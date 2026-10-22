@@ -36,4 +36,6 @@ DIRECT 单记录 envelope 的字段规则、来源和 S1-A 本地验收见 [S1-A
 
 Windows 本地诊断 CLI 的参数、固定音频格式、资源清理和验证边界见 [S1-B 本地诊断入口](docs/S1-B本地诊断入口.md)。
 
+绑定本机 COM5、WaveIn 1、WaveOut 0 的可见 HRI 监听启动器说明见[本机 HRI 诊断启动器](tools/README.md)。这是最长 120 秒的本机诊断切片，不代表双向语音验收或完整 HRI 初始化。
+
 纯函数 HRI 状态层的时序、超时和边界测试见 `tests/hri_session_test.cpp`；CLI 会话输出只表示本机观察到的有限控制交换，不代表完整初始化或人耳确认。
