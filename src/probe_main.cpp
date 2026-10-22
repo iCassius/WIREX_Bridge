@@ -972,6 +972,7 @@ int hri_listen(const std::wstring& port_name, const std::filesystem::path& body_
               << "unsupported_config_import=not_implemented; X/100 byte 0x0b ASCII '1' is counted, not applied; configuration synchronization is unconfirmed.\n"
               << "Input " << input_id << ": " << to_utf8(device_name(input_caps.szPname, MAXPNAMELEN))
               << "; output " << output_id << ": " << to_utf8(device_name(output_caps.szPname, MAXPNAMELEN)) << "\n";
+    std::cout.flush();
 
     COMMTIMEOUTS active_timeouts{};
     active_timeouts.ReadIntervalTimeout = 5;
@@ -1091,7 +1092,8 @@ int hri_listen(const std::wstring& port_name, const std::filesystem::path& body_
                 break;
             }
             audio_started = true;
-            std::wcout << L"音频路由已打开，进入本次 HRI 监听窗口。\n" << std::flush;
+            // 直接输出UTF-8字节，避免窄/宽标准流混用时依赖宽字符区域设置转换。
+            std::cout << u8"音频路由已打开，进入本次 HRI 监听窗口。\n" << std::flush;
         }
 
         if (audio_started) {
