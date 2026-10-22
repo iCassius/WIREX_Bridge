@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WIREX Bridge · 离线 UI 评审稿</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --canvas: #141719;
+      --panel: #20252a;
+      --panel-hi: #282f34;
+      --line: #3a4248;
+      --line-hi: #515d64;
+      --text: #edf1f2;
+      --muted: #9da8ad;
+      --amber: #e1ae53;
+      --blue: #76b3d8;
+      --green: #6fc18f;
+      --red: #cd7867;
+    }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; }
+    body { overflow: hidden; background: var(--canvas); color: var(--text); font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; }
+    button { font: inherit; color: inherit; }
+    .shell { width: 100%; height: 100%; max-width: 1500px; margin: 0 auto; padding: 16px 22px 14px; display: grid; grid-template-rows: auto auto auto minmax(0, 1fr) auto; grid-template-areas: "header" "banner" "overview" "work" "footer"; gap: 10px; }
+    .header { grid-area: header; min-height: 44px; display: flex; align-items: center; gap: 12px; }
+    .title-block { flex: 1; min-width: 220px; }
+    .eyebrow { color: var(--muted); font-size: 10px; line-height: 1.15; font-weight: 800; letter-spacing: 1.05px; text-transform: uppercase; }
+    h1 { margin: 3px 0 0; font-size: 21px; line-height: 1.1; letter-spacing: .01em; }
+    .usage-label { color: var(--muted); font-size: 11px; font-weight: 800; }
+    .usage-note { color: var(--muted); font-size: 10px; white-space: nowrap; }
+    select.usage { height: 36px; min-width: 165px; padding: 6px 9px; color: #9da8ad; background: #252a2e; border: 1px solid #394147; font: inherit; font-size: 11px; font-weight: 800; }
+    .button { border: 1px solid var(--line-hi); border-bottom: 3px solid #394147; background: #30383e; min-height: 36px; padding: 7px 13px; font-size: 12px; font-weight: 800; cursor: pointer; }
+    .button:hover:not(:disabled) { background: #39434a; }
+    .button:disabled { color: #78848a; background: #252a2e; border-color: #394147; cursor: not-allowed; }
+    .button.exit { color: #fff1e4; background: #68412a; border-color: #9c6843; border-bottom-color: #492f20; }
+    .button.exit:hover { background: #795033; }
+    .demo-banner { grid-area: banner; min-height: 34px; display: flex; align-items: center; padding: 7px 12px; color: #ffdd98; background: #493819; border: 1px solid #9b7635; font-size: 12px; font-weight: 800; }
+    .demo-banner[hidden] { display: none; }
+    .overview { grid-area: overview; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }
+    .tile, .panel { background: var(--panel); border: 1px solid var(--line); box-shadow: inset 0 1px rgba(255,255,255,.025); }
+    .tile { min-width: 0; min-height: 82px; padding: 9px 11px 8px; border-left: 4px solid #66727a; display: flex; flex-direction: column; gap: 3px; }
+    .tile.amber { border-left-color: var(--amber); }
+    .tile.blue { border-left-color: var(--blue); }
+    .tile.green { border-left-color: var(--green); }
+    .tile-value { font-size: 16px; font-weight: 800; line-height: 1.2; }
+    .tile-detail { color: var(--muted); font-size: 11px; line-height: 1.25; overflow-wrap: anywhere; }
+    .tile-sub { color: #a7c7da; font-size: 10.5px; line-height: 1.25; font-weight: 700; overflow-wrap: anywhere; }
+    .work { grid-area: work; min-height: 0; display: grid; grid-template-rows: minmax(238px, 1.2fr) minmax(168px, .88fr); gap: 10px; }
+    .panel { min-width: 0; padding: 13px 16px; }
+    .panel-head { display: flex; align-items: center; gap: 10px; min-height: 24px; }
+    .panel-head .eyebrow { flex: 1; }
+    .tag { color: #d0d9dd; background: #2b3338; border: 1px solid #48545b; padding: 4px 8px; font-size: 10px; font-weight: 800; }
+    .call-content { height: calc(100% - 30px); min-height: 0; display: grid; grid-template-columns: 1.05fr 1fr; align-items: center; gap: 16px; }
+    .call-identity { min-width: 0; padding: 5px 0 5px 2px; border-left: 3px solid var(--blue); padding-left: 14px; }
+    .callsign { margin: 4px 0 5px; color: #f4f6f7; font-size: clamp(42px, 5.5vw, 70px); font-weight: 900; line-height: .98; letter-spacing: .035em; overflow-wrap: anywhere; }
+    .call-note { color: var(--muted); font-size: 12px; line-height: 1.4; }
+    .data-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .data-cell { min-width: 0; min-height: 73px; padding: 10px 11px; background: #191e21; border: 1px solid #343d42; border-top: 2px solid #53626a; }
+    .data-cell.direction { border-top-color: var(--blue); }
+    .data-cell.target { border-top-color: var(--amber); }
+    .data-cell-value { margin-top: 8px; font-size: clamp(17px, 2.1vw, 24px); font-weight: 800; line-height: 1.05; overflow-wrap: anywhere; }
+    .lower { min-height: 0; display: grid; grid-template-columns: .95fr 1.05fr; gap: 10px; }
+    .control-panel, .log-panel { min-height: 0; }
+    .control-fields { margin-top: 7px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .field-label { color: var(--muted); font-size: 10px; font-weight: 800; }
+    .field { margin-top: 4px; height: 31px; padding: 6px 8px; background: #181c1f; color: #889399; border: 1px solid #424d53; font-size: 12px; }
+    .actions { display: flex; gap: 8px; margin-top: 8px; }
+    .actions .button { flex: 1; min-width: 0; min-height: 32px; padding: 5px 8px; font-size: 11px; }
+    .control-note { margin-top: 7px; color: #9aa5aa; font-size: 10px; line-height: 1.25; }
+    .log-list { margin: 7px 0 0; padding: 0; list-style: none; display: grid; gap: 5px; }
+    .log-list li { padding: 6px 8px; color: #c2cbd0; background: #191e21; border-left: 2px solid #56646b; font-family: Consolas, "Cascadia Mono", monospace; font-size: 11px; line-height: 1.25; }
+    .log-list li.demo-line { border-left-color: var(--blue); }
+    .empty-log { margin-top: 11px; color: var(--muted); font-size: 12px; }
+    .footer { grid-area: footer; min-height: 22px; display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: 10px; }
+    .footer strong { color: #c1cbd0; letter-spacing: .07em; }
+    .mode-switch { display: flex; gap: 5px; margin-left: auto; }
+    .mode-button { min-height: 27px; padding: 4px 9px; border: 1px solid #3d484e; background: #20262a; color: #adb8bd; font-size: 10px; font-weight: 800; cursor: pointer; }
+    .mode-button[aria-pressed="true"] { color: #eef3f5; border-color: #80919a; background: #354047; }
+    .dialog-backdrop { position: fixed; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(0,0,0,.68); }
+    .dialog-backdrop[hidden] { display: none; }
+    .dialog { width: min(520px, 100%); padding: 19px; background: #1c2125; border: 1px solid #566169; box-shadow: 0 12px 40px rgba(0,0,0,.45); }
+    .dialog h2 { margin: 5px 0 6px; font-size: 21px; }
+    .dialog-intro { margin: 0 0 12px; color: var(--muted); font-size: 12px; }
+    .setting-row { margin-top: 7px; padding: 8px 10px; background: #23292d; border: 1px solid #374148; }
+    .setting-row strong { display: block; color: #d7dfe2; font-size: 10px; letter-spacing: .05em; }
+    .setting-row span { display: block; margin-top: 4px; color: #aab5ba; font-size: 11px; line-height: 1.3; }
+    .dialog .button { margin-top: 12px; }
+    @media (max-width: 1100px) {
+      .shell { padding: 13px 16px 11px; gap: 8px; }
+      .overview { gap: 7px; }
+      .tile { min-height: 78px; padding: 8px 8px 7px; }
+      .panel { padding: 11px 13px; }
+      .work { grid-template-rows: minmax(224px, 1.2fr) minmax(165px, .88fr); gap: 8px; }
+      .lower { gap: 8px; }
+    }
+    @media (max-height: 800px) {
+      .shell { padding-top: 10px; padding-bottom: 9px; gap: 7px; }
+      .tile { min-height: 72px; }
+      .work { grid-template-rows: minmax(211px, 1.15fr) minmax(155px, .88fr); gap: 7px; }
+      .data-cell { min-height: 66px; padding: 8px 10px; }
+      .panel { padding-top: 10px; padding-bottom: 10px; }
+      .log-list { gap: 4px; }
+      .log-list li { padding: 5px 7px; }
+    }
+    @media (max-width: 760px) {
+      body { overflow: auto; }
+      .shell { height: auto; min-height: 100%; grid-template-rows: auto auto auto auto; }
+      .overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .work { grid-template-rows: auto auto; }
+      .call-content { height: auto; grid-template-columns: 1fr; padding-top: 18px; }
+      .lower { grid-template-columns: 1fr; }
+      .mode-switch { margin-left: 0; }
+      .footer { flex-wrap: wrap; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell" aria-label="WIREX Bridge 离线 UI 评审稿">
+    <header class="header">
+      <div class="title-block">
+        <div class="eyebrow">WIREX BRIDGE / OPERATOR PANEL</div>
+        <h1>数字语音链路控制台</h1>
+      </div>
+      <label class="usage-label" for="usageSelector">用途</label>
+      <select class="usage" id="usageSelector" disabled title="用途选择等待核心能力；当前离线 UI 不连接，也不表示 RF 节点可用。" aria-label="用途（等待核心能力）">
+        <option selected>FTX-1 个人终端</option>
+        <option>C4FM RF 节点</option>
+      </select>
+      <span class="usage-note">等待核心能力</span>
+      <button class="button" id="settingsButton" type="button">设置</button>
+
+    </header>
+
+    <div class="demo-banner" id="demoBanner" role="status" hidden>模拟预览：无核心、无电台连接 · 下方状态、通话与记录均为本地固定示例</div>
+
+    <section class="overview" aria-label="链路状态概览">
+      <article class="tile amber" id="coreTile">
+        <div class="eyebrow">CORE / 核心</div>
+        <div class="tile-value" id="coreValue">不可用</div>
+        <div class="tile-detail" id="coreDetail">核心未就绪（尚无可执行核心）</div>
+      </article>
+      <article class="tile" id="radioTile">
+        <div class="eyebrow">RADIO / FTX-1</div>
+        <div class="tile-value" id="radioValue">未知</div>
+        <div class="tile-detail" id="radioDetail">型号：FTX-1 · 固件：待核心确认</div>
+        <div class="tile-sub" id="hriDetails">HRI：未知 · HRI MODE：待核心确认</div>
+        <div class="tile-sub" id="catDetails">CAT：未知 · Node Mode：待核心确认</div>
+        <div class="tile-sub" id="gmxDetails">GM/X：待核心确认 · WIRES-X：未知</div>
+      </article>
+      <article class="tile" id="audioTile">
+        <div class="eyebrow">AUDIO / 音频</div>
+        <div class="tile-value" id="audioValue">未知</div>
+        <div class="tile-detail" id="audioDetail">尚无音频端点读取来源</div>
+      </article>
+      <article class="tile" id="bmTile">
+        <div class="eyebrow">NETWORK / BrandMeister</div>
+        <div class="tile-value" id="bmValue">未知</div>
+        <div class="tile-detail" id="bmDetail">待核心提供连接状态</div>
+      </article>
+    </section>
+
+    <section class="work" aria-label="通话与操作">
+      <section class="panel call-panel" aria-label="当前通话">
+        <div class="panel-head">
+          <div class="eyebrow">CURRENT CHANNEL / 当前通话</div>
+          <div class="tag" id="callTag">无通话数据源</div>
+        </div>
+        <div class="call-content">
+          <div class="call-identity">
+            <div class="eyebrow">发话呼号 / CALLSIGN</div>
+            <div class="callsign" id="callsign">—</div>
+            <div class="call-note" id="callNote">核心未就绪，当前没有可读取的通话事件。</div>
+          </div>
+          <div class="data-grid">
+            <div class="data-cell direction"><div class="eyebrow">方向 / DIRECTION</div><div class="data-cell-value" id="direction">—</div></div>
+            <div class="data-cell target"><div class="eyebrow">目标 / TALK GROUP</div><div class="data-cell-value" id="talkgroup">—</div></div>
+            <div class="data-cell"><div class="eyebrow">时隙 / TIMESLOT</div><div class="data-cell-value" id="timeslot">—</div></div>
+            <div class="data-cell"><div class="eyebrow">持续 / DURATION</div><div class="data-cell-value" id="duration">—</div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="lower" aria-label="目标控制和运行记录">
+        <section class="panel control-panel">
+          <div class="panel-head"><div class="eyebrow">TARGET CONTROL / 目标控制</div></div>
+          <div class="control-fields">
+            <label><span class="field-label">目标 TG</span><div class="field" id="targetTg">未知</div></label>
+            <label><span class="field-label">时隙 TS</span><div class="field" id="targetTs">未知</div></label>
+          </div>
+          <div class="actions">
+            <button class="button" type="button" disabled title="当前尚无可执行核心；未来由启动流程按上次配置尝试连接，当前不可用">重试连接</button>
+            <button class="button" type="button" disabled title="当前尚无可执行核心；未来由启动流程按上次配置尝试连接，当前不可用">应用目标</button>
+          </div>
+          <div class="control-note">控制项已禁用 · 未来由启动流程尝试连接；离线 UI 不会连接、写入或发射</div>
+        </section>
+        <section class="panel log-panel">
+          <div class="panel-head"><div class="eyebrow">RUN LOG / 运行记录</div></div>
+          <div class="empty-log" id="emptyLog">尚无核心事件或运行记录。</div>
+          <ul class="log-list" id="logList" hidden></ul>
+        </section>
+      </section>
+    </section>
+
+    <footer class="footer">
+      <strong>AUTO CONNECT</strong>
+      <span>未来启动按上次配置尝试连接 · 当前离线 UI 不会发起连接</span>
+      <div class="mode-switch" aria-label="预览状态切换">
+        <button class="mode-button" id="offlineMode" type="button" aria-pressed="true">未接核心</button>
+        <button class="mode-button" id="demoMode" type="button" aria-pressed="false">演示通话</button>
+      </div>
+    <button class="button exit" type="button" title="此静态评审稿不启动服务">停止并退出</button>
+    </footer>
+  </main>
+
+  <div class="dialog-backdrop" id="settingsDialog" hidden>
+    <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <div class="eyebrow">CONFIGURATION OUTLINE</div>
+      <h2 id="settingsTitle">连接与显示结构</h2>
+      <p class="dialog-intro">本窗口只展示未来配置项，不读取、保存或应用设置。</p>
+      <div class="setting-row"><strong>启动策略</strong><span>未来启动时按上次配置尝试连接 · 当前未实现</span></div>
+      <div class="setting-row"><strong>FTX-1 信息</strong><span>型号、固件、HRI MODE、Node Mode 与 GM/X 均待核心读取/确认</span></div>
+      <div class="setting-row"><strong>电台与核心</strong><span>待核心接口定义设备身份、状态来源和能力</span></div>
+      <div class="setting-row"><strong>WIRES-X 模式</strong><span>由核心提供已确认状态；本 UI 不从原始数值推断</span></div>
+      <div class="setting-row"><strong>网络目标</strong><span>待定义连接状态、目标 TG 与时隙的来源</span></div>
+      <div class="setting-row"><strong>凭据</strong><span>本离线版本不收集或持久化凭据</span></div>
+      <button class="button" id="closeSettings" type="button">关闭</button>
+    </section>
+  </div>
+
+  <script>
+    const offline = {
+      core: ["不可用", "核心未就绪（尚无可执行核心）"],
+      radio: ["未知", "型号：FTX-1 · 固件：待核心确认"],
+      modes: ["HRI：未知 · HRI MODE：待核心确认", "CAT：未知 · Node Mode：待核心确认", "GM/X：待核心确认 · WIRES-X：未知"],
+      audio: ["未知", "尚无音频端点读取来源"],
+      bm: ["未知", "待核心提供连接状态"],
+      call: null
+    };
+    const demo = {
+      core: ["无核心", "模拟预览不启动核心进程"],
+      radio: ["未连接", "型号：FTX-1（示例） · 固件：示例标记（无版本值）"],
+      modes: ["HRI：模拟状态 · HRI MODE：ON（示例）", "CAT：模拟状态 · Node Mode：DIRECT（示例）", "GM/X：GM-X（示例） · WIRES-X：演示状态"],
+      audio: ["模拟状态", "虚构音频端点 · 未打开"],
+      bm: ["未连接", "演示目标 · TG 91 / TS 1"],
+      call: { callsign: "DEMO-01", direction: "本地 → 网络", tg: "TG 91", ts: "TS 1", duration: "00:12" }
+    };
+    const byId = id => document.getElementById(id);
+    function setTile(id, tone, value, detail) {
+      const tile = byId(id);
+      tile.classList.remove("amber", "blue", "green");
+      if (tone) tile.classList.add(tone);
+      byId(id === "coreTile" ? "coreValue" : id === "radioTile" ? "radioValue" : id === "audioTile" ? "audioValue" : "bmValue").textContent = value;
+      byId(id === "coreTile" ? "coreDetail" : id === "radioTile" ? "radioDetail" : id === "audioTile" ? "audioDetail" : "bmDetail").textContent = detail;
+    }
+    function showMode(isDemo) {
+      const s = isDemo ? demo : offline;
+      byId("demoBanner").hidden = !isDemo;
+      setTile("coreTile", isDemo ? "" : "amber", ...s.core);
+      setTile("radioTile", "", ...s.radio);
+      setTile("audioTile", isDemo ? "blue" : "", ...s.audio);
+      setTile("bmTile", "", ...s.bm);
+      byId("hriDetails").textContent = s.modes[0];
+      byId("catDetails").textContent = s.modes[1];
+      byId("gmxDetails").textContent = s.modes[2];
+      byId("callTag").textContent = isDemo ? "演示快照" : "无通话数据源";
+      byId("callNote").textContent = isDemo ? "DEMO-01 为虚构标识 · 不代表设备或网络连接。" : "核心未就绪，当前没有可读取的通话事件。";
+      byId("callsign").textContent = s.call?.callsign ?? "—";
+      byId("direction").textContent = s.call?.direction ?? "—";
+      byId("talkgroup").textContent = s.call?.tg ?? "—";
+      byId("timeslot").textContent = s.call?.ts ?? "—";
+      byId("duration").textContent = s.call?.duration ?? "—";
+      byId("targetTg").textContent = isDemo ? "91" : "未知";
+      byId("targetTs").textContent = isDemo ? "1" : "未知";
+      byId("emptyLog").hidden = isDemo;
+      const log = byId("logList");
+      log.hidden = !isDemo;
+      log.innerHTML = isDemo
+        ? "<li class='demo-line'>演示快照已载入</li><li class='demo-line'>模拟 HRI 状态：ON / DIRECT / GM-X</li><li class='demo-line'>模拟通话：DEMO-01 → TG 91 / TS 1</li>"
+        : "";
+      byId("offlineMode").setAttribute("aria-pressed", String(!isDemo));
+      byId("demoMode").setAttribute("aria-pressed", String(isDemo));
+    }
+    byId("offlineMode").addEventListener("click", () => showMode(false));
+    byId("demoMode").addEventListener("click", () => showMode(true));
+    byId("settingsButton").addEventListener("click", () => { byId("settingsDialog").hidden = false; });
+    byId("closeSettings").addEventListener("click", () => { byId("settingsDialog").hidden = true; });
+    byId("settingsDialog").addEventListener("click", event => { if (event.target.id === "settingsDialog") event.currentTarget.hidden = true; });
+  </script>
+</body>
+</html>
