@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.16)
+cmake_policy(SET CMP0091 NEW)
 project(wirex_dmrd LANGUAGES CXX)
+
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
 
 add_library(wirex_dmrd src/dmrd.cpp)
 target_include_directories(wirex_dmrd PUBLIC include)
@@ -27,6 +32,31 @@ endif()
 add_executable(direct_frame_test tests/direct_frame_test.cpp)
 target_link_libraries(direct_frame_test PRIVATE wirex_direct_frame)
 
+add_library(wirex_direct_stream src/direct_stream.cpp)
+target_include_directories(wirex_direct_stream PUBLIC include)
+target_compile_features(wirex_direct_stream PUBLIC cxx_std_17)
+target_link_libraries(wirex_direct_stream PUBLIC wirex_direct_frame)
+
+if(MSVC)
+    target_compile_options(wirex_direct_stream PRIVATE /W4 /permissive- /utf-8)
+    target_compile_options(wirex_direct_frame PRIVATE /utf-8)
+else()
+    target_compile_options(wirex_direct_stream PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_executable(direct_stream_test tests/direct_stream_test.cpp)
+target_link_libraries(direct_stream_test PRIVATE wirex_direct_stream)
+
+if(WIN32)
+    add_executable(wirex_probe src/probe_main.cpp)
+    target_compile_features(wirex_probe PRIVATE cxx_std_17)
+    if(MSVC)
+        target_compile_options(wirex_probe PRIVATE /W4 /permissive- /utf-8)
+    endif()
+    target_link_libraries(wirex_probe PRIVATE wirex_direct_stream wirex_direct_frame winmm)
+endif()
+
 enable_testing()
 add_test(NAME dmrd_test COMMAND dmrd_test)
 add_test(NAME direct_frame_test COMMAND direct_frame_test)
+add_test(NAME direct_stream_test COMMAND direct_stream_test)
