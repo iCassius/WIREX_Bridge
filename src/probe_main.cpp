@@ -969,6 +969,7 @@ int hri_listen(const std::wstring& port_name, const std::filesystem::path& body_
               << "Audio is gated until a complete, checksum-valid Y/0 is observed. Gain="
               << gain_milli / 1000U << "." << std::setw(3) << std::setfill('0') << gain_milli % 1000U
               << std::setfill(' ') << "x. Only the bounded V/Y/X records are sent; no extra software PTT/CAT command is called, and RF behavior is unmeasured.\n"
+              << "unsupported_config_import=not_implemented; X/100 byte 0x0b ASCII '1' is counted, not applied; configuration synchronization is unconfirmed.\n"
               << "Input " << input_id << ": " << to_utf8(device_name(input_caps.szPname, MAXPNAMELEN))
               << "; output " << output_id << ": " << to_utf8(device_name(output_caps.szPname, MAXPNAMELEN)) << "\n";
 
@@ -1082,8 +1083,6 @@ int hri_listen(const std::wstring& port_name, const std::filesystem::path& body_
                 (void)session.abort(wirex::hri_session::StopReason::audio_failure);
                 break;
             }
-            audio_started = true;
-
             // WinMM 打开设备可能耗时；在开始处理任何音频缓冲前重新检查会话期限。
             update = session.tick(elapsed_ms());
             if (update.state.phase == wirex::hri_session::Phase::stopped ||
@@ -1091,6 +1090,8 @@ int hri_listen(const std::wstring& port_name, const std::filesystem::path& body_
                 session.snapshot().phase == wirex::hri_session::Phase::stopped) {
                 break;
             }
+            audio_started = true;
+            std::wcout << L"音频路由已打开，进入本次 HRI 监听窗口。\n" << std::flush;
         }
 
         if (audio_started) {
@@ -1176,7 +1177,8 @@ int hri_listen(const std::wstring& port_name, const std::filesystem::path& body_
                << final_state.counters.y_write_completed
                << L", valid Y/0 records=" << final_state.counters.y_zero_ack_received
                << L", X/100 received=" << final_state.counters.x100_received
-               << L", X conditional-copy branches=" << final_state.counters.x_copy_branch_count
+               << L", unsupported_config_import records (not applied)=" << final_state.counters.unsupported_config_import_records
+               << L", X non-config local-template-copy branches=" << final_state.counters.x_copy_branch_count
                << L", local next-Y offset-12 changes=" << final_state.counters.y_byte12_changed_count
                << L", X/0 writes=" << final_state.counters.x0_write_requested << L"/"
                << final_state.counters.x0_write_completed << L", other valid records="
@@ -1395,7 +1397,7 @@ void print_help()
     std::wcout << L"wirex_probe - offline-first FTX-1 DIRECT diagnostic CLI\n"
                << L"  --help\n"
                << L"  --version --port COM5       Send one Direct V0000 query; wait at most 2500 ms.\n"
-               << L"  --hri-listen --port COM5 --body-file ABS --input N --output M --seconds N [--gain X]\n"
+               << L"  --hri-listen --port COM5 --body-file ABS --input N --output M --seconds N (1..120) [--gain X]\n"
                << L"                               External 100-byte Y body; start selected PCM route only after valid Y/0.\n"
                << L"  --list-audio                List explicit WaveIn/WaveOut device IDs and names.\n"
                << L"  --monitor --input N --seconds N (1..30)\n"
@@ -1432,17 +1434,17 @@ int wmain(int argc, wchar_t* argv[])
         std::uint32_t gain_milli = wirex::pcm_gain::unity_milli;
         if (!parse_uint(argv[7], input_id) || input_id > 0xffffffffUL ||
             !parse_uint(argv[9], output_id) || output_id > 0xffffffffUL ||
-            !parse_uint(argv[11], seconds) || seconds < 1 || seconds > 30 ||
+            !parse_uint(argv[11], seconds) || seconds < 1 || seconds > 120 ||
             (argc == 14 && (std::wstring_view(argv[12]) != L"--gain" ||
                 !wirex::pcm_gain::parse_gain(argv[13], gain_milli)))) {
-            std::wcerr << L"--input/--output must be explicit device IDs, --seconds must be 1..30, and optional --gain must be 0.25..16.0.\n";
+            std::wcerr << L"--input/--output must be explicit device IDs, HRI --seconds must be 1..120, and optional --gain must be 0.25..16.0.\n";
             return 2;
         }
         return hri_listen(argv[3], std::filesystem::path(argv[5]), static_cast<UINT>(input_id),
             static_cast<UINT>(output_id), seconds, gain_milli);
     }
     if (argc > 1 && std::wstring_view(argv[1]) == L"--hri-listen") {
-        std::wcerr << L"Usage: --hri-listen --port COMn --body-file ABS --input N --output M --seconds 1..30 [--gain X].\n";
+        std::wcerr << L"Usage: --hri-listen --port COMn --body-file ABS --input N --output M --seconds 1..120 [--gain X].\n";
         return 2;
     }
     if (argc == 6 && std::wstring_view(argv[1]) == L"--play-wav" && std::wstring_view(argv[2]) == L"--file" &&

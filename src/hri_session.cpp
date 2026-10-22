@@ -159,6 +159,7 @@ Update Session::feed(const std::uint8_t* bytes, std::size_t size, std::uint64_t 
 
         if (record.type == 'X' && record.payload.size() == y_body_size && counters_.y_write_completed != 0) {
             counters_.x100_received++;
+            if (record.payload[11] == '1') counters_.unsupported_config_import_records++;
             if (counters_.x0_write_requested >= max_x_ack_write_calls) {
                 stop(StopReason::x_ack_limit);
                 break;

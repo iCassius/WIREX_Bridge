@@ -192,6 +192,8 @@ void test_y_ack_x_ack_and_conditional_next_y_byte()
     check(x_other_result.state.counters.x_copy_branch_count == 0 &&
         x_other_result.state.counters.y_byte12_changed_count == 0,
         "the alternate X branch should not count a copy or a next-Y byte change");
+    check(x_other_result.state.counters.unsupported_config_import_records == 1,
+        "X byte-11 ASCII 1 should be counted as a configuration import the prototype does not implement");
     if (!x_other_result.commands.empty()) complete_write(other_branch, x_other_result.commands[0], 1130);
     const auto unchanged_y = other_branch.tick(2110);
     if (unchanged_y.commands.empty()) {
@@ -201,6 +203,49 @@ void test_y_ack_x_ack_and_conditional_next_y_byte()
     const auto unchanged_decoded = wirex::direct_frame::decode(unchanged_y.commands[0].frame.data(), unchanged_y.commands[0].frame.size());
     check(unchanged_decoded && unchanged_decoded.record.payload[12] == '0',
         "X byte 12 should not be copied when X byte 11 is ASCII 1");
+}
+
+void test_extended_hri_bounds()
+{
+    check(wirex::hri_session::max_window_ms == 120000 &&
+        wirex::hri_session::max_y_write_calls == 120 &&
+        wirex::hri_session::max_x_ack_write_calls == 256 &&
+        wirex::hri_session::max_receive_bytes == 256 * 1024 &&
+        wirex::hri_session::max_transmit_bytes == 32 * 1024 &&
+        wirex::hri_session::max_valid_records == 1024,
+        "HRI-only duration and protocol budgets should use the approved bounded 120-second envelope");
+
+    Session maximum_window(synthetic_y_body(), Config{wirex::hri_session::max_window_ms});
+    const auto start = maximum_window.start(0);
+    check(start.commands.size() == 1 && start.state.phase == Phase::awaiting_version_write,
+        "the full 120-second session window should be accepted");
+    const auto expired = maximum_window.tick(wirex::hri_session::max_window_ms);
+    check(expired.state.phase == Phase::stopped && expired.state.stop_reason == StopReason::deadline,
+        "the maximum HRI window should stop at its exact deadline");
+
+    Session overlong_window(synthetic_y_body(), Config{wirex::hri_session::max_window_ms + 1});
+    const auto rejected = overlong_window.start(0);
+    check(rejected.commands.empty() && rejected.state.stop_reason == StopReason::invalid_configuration,
+        "an HRI window above 120 seconds should be rejected before any command is queued");
+
+    Session over_receive(synthetic_y_body());
+    const auto receive_start = over_receive.start(0);
+    if (!receive_start.commands.empty()) complete_write(over_receive, receive_start.commands[0], 0);
+    std::vector<std::uint8_t> too_many_bytes(wirex::hri_session::max_receive_bytes + 1, 0);
+    const auto receive_result = over_receive.feed(too_many_bytes.data(), too_many_bytes.size(), 1);
+    check(receive_result.state.stop_reason == StopReason::receive_limit && receive_result.commands.empty(),
+        "bytes beyond the 256-KiB HRI receive budget should fail closed");
+
+    Session over_records(synthetic_y_body());
+    begin_with_valid_version(over_records, 0, 10);
+    std::vector<std::uint8_t> record_batch;
+    for (std::uint32_t i = 0; i < wirex::hri_session::max_valid_records + 1; ++i) {
+        const auto frame = encode_record(Record{'Q', {}});
+        record_batch.insert(record_batch.end(), frame.begin(), frame.end());
+    }
+    const auto record_result = over_records.feed(record_batch.data(), record_batch.size(), 20);
+    check(record_result.state.stop_reason == StopReason::record_limit && record_result.commands.empty(),
+        "more than 1024 valid records in one bounded session should fail closed");
 }
 
 void test_fail_closed_no_exit_frames_and_deadlines()
@@ -343,6 +388,7 @@ int main()
     test_template_gate_and_fixed_version_request();
     test_version_gate_and_periodic_y();
     test_y_ack_x_ack_and_conditional_next_y_byte();
+    test_extended_hri_bounds();
     test_fail_closed_no_exit_frames_and_deadlines();
     test_limited_exchange_requires_version_y_and_y0();
     if (failures != 0) {

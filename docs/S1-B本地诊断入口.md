@@ -1,11 +1,11 @@
 # S1-B：Windows 本地诊断入口
 
-`wirex_probe.exe` 是一个便携式 Windows 命令行诊断切片。它不安装服务或登录启动项，不创建后台进程；音频操作有 1–30 秒上限，并只打开调用者明确指定的端口或音频设备 ID。Windows 构建使用静态 MSVC 运行库 `/MT`。这不是完整的 HRI 会话或语音桥接程序。
+`wirex_probe.exe` 是一个便携式 Windows 命令行诊断切片。它不安装服务或登录启动项，不创建后台进程；`--hri-listen` 最长 120 秒，其他音频操作最长 30 秒，并只打开调用者明确指定的端口或音频设备 ID。Windows 构建使用静态 MSVC 运行库 `/MT`。这不是完整的 HRI 会话或语音桥接程序。
 
 ```text
 wirex_probe.exe --help
 wirex_probe.exe --version --port COM5
-wirex_probe.exe --hri-listen --port COM5 --body-file C:\path\to\approved-y-body.bin --input 1 --output 0 --seconds 30 --gain 8
+wirex_probe.exe --hri-listen --port COM5 --body-file C:\path\to\approved-y-body.bin --input 1 --output 0 --seconds 120 --gain 8
 wirex_probe.exe --list-audio
 wirex_probe.exe --monitor --input 1 --seconds 5
 wirex_probe.exe --audio-loop --input 1 --output 2 --seconds 5
@@ -38,11 +38,11 @@ cl /nologo /std:c++17 /EHsc /W4 /permissive- /utf-8 /DNDEBUG /MT /I include `
 
 ## S1-H：单进程 HRI 监听原型
 
-`--hri-listen` 把已有纯 DIRECT frame/stream、HRI 会话状态层和 WinMM 实时 PCM 路由接在同一个进程中。它要求 `--body-file` 是绝对路径，文件必须恰好100字节、偏移5为ASCII `2`，并与代码内固定SHA-256一致；正文不会写入仓库、日志或控制台。串口采用115200 8N1、无握手、DTR/RTS关闭，读清最多250 ms、最多4096字节并要求20 ms安静，然后只发一次V0000。V响应须完整、SUM正确且48字节payload以`FTX-1`开头；版本应答等待2500 ms。通过后按约1000 ms节拍发送外部Y/100模板；首个Y/0等待最多3000 ms。仅在有效Y/0收到后，程序才打开用户指定的WaveIn与WaveOut设备并开始48000 Hz、单声道、有符号16-bit PCM路由。
+`--hri-listen` 把已有纯 DIRECT frame/stream、HRI 会话状态层和 WinMM 实时 PCM 路由接在同一个进程中。它要求 `--body-file` 是绝对路径，文件必须恰好100字节、偏移5为ASCII `2`，并与代码内固定SHA-256一致；正文不会写入仓库、日志或控制台。串口采用115200 8N1、无握手、DTR/RTS关闭，读清最多250 ms、最多4096字节并要求20 ms安静，然后只发一次V0000。V响应须完整、SUM正确且48字节payload以`FTX-1`开头；版本应答等待2500 ms。通过后按约1000 ms节拍发送外部Y/100模板；首个Y/0等待最多3000 ms。仅在有效Y/0收到后，程序才打开用户指定的WaveIn与WaveOut设备并开始48000 Hz、单声道、有符号16-bit PCM路由。两个端点成功打开且会话期限仍有效后，标准输出立即刷新“音频路由已打开，进入本次 HRI 监听窗口。”提示；此提示不确认电台配置已同步。
 
-程序在同一主循环每20 ms轮询串口并推进状态，WinMM使用`CALLBACK_EVENT`，不在音频回调中等待串口，也不创建额外线程、子进程或常驻服务。会话最多30秒；累计接收最多64 KiB、发送最多8 KiB、Y发送最多30次、X/0应答最多64次。超时、串口错误、坏帧或音频错误都会停止路由并关闭本进程打开的资源；程序单独检查串口`CloseHandle`结果，并在清理失败时返回错误。它不会猜测发送退出帧，也不会额外调用PTT/CAT软件命令；记录字段的RF作用尚未测量。对完整、校验有效的X/100，状态层按已核对分支决定是否把X正文偏移12的字节复制到下一条Y正文偏移12；摘要只报告符合复制条件的次数与实际值发生变化的次数，不解释该字节的业务意义。
+程序在同一主循环每20 ms轮询串口并推进状态，WinMM使用`CALLBACK_EVENT`，不在音频回调中等待串口，也不创建额外线程、子进程或常驻服务。HRI窗口最多120秒；累计接收最多256 KiB、发送最多32 KiB、有效记录最多1024条、Y发送最多120次、X/0应答最多256次，单帧上限仍为4096字节。`X/100`正文偏移`0x0b`为ASCII`1`时，DLL会进入配置导入分支并调用多组DGKEY设置；当前CLI没有实现这些配置校验/导入，只在摘要计为`unsupported_config_import`，不报告配置同步成功。该分支成功时，官方DLL还会把`X.body[0x0c]`写入内部状态；此原型不拥有DLL状态对象，因而不会据此改写本地Y模板。只有正文偏移`0x0b`不为`1`的X/100，原型才按窄证据规则把偏移`0x0c`复制到本地下一Y模板。详见 [R47](../../research/planning/R47_Y状态字节与手咪PTT.md) 和 [R49](../../research/planning/R49_HRI空闲状态指针关联观察准备.md)。超时、串口错误、坏帧或音频错误都会停止路由并关闭本进程打开的资源；程序单独检查串口`CloseHandle`结果，并在清理失败时返回错误。它不会猜测发送退出帧，也不会额外调用PTT/CAT软件命令；记录字段的RF作用尚未测量。
 
-结束摘要分别报告已验证V/48、观察到的Y/0、X/100接收数、X/0写完成数、上述两个复制计数和音频RMS/峰值/裁剪数。显示“有效Y/0已观察”只表示本进程观察到该记录；它不证明完整HRI初始化、语音codec、RF链路或人耳可听。外部Y正文和实际串口帧正文均不打印。本地准备阶段没有运行此命令或打开设备。
+结束摘要分别报告已验证V/48、观察到的Y/0、X/100接收数、`unsupported_config_import`数、X/0写完成数、本地模板复制条件与变化计数和音频RMS/峰值/裁剪数。显示“有效Y/0已观察”只表示本进程观察到该记录；它不证明完整HRI初始化、配置同步、语音codec、RF链路或人耳可听。外部Y正文和实际串口帧正文均不打印。本地准备阶段没有运行此命令或打开设备。
 
 正常超时以及 Ctrl+C/Ctrl+Break 请求停止时，程序尝试重置、解除准备并关闭自己打开的 WinMM 缓冲和句柄。控制台关闭或进程被强制终止时，不能据此保证应用清理代码已经完成；进程结束后 Windows 会回收进程句柄。这里没有 PTT 状态需要释放。音频设备驱动的行为仍需由主会话受控验证。
 

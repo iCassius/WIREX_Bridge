@@ -12,13 +12,13 @@ inline constexpr std::size_t y_body_size = 100;
 inline constexpr std::uint64_t y_period_ms = 1000;
 inline constexpr std::uint64_t version_response_timeout_ms = 2500;
 inline constexpr std::uint64_t y_ack_timeout_ms = 3000;
-inline constexpr std::uint64_t max_window_ms = 30000;
+inline constexpr std::uint64_t max_window_ms = 120000;
 inline constexpr std::size_t max_frame_bytes = 4096;
-inline constexpr std::size_t max_receive_bytes = 64 * 1024;
-inline constexpr std::size_t max_transmit_bytes = 8 * 1024;
-inline constexpr std::uint32_t max_valid_records = 256;
-inline constexpr std::uint32_t max_y_write_calls = 30;
-inline constexpr std::uint32_t max_x_ack_write_calls = 64;
+inline constexpr std::size_t max_receive_bytes = 256 * 1024;
+inline constexpr std::size_t max_transmit_bytes = 32 * 1024;
+inline constexpr std::uint32_t max_valid_records = 1024;
+inline constexpr std::uint32_t max_y_write_calls = 120;
+inline constexpr std::uint32_t max_x_ack_write_calls = 256;
 
 enum class Phase {
     not_started,
@@ -80,6 +80,7 @@ struct Counters {
     std::uint64_t y_byte12_changed_count{};
     std::uint64_t x0_write_requested{};
     std::uint64_t x0_write_completed{};
+    std::uint64_t unsupported_config_import_records{};
     std::uint64_t other_valid_records{};
     std::uint64_t malformed_records{};
     std::uint64_t valid_records{};
