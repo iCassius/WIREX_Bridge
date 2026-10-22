@@ -1,6 +1,6 @@
-# WIREX Bridge：DMRD codec
+# WIREX Bridge：协议纯函数切片
 
-这是后续 WIREX Bridge 的独立 C++17 子项目。本切片只提供 DMRD 固定 55 字节数据报的纯函数解析与编码，没有网络 socket、登录认证、会话状态机、音频、串口、PTT 或 RF 操作。
+这是后续 WIREX Bridge 的独立 C++17 子项目。本地切片提供 DMRD 固定 55 字节数据报和 DIRECT 单记录 envelope 的纯函数解析与编码，没有网络 socket、登录认证、会话状态机、音频、串口、PTT 或 RF 操作。
 
 解析只接受长度恰为 55 字节且首四字节为 `DMRD` 的数据报。24-bit source/destination ID 按大端读写；超出 `0xFFFFFF` 的编码请求返回错误，不截断。flags、四个 stream ID 字节和 33 字节 payload 均按原样保留；stream ID 不转成整数，也不推断其主机序。BER 与 RSSI 是各一个原始字节。
 
@@ -20,6 +20,8 @@ build\dmrd_test.exe
 
 仓库也提供 `CMakeLists.txt`，用于已有 CMake 环境；本项目不安装或下载 CMake。
 
-测试含独立硬编码的 55-byte 黄金向量，逐字段检查解码结果并要求编码字节与向量完全一致；另覆盖 54/56-byte 长度、bad magic、24-bit 最大值与两个溢出方向、stream ID 原始字节序以及 flags/payload 透明保留。断言由显式检查函数实现，不依赖 `assert` 或 `NDEBUG`。
+DMRD 测试含独立硬编码的 55-byte 黄金向量，逐字段检查解码结果并要求编码字节与向量完全一致；另覆盖 54/56-byte 长度、bad magic、24-bit 最大值与两个溢出方向、stream ID 原始字节序以及 flags/payload 透明保留。断言由显式检查函数实现，不依赖 `assert` 或 `NDEBUG`。
 
 协议布局来源和本切片验收记录见 [S3-A 验收文档](docs/S3-A验收.md)。
+
+DIRECT 单记录 envelope 的字段规则、来源和 S1-A 本地验收见 [S1-A 验收文档](docs/S1-A验收.md)。该 codec 原样保留 type 与 payload，不解释 X/Y 状态或其他类型的语义。
