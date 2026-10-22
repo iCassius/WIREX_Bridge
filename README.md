@@ -1,0 +1,25 @@
+# WIREX Bridge：DMRD codec
+
+这是后续 WIREX Bridge 的独立 C++17 子项目。本切片只提供 DMRD 固定 55 字节数据报的纯函数解析与编码，没有网络 socket、登录认证、会话状态机、音频、串口、PTT 或 RF 操作。
+
+解析只接受长度恰为 55 字节且首四字节为 `DMRD` 的数据报。24-bit source/destination ID 按大端读写；超出 `0xFFFFFF` 的编码请求返回错误，不截断。flags、四个 stream ID 字节和 33 字节 payload 均按原样保留；stream ID 不转成整数，也不推断其主机序。BER 与 RSSI 是各一个原始字节。
+
+该 codec 不验证 flags 位含义、DMR Link Control、FEC、AMBE/语音编码或消息上下文。数据报解析成功只表示长度和 magic 符合本切片格式，不表示数据内容有效或可上网、可发射。
+
+这里的 codec 指数据包字段的解析与编码，不是语音 codec 或 vocoder。
+
+## 构建与测试
+
+MSVC x64 开发者命令行中可直接构建，不依赖第三方库：
+
+```powershell
+New-Item -ItemType Directory -Force build | Out-Null
+cl /nologo /std:c++17 /EHsc /W4 /permissive- /I include src\dmrd.cpp tests\dmrd_test.cpp /Fe:build\dmrd_test.exe
+build\dmrd_test.exe
+```
+
+仓库也提供 `CMakeLists.txt`，用于已有 CMake 环境；本项目不安装或下载 CMake。
+
+测试含独立硬编码的 55-byte 黄金向量，逐字段检查解码结果并要求编码字节与向量完全一致；另覆盖 54/56-byte 长度、bad magic、24-bit 最大值与两个溢出方向、stream ID 原始字节序以及 flags/payload 透明保留。断言由显式检查函数实现，不依赖 `assert` 或 `NDEBUG`。
+
+协议布局来源和本切片验收记录见 [S3-A 验收文档](docs/S3-A验收.md)。
