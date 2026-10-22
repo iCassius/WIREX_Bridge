@@ -5,6 +5,7 @@
 ```text
 wirex_probe.exe --help
 wirex_probe.exe --version --port COM5
+wirex_probe.exe --hri-listen --port COM5 --body-file C:\path\to\approved-y-body.bin --input 1 --output 0 --seconds 30 --gain 8
 wirex_probe.exe --list-audio
 wirex_probe.exe --monitor --input 1 --seconds 5
 wirex_probe.exe --audio-loop --input 1 --output 2 --seconds 5
@@ -17,7 +18,7 @@ wirex_probe.exe --play-wav --file .\speech.wav --output 2
 ```powershell
 New-Item -ItemType Directory -Force build | Out-Null
 cl /nologo /std:c++17 /EHsc /W4 /permissive- /utf-8 /DNDEBUG /MT /I include `
-  src\direct_frame.cpp src\direct_stream.cpp src\wave_file.cpp src\pcm_gain.cpp src\probe_main.cpp winmm.lib `
+  src\direct_frame.cpp src\direct_stream.cpp src\hri_session.cpp src\wave_file.cpp src\pcm_gain.cpp src\probe_main.cpp winmm.lib bcrypt.lib `
   /Fe:build\wirex_probe.exe
 ```
 
@@ -33,7 +34,15 @@ cl /nologo /std:c++17 /EHsc /W4 /permissive- /utf-8 /DNDEBUG /MT /I include `
 
 播放使用固定四个 100 ms 输出缓冲。队列满时等待 WaveOut 完成事件后再提交下一块，不丢 WAV 文件数据；播放与排空共用 35 秒整体截止时间。只有所有数据块都已提交并排空、WaveOut 清理调用成功后才报告播放完成。Ctrl+C/Ctrl+Break 取消后重置已排队输出并退出，不发送 PTT。
 
-一次 `--audio-loop` 只沿指定的“输入设备 → 输出设备”方向路由。若要分别检查电台到电脑和电脑到电台，需要依据 `--list-audio` 的结果为每个方向选择相应端点并各自运行；设备名称本身不能证明某个端点实际连接到 FTX-1。用户报告先前在电脑听到电台手咪语音，但音量很小或失真；本次新增增益代码没有在硬件上运行，不能据此判断失真来自电台输入、PC音量、设备路由或软件增益。`--audio-loop` 尚未完成双向语音验收。
+一次 `--audio-loop` 只沿指定的“输入设备 → 输出设备”方向路由。若要分别检查电台到电脑和电脑到电台，需要依据 `--list-audio` 的结果为每个方向选择相应端点并各自运行；设备名称本身不能证明某个端点实际连接到 FTX-1。R46 操作者确认电脑可辨认手咪语句但主要是声音较小；未确认失真；本次新增增益代码没有在硬件上运行，不能据此判断失真来自电台输入、PC音量、设备路由或软件增益。`--audio-loop` 尚未完成双向语音验收。
+
+## S1-H：单进程 HRI 监听原型
+
+`--hri-listen` 把已有纯 DIRECT frame/stream、HRI 会话状态层和 WinMM 实时 PCM 路由接在同一个进程中。它要求 `--body-file` 是绝对路径，文件必须恰好100字节、偏移5为ASCII `2`，并与代码内固定SHA-256一致；正文不会写入仓库、日志或控制台。串口采用115200 8N1、无握手、DTR/RTS关闭，读清最多250 ms、最多4096字节并要求20 ms安静，然后只发一次V0000。V响应须完整、SUM正确且48字节payload以`FTX-1`开头；版本应答等待2500 ms。通过后按约1000 ms节拍发送外部Y/100模板；首个Y/0等待最多3000 ms。仅在有效Y/0收到后，程序才打开用户指定的WaveIn与WaveOut设备并开始48000 Hz、单声道、有符号16-bit PCM路由。
+
+程序在同一主循环每20 ms轮询串口并推进状态，WinMM使用`CALLBACK_EVENT`，不在音频回调中等待串口，也不创建额外线程、子进程或常驻服务。会话最多30秒；累计接收最多64 KiB、发送最多8 KiB、Y发送最多30次、X/0应答最多64次。超时、串口错误、坏帧或音频错误都会停止路由并关闭本进程打开的资源；程序单独检查串口`CloseHandle`结果，并在清理失败时返回错误。它不会猜测发送退出帧，也不会额外调用PTT/CAT软件命令；记录字段的RF作用尚未测量。对完整、校验有效的X/100，状态层按已核对分支决定是否把X正文偏移12的字节复制到下一条Y正文偏移12；摘要只报告符合复制条件的次数与实际值发生变化的次数，不解释该字节的业务意义。
+
+结束摘要分别报告已验证V/48、观察到的Y/0、X/100接收数、X/0写完成数、上述两个复制计数和音频RMS/峰值/裁剪数。显示“有效Y/0已观察”只表示本进程观察到该记录；它不证明完整HRI初始化、语音codec、RF链路或人耳可听。外部Y正文和实际串口帧正文均不打印。本地准备阶段没有运行此命令或打开设备。
 
 正常超时以及 Ctrl+C/Ctrl+Break 请求停止时，程序尝试重置、解除准备并关闭自己打开的 WinMM 缓冲和句柄。控制台关闭或进程被强制终止时，不能据此保证应用清理代码已经完成；进程结束后 Windows 会回收进程句柄。这里没有 PTT 状态需要释放。音频设备驱动的行为仍需由主会话受控验证。
 
@@ -63,6 +72,12 @@ build\pcm_gain_test.exe
 
 ## 本次软件增益增量验证
 
-本次从 app 源码 HEAD `dee4b59` 开始，只修改 CLI 的音频路由、PCM 增益纯函数和相关文档/测试；没有改 UI。使用 MSVC x64 `/std:c++17 /EHsc /W4 /permissive- /utf-8 /DNDEBUG /MT` 独立编译 `pcm_gain_test`、既有四组 codec/parser 测试和 `wirex_probe.exe`，均退出码 0、无编译警告。增益测试检查默认单位增益、衰减舍入、放大饱和及裁剪数、增益参数格式/范围和 RMS/峰值计算；全部通过。`wirex_probe.exe --help` 正常显示新参数；越界 `--gain 16.001` 在打开音频端点前以退出码 2 拒绝。
+本次增益切片从 app 源码 HEAD `dee4b59` 开始，只修改 CLI 的音频路由、PCM 增益纯函数和相关文档/测试；没有改 UI，当前 app native HEAD 为 `2275290`。使用 MSVC x64 `/std:c++17 /EHsc /W4 /permissive- /utf-8 /DNDEBUG /MT` 独立编译 `pcm_gain_test`、既有四组 codec/parser 测试和 `wirex_probe.exe`，均退出码 0、无编译警告；dumpbin /dependents 显示 CLI 仅依赖 WINMM.dll 与 KERNEL32.dll。增益测试检查默认单位增益、衰减舍入、放大饱和及裁剪数、增益参数格式/范围和 RMS/峰值计算；全部通过。`wirex_probe.exe --help` 正常显示新参数；越界 `--gain 16.001` 在打开音频端点前以退出码 2 拒绝。
 
-本次没有运行 `--audio-loop`、`--monitor` 或 `--play-wav`，没有打开音频设备。用户此前报告电脑能听到电台手咪语音但音量很小或失真；新增软件增益尚未通过硬件试听，不能据此声称已修复音质。下一次受控路由可从 `--gain 8` 开始，并依据提交前/后 RMS、峰值和饱和样本数判断是否继续；实际端点选择与试听由主会话控制。
+本次没有运行 `--audio-loop`、`--monitor` 或 `--play-wav`，没有打开音频设备。R46 操作者确认电脑能辨认手咪语句但主要是声音较小；未确认失真；新增软件增益尚未通过硬件试听，不能据此声称已修复音质。下一次受控路由可从 `--gain 8` 开始，并依据提交前/后 RMS、峰值和饱和样本数判断是否继续；实际端点选择与试听由主会话控制。
+
+## S1-H 本地构建与离线验证
+
+本地使用 MSVC x64 `/std:c++17 /EHsc /W4 /permissive- /utf-8 /DNDEBUG /MT` 编译 `hri_session_test.exe` 和包含 `--hri-listen` 的 `wirex_probe.exe`，均退出码0且无编译警告。纯状态测试覆盖固定V0000字节、V/48型号校验、写完成后2500 ms版本应答期限、1000 ms Y节拍、Y/0门控、3000 ms迟到Y/0拒绝、X/0应答、偏移12条件复制计数、同一读批坏帧丢弃动作、取消与期限停止。测试全部通过。
+
+`wirex_probe.exe --help` 退出码0并显示新用法。用相对路径调用`--hri-listen`时，程序在音频设备查询和串口打开前以退出码2拒绝；本轮没有提供外部正文、打开串口或音频流、发送协议帧或执行硬件测试。CMake配置未运行。代码要求外部100字节正文与固定摘要匹配，但不把正文放入项目。
