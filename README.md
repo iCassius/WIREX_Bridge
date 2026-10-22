@@ -1,6 +1,6 @@
 # WIREX Bridge：协议与本地诊断切片
 
-这是后续 WIREX Bridge 的独立 C++17 子项目。本地切片提供 DMRD 固定 55 字节数据报和 DIRECT 单记录 envelope 的纯函数解析与编码，也提供 Windows 本地诊断入口，可查询一次 DIRECT 版本、枚举音频设备、测量输入电平、把指定 PCM 输入短时路由到指定 PCM 输出，或播放受限格式的短 WAV 文件。它还没有完整 HRI 会话初始化、PTT、语音编解码、网络/BM 或 RF 桥接。
+这是后续 WIREX Bridge 的独立 C++17 子项目。本地切片提供 DMRD 固定 55 字节数据报和 DIRECT 单记录 envelope 的纯函数解析与编码，也提供 Windows 本地诊断入口，可查询一次 DIRECT 版本、枚举音频设备、测量输入电平、把指定 PCM 输入短时路由到指定 PCM 输出（可显式指定有限软件增益并检查饱和裁剪），或播放受限格式的短 WAV 文件。它还没有完整 HRI 会话初始化、PTT、语音编解码、网络/BM 或 RF 桥接。
 
 解析只接受长度恰为 55 字节且首四字节为 `DMRD` 的数据报。24-bit source/destination ID 按大端读写；超出 `0xFFFFFF` 的编码请求返回错误，不截断。flags、四个 stream ID 字节和 33 字节 payload 均按原样保留；stream ID 不转成整数，也不推断其主机序。BER 与 RSSI 是各一个原始字节。
 

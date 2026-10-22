@@ -8,6 +8,7 @@ wirex_probe.exe --version --port COM5
 wirex_probe.exe --list-audio
 wirex_probe.exe --monitor --input 1 --seconds 5
 wirex_probe.exe --audio-loop --input 1 --output 2 --seconds 5
+wirex_probe.exe --audio-loop --input 1 --output 2 --seconds 5 --gain 8
 wirex_probe.exe --play-wav --file .\speech.wav --output 2
 ```
 
@@ -16,7 +17,7 @@ wirex_probe.exe --play-wav --file .\speech.wav --output 2
 ```powershell
 New-Item -ItemType Directory -Force build | Out-Null
 cl /nologo /std:c++17 /EHsc /W4 /permissive- /utf-8 /DNDEBUG /MT /I include `
-  src\direct_frame.cpp src\direct_stream.cpp src\wave_file.cpp src\probe_main.cpp winmm.lib `
+  src\direct_frame.cpp src\direct_stream.cpp src\wave_file.cpp src\pcm_gain.cpp src\probe_main.cpp winmm.lib `
   /Fe:build\wirex_probe.exe
 ```
 
@@ -24,7 +25,7 @@ cl /nologo /std:c++17 /EHsc /W4 /permissive- /utf-8 /DNDEBUG /MT /I include `
 
 `--list-audio` 只枚举 WinMM 的 WaveIn/WaveOut 设备编号和名称，不选择默认设备。`--monitor` 只打开指定 WaveIn 编号，要求设备接受 48 kHz、单声道、有符号 16-bit PCM；不支持时拒绝打开。它每秒输出采样数、RMS dBFS 和峰值，不保存或播放 PCM。
 
-`--audio-loop` 同时对命令行给出的 WaveIn 与 WaveOut 编号分别执行 `WAVE_FORMAT_QUERY`，仅接受 48 kHz、单声道、有符号 16-bit PCM；任一端不接受该格式，程序就拒绝开始。它把输入缓冲中的 PCM 复制到固定的四个 100 ms 输出缓冲中，不写文件，也不自动选择设备。输出队列满时丢弃新输入块并在结束时报告丢弃块数。输入采集和输出播放最多持续 30 秒；它不自动发 PTT。
+`--audio-loop` 同时对命令行给出的 WaveIn 与 WaveOut 编号分别执行 `WAVE_FORMAT_QUERY`，仅接受 48 kHz、单声道、有符号 16-bit PCM；任一端不接受该格式，程序就拒绝开始。它把输入缓冲复制到固定的四个 100 ms 输出缓冲中，不写文件，也不自动选择设备。可选的 `--gain X` 是 PCM 样本的软件增益，默认 `1.0`（原样转发），范围为 `0.25` 到 `16.0`，最多三位小数；它不调用系统混音器或改设备音量，也不做自动增益。增益处理采用有符号 16-bit 饱和裁剪，并统计被裁剪的样本数。结束摘要分别报告采集输入、实际提交前的输入和提交后的输出 RMS/峰值（dBFS），便于判断源电平偏低或增益造成过载。输出队列满时丢弃新输入块并报告丢弃数；输入摘要包含采集到的块，提交摘要仅包含成功排入 WaveOut 的块。输入采集和输出播放最多持续 30 秒；它不自动发 PTT。
 
 `--play-wav` 只读入调用者给定的 RIFF/WAVE 文件，并只打开显式选择的 WaveOut 编号。解析器要求 RIFF 长度与整个文件完全相等，且只有一个 `fmt ` 和一个 `data` chunk；格式必须是 48 kHz、单声道、有符号 16-bit PCM，`block align` 为 2，数据长度按完整采样对齐。它按 chunk 长度和 RIFF 奇数长度 padding 跳过未知 chunk。音频数据最多 30 秒；整个文件最多为 30 秒 PCM 数据加 64 KiB 元数据。程序不重采样。
 
@@ -32,7 +33,7 @@ cl /nologo /std:c++17 /EHsc /W4 /permissive- /utf-8 /DNDEBUG /MT /I include `
 
 播放使用固定四个 100 ms 输出缓冲。队列满时等待 WaveOut 完成事件后再提交下一块，不丢 WAV 文件数据；播放与排空共用 35 秒整体截止时间。只有所有数据块都已提交并排空、WaveOut 清理调用成功后才报告播放完成。Ctrl+C/Ctrl+Break 取消后重置已排队输出并退出，不发送 PTT。
 
-一次 `--audio-loop` 只沿指定的“输入设备 → 输出设备”方向路由。若要分别检查电台到电脑和电脑到电台，需要依据 `--list-audio` 的结果为每个方向选择相应端点并各自运行；设备名称本身不能证明某个端点实际连接到 FTX-1。该命令没有在本轮运行，尚无电台音路或双向语音实测结论。
+一次 `--audio-loop` 只沿指定的“输入设备 → 输出设备”方向路由。若要分别检查电台到电脑和电脑到电台，需要依据 `--list-audio` 的结果为每个方向选择相应端点并各自运行；设备名称本身不能证明某个端点实际连接到 FTX-1。用户报告先前在电脑听到电台手咪语音，但音量很小或失真；本次新增增益代码没有在硬件上运行，不能据此判断失真来自电台输入、PC音量、设备路由或软件增益。`--audio-loop` 尚未完成双向语音验收。
 
 正常超时以及 Ctrl+C/Ctrl+Break 请求停止时，程序尝试重置、解除准备并关闭自己打开的 WinMM 缓冲和句柄。控制台关闭或进程被强制终止时，不能据此保证应用清理代码已经完成；进程结束后 Windows 会回收进程句柄。这里没有 PTT 状态需要释放。音频设备驱动的行为仍需由主会话受控验证。
 
@@ -42,6 +43,8 @@ cl /nologo /std:c++17 /EHsc /W4 /permissive- /utf-8 /DNDEBUG /MT /I include `
 - `--help` 和只读 `--list-audio` 执行成功；未执行 `--version`、`--monitor`、`--audio-loop` 或 `--play-wav`，未打开串口或音频流。
 - WAV 播放器仅通过固定 RIFF 字节向量及离线边界测试验证；没有在本轮播放音频。DIRECT stream、DIRECT frame 和 DMRD 纯函数测试以独立离线命令构建运行。CMake 配置未运行：本机没有可用的 `cmake` 命令。
 
+PCM 增益纯函数使用固定数值测试检查单位增益、衰减舍入、放大饱和裁剪、范围拒绝和 dBFS 统计。本次没有打开音频设备验证增益后的听感或硬件音量变化。
+
 WAV 解析器的纯函数测试可单独重建：
 
 ```powershell
@@ -49,3 +52,17 @@ cl /nologo /std:c++17 /EHsc /W4 /permissive- /utf-8 /DNDEBUG /MT /I include `
   src\wave_file.cpp tests\wave_file_test.cpp /Fe:build\wave_file_test.exe
 build\wave_file_test.exe
 ```
+
+PCM 增益纯函数可单独离线构建测试：
+
+```powershell
+cl /nologo /std:c++17 /EHsc /W4 /permissive- /utf-8 /DNDEBUG /MT /I include `
+  src\pcm_gain.cpp tests\pcm_gain_test.cpp /Fe:build\pcm_gain_test.exe
+build\pcm_gain_test.exe
+```
+
+## 本次软件增益增量验证
+
+本次从 app 源码 HEAD `dee4b59` 开始，只修改 CLI 的音频路由、PCM 增益纯函数和相关文档/测试；没有改 UI。使用 MSVC x64 `/std:c++17 /EHsc /W4 /permissive- /utf-8 /DNDEBUG /MT` 独立编译 `pcm_gain_test`、既有四组 codec/parser 测试和 `wirex_probe.exe`，均退出码 0、无编译警告。增益测试检查默认单位增益、衰减舍入、放大饱和及裁剪数、增益参数格式/范围和 RMS/峰值计算；全部通过。`wirex_probe.exe --help` 正常显示新参数；越界 `--gain 16.001` 在打开音频端点前以退出码 2 拒绝。
+
+本次没有运行 `--audio-loop`、`--monitor` 或 `--play-wav`，没有打开音频设备。用户此前报告电脑能听到电台手咪语音但音量很小或失真；新增软件增益尚未通过硬件试听，不能据此声称已修复音质。下一次受控路由可从 `--gain 8` 开始，并依据提交前/后 RMS、峰值和饱和样本数判断是否继续；实际端点选择与试听由主会话控制。

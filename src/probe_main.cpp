@@ -5,6 +5,7 @@
 
 #include "wirex/direct_frame.hpp"
 #include "wirex/direct_stream.hpp"
+#include "wirex/pcm_gain.hpp"
 #include "wirex/wave_file.hpp"
 
 #include <algorithm>
@@ -509,6 +510,16 @@ public:
 
     [[nodiscard]] HANDLE event() const noexcept { return event_.get(); }
 
+    [[nodiscard]] bool has_capacity() noexcept
+    {
+        reap();
+        if (device_ == nullptr) return false;
+        for (const auto& buffer : buffers_) {
+            if (!buffer.queued) return true;
+        }
+        return false;
+    }
+
     void reap() noexcept
     {
         if (device_ == nullptr) return;
@@ -619,7 +630,7 @@ private:
     std::array<Buffer, buffer_count> buffers_{};
 };
 
-int audio_loop(UINT input_id, UINT output_id, unsigned long seconds)
+int audio_loop(UINT input_id, UINT output_id, unsigned long seconds, std::uint32_t gain_milli)
 {
     if (input_id >= waveInGetNumDevs() || output_id >= waveOutGetNumDevs()) {
         std::wcerr << L"Input or output ID is outside the enumerated device range. Run --list-audio and select IDs explicitly.\n";
@@ -635,6 +646,8 @@ int audio_loop(UINT input_id, UINT output_id, unsigned long seconds)
     }
 
     std::cout << "Routing selected input to selected output for " << seconds << " s; PCM 48000 Hz, mono, signed 16-bit.\n"
+              << "Explicit software gain=" << gain_milli / 1000U << "." << std::setw(3) << std::setfill('0') << gain_milli % 1000U
+              << std::setfill(' ') << "x; no system mixer level is changed.\n"
               << "Input " << input_id << ": " << to_utf8(device_name(input_caps.szPname, MAXPNAMELEN)) << "\n"
               << "Output " << output_id << ": " << to_utf8(device_name(output_caps.szPname, MAXPNAMELEN)) << "\n"
               << "No default device, file recording, or PTT is used. Unsupported formats are refused.\n";
@@ -658,6 +671,11 @@ int audio_loop(UINT input_id, UINT output_id, unsigned long seconds)
     std::uint64_t captured_bytes = 0;
     std::uint64_t submitted_bytes = 0;
     std::uint64_t dropped_blocks = 0;
+    std::uint64_t clipped_samples = 0;
+    wirex::pcm_gain::SignalStats captured_stats{};
+    wirex::pcm_gain::SignalStats routed_input_stats{};
+    wirex::pcm_gain::SignalStats submitted_stats{};
+    std::array<std::int16_t, WaveInput::sample_count> routed_samples{};
     bool failed = false;
     HANDLE events[] = {input.event(), output.event()};
 
@@ -679,15 +697,32 @@ int audio_loop(UINT input_id, UINT output_id, unsigned long seconds)
             }
             captured_bytes += recorded;
             if (recorded != 0) {
-                const auto result = output.submit(buffer.samples.data(), recorded);
-                if (result == WaveOutput::SubmitResult::queued) {
-                    submitted_bytes += recorded;
-                } else if (result == WaveOutput::SubmitResult::full) {
+                const auto sample_count = static_cast<std::size_t>(recorded / sizeof(std::int16_t));
+                const auto input_block_stats = wirex::pcm_gain::measure(buffer.samples.data(), sample_count);
+                wirex::pcm_gain::accumulate(captured_stats, input_block_stats);
+                if (!output.has_capacity()) {
                     ++dropped_blocks;
                 } else {
-                    std::wcerr << L"waveOutWrite failed or received invalid PCM block metadata.\n";
-                    failed = true;
-                    break;
+                    std::copy_n(buffer.samples.begin(), sample_count, routed_samples.begin());
+                    const auto gain_result = wirex::pcm_gain::apply(routed_samples.data(), sample_count, gain_milli);
+                    if (!gain_result.valid) {
+                        std::wcerr << L"The selected software gain was rejected by the PCM processor.\n";
+                        failed = true;
+                        break;
+                    }
+                    const auto result = output.submit(routed_samples.data(), recorded);
+                    if (result == WaveOutput::SubmitResult::queued) {
+                        submitted_bytes += recorded;
+                        clipped_samples += gain_result.clipped_samples;
+                        wirex::pcm_gain::accumulate(routed_input_stats, gain_result.before);
+                        wirex::pcm_gain::accumulate(submitted_stats, gain_result.after);
+                    } else if (result == WaveOutput::SubmitResult::full) {
+                        ++dropped_blocks;
+                    } else {
+                        std::wcerr << L"waveOutWrite failed or received invalid PCM block metadata.\n";
+                        failed = true;
+                        break;
+                    }
                 }
             }
             buffer.header.dwBytesRecorded = 0;
@@ -715,6 +750,17 @@ int audio_loop(UINT input_id, UINT output_id, unsigned long seconds)
     }
     std::cout << "Captured PCM bytes=" << captured_bytes << ", submitted to output bytes=" << submitted_bytes
               << ", dropped input blocks=" << dropped_blocks << ".\n";
+    std::cout << std::fixed << std::setprecision(1)
+              << "Captured input: samples=" << captured_stats.sample_count
+              << ", RMS=" << wirex::pcm_gain::rms_dbfs(captured_stats) << " dBFS"
+              << ", peak=" << wirex::pcm_gain::peak_dbfs(captured_stats) << " dBFS.\n"
+              << "Submitted pre-gain input: samples=" << routed_input_stats.sample_count
+              << ", RMS=" << wirex::pcm_gain::rms_dbfs(routed_input_stats) << " dBFS"
+              << ", peak=" << wirex::pcm_gain::peak_dbfs(routed_input_stats) << " dBFS.\n"
+              << "Submitted post-gain output: samples=" << submitted_stats.sample_count
+              << ", RMS=" << wirex::pcm_gain::rms_dbfs(submitted_stats) << " dBFS"
+              << ", peak=" << wirex::pcm_gain::peak_dbfs(submitted_stats) << " dBFS"
+              << ", saturated samples=" << clipped_samples << ".\n";
     return failed || !input_cleanup_ok || !output_cleanup_ok ? 2 : 0;
 }
 
@@ -908,7 +954,8 @@ void print_help()
                << L"  --play-wav --file PATH --output N\n"
                << L"                               Play PCM 48000 Hz mono s16 WAV, at most 30 s.\n"
                << L"  --audio-loop --input N --output M --seconds N\n"
-               << L"                               Route explicit devices for 1..30 s; 48000 Hz mono signed 16-bit PCM.\n";
+               << L"                               Route explicit devices for 1..30 s; 48000 Hz mono signed 16-bit PCM.\n"
+               << L"                               Optional trailing --gain X (0.25..16.0, default 1.0); no mixer change.\n";
 }
 
 } // namespace
@@ -945,21 +992,23 @@ int wmain(int argc, wchar_t* argv[])
         }
         return monitor_input(static_cast<UINT>(input_id), seconds);
     }
-    if (argc == 8 && std::wstring_view(argv[1]) == L"--audio-loop" && std::wstring_view(argv[2]) == L"--input" &&
+    if ((argc == 8 || argc == 10) && std::wstring_view(argv[1]) == L"--audio-loop" && std::wstring_view(argv[2]) == L"--input" &&
         std::wstring_view(argv[4]) == L"--output" && std::wstring_view(argv[6]) == L"--seconds") {
         unsigned long input_id = 0;
         unsigned long output_id = 0;
         unsigned long seconds = 0;
+        std::uint32_t gain_milli = wirex::pcm_gain::unity_milli;
         if (!parse_uint(argv[3], input_id) || input_id > 0xffffffffUL ||
             !parse_uint(argv[5], output_id) || output_id > 0xffffffffUL ||
-            !parse_uint(argv[7], seconds) || seconds < 1 || seconds > 30) {
-            std::wcerr << L"--input and --output must be non-negative device IDs and --seconds must be 1..30.\n";
+            !parse_uint(argv[7], seconds) || seconds < 1 || seconds > 30 ||
+            (argc == 10 && (std::wstring_view(argv[8]) != L"--gain" || !wirex::pcm_gain::parse_gain(argv[9], gain_milli)))) {
+            std::wcerr << L"--input and --output must be non-negative device IDs, --seconds 1..30, and optional --gain 0.25..16.0 with at most 3 decimal places.\n";
             return 2;
         }
-        return audio_loop(static_cast<UINT>(input_id), static_cast<UINT>(output_id), seconds);
+        return audio_loop(static_cast<UINT>(input_id), static_cast<UINT>(output_id), seconds, gain_milli);
     }
     if (argc > 1 && std::wstring_view(argv[1]) == L"--audio-loop") {
-        std::wcerr << L"Usage: --audio-loop --input N --output M --seconds N (seconds 1..30).\n";
+        std::wcerr << L"Usage: --audio-loop --input N --output M --seconds N [--gain X] (seconds 1..30, gain 0.25..16.0).\n";
         return 2;
     }
     print_help();
