@@ -5,6 +5,7 @@
 
 #include "wirex/direct_frame.hpp"
 #include "wirex/direct_stream.hpp"
+#include "wirex/wave_file.hpp"
 
 #include <algorithm>
 #include <array>
@@ -12,11 +13,14 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <cstring>
 #include <iomanip>
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 namespace {
@@ -272,6 +276,45 @@ int query_version(const std::wstring& port_name)
     return 2;
 }
 
+bool read_wav_file(const std::wstring& path, std::vector<std::uint8_t>& bytes)
+{
+    std::error_code error;
+    const auto file_size = std::filesystem::file_size(std::filesystem::path(path), error);
+    if (error) {
+        std::wcerr << L"Could not determine WAV file size.\n";
+        return false;
+    }
+    if (file_size > wirex::wave_file::max_file_bytes) {
+        std::wcerr << L"WAV file exceeds the configured 30-second audio plus metadata size limit.\n";
+        return false;
+    }
+    if (file_size < 12) {
+        std::wcerr << L"WAV file is too small for a RIFF/WAVE header.\n";
+        return false;
+    }
+
+    std::ifstream file(std::filesystem::path(path), std::ios::binary);
+    if (!file) {
+        std::wcerr << L"Could not open WAV file for reading.\n";
+        return false;
+    }
+    bytes.resize(static_cast<std::size_t>(file_size));
+    file.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    if (file.gcount() != static_cast<std::streamsize>(bytes.size())) {
+        std::wcerr << L"WAV file changed or ended while being read.\n";
+        bytes.clear();
+        return false;
+    }
+    char extra = 0;
+    file.read(&extra, 1);
+    if (file.gcount() != 0 || file.bad()) {
+        std::wcerr << L"WAV file changed while being read; refusing to play an unstable file.\n";
+        bytes.clear();
+        return false;
+    }
+    return true;
+}
+
 void list_audio_devices()
 {
     const UINT inputs = waveInGetNumDevs();
@@ -423,7 +466,8 @@ public:
         bool prepared{false};
         bool queued{false};
     };
-    enum class SubmitResult { queued, full, failed };
+    enum class SubmitResult { queued, full, failed, cancelled, timed_out };
+    enum class DrainResult { complete, failed, cancelled, timed_out };
 
     ~WaveOutput() { close(); }
     WaveOutput(const WaveOutput&) = delete;
@@ -476,7 +520,7 @@ public:
         }
     }
 
-    SubmitResult submit(const std::int16_t* samples, DWORD byte_count) noexcept
+    SubmitResult submit(const void* samples, DWORD byte_count) noexcept
     {
         if (device_ == nullptr || samples == nullptr || byte_count == 0 ||
             byte_count > sizeof(buffers_[0].samples) || byte_count % sizeof(std::int16_t) != 0) {
@@ -494,6 +538,41 @@ public:
             return SubmitResult::queued;
         }
         return SubmitResult::full;
+    }
+
+    SubmitResult submit_wait(const void* samples, DWORD byte_count,
+                             std::chrono::steady_clock::time_point deadline) noexcept
+    {
+        for (;;) {
+            if (cancel_requested.load()) return SubmitResult::cancelled;
+            const auto submitted = submit(samples, byte_count);
+            if (submitted != SubmitResult::full) return submitted;
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= deadline) return SubmitResult::timed_out;
+            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
+            if (remaining <= 0) return SubmitResult::timed_out;
+            const auto wait_ms = static_cast<DWORD>(std::min<std::int64_t>(100, remaining));
+            const DWORD result = WaitForSingleObject(event_.get(), wait_ms);
+            if (result != WAIT_OBJECT_0 && result != WAIT_TIMEOUT) return SubmitResult::failed;
+        }
+    }
+
+    DrainResult drain_until(std::chrono::steady_clock::time_point deadline) noexcept
+    {
+        for (;;) {
+            reap();
+            bool any_queued = false;
+            for (const auto& buffer : buffers_) any_queued = any_queued || buffer.queued;
+            if (!any_queued) return DrainResult::complete;
+            if (cancel_requested.load()) return DrainResult::cancelled;
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= deadline) return DrainResult::timed_out;
+            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
+            if (remaining <= 0) return DrainResult::timed_out;
+            const auto wait_ms = static_cast<DWORD>(std::min<std::int64_t>(100, remaining));
+            const DWORD result = WaitForSingleObject(event_.get(), wait_ms);
+            if (result != WAIT_OBJECT_0 && result != WAIT_TIMEOUT) return DrainResult::failed;
+        }
     }
 
     bool close() noexcept
@@ -592,7 +671,12 @@ int audio_loop(UINT input_id, UINT output_id, unsigned long seconds)
         output.reap();
         for (auto& buffer : input.buffers()) {
             if ((buffer.header.dwFlags & WHDR_DONE) == 0) continue;
-            const auto recorded = std::min<DWORD>(buffer.header.dwBytesRecorded, buffer.header.dwBufferLength);
+            const auto recorded = buffer.header.dwBytesRecorded;
+            if (recorded > buffer.header.dwBufferLength || recorded % sizeof(std::int16_t) != 0) {
+                std::wcerr << L"WaveIn returned an invalid byte count or a partial 16-bit PCM sample; stopping.\n";
+                failed = true;
+                break;
+            }
             captured_bytes += recorded;
             if (recorded != 0) {
                 const auto result = output.submit(buffer.samples.data(), recorded);
@@ -623,11 +707,102 @@ int audio_loop(UINT input_id, UINT output_id, unsigned long seconds)
     }
     const bool input_cleanup_ok = input.close();
     const bool output_cleanup_ok = output.close();
-    if (cancel_requested.load()) std::cout << "Audio route cancelled; owned audio buffers and handles were reset and released.\n";
-    else std::cout << "Audio route stopped; owned audio buffers and handles were reset and released.\n";
+    if (input_cleanup_ok && output_cleanup_ok) {
+        if (cancel_requested.load()) std::cout << "Audio route cancelled; reset and close calls succeeded for owned audio resources.\n";
+        else std::cout << "Audio route stopped; reset and close calls succeeded for owned audio resources.\n";
+    } else {
+        std::cout << "Audio route stopped, but at least one audio cleanup call failed; inspect the error output.\n";
+    }
     std::cout << "Captured PCM bytes=" << captured_bytes << ", submitted to output bytes=" << submitted_bytes
               << ", dropped input blocks=" << dropped_blocks << ".\n";
     return failed || !input_cleanup_ok || !output_cleanup_ok ? 2 : 0;
+}
+
+int play_wav(const std::wstring& path, UINT output_id)
+{
+    std::vector<std::uint8_t> file_bytes;
+    if (!read_wav_file(path, file_bytes)) return 2;
+    const auto wav = wirex::wave_file::parse(file_bytes.data(), file_bytes.size());
+    if (!wav) {
+        std::cerr << "WAV rejected: " << wirex::wave_file::error_name(wav.error) << "\n";
+        return 2;
+    }
+    if (output_id >= waveOutGetNumDevs()) {
+        std::wcerr << L"Output ID is outside the enumerated WaveOut device range. Run --list-audio and select an ID.\n";
+        return 2;
+    }
+    WAVEOUTCAPSW caps{};
+    const auto cap_result = waveOutGetDevCapsW(output_id, &caps, sizeof(caps));
+    if (cap_result != MMSYSERR_NOERROR) {
+        std::wcerr << L"Output device query failed: " << mm_error(cap_result) << L"\n";
+        return 2;
+    }
+
+    std::cout << "Playing explicit output " << output_id << " (" << to_utf8(device_name(caps.szPname, MAXPNAMELEN))
+              << "); PCM 48000 Hz, mono, signed 16-bit; WAV data=" << wav.info.data_size << " bytes.\n"
+              << "No default device, resampling, file writing, or PTT is used.\n";
+
+    WaveOutput output;
+    if (!output.open(output_id)) return 2;
+    cancel_requested.store(false);
+    if (!SetConsoleCtrlHandler(console_control_handler, TRUE)) {
+        std::wcerr << L"Could not register the Ctrl+C handler: " << win_error(GetLastError()) << L"\n";
+        return output.close() ? 2 : 3;
+    }
+
+    constexpr auto playback_grace = std::chrono::seconds(5);
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::seconds(wirex::wave_file::max_duration_seconds) + playback_grace;
+    const std::size_t chunk_capacity = WaveInput::sample_count * sizeof(std::int16_t);
+    std::size_t offset = wav.info.data_offset;
+    const std::size_t data_end = wav.info.data_offset + wav.info.data_size;
+    std::uint64_t submitted_bytes = 0;
+    bool cancelled = false;
+    bool timed_out = false;
+    bool failed = false;
+
+    while (offset < data_end) {
+        if (cancel_requested.load()) {
+            cancelled = true;
+            break;
+        }
+        const auto byte_count = std::min(chunk_capacity, data_end - offset);
+        const auto result = output.submit_wait(file_bytes.data() + offset, static_cast<DWORD>(byte_count), deadline);
+        if (result == WaveOutput::SubmitResult::queued) {
+            offset += byte_count;
+            submitted_bytes += byte_count;
+            continue;
+        }
+        if (result == WaveOutput::SubmitResult::cancelled) cancelled = true;
+        else if (result == WaveOutput::SubmitResult::timed_out) timed_out = true;
+        else failed = true;
+        break;
+    }
+
+    bool drained = false;
+    if (!cancelled && !timed_out && !failed && offset == data_end) {
+        const auto drain = output.drain_until(deadline);
+        if (drain == WaveOutput::DrainResult::complete) drained = true;
+        else if (drain == WaveOutput::DrainResult::cancelled) cancelled = true;
+        else if (drain == WaveOutput::DrainResult::timed_out) timed_out = true;
+        else failed = true;
+    }
+
+    if (!SetConsoleCtrlHandler(console_control_handler, FALSE)) {
+        std::wcerr << L"Could not unregister the Ctrl+C handler: " << win_error(GetLastError()) << L"\n";
+        failed = true;
+    }
+    const bool cleanup_ok = output.close();
+    if (!cleanup_ok) failed = true;
+
+    if (drained && cleanup_ok && !failed) {
+        std::cout << "WAV playback completed; all " << submitted_bytes << " PCM bytes were submitted and drained.\n";
+        return 0;
+    }
+    if (cancelled) std::cout << "WAV playback cancelled; queued output was reset. Submitted " << submitted_bytes << " of " << wav.info.data_size << " bytes.\n";
+    else if (timed_out) std::cout << "WAV playback deadline expired; queued output was reset. Submitted " << submitted_bytes << " of " << wav.info.data_size << " bytes.\n";
+    else std::cout << "WAV playback did not complete; queued output was reset. Submitted " << submitted_bytes << " of " << wav.info.data_size << " bytes.\n";
+    return 2;
 }
 
 int monitor_input(UINT input_id, unsigned long seconds)
@@ -669,7 +844,12 @@ int monitor_input(UINT input_id, unsigned long seconds)
         }
         for (auto& buffer : input.buffers()) {
             if ((buffer.header.dwFlags & WHDR_DONE) == 0) continue;
-            const auto recorded = std::min<DWORD>(buffer.header.dwBytesRecorded, buffer.header.dwBufferLength);
+            const auto recorded = buffer.header.dwBytesRecorded;
+            if (recorded > buffer.header.dwBufferLength || recorded % sizeof(std::int16_t) != 0) {
+                std::wcerr << L"WaveIn returned an invalid byte count or a partial 16-bit PCM sample; stopping.\n";
+                failed = true;
+                break;
+            }
             const auto count = recorded / sizeof(std::int16_t);
             for (DWORD i = 0; i < count; ++i) {
                 const auto sample = static_cast<std::int32_t>(buffer.samples[i]);
@@ -708,8 +888,12 @@ int monitor_input(UINT input_id, unsigned long seconds)
         failed = true;
     }
     const bool cleanup_ok = input.close();
-    if (cancel_requested.load()) std::wcout << L"Monitor cancelled and audio input released.\n";
-    else std::wcout << L"Monitor stopped and audio input released.\n";
+    if (cleanup_ok) {
+        if (cancel_requested.load()) std::wcout << L"Monitor cancelled; reset and close calls succeeded for audio input.\n";
+        else std::wcout << L"Monitor stopped; reset and close calls succeeded for audio input.\n";
+    } else {
+        std::wcout << L"Monitor stopped, but at least one audio cleanup call failed; inspect the error output.\n";
+    }
     return failed || !cleanup_ok ? 2 : 0;
 }
 
@@ -721,6 +905,8 @@ void print_help()
                << L"  --list-audio                List explicit WaveIn/WaveOut device IDs and names.\n"
                << L"  --monitor --input N --seconds N (1..30)\n"
                << L"                               Measure input PCM; no save/playback/default device.\n"
+               << L"  --play-wav --file PATH --output N\n"
+               << L"                               Play PCM 48000 Hz mono s16 WAV, at most 30 s.\n"
                << L"  --audio-loop --input N --output M --seconds N\n"
                << L"                               Route explicit devices for 1..30 s; 48000 Hz mono signed 16-bit PCM.\n";
 }
@@ -739,6 +925,15 @@ int wmain(int argc, wchar_t* argv[])
     }
     if (argc == 4 && std::wstring_view(argv[1]) == L"--version" && std::wstring_view(argv[2]) == L"--port") {
         return query_version(argv[3]);
+    }
+    if (argc == 6 && std::wstring_view(argv[1]) == L"--play-wav" && std::wstring_view(argv[2]) == L"--file" &&
+        std::wstring_view(argv[4]) == L"--output") {
+        unsigned long output_id = 0;
+        if (!parse_uint(argv[5], output_id) || output_id > 0xffffffffUL) {
+            std::wcerr << L"--output must be a non-negative WaveOut device ID.\n";
+            return 2;
+        }
+        return play_wav(argv[3], static_cast<UINT>(output_id));
     }
     if (argc == 6 && std::wstring_view(argv[1]) == L"--monitor" && std::wstring_view(argv[2]) == L"--input" &&
         std::wstring_view(argv[4]) == L"--seconds") {
