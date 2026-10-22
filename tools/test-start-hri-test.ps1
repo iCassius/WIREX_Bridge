@@ -5,7 +5,9 @@ function Assert-True {
     if (-not $Condition) { throw $Message }
 }
 
-$testRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('wirex-launcher-test-' + [guid]::NewGuid().ToString('N'))
+$tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\', '/')
+$testLeaf = 'wirex-launcher-test-' + [guid]::NewGuid().ToString('N')
+$testRoot = Join-Path $tempRoot $testLeaf
 New-Item -ItemType Directory -Path $testRoot | Out-Null
 try {
     $runnerPath = Join-Path $testRoot 'start-hri-test.ps1'
@@ -84,6 +86,20 @@ exit 7
 
     Write-Output 'Launcher mock checks passed: fixed arguments, exit propagation, summary-only log.'
 } finally {
-    Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item Env:\WIREX_LAUNCHER_TEST_ARGS -ErrorAction SilentlyContinue
+    try {
+        $resolvedTempRoot = [System.IO.Path]::GetFullPath($tempRoot).TrimEnd('\', '/')
+        $resolvedTestRoot = [System.IO.Path]::GetFullPath($testRoot)
+        $tempPrefix = $resolvedTempRoot + [System.IO.Path]::DirectorySeparatorChar
+        $leafName = [System.IO.Path]::GetFileName($resolvedTestRoot)
+        $withinTemp = $resolvedTestRoot.StartsWith($tempPrefix, [System.StringComparison]::OrdinalIgnoreCase)
+        $expectedLeaf = $leafName -ceq $testLeaf -and $leafName -match '^wirex-launcher-test-[0-9a-f]{32}$'
+        if ($resolvedTestRoot -eq $resolvedTempRoot -or -not $withinTemp -or -not $expectedLeaf) {
+            throw "Refusing recursive cleanup outside this test's exact temporary directory: $resolvedTestRoot"
+        }
+        if (Test-Path -LiteralPath $resolvedTestRoot) {
+            Remove-Item -LiteralPath $resolvedTestRoot -Recurse -Force
+        }
+    } finally {
+        Remove-Item Env:\WIREX_LAUNCHER_TEST_ARGS -ErrorAction SilentlyContinue
+    }
 }

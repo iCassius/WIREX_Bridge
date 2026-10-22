@@ -6,4 +6,4 @@
 
 `last-test.log` 使用 Windows PowerShell 默认的 UTF-16LE 文本编码，启动时先清空，再只收集统计摘要、预检错误类别、原生错误诊断、串口关闭结果和进程退出码。PowerShell 按 UTF-8 解码 CLI 输出，以正确显示 ready 中文行；控制台显示程序运行输出。启动器不保存 PCM 录音或 HRI 正文。此工具包是本机电台诊断切片，不是完整双向语音验收版；它不验证语音 codec、完整 HRI 初始化、RF 效果或人耳确认。
 
-仓库中的源脚本位于 `tools/`。离线模拟验证可运行 `powershell.exe -NoLogo -NoProfile -File tools\test-start-hri-test.ps1`；该测试使用临时 100 字节文件和 PowerShell 假程序，不打开电台或音频设备。
+仓库中的源脚本位于 `tools/`。维护人员可运行 `powershell.exe -NoLogo -NoProfile -File tools\test-start-hri-test.ps1` 做离线模拟验证；测试只使用唯一 GUID 子目录中的临时 100 字节文件和 PowerShell 假程序，不打开电台或音频设备。清理前会解析并检查目标仍位于系统临时目录、目录名与本次 GUID 完全相符且不是临时根；校验不通过会报错并保留目录。此测试脚本只随源码仓库提供，不包含在私有电台包内。
