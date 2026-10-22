@@ -49,6 +49,12 @@
 
 使用 Visual Studio 2019 x64 工具链（MSVC 19.29.30159）编译 `src/dmrd.cpp` 和 `tests/dmrd_test.cpp`，编译选项为 `/std:c++17 /EHsc /W4 /permissive-`。测试程序输出：`All DMRD codec checks passed.`。该次本机生成的 `build/dmrd_test.exe` SHA-256 为 `3C2FF06C2A8B58EC6F2F106359E7E82E6D3E07D455988612C53E413704DB9D10`；`build/` 已由 `.gitignore` 排除，不纳入源码提交。
 
+## S3-A 交付来源与只读验收
+
+开始实施前，`WIREX_Bridge/app` 目录不存在，因此没有既有基线提交。S3-A 在该目录建立独立 Git 仓库；源码和测试的初始提交为 `fdf4550a0a40993b9cbb48ad5d236e44d93a8aa1`。本节由后续中文验收文档提交补记，不改写该源码提交。
+
+主会话对该提交进行了只读验收，范围包括：核对源码字段布局与字节处理、核对独立硬编码黄金向量、实际运行 `build/dmrd_test.exe` 并确认通过，以及确认该切片没有进行硬件操作。验收结果只覆盖本地源码和测试，不构成设备、网络、语音或 RF 验证。
+
 ## 能力边界
 
 编译和测试只验证本地数据结构与字节布局，不证明任何远端协议会话、DMR 内容有效性、LC/FEC 校验、语音 codec、BrandMeister 互通或无线发射能力。payload 和 flags 保持不透明，stream ID 维持原始字节顺序。
