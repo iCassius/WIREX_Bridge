@@ -52,3 +52,19 @@ payload 是 `00 01 03 04 FF`，包含 NUL、记录控制字节和非 ASCII 值�
 - [R32：DIRECT 模式下单次版本查询实测](../../research/planning/R32_Direct版本查询独立实测.md)记录了实际发送该 V0000 9 字节记录并收到校验匹配的设备应答；本文只引用脱敏后的请求向量与格式结论，不复制应答 payload 或设备身份。
 
 这些来源支持本切片实现的 envelope 规则，不证明其他 type/payload 的语义、完整 HRI 初始化、音频、PTT、网络或 RF 行为。`direct_frame` 只处理一条已经完整位于内存中的记录，不提供 byte stream 分帧能力。
+
+## 本机验收记录
+
+主会话在 Visual Studio 2019 x64 Native Tools 环境（MSVC 19.29.30159）用以下命令独立编译并运行两套测试。编译选项包含 `/DNDEBUG`，用于确认测试检查不会被该宏关闭：
+
+```bat
+call "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" x64
+cl /nologo /std:c++17 /EHsc /W4 /permissive- /DNDEBUG /I include /Fo:build\review-s1a\ src\direct_frame.cpp tests\direct_frame_test.cpp /Fe:build\review-s1a\direct_frame_test.exe
+build\review-s1a\direct_frame_test.exe
+cl /nologo /std:c++17 /EHsc /W4 /permissive- /DNDEBUG /I include /Fo:build\review-s1a\ src\dmrd.cpp tests\dmrd_test.cpp /Fe:build\review-s1a\dmrd_test.exe
+build\review-s1a\dmrd_test.exe
+```
+
+两次编译均无警告并以 exit code 0 完成。DIRECT 测试输出 `All DIRECT frame checks passed.`；既有 DMRD 回归测试输出 `All DMRD codec checks passed.`。`CMakeLists.txt` 已注册 `wirex_direct_frame`、`direct_frame_test` 与 CTest 项目，但本次没有运行 CMake 配置或 CTest。
+
+这份源码和测试对应的已验收提交为 `a3c6ce6d47407cee87611a6c1cbf4d233b3e18c4`。该哈希标识实现提交，不包含本验收记录这次文档补充。
