@@ -12,6 +12,18 @@
 #include <vector>
 
 namespace wirex::session_report {
+
+void apply_radio_event(RuntimeFields& runtime, std::string_view type, std::string_view status,
+                       std::string_view phase) noexcept
+{
+    if (type == "request_result") runtime.radio_session.request_status.assign(status);
+    if (type == "snapshot" || type == "session_result") {
+        runtime.status.assign(status);
+        runtime.phase.assign(phase);
+        runtime.radio_session.phase.assign(phase);
+    }
+}
+
 namespace {
 
 std::string win32_error(DWORD code)
@@ -287,6 +299,26 @@ bool Writer::write(const hri_session::Snapshot& hri, const RuntimeFields& runtim
         else json << "null";
         json << ",\"pcm_submitted_bytes\":" << downlink.pcm_submitted_bytes
              << ",\"pcm_drained\":" << (downlink.pcm_drained ? "true" : "false")
+             << ",\"operation_audio_cleanup\":" << json_string(downlink.operation_audio_cleanup)
+             << ",\"radio_state\":\"unknown\",\"radio_state_unknown\":true}";
+    }
+    if (runtime.radio_session.enabled) {
+        const auto& session = runtime.radio_session;
+        json << ",\"radio_session\":{\"seq\":" << session.seq
+             << ",\"phase\":" << json_string(session.phase)
+             << ",\"active_request_id\":";
+        if (session.active_request_id.empty()) json << "null";
+        else json << json_string(session.active_request_id);
+        json << ",\"last_request_id\":";
+        if (session.last_request_id.empty()) json << "null";
+        else json << json_string(session.last_request_id);
+        json << ",\"request_status\":" << json_string(session.request_status)
+             << ",\"request_failure_reason\":" << json_string(session.request_failure_reason)
+             << ",\"operation_count\":" << session.operation_count
+             << ",\"radio_audio_input\":" << json_string(session.radio_audio_input)
+             << ",\"pc_audio_output\":" << json_string(session.pc_audio_output)
+             << ",\"microphone_capture\":" << json_string(session.microphone_capture)
+             << ",\"microphone_capture_bytes\":" << session.microphone_capture_bytes
              << ",\"radio_state\":\"unknown\",\"radio_state_unknown\":true}";
     }
     json << ",\"radio_state\":\"unknown\",\"radio_state_unknown\":true}\n";

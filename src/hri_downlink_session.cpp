@@ -415,6 +415,34 @@ Update Session::cleanup_completed(bool audio_cleanup_succeeded,
     return update;
 }
 
+Update Session::operation_cleanup_completed(bool audio_cleanup_succeeded,
+                                            std::uint64_t now_ms)
+{
+    Update update = make_update();
+    if (!started_) {
+        update.error = EventError::invalid_phase;
+        return update;
+    }
+    if (!observe_time(now_ms, update)) return update;
+    if (cleanup_reported_) {
+        update.error = EventError::cleanup_already_reported;
+    } else if (state_.phase != Phase::cleanup_pending) {
+        update.error = EventError::cleanup_not_pending;
+    } else {
+        cleanup_reported_ = true;
+        operation_cleanup_only_ = true;
+        state_.audio_cleanup_reported = true;
+        state_.audio_cleanup_succeeded = audio_cleanup_succeeded;
+        // 本轮只回收候选PCM设备；串口仍由上层HRI会话持有，不能冒报已关闭。
+        if (!audio_cleanup_succeeded) set_failure(StopReason::pc_cleanup_failed);
+        state_.final = true;
+        state_.phase = Phase::finished;
+        finalize_status();
+    }
+    update.state = state_;
+    return update;
+}
+
 Snapshot Session::snapshot() const noexcept
 {
     return state_;
@@ -583,7 +611,8 @@ void Session::set_failure(StopReason reason) noexcept
 
 void Session::finalize_status() noexcept
 {
-    if (!state_.audio_cleanup_succeeded || !state_.serial_cleanup_succeeded) {
+    if (!state_.audio_cleanup_succeeded ||
+        (!operation_cleanup_only_ && !state_.serial_cleanup_succeeded)) {
         state_.status = Status::failed;
         return;
     }

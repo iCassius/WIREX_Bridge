@@ -7,9 +7,13 @@
 #include "wirex/direct_frame.hpp"
 #include "wirex/direct_stream.hpp"
 #include "wirex/hri_downlink_session.hpp"
+#include "wirex/hri_radio_protocol.hpp"
 #include "wirex/hri_session.hpp"
 #include "wirex/hri_t_payload.hpp"
+#include "wirex/operation_audio_cleanup.hpp"
 #include "wirex/console_lifecycle.hpp"
+#include "wirex/audio_input_cleanup.hpp"
+#include "wirex/bounded_pipe_writer.hpp"
 #include "wirex/pcm_gain.hpp"
 #include "wirex/session_report.hpp"
 #include "wirex/wave_file.hpp"
@@ -27,6 +31,8 @@
 #include <iomanip>
 #include <iostream>
 #include <optional>
+#include <memory>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -79,6 +85,11 @@ std::wstring win_error(DWORD code)
     return result;
 }
 
+void secure_wipe(void* data, std::size_t size) noexcept
+{
+    if (data != nullptr && size != 0) SecureZeroMemory(data, size);
+}
+
 std::wstring mm_error(MMRESULT code)
 {
     std::array<wchar_t, 256> message{};
@@ -105,6 +116,35 @@ std::string to_utf8(std::wstring_view text)
     const int written = WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), result.data(), required, nullptr, nullptr);
     if (written != required) return "<name encoding failed>";
     return result;
+}
+
+std::string json_escape(std::string_view value)
+{
+    std::string escaped;
+    escaped.reserve(value.size() + 2);
+    escaped.push_back('"');
+    for (const unsigned char byte : value) {
+        switch (byte) {
+        case '"': escaped += "\\\""; break;
+        case '\\': escaped += "\\\\"; break;
+        case '\b': escaped += "\\b"; break;
+        case '\f': escaped += "\\f"; break;
+        case '\n': escaped += "\\n"; break;
+        case '\r': escaped += "\\r"; break;
+        case '\t': escaped += "\\t"; break;
+        default:
+            if (byte < 0x20) {
+                static constexpr char digits[] = "0123456789abcdef";
+                escaped += "\\u00";
+                escaped.push_back(digits[byte >> 4]);
+                escaped.push_back(digits[byte & 0x0f]);
+            } else {
+                escaped.push_back(static_cast<char>(byte));
+            }
+        }
+    }
+    escaped.push_back('"');
+    return escaped;
 }
 
 bool parse_uint(std::wstring_view text, unsigned long& value)
@@ -340,6 +380,35 @@ void list_audio_devices()
     if (outputs == 0) std::cout << "  (none)\n";
 }
 
+void list_audio_devices_json()
+{
+    std::cout << "{\"schema_version\":1,\"type\":\"audio_devices\",\"wave_inputs\":[";
+    for (UINT id = 0; id < waveInGetNumDevs(); ++id) {
+        if (id != 0) std::cout << ',';
+        WAVEINCAPSW caps{};
+        const auto result = waveInGetDevCapsW(id, &caps, sizeof(caps));
+        const auto name = result == MMSYSERR_NOERROR ? to_utf8(device_name(caps.szPname, MAXPNAMELEN)) : "";
+        const auto format = pcm_format();
+        const bool pcm_supported = result == MMSYSERR_NOERROR &&
+            waveInOpen(nullptr, id, &format, 0, 0, WAVE_FORMAT_QUERY) == MMSYSERR_NOERROR;
+        std::cout << "{\"id\":" << id << ",\"name\":" << json_escape(name)
+                  << ",\"pcm_48000_mono_s16_supported\":" << (pcm_supported ? "true" : "false") << '}';
+    }
+    std::cout << "],\"wave_outputs\":[";
+    for (UINT id = 0; id < waveOutGetNumDevs(); ++id) {
+        if (id != 0) std::cout << ',';
+        WAVEOUTCAPSW caps{};
+        const auto result = waveOutGetDevCapsW(id, &caps, sizeof(caps));
+        const auto name = result == MMSYSERR_NOERROR ? to_utf8(device_name(caps.szPname, MAXPNAMELEN)) : "";
+        const auto format = pcm_format();
+        const bool pcm_supported = result == MMSYSERR_NOERROR &&
+            waveOutOpen(nullptr, id, &format, 0, 0, WAVE_FORMAT_QUERY) == MMSYSERR_NOERROR;
+        std::cout << "{\"id\":" << id << ",\"name\":" << json_escape(name)
+                  << ",\"pcm_48000_mono_s16_supported\":" << (pcm_supported ? "true" : "false") << '}';
+    }
+    std::cout << "]}\n" << std::flush;
+}
+
 class WaveInput {
 public:
     static constexpr std::size_t sample_count = 4800; // 48 kHz 下每块 100 ms。
@@ -357,6 +426,7 @@ public:
 
     bool open(UINT device_id)
     {
+        if (device_ != nullptr || close_failed_) return false;
         auto format = pcm_format();
         const auto query = waveInOpen(nullptr, device_id, &format, 0, 0, WAVE_FORMAT_QUERY);
         if (query != MMSYSERR_NOERROR) {
@@ -375,6 +445,7 @@ public:
             return false;
         }
         for (auto& buffer : buffers_) {
+            buffer.header = {};
             buffer.header.lpData = reinterpret_cast<LPSTR>(buffer.samples.data());
             buffer.header.dwBufferLength = static_cast<DWORD>(sizeof(buffer.samples));
             const auto prepared = waveInPrepareHeader(device_, &buffer.header, sizeof(buffer.header));
@@ -405,14 +476,18 @@ public:
     [[nodiscard]] std::array<Buffer, buffer_count>& buffers() noexcept { return buffers_; }
     [[nodiscard]] MMRESULT requeue(Buffer& buffer) noexcept
     {
+        secure_wipe(buffer.samples.data(), sizeof(buffer.samples));
         return waveInAddBuffer(device_, &buffer.header, sizeof(buffer.header));
     }
+
+    [[nodiscard]] bool is_open() const noexcept { return device_ != nullptr; }
+    [[nodiscard]] bool close_failed() const noexcept { return close_failed_; }
 
     bool close() noexcept
     {
         if (device_ == nullptr) {
             event_.reset();
-            return true;
+            return !close_failed_;
         }
         bool cleanup_ok = true;
         if (started_) {
@@ -426,6 +501,8 @@ public:
         if (reset != MMSYSERR_NOERROR) {
             std::wcerr << L"waveInReset cleanup failed: " << mm_error(reset) << L"\n";
             cleanup_ok = false;
+        } else {
+            for (auto& buffer : buffers_) secure_wipe(buffer.samples.data(), sizeof(buffer.samples));
         }
         for (auto& buffer : buffers_) {
             if (!buffer.prepared) continue;
@@ -448,8 +525,12 @@ public:
             std::wcerr << L"waveInClose cleanup failed: " << mm_error(closed) << L"\n";
             cleanup_ok = false;
         }
+        if (!cleanup_ok) close_failed_ = true;
         started_ = false;
-        if (device_ == nullptr) event_.reset();
+        if (device_ == nullptr) {
+            event_.reset();
+            for (auto& buffer : buffers_) secure_wipe(buffer.samples.data(), sizeof(buffer.samples));
+        }
         return cleanup_ok;
     }
 
@@ -458,6 +539,7 @@ private:
     WinHandle event_{};
     std::array<Buffer, buffer_count> buffers_{};
     bool started_{false};
+    bool close_failed_{false};
 };
 
 class WaveOutput {
@@ -497,6 +579,7 @@ public:
             return false;
         }
         for (auto& buffer : buffers_) {
+            buffer.header = {};
             buffer.header.lpData = reinterpret_cast<LPSTR>(buffer.samples.data());
             buffer.header.dwBufferLength = static_cast<DWORD>(sizeof(buffer.samples));
             const auto prepared = waveOutPrepareHeader(device_, &buffer.header, sizeof(buffer.header));
@@ -2138,6 +2221,1294 @@ int hri_downlink_candidate(const std::wstring& port_name,
     return 2;
 }
 
+int hri_radio_session(const std::wstring& port_name,
+                      const std::filesystem::path& body_path,
+                      const std::filesystem::path& fixed_wav_path,
+                      UINT radio_input_id,
+                      UINT pc_output_id,
+                      UINT microphone_input_id,
+                      const std::filesystem::path& report_path,
+                      bool interactive)
+{
+    using Clock = std::chrono::steady_clock;
+    using DownlinkSession = wirex::hri_downlink_session::Session;
+    using DownlinkAction = wirex::hri_downlink_session::Action;
+    using DownlinkActionKind = wirex::hri_downlink_session::ActionKind;
+    using DownlinkPhase = wirex::hri_downlink_session::Phase;
+    using HriPhase = wirex::hri_session::Phase;
+    constexpr std::uint64_t radio_window_ms = wirex::hri_session::max_window_ms;
+    constexpr std::size_t max_pcm_bytes = 8U * 48000U * sizeof(std::int16_t);
+    constexpr std::uint64_t microphone_capture_ms = 8000;
+    constexpr std::uint64_t microphone_capture_grace_ms = 300;
+    constexpr std::uint64_t cleanup_grace_ms = 3000;
+
+    wirex::bounded_pipe_writer::Writer protocol_writer(GetStdHandle(STD_OUTPUT_HANDLE));
+    const bool protocol_writer_ready = interactive || protocol_writer.enable_nonblocking();
+    wirex::session_report::Writer report_writer;
+    wirex::session_report::RuntimeFields report_runtime{};
+    report_runtime.radio_session.enabled = true;
+    report_runtime.downlink.enabled = true;
+    report_runtime.audio_input_cleanup = "not_started";
+    report_runtime.audio_output_cleanup = "not_started";
+    report_runtime.serial_cleanup = "not_opened";
+    wirex::hri_session::Snapshot hri_state{};
+    std::string report_error;
+    bool report_write_failed = false;
+    bool protocol_output_failed = false;
+    std::uint64_t event_seq = 0;
+    std::string interactive_last_phase{"starting"};
+    auto emit_unbound_failure = [interactive, protocol_writer_ready, &protocol_writer](std::string_view reason) {
+        if (interactive) {
+            std::cerr << "启动失败：" << reason << "\n" << std::flush;
+        } else if (!protocol_writer_ready) {
+            std::cerr << "协议模式无法将stdout设置为有界非阻塞管道写入；未打开硬件。\n" << std::flush;
+        } else {
+            std::ostringstream line;
+            line << "{\"protocol_version\":1,\"type\":\"session_result\",\"run_id\":null,"
+                    "\"seq\":1,\"request_id\":null,\"status\":\"failed\","
+                    "\"phase\":\"startup_failed\",\"failure_reason\":" << json_escape(reason) << '}';
+            (void)protocol_writer.write_line(line.str());
+        }
+        return 2;
+    };
+    if (!protocol_writer_ready) return emit_unbound_failure("stdout_nonblocking_pipe_required");
+    if (!report_path.is_absolute()) return emit_unbound_failure("report_path_must_be_absolute");
+    if (!wirex::session_report::Writer::create(report_path, report_writer, report_error)) {
+        std::cerr << "无法创建本机受控会话报告。\n";
+        return emit_unbound_failure("report_init_failed");
+    }
+    auto emit_event = [&](std::string_view type, std::string_view status,
+                          std::string_view phase, std::string_view request_id,
+                          std::string_view extra = {}, std::string_view failure_reason = {}) {
+        ++event_seq;
+        report_runtime.radio_session.seq = event_seq;
+        wirex::session_report::apply_radio_event(report_runtime, type, status, phase);
+        if (!report_writer.write(hri_state, report_runtime, report_error)) {
+            report_write_failed = true;
+            report_runtime.report_write_failed = true;
+        }
+        if (interactive) {
+            if (type == "snapshot" && phase == "listening" && interactive_last_phase != "listening") {
+                std::cerr << u8"HRI监听已就绪。F：发送固定语句；M：录入最多8秒后发送；C：取消当前操作；Q：停止并退出。\n"
+                             u8"本次会话最长120秒，到期后退出且不会自动重启。\n" << std::flush;
+            } else if (type == "operation_event" && phase == "capturing") {
+                std::cerr << u8"开始麦克风录入；最多8秒，录入结束后才开始下行。\n" << std::flush;
+            } else if (type == "operation_event" && phase == "waiting_start_t") {
+                std::cerr << u8"已接受下行操作，正在等待有效的T类型记录。\n" << std::flush;
+            } else if (type == "operation_event" && phase == "pcm_active") {
+                std::cerr << u8"收到窗口内有效T类型记录，正在提交PCM；这不代表电台或RF确认。\n" << std::flush;
+            } else if (type == "operation_result") {
+                std::cerr << "Operation " << status << " (" << phase << ")";
+                if (!failure_reason.empty()) std::cerr << ": " << failure_reason;
+                std::cerr << "\n" << std::flush;
+            } else if (type == "session_result") {
+                std::cerr << "Session " << status << " (" << phase << ")";
+                if (!failure_reason.empty()) std::cerr << ": " << failure_reason;
+                std::cerr << "\n" << std::flush;
+            }
+            interactive_last_phase.assign(phase);
+        } else {
+            std::ostringstream line;
+            line << "{\"protocol_version\":1,\"type\":" << json_escape(type)
+                 << ",\"run_id\":" << json_escape(report_writer.run_id())
+                 << ",\"seq\":" << event_seq << ",\"request_id\":";
+            if (request_id.empty()) line << "null";
+            else line << json_escape(request_id);
+            line << ",\"status\":" << json_escape(status)
+                 << ",\"phase\":" << json_escape(phase)
+                 << ",\"radio_state\":\"unknown\",\"radio_state_unknown\":true";
+            if (!extra.empty()) line << ',' << extra;
+            line << '}';
+            if (!protocol_writer.write_line(line.str())) {
+                protocol_output_failed = true;
+            }
+        }
+    };
+
+    // 先创建本轮报告并发送首个快照；串口与 WinMM 设备此时都尚未打开。
+    emit_event("snapshot", "running", "starting", {},
+        "\"components\":{\"serial\":\"not_opened\",\"hri\":\"not_started\","
+        "\"radio_audio_input\":\"not_started\",\"pc_audio_output\":\"not_started\","
+        "\"radio_audio_output\":\"not_started\",\"microphone_capture\":\"idle\"}");
+    if (protocol_output_failed) {
+        report_runtime.final = true;
+        report_runtime.status = "failed";
+        report_runtime.phase = "startup_failed";
+        report_runtime.failure_reason = "protocol_stdout_write_failed";
+        report_runtime.elapsed_ms = 0;
+        if (!report_writer.write(hri_state, report_runtime, report_error)) report_write_failed = true;
+        std::cerr << "协议stdout写入失败；未打开硬件。\n" << std::flush;
+        return 2;
+    }
+
+    WinHandle port;
+    WaveInput radio_input;
+    WaveInput microphone_input;
+    WaveOutput pc_output;
+    WaveOutput radio_output;
+    wirex::ConsoleHandlerScope control_scope;
+    bool handler_started = false;
+    bool session_started = false;
+    bool serial_opened_once = false;
+    bool session_ending = false;
+    bool hri_active = false;
+    bool hri_ready = false;
+    bool serial_transport_failed = false;
+    bool audio_failed = false;
+    bool control_failed = false;
+    bool radio_input_open = false;
+    bool microphone_open = false;
+    bool pc_output_open = false;
+    bool pc_output_started = false;
+    bool radio_output_open = false;
+    bool radio_output_started = false;
+    bool radio_input_started = false;
+    bool microphone_input_started = false;
+    wirex::audio_input_cleanup::State radio_input_cleanup_state;
+    wirex::audio_input_cleanup::State microphone_input_cleanup_state;
+    wirex::operation_audio_cleanup::State radio_output_cleanup_state;
+    bool cleanup_ok = true;
+    bool natural_deadline = false;
+    bool parent_pipe_closed = false;
+    bool console_cancelled = false;
+    bool shutdown_requested = false;
+    bool session_final_report_failed = false;
+    std::string final_failure_reason;
+    std::string radio_input_name;
+    std::string microphone_input_name;
+    std::string pc_output_name;
+    std::string radio_output_name;
+    auto clock_origin = Clock::now();
+    auto elapsed_ms = [&]() -> std::uint64_t {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - clock_origin).count();
+        return elapsed < 0 ? 0U : static_cast<std::uint64_t>(elapsed);
+    };
+    auto set_failure = [&](std::string reason) {
+        if (!control_failed) final_failure_reason = std::move(reason);
+        control_failed = true;
+    };
+    auto close_radio_input = [&]() {
+        if (!radio_input_open) {
+            if (!radio_input_cleanup_state.close_failed()) return true;
+            audio_failed = true;
+            set_failure("radio_input_cleanup_failed");
+            session_ending = true;
+            return false;
+        }
+        const bool closed = radio_input.close();
+        radio_input_open = radio_input.is_open();
+        radio_input_cleanup_state.record_close_result(closed);
+        if (!closed) {
+            audio_failed = true;
+            set_failure("radio_input_cleanup_failed");
+            session_ending = true;
+        }
+        return closed;
+    };
+    auto close_microphone_input = [&]() {
+        if (!microphone_open) {
+            if (!microphone_input_cleanup_state.close_failed()) return true;
+            audio_failed = true;
+            set_failure("microphone_cleanup_failed");
+            session_ending = true;
+            return false;
+        }
+        const bool closed = microphone_input.close();
+        microphone_open = microphone_input.is_open();
+        microphone_input_cleanup_state.record_close_result(closed);
+        if (!closed) {
+            audio_failed = true;
+            set_failure("microphone_cleanup_failed");
+            session_ending = true;
+        }
+        return closed;
+    };
+    auto component_json = [&]() {
+        const auto hri_component = hri_active ? "active" : (hri_state.phase == HriPhase::stopped ? "stopped" : "not_started");
+        const auto input_component = radio_input_cleanup_state.close_failed() ? "failed" :
+            (radio_input_open ? "open" : (hri_ready ? "paused" : "not_started"));
+        const auto mic_component = microphone_input_cleanup_state.close_failed() ? "failed" : (microphone_open ? "capturing" :
+            (report_runtime.radio_session.microphone_capture == "complete" ? "complete" : "idle"));
+        std::string json = "\"components\":{";
+        json += "\"serial\":" + json_escape(port.valid() ? "open" : (serial_opened_once ? "closed" : "not_opened"));
+        json += ",\"hri\":" + json_escape(hri_component);
+        json += ",\"radio_audio_input\":" + json_escape(input_component);
+        json += ",\"pc_audio_output\":" + json_escape(pc_output_open ? "open" : (pc_output_started ? "closed" : "not_started"));
+        json += ",\"radio_audio_output\":" + json_escape(radio_output_open ? "open" : (radio_output_started ? "closed" : "not_started"));
+        json += ",\"microphone_capture\":" + json_escape(mic_component);
+        json += ",\"radio_input_name\":" + json_escape(radio_input_name);
+        json += ",\"microphone_input_name\":" + json_escape(microphone_input_name);
+        json += ",\"pc_output_name\":" + json_escape(pc_output_name);
+        json += ",\"radio_output_name\":" + json_escape(radio_output_name) + "}";
+        return json;
+    };
+    auto finalize_early_failure = [&](std::string_view phase, std::string_view reason) {
+        set_failure(std::string(reason));
+        const bool input_cleanup_started = radio_input_open || microphone_open || radio_input_started ||
+            microphone_input_started || radio_input_cleanup_state.close_failed() || microphone_input_cleanup_state.close_failed();
+        bool input_cleanup_ok = true;
+        if (radio_input_open) input_cleanup_ok = close_radio_input() && input_cleanup_ok;
+        if (microphone_open) input_cleanup_ok = close_microphone_input() && input_cleanup_ok;
+        input_cleanup_ok = !radio_input_cleanup_state.close_failed() && !microphone_input_cleanup_state.close_failed() && input_cleanup_ok;
+        const bool output_cleanup_started = pc_output_open || radio_output_open || radio_output_cleanup_state.close_failed();
+        bool output_cleanup_ok = true;
+        if (pc_output_open) { output_cleanup_ok = pc_output.close() && output_cleanup_ok; pc_output_open = false; }
+        if (radio_output_open || radio_output_cleanup_state.close_failed()) {
+            output_cleanup_ok = radio_output_cleanup_state.close_if_open(radio_output_open,
+                [&]() { return radio_output.close(); }) && output_cleanup_ok;
+        }
+        const bool serial_cleanup_started = port.valid();
+        bool serial_cleanup_ok = true;
+        if (serial_cleanup_started) {
+            const HANDLE raw = port.release();
+            serial_cleanup_ok = raw != nullptr && raw != INVALID_HANDLE_VALUE && CloseHandle(raw) != FALSE;
+        }
+        cleanup_ok = input_cleanup_ok && output_cleanup_ok && serial_cleanup_ok;
+        report_runtime.final = true;
+        report_runtime.status = "failed";
+        report_runtime.failure_reason.assign(reason);
+        report_runtime.audio_input_cleanup = !input_cleanup_started ? "not_started" :
+            (input_cleanup_ok ? "succeeded" : "failed");
+        report_runtime.audio_output_cleanup = !output_cleanup_started ? "not_started" :
+            (output_cleanup_ok ? "succeeded" : "failed");
+        report_runtime.serial_cleanup = !serial_cleanup_started ? "not_opened" :
+            (serial_cleanup_ok ? "succeeded" : "failed");
+        report_runtime.downlink.operation_audio_cleanup.assign(radio_output_cleanup_state.status(false));
+        report_runtime.report_write_failed = report_write_failed;
+        report_runtime.elapsed_ms = elapsed_ms();
+        if (!report_writer.write(hri_state, report_runtime, report_error)) report_write_failed = true;
+        emit_event("session_result", "failed", phase, {},
+            "\"failure_reason\":" + json_escape(reason) + "," + component_json(), reason);
+        if (handler_started) {
+            (void)control_scope.signal_cleanup_complete();
+            (void)control_scope.unregister_now();
+        }
+        return 2;
+    };
+
+    if (!body_path.is_absolute() || !fixed_wav_path.is_absolute()) {
+        return finalize_early_failure("preflight_failed", "input_paths_must_be_absolute");
+    }
+    std::vector<std::uint8_t> y_body;
+    if (!load_hri_y_template(body_path, y_body)) return finalize_early_failure("preflight_failed", "y_template_invalid");
+    std::vector<std::uint8_t> wav_bytes;
+    if (!read_wav_file(fixed_wav_path.wstring(), wav_bytes)) return finalize_early_failure("preflight_failed", "fixed_wav_invalid");
+    const auto fixed_wav = wirex::wave_file::parse(wav_bytes.data(), wav_bytes.size());
+    if (!fixed_wav || fixed_wav.info.data_size == 0 || fixed_wav.info.data_size > max_pcm_bytes) {
+        return finalize_early_failure("preflight_failed", "fixed_wav_format_or_duration_invalid");
+    }
+    if (radio_input_id >= waveInGetNumDevs() || microphone_input_id >= waveInGetNumDevs() ||
+        pc_output_id >= waveOutGetNumDevs() || radio_input_id == microphone_input_id) {
+        return finalize_early_failure("preflight_failed", "audio_device_ids_invalid_or_conflicting");
+    }
+    UINT radio_output_id = 0;
+    if (!resolve_candidate_output(radio_output_id) || radio_output_id == pc_output_id) {
+        return finalize_early_failure("preflight_failed", "radio_waveout_missing_ambiguous_or_conflicting");
+    }
+    auto format = pcm_format();
+    if (waveInOpen(nullptr, radio_input_id, &format, 0, 0, WAVE_FORMAT_QUERY) != MMSYSERR_NOERROR ||
+        waveInOpen(nullptr, microphone_input_id, &format, 0, 0, WAVE_FORMAT_QUERY) != MMSYSERR_NOERROR ||
+        waveOutOpen(nullptr, pc_output_id, &format, 0, 0, WAVE_FORMAT_QUERY) != MMSYSERR_NOERROR) {
+        return finalize_early_failure("preflight_failed", "selected_audio_format_unsupported");
+    }
+    WAVEINCAPSW radio_input_caps{};
+    WAVEINCAPSW microphone_caps{};
+    WAVEOUTCAPSW pc_output_caps{};
+    WAVEOUTCAPSW radio_output_caps{};
+    if (waveInGetDevCapsW(radio_input_id, &radio_input_caps, sizeof(radio_input_caps)) != MMSYSERR_NOERROR ||
+        waveInGetDevCapsW(microphone_input_id, &microphone_caps, sizeof(microphone_caps)) != MMSYSERR_NOERROR ||
+        waveOutGetDevCapsW(pc_output_id, &pc_output_caps, sizeof(pc_output_caps)) != MMSYSERR_NOERROR ||
+        waveOutGetDevCapsW(radio_output_id, &radio_output_caps, sizeof(radio_output_caps)) != MMSYSERR_NOERROR) {
+        return finalize_early_failure("preflight_failed", "selected_audio_device_query_failed");
+    }
+    radio_input_name = to_utf8(device_name(radio_input_caps.szPname, MAXPNAMELEN));
+    microphone_input_name = to_utf8(device_name(microphone_caps.szPname, MAXPNAMELEN));
+    pc_output_name = to_utf8(device_name(pc_output_caps.szPname, MAXPNAMELEN));
+    radio_output_name = to_utf8(device_name(radio_output_caps.szPname, MAXPNAMELEN));
+
+    emit_event("snapshot", "running", "preflight", {}, component_json());
+    if (protocol_output_failed) return finalize_early_failure("preflight_failed", "protocol_stdout_write_failed");
+    if (interactive) {
+        std::cerr << u8"当前设备：无线电输入=" << radio_input_id << " " << radio_input_name
+                  << u8"；电脑扬声器=" << pc_output_id << " " << pc_output_name
+                  << u8"；麦克风输入=" << microphone_input_id << " " << microphone_input_name
+                  << u8"；下行USB输出=" << radio_output_id << " " << radio_output_name << "\n"
+                  << u8"正在初始化HRI。只有监听就绪后才会接受F/M按键。\n" << std::flush;
+    }
+
+    const HANDLE stdin_handle = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD console_mode = 0;
+    if (stdin_handle == nullptr || stdin_handle == INVALID_HANDLE_VALUE ||
+        (interactive ? !GetConsoleMode(stdin_handle, &console_mode) : GetFileType(stdin_handle) != FILE_TYPE_PIPE)) {
+        return finalize_early_failure("preflight_failed", interactive ? "interactive_console_required" : "stdin_control_pipe_required");
+    }
+    std::wstring device_path;
+    if (!parse_port(port_name, device_path)) return finalize_early_failure("preflight_failed", "port_name_invalid");
+    if (!control_scope.start()) return finalize_early_failure("preflight_failed", "console_handler_registration_failed");
+    handler_started = true;
+
+    port.reset(CreateFileW(device_path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+    if (!port.valid()) return finalize_early_failure("serial_open_failed", "serial_open_failed");
+    serial_opened_once = true;
+    if (!configure_serial(port.get(), false)) return finalize_early_failure("serial_configuration_failed", "serial_configuration_failed");
+    COMMTIMEOUTS timeouts{};
+    timeouts.ReadIntervalTimeout = 5;
+    timeouts.ReadTotalTimeoutConstant = 10;
+    timeouts.WriteTotalTimeoutConstant = 100;
+    if (!SetCommTimeouts(port.get(), &timeouts)) return finalize_early_failure("serial_configuration_failed", "serial_timeout_configuration_failed");
+    std::uint64_t discarded_bytes = 0;
+    if (!pre_drain_hri_serial(port.get(), discarded_bytes)) return finalize_early_failure("serial_pre_drain_failed", "serial_pre_drain_failed");
+
+    wirex::hri_session::Session hri_session(std::move(y_body), wirex::hri_session::Config{radio_window_ms});
+    using namespace wirex::hri_downlink_session;
+    const auto start_body = wirex::hri_t_payload::build_empty_header_empty_ambe_candidate_body(1, 1, 9);
+    const auto stop_body = wirex::hri_t_payload::build_empty_header_empty_ambe_candidate_body(0, 1, 9);
+    const auto start_frame = wirex::direct_frame::encode({static_cast<std::uint8_t>('T'),
+        std::vector<std::uint8_t>(start_body.begin(), start_body.end())});
+    const auto stop_frame = wirex::direct_frame::encode({static_cast<std::uint8_t>('T'),
+        std::vector<std::uint8_t>(stop_body.begin(), stop_body.end())});
+    if (!start_frame || !stop_frame) return finalize_early_failure("preflight_failed", "candidate_frame_build_failed");
+
+    struct ActiveOperation {
+        bool active{false};
+        bool capture{false};
+        bool capturing{false};
+        bool pcm_cancelled{false};
+        std::string request_id;
+        std::string cancel_request_id;
+        std::vector<std::uint8_t> pcm;
+        std::size_t pcm_offset{};
+        std::uint64_t capture_started_ms{};
+        std::uint64_t capture_deadline_ms{};
+        std::uint64_t pcm_window_ms{};
+        std::string failure_reason;
+    } operation;
+    auto wipe_operation_pcm = [&]() {
+        secure_wipe(operation.pcm.data(), operation.pcm.size());
+        operation.pcm.clear();
+        operation.pcm.shrink_to_fit();
+        operation.pcm_offset = 0;
+    };
+    std::optional<DownlinkSession> downlink;
+    wirex::hri_downlink_session::Snapshot downlink_state{};
+    std::deque<DownlinkAction> pending_actions;
+    bool start_write_attempted = false;
+    bool start_write_completed = false;
+    bool stop_write_attempted = false;
+    bool stop_write_completed = false;
+    bool pcm_drained = false;
+    std::uint64_t receive_generation = 0;
+    std::uint64_t downlink_feed_generation = 0;
+    std::uint64_t downlink_operation_count = 0;
+    std::uint64_t captured_bytes = 0;
+    std::uint64_t monitor_submitted_bytes = 0;
+    std::uint64_t pcm_submitted_bytes = 0;
+    std::uint64_t dropped_blocks = 0;
+    std::uint64_t clipped_samples = 0;
+    std::array<std::int16_t, WaveInput::sample_count> routed_samples{};
+    std::array<std::uint8_t, 2048> serial_buffer{};
+    std::string command_buffer;
+    bool discard_long_line = false;
+    bool command_eof = false;
+    wirex::hri_radio_protocol::Parser command_parser(report_writer.run_id());
+    std::uint64_t next_snapshot_ms = 1000;
+    std::string last_request_id;
+    std::string accepted_shutdown_id;
+    std::string shutdown_reason;
+    std::uint64_t interactive_request_count = 0;
+    auto current_phase = [&]() -> std::string {
+        if (session_ending) return "stopping";
+        if (operation.active && operation.capturing) return "capturing";
+        if (operation.active && downlink) return "downlink";
+        if (hri_ready) return "listening";
+        return "initializing_hri";
+    };
+    auto sync_downlink_report = [&]() {
+        auto& fields = report_runtime.downlink;
+        fields.phase = downlink ? downlink_phase_name(downlink_state.phase) : "not_started";
+        fields.operation_result = downlink ? downlink_status_name(downlink_state.status) : "not_started";
+        fields.failure_reason = downlink ? downlink_stop_reason_name(downlink_state.stop_reason) : "none";
+        fields.start_t_write_attempts = start_write_attempted ? 1U : 0U;
+        fields.start_t_write_completions = start_write_completed ? 1U : 0U;
+        fields.start_matching_t_records = downlink_state.start_matching_t_record_observed ? 1U : 0U;
+        fields.start_matching_t_payload_observed = downlink_state.start_matching_t_record_observed;
+        fields.start_matching_t_payload_bytes = downlink_state.start_matching_t_payload_bytes;
+        fields.stop_t_write_attempts = stop_write_attempted ? 1U : 0U;
+        fields.stop_t_write_completions = stop_write_completed ? 1U : 0U;
+        fields.stop_matching_t_records = downlink_state.stop_matching_t_record_observed ? 1U : 0U;
+        fields.stop_matching_t_payload_observed = downlink_state.stop_matching_t_record_observed;
+        fields.stop_matching_t_payload_bytes = downlink_state.stop_matching_t_payload_bytes;
+        fields.pcm_submitted_bytes = pcm_submitted_bytes;
+        fields.pcm_drained = pcm_drained;
+        fields.operation_audio_cleanup.assign(radio_output_cleanup_state.status(radio_output_open));
+    };
+    auto set_report_components = [&]() {
+        report_runtime.radio_session.active_request_id = operation.active ? operation.request_id : "";
+        report_runtime.radio_session.last_request_id = last_request_id;
+        report_runtime.radio_session.operation_count = downlink_operation_count;
+        report_runtime.radio_session.radio_audio_input = radio_input_cleanup_state.close_failed() ? "failed" :
+            (radio_input_open ? "open" : (hri_ready ? "paused" : "not_started"));
+        report_runtime.radio_session.pc_audio_output = pc_output_open ? "open" : "not_started";
+        report_runtime.radio_session.microphone_capture = microphone_input_cleanup_state.close_failed() ? "failed" : (microphone_open ? "capturing" :
+            (report_runtime.radio_session.microphone_capture == "complete" ? "complete" : "idle"));
+        report_runtime.radio_session.microphone_capture_bytes = captured_bytes;
+        report_runtime.elapsed_ms = elapsed_ms();
+        report_runtime.captured_bytes = captured_bytes;
+        report_runtime.submitted_bytes = monitor_submitted_bytes + pcm_submitted_bytes;
+        report_runtime.dropped_blocks = dropped_blocks;
+        report_runtime.clipped_samples = clipped_samples;
+        sync_downlink_report();
+    };
+    // 包装report写入；事件流与磁盘报告共享同一个native run_id与seq。
+    auto publish = [&](std::string_view type, std::string_view status,
+                       std::string_view phase, std::string_view request_id,
+                       std::string_view extra = {}, std::string_view failure_reason = {}) {
+        ++event_seq;
+        report_runtime.radio_session.seq = event_seq;
+        wirex::session_report::apply_radio_event(report_runtime, type, status, phase);
+        set_report_components();
+        if (!report_runtime.final && !report_writer.write(hri_state, report_runtime, report_error)) {
+            report_write_failed = true;
+            report_runtime.report_write_failed = true;
+        }
+        if (interactive) {
+            if (type == "snapshot" && phase == "listening" && interactive_last_phase != "listening") {
+                std::cerr << u8"HRI监听已就绪。F：发送固定语句；M：录入最多8秒后发送；C：取消当前操作；Q：停止并退出。\n"
+                             u8"本次会话最长120秒，到期后退出且不会自动重启。\n" << std::flush;
+            } else if (type == "operation_event" && phase == "capturing") {
+                std::cerr << u8"开始麦克风录入；最多8秒，录入结束后才开始下行。\n" << std::flush;
+            } else if (type == "operation_event" && phase == "waiting_start_t") {
+                std::cerr << u8"已接受下行操作，正在等待有效的T类型记录。\n" << std::flush;
+            } else if (type == "operation_event" && phase == "pcm_active") {
+                std::cerr << u8"收到窗口内有效T类型记录，正在提交PCM；这不代表电台或RF确认。\n" << std::flush;
+            } else if (type == "operation_result") {
+                std::cerr << "Operation " << status << " (" << phase << ")";
+                if (!failure_reason.empty()) std::cerr << ": " << failure_reason;
+                std::cerr << "\n" << std::flush;
+            } else if (type == "session_result") {
+                std::cerr << "Session " << status << " (" << phase << ")";
+                if (!failure_reason.empty()) std::cerr << ": " << failure_reason;
+                std::cerr << "\n" << std::flush;
+            }
+            interactive_last_phase.assign(phase);
+        } else {
+            std::ostringstream line;
+            line << "{\"protocol_version\":1,\"type\":" << json_escape(type)
+                 << ",\"run_id\":" << json_escape(report_writer.run_id())
+                 << ",\"seq\":" << event_seq << ",\"request_id\":";
+            if (request_id.empty()) line << "null";
+            else line << json_escape(request_id);
+            line << ",\"status\":" << json_escape(status)
+                 << ",\"phase\":" << json_escape(phase)
+                 << ",\"radio_state\":\"unknown\",\"radio_state_unknown\":true";
+            if (!extra.empty()) line << ',' << extra;
+            line << '}';
+            if (!protocol_writer.write_line(line.str())) {
+                protocol_output_failed = true;
+                set_failure("protocol_stdout_write_failed");
+                session_ending = true;
+            }
+        }
+    };
+
+    clock_origin = Clock::now();
+    session_started = true;
+    hri_state = hri_session.snapshot();
+    auto open_radio_monitor = [&]() {
+        if (!hri_ready || session_ending || serial_transport_failed) return false;
+        if (!radio_input_cleanup_state.reopen_allowed()) return false;
+        if (!pc_output_open) {
+            if (!pc_output.open(pc_output_id)) return false;
+            pc_output_open = true;
+            pc_output_started = true;
+        }
+        if (!radio_input_open) {
+            if (!radio_input.open(radio_input_id)) {
+                if (radio_input.close_failed()) radio_input_cleanup_state.record_close_result(false);
+                return false;
+            }
+            radio_input_open = true;
+            radio_input_started = true;
+        }
+        return true;
+    };
+    auto close_radio_monitor = [&]() {
+        if (!radio_input_open) return !radio_input_cleanup_state.close_failed();
+        return close_radio_input();
+    };
+    auto begin_downlink = [&]() {
+        if (!operation.active || operation.capturing || operation.pcm.empty() || session_ending || !port.valid()) return false;
+        if (!radio_output_cleanup_state.reopen_allowed()) {
+            audio_failed = true;
+            set_failure("radio_waveout_cleanup_failed");
+            session_ending = true;
+            return false;
+        }
+        radio_output_cleanup_state.begin_operation();
+        if (!close_radio_monitor()) {
+            audio_failed = true;
+            operation.failure_reason = "radio_input_cleanup_failed";
+            return false;
+        }
+        Config config{};
+        config.overall_timeout_ms = max_flow_duration_ms;
+        downlink.emplace(start_frame.bytes, stop_frame.bytes, config);
+        auto started = downlink->start(elapsed_ms(), operation.pcm_window_ms);
+        downlink_state = started.state;
+        downlink_feed_generation = receive_generation;
+        start_write_attempted = false;
+        start_write_completed = false;
+        stop_write_attempted = false;
+        stop_write_completed = false;
+        pcm_drained = false;
+        pcm_submitted_bytes = 0;
+        report_runtime.downlink.operation_audio_cleanup = "not_started";
+        ++downlink_operation_count;
+        report_runtime.radio_session.microphone_capture = operation.capture ? "complete" : "idle";
+        publish("operation_event", "running", "waiting_start_t", operation.request_id,
+            "\"source\":" + json_escape(operation.capture ? "microphone_memory" : "fixed_wav"));
+        for (auto& action : started.actions) {
+            pending_actions.push_back(std::move(action));
+        }
+        return true;
+    };
+
+    if (!SetCommTimeouts(port.get(), &timeouts)) return finalize_early_failure("serial_configuration_failed", "active_serial_timeout_configuration_failed");
+    auto finish_operation = [&](std::string_view status, std::string_view reason) {
+        const std::string request_id = operation.request_id;
+        const bool can_resume = !session_ending && !serial_transport_failed &&
+            (!start_write_attempted || downlink_state.stop_matching_t_record_observed);
+        operation.active = false;
+        operation.capturing = false;
+        secure_wipe(operation.pcm.data(), operation.pcm.size());
+        wipe_operation_pcm();
+        report_runtime.downlink.operation_audio_cleanup.assign(radio_output_cleanup_state.status(radio_output_open));
+        downlink.reset();
+        pending_actions.clear();
+        publish("operation_result", status, "operation_finished", request_id,
+            std::string("\"failure_reason\":") + json_escape(reason) + "," + component_json(), reason);
+        if (!operation.cancel_request_id.empty()) {
+            publish("operation_result", status == "cancelled" ? "completed" :
+                (status == "completed" ? "completed" : "failed"), "cancel_request_finished",
+                operation.cancel_request_id, std::string("\"failure_reason\":") + json_escape(reason));
+        }
+        last_request_id = request_id;
+        secure_wipe(operation.pcm.data(), operation.pcm.size());
+        operation = {};
+        if (can_resume && hri_active && hri_ready) {
+            if (!open_radio_monitor()) {
+                audio_failed = true;
+                set_failure("radio_monitor_reopen_failed");
+                session_ending = true;
+            } else {
+                publish("snapshot", "running", "listening", {}, component_json());
+            }
+        } else if (!session_ending && start_write_attempted && !downlink_state.stop_matching_t_record_observed) {
+            set_failure("stop_matching_t_not_observed_radio_state_unknown");
+            session_ending = true;
+        }
+    };
+
+    auto update_downlink = [&](wirex::hri_downlink_session::Update update) {
+        if (update.error != wirex::hri_downlink_session::EventError::none) {
+            set_failure("downlink_state_event_rejected");
+            if (downlink && downlink_state.start_write_attempted && !serial_transport_failed && port.valid() &&
+                !stop_write_attempted && downlink_state.phase != DownlinkPhase::cleanup_pending &&
+                downlink_state.phase != DownlinkPhase::finished) {
+                auto recovery = downlink->cancel(elapsed_ms());
+                downlink_state = recovery.state;
+                for (auto& action : recovery.actions) pending_actions.push_back(std::move(action));
+            } else {
+                session_ending = true;
+            }
+            return;
+        }
+        downlink_state = update.state;
+        for (auto& action : update.actions) pending_actions.push_back(std::move(action));
+    };
+    auto service_downlink_actions = [&]() {
+        while (!pending_actions.empty() && downlink && !serial_transport_failed) {
+            auto action = std::move(pending_actions.front());
+            pending_actions.pop_front();
+            if (action.kind == DownlinkActionKind::write_start_candidate &&
+                (control_scope.cancel_requested() || session_ending)) {
+                update_downlink(downlink->cancel(elapsed_ms()));
+                continue;
+            }
+            switch (action.kind) {
+            case DownlinkActionKind::write_start_candidate:
+            case DownlinkActionKind::write_stop_candidate: {
+                const auto attempted = downlink->write_attempted(action.write_id, elapsed_ms());
+                if (attempted.error != wirex::hri_downlink_session::EventError::none) {
+                    set_failure("candidate_write_attempt_rejected");
+                    session_ending = true;
+                    break;
+                }
+                downlink_state = attempted.state;
+                if (action.kind == DownlinkActionKind::write_start_candidate) start_write_attempted = true;
+                else stop_write_attempted = true;
+                DWORD actual = 0;
+                const BOOL wrote = WriteFile(port.get(), action.frame.data(),
+                    static_cast<DWORD>(action.frame.size()), &actual, nullptr);
+                const DWORD write_error = wrote == FALSE ? GetLastError() : ERROR_SUCCESS;
+                const bool full_write = wrote != FALSE && actual == action.frame.size();
+                if (action.kind == DownlinkActionKind::write_start_candidate) start_write_completed = full_write;
+                else stop_write_completed = full_write;
+                downlink_feed_generation = receive_generation;
+                if (!full_write) set_failure(wrote == FALSE ? "candidate_t_write_failed" : "candidate_t_short_write");
+                if (!port.valid() || write_error == ERROR_INVALID_HANDLE) {
+                    serial_transport_failed = true;
+                    set_failure("serial_handle_unavailable");
+                    update_downlink(downlink->transport_failed(elapsed_ms()));
+                    break;
+                }
+                update_downlink(downlink->write_completed(action.write_id, full_write, elapsed_ms()));
+                break;
+            }
+            case DownlinkActionKind::allow_pcm:
+                if (!radio_output_cleanup_state.reopen_allowed()) {
+                    audio_failed = true;
+                    set_failure("radio_waveout_cleanup_failed");
+                    session_ending = true;
+                    update_downlink(downlink->pcm_completed(false, elapsed_ms()));
+                } else if (!radio_output.open(radio_output_id)) {
+                    audio_failed = true;
+                    set_failure("radio_waveout_open_failed");
+                    update_downlink(downlink->pcm_completed(false, elapsed_ms()));
+                } else {
+                    radio_output_open = true;
+                    radio_output_started = true;
+                    update_downlink(downlink->pcm_started(elapsed_ms()));
+                    publish("operation_event", "running", "pcm_active", operation.request_id,
+                        "\"pcm_source\":" + json_escape(operation.capture ? "microphone_memory" : "fixed_wav"));
+                }
+                break;
+            case DownlinkActionKind::request_pcm_stop:
+                operation.pcm_cancelled = true;
+                update_downlink(downlink->pcm_completed(false, elapsed_ms()));
+                break;
+            case DownlinkActionKind::cleanup_required:
+                break;
+            }
+        }
+    };
+    auto complete_operation_cleanup = [&]() {
+        if (!downlink || downlink_state.phase != DownlinkPhase::cleanup_pending) return;
+        const bool output_ok = radio_output_cleanup_state.close_if_open(radio_output_open,
+            [&]() { return radio_output.close(); });
+        if (!output_ok) {
+            audio_failed = true;
+            set_failure("radio_waveout_cleanup_failed");
+            session_ending = true;
+        }
+        report_runtime.downlink.operation_audio_cleanup.assign(radio_output_cleanup_state.status(false));
+        update_downlink(downlink->operation_cleanup_completed(output_ok, elapsed_ms()));
+        downlink_state = downlink->snapshot();
+        const bool operation_ok = downlink_state.status == wirex::hri_downlink_session::Status::completed &&
+            downlink_state.start_write_succeeded && downlink_state.start_matching_t_record_observed &&
+            downlink_state.stop_write_succeeded && downlink_state.stop_matching_t_record_observed &&
+            downlink_state.pcm_succeeded && pcm_drained && output_ok;
+        const bool operation_cancelled = downlink_state.status == wirex::hri_downlink_session::Status::cancelled &&
+            (!start_write_attempted || downlink_state.stop_matching_t_record_observed) && output_ok;
+        const auto reason = operation_ok ? "none" :
+            (downlink_state.stop_reason == wirex::hri_downlink_session::StopReason::none ?
+             (downlink_state.stop_matching_t_record_observed ? "pcm_or_cleanup_incomplete" : "stop_matching_t_not_observed") :
+             downlink_stop_reason_name(downlink_state.stop_reason));
+        finish_operation(operation_ok ? "completed" : (operation_cancelled ? "cancelled" :
+            (downlink_state.stop_reason == wirex::hri_downlink_session::StopReason::start_record_timeout ||
+             downlink_state.stop_reason == wirex::hri_downlink_session::StopReason::stop_record_timeout ||
+             downlink_state.stop_reason == wirex::hri_downlink_session::StopReason::overall_timeout ? "timed_out" : "failed")), reason);
+    };
+
+    auto cancel_current_operation = [&](std::string_view reason) {
+        if (!operation.active) return;
+        operation.failure_reason.assign(reason);
+        if (operation.capturing) {
+            const bool mic_ok = close_microphone_input();
+            report_runtime.radio_session.microphone_capture = "cancelled";
+            if (!mic_ok) { audio_failed = true; set_failure("microphone_cleanup_failed"); }
+            operation.capturing = false;
+            wipe_operation_pcm();
+            if (!session_ending && hri_active && hri_ready && !open_radio_monitor()) {
+                audio_failed = true;
+                set_failure("radio_monitor_reopen_failed");
+                session_ending = true;
+            }
+            const std::string req = operation.request_id;
+            publish("operation_result", "cancelled", "capture_cancelled", req,
+                std::string("\"failure_reason\":") + json_escape(reason), reason);
+            if (!operation.cancel_request_id.empty()) publish("operation_result", "completed", "cancel_request_finished", operation.cancel_request_id);
+            last_request_id = req;
+            wipe_operation_pcm();
+            operation = {};
+            return;
+        }
+        if (downlink && downlink_state.phase != DownlinkPhase::cleanup_pending && downlink_state.phase != DownlinkPhase::finished) {
+            update_downlink(downlink->cancel(elapsed_ms()));
+        }
+    };
+
+    auto start_capture = [&]() {
+        if (!close_radio_monitor()) return false;
+        if (!microphone_input_cleanup_state.reopen_allowed()) return false;
+        report_runtime.radio_session.microphone_capture = "capturing";
+        if (!microphone_input.open(microphone_input_id)) {
+            if (microphone_input.close_failed()) microphone_input_cleanup_state.record_close_result(false);
+            return false;
+        }
+        microphone_open = true;
+        microphone_input_started = true;
+        operation.capturing = true;
+        operation.capture_started_ms = elapsed_ms();
+        operation.capture_deadline_ms = operation.capture_started_ms + microphone_capture_ms;
+        wipe_operation_pcm();
+        operation.pcm.reserve(max_pcm_bytes);
+        captured_bytes = 0;
+        publish("operation_event", "running", "capturing", operation.request_id,
+            "\"capture_limit_ms\":8000,\"capture_memory_only\":true");
+        return true;
+    };
+    auto start_operation = [&](const wirex::hri_radio_protocol::Command& command) {
+        wipe_operation_pcm();
+        operation = {};
+        operation.active = true;
+        operation.capture = command.kind == wirex::hri_radio_protocol::CommandKind::capture_mic;
+        operation.request_id = command.request_id;
+        report_runtime.radio_session.active_request_id = command.request_id;
+        report_runtime.radio_session.last_request_id = command.request_id;
+        report_runtime.radio_session.microphone_capture = "idle";
+        if (operation.capture) {
+            if (!start_capture()) {
+                audio_failed = true;
+                operation.active = false;
+                if (microphone_input_cleanup_state.close_failed()) session_ending = true;
+                set_failure("microphone_capture_start_failed");
+                publish("operation_result", "failed", "capture_start_failed", command.request_id,
+                    "\"failure_reason\":\"microphone_capture_start_failed\"", "microphone_capture_start_failed");
+                if (hri_active && hri_ready && !open_radio_monitor()) session_ending = true;
+                return;
+            }
+        } else {
+            const auto begin = fixed_wav.info.data_offset;
+            const auto end = begin + fixed_wav.info.data_size;
+            operation.pcm.assign(wav_bytes.begin() + static_cast<std::ptrdiff_t>(begin),
+                wav_bytes.begin() + static_cast<std::ptrdiff_t>(end));
+            operation.pcm_window_ms = (static_cast<std::uint64_t>(operation.pcm.size()) * 1000U + 95999U) / 96000U + 1000U;
+            if (!begin_downlink()) {
+                operation.active = false;
+                const std::string reason = operation.failure_reason.empty() ? "downlink_start_failed" : operation.failure_reason;
+                set_failure(reason);
+                publish("operation_result", "failed", "operation_start_failed", command.request_id,
+                    std::string("\"failure_reason\":") + json_escape(reason), reason);
+                wipe_operation_pcm();
+                operation = {};
+                if (hri_active && hri_ready && !open_radio_monitor()) session_ending = true;
+            }
+        }
+    };
+
+    auto dispatch_command = [&](const wirex::hri_radio_protocol::Command& command) {
+        last_request_id = command.request_id;
+        if (command.kind == wirex::hri_radio_protocol::CommandKind::shutdown) {
+            if (shutdown_requested) {
+                publish("request_result", "busy", current_phase(), command.request_id,
+                    "\"failure_reason\":\"shutdown_already_pending\"");
+                return;
+            }
+            shutdown_requested = true;
+            accepted_shutdown_id = command.request_id;
+            shutdown_reason = "shutdown_requested";
+            publish("request_result", "accepted", "stopping", command.request_id);
+            session_ending = true;
+            if (hri_active) { hri_state = hri_session.cancel().state; hri_active = false; }
+            cancel_current_operation("shutdown_requested");
+            return;
+        }
+        if (command.kind == wirex::hri_radio_protocol::CommandKind::cancel_operation) {
+            if (!operation.active) {
+                publish("request_result", "busy", current_phase(), command.request_id,
+                    "\"failure_reason\":\"no_active_operation\"");
+                return;
+            }
+            operation.cancel_request_id = command.request_id;
+            publish("request_result", "accepted", current_phase(), command.request_id);
+            cancel_current_operation("cancelled_by_request");
+            return;
+        }
+        if (!hri_ready || !hri_active || session_ending) {
+            publish("request_result", "rejected", current_phase(), command.request_id,
+                "\"failure_reason\":\"session_not_listening\"");
+            return;
+        }
+        if (operation.active) {
+            publish("request_result", "busy", current_phase(), command.request_id,
+                "\"failure_reason\":\"operation_in_progress\"");
+            return;
+        }
+        publish("request_result", "accepted", current_phase(), command.request_id);
+        if (protocol_output_failed) return;
+        start_operation(command);
+    };
+
+    auto process_command_line = [&](std::string line) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        wirex::hri_radio_protocol::Command command{};
+        const auto parse_error = command_parser.parse(line, command);
+        if (parse_error != wirex::hri_radio_protocol::ParseError::none) {
+            const auto request_id = command.request_id;
+            publish("request_result", "rejected", current_phase(), request_id,
+                std::string("\"failure_reason\":") + json_escape(wirex::hri_radio_protocol::error_name(parse_error)));
+            return;
+        }
+        dispatch_command(command);
+    };
+
+    auto poll_commands = [&]() {
+        if (interactive) {
+            DWORD queued = 0;
+            if (!GetNumberOfConsoleInputEvents(stdin_handle, &queued)) {
+                set_failure("console_input_query_failed");
+                session_ending = true;
+                return;
+            }
+            std::array<INPUT_RECORD, 32> records{};
+            while (queued != 0) {
+                DWORD read = 0;
+                const DWORD wanted = std::min<DWORD>(queued, static_cast<DWORD>(records.size()));
+                if (!ReadConsoleInputW(stdin_handle, records.data(), wanted, &read) || read == 0 || read > wanted) {
+                    set_failure("console_input_read_failed");
+                    session_ending = true;
+                    return;
+                }
+                queued -= read;
+                for (DWORD index = 0; index < read; ++index) {
+                    const auto& record = records[index];
+                    if (record.EventType != KEY_EVENT || !record.Event.KeyEvent.bKeyDown) continue;
+                    wchar_t key = record.Event.KeyEvent.uChar.UnicodeChar;
+                    if (key >= L'a' && key <= L'z') key = static_cast<wchar_t>(key - L'a' + L'A');
+                    wirex::hri_radio_protocol::Command command{};
+                    command.run_id = report_writer.run_id();
+                    command.request_id = "interactive_" + std::to_string(++interactive_request_count);
+                    if (key == L'F') command.kind = wirex::hri_radio_protocol::CommandKind::send_fixed;
+                    else if (key == L'M') command.kind = wirex::hri_radio_protocol::CommandKind::capture_mic;
+                    else if (key == L'C') command.kind = wirex::hri_radio_protocol::CommandKind::cancel_operation;
+                    else if (key == L'Q') command.kind = wirex::hri_radio_protocol::CommandKind::shutdown;
+                    else continue;
+                    dispatch_command(command);
+                }
+            }
+            return;
+        }
+        DWORD available = 0;
+        if (!PeekNamedPipe(stdin_handle, nullptr, 0, nullptr, &available, nullptr)) {
+            const DWORD error = GetLastError();
+            if (error == ERROR_BROKEN_PIPE || error == ERROR_NO_DATA) {
+                command_eof = true;
+                parent_pipe_closed = true;
+                return;
+            }
+            set_failure("stdin_pipe_read_failed");
+            session_ending = true;
+            return;
+        }
+        std::array<char, 256> input{};
+        while (available != 0) {
+            DWORD actual = 0;
+            const DWORD wanted = std::min<DWORD>(available, static_cast<DWORD>(input.size()));
+            if (!ReadFile(stdin_handle, input.data(), wanted, &actual, nullptr) || actual == 0 || actual > wanted) {
+                set_failure("stdin_pipe_read_failed");
+                session_ending = true;
+                return;
+            }
+            available -= actual;
+            for (DWORD index = 0; index < actual; ++index) {
+                const char ch = input[index];
+                if (ch == '\n') {
+                    if (discard_long_line) {
+                        publish("request_result", "rejected", current_phase(), {}, "\"failure_reason\":\"line_too_long\"");
+                        discard_long_line = false;
+                        command_buffer.clear();
+                    } else {
+                        process_command_line(std::move(command_buffer));
+                        command_buffer.clear();
+                    }
+                } else if (!discard_long_line) {
+                    command_buffer.push_back(ch);
+                    if (command_buffer.size() > wirex::hri_radio_protocol::max_command_line_bytes) {
+                        discard_long_line = true;
+                        command_buffer.clear();
+                    }
+                }
+            }
+        }
+    };
+
+    bool command_started = false;
+    auto start_control_session = [&]() {
+        if (command_started) return;
+        command_started = true;
+        auto initial = hri_session.start(elapsed_ms());
+        hri_state = initial.state;
+        hri_active = hri_state.phase != HriPhase::stopped;
+        for (const auto& command : initial.commands) {
+            DWORD actual = 0;
+            const BOOL wrote = WriteFile(port.get(), command.frame.data(),
+                static_cast<DWORD>(command.frame.size()), &actual, nullptr);
+            const bool full_write = wrote != FALSE && actual == command.frame.size();
+            hri_state = hri_session.write_completed(command.id, full_write, elapsed_ms()).state;
+            hri_active = hri_state.phase != HriPhase::stopped;
+            if (!full_write) {
+                serial_transport_failed = true;
+                set_failure("version_query_write_failed");
+                session_ending = true;
+                break;
+            }
+        }
+    };
+    start_control_session();
+
+    auto service_actions = [&]() {
+        service_downlink_actions();
+        complete_operation_cleanup();
+    };
+    auto handle_serial_failure = [&](std::string_view reason) {
+        serial_transport_failed = true;
+        set_failure(std::string(reason));
+        session_ending = true;
+        if (hri_active) { hri_state = hri_session.abort(wirex::hri_session::StopReason::transport_failure).state; hri_active = false; }
+        if (downlink && downlink_state.phase != DownlinkPhase::finished && downlink_state.phase != DownlinkPhase::cleanup_pending) {
+            update_downlink(downlink->transport_failed(elapsed_ms()));
+        }
+    };
+    auto process_radio_monitor = [&]() {
+        if (!radio_input_open || !pc_output_open || operation.active) return;
+        const DWORD waited = WaitForSingleObject(radio_input.event(), 0);
+        if (waited == WAIT_FAILED) {
+            audio_failed = true;
+            set_failure("radio_input_wait_failed");
+            session_ending = true;
+            return;
+        }
+        pc_output.reap();
+        for (auto& buffer : radio_input.buffers()) {
+            if ((buffer.header.dwFlags & WHDR_DONE) == 0) continue;
+            const DWORD bytes = buffer.header.dwBytesRecorded;
+            if (bytes > buffer.header.dwBufferLength || bytes % sizeof(std::int16_t) != 0) {
+                audio_failed = true;
+                set_failure("radio_input_pcm_invalid");
+                session_ending = true;
+                return;
+            }
+            captured_bytes += bytes;
+            if (bytes != 0) {
+                if (!pc_output.has_capacity()) ++dropped_blocks;
+                else {
+                    const auto sample_count = static_cast<std::size_t>(bytes / sizeof(std::int16_t));
+                    std::copy_n(buffer.samples.begin(), sample_count, routed_samples.begin());
+                    const auto submitted = pc_output.submit(routed_samples.data(), bytes);
+                    if (submitted == WaveOutput::SubmitResult::queued) monitor_submitted_bytes += bytes;
+                    else if (submitted == WaveOutput::SubmitResult::full) ++dropped_blocks;
+                    else { audio_failed = true; set_failure("pc_monitor_output_failed"); session_ending = true; return; }
+                }
+            }
+            buffer.header.dwBytesRecorded = 0;
+            if (radio_input.requeue(buffer) != MMSYSERR_NOERROR) {
+                audio_failed = true;
+                set_failure("radio_input_requeue_failed");
+                session_ending = true;
+                return;
+            }
+        }
+    };
+
+    bool protocol_failure_handled = false;
+    while (!session_ending || operation.active || downlink.has_value()) {
+        const auto now = elapsed_ms();
+        if (protocol_output_failed && !protocol_failure_handled) {
+            protocol_failure_handled = true;
+            set_failure("protocol_stdout_write_failed");
+            shutdown_reason = "protocol_stdout_write_failed";
+            session_ending = true;
+            if (hri_active) { hri_state = hri_session.cancel().state; hri_active = false; }
+            cancel_current_operation("protocol_stdout_write_failed");
+        }
+        if (control_scope.cancel_requested() && !session_ending) {
+            console_cancelled = true;
+            shutdown_reason = "console_cancelled";
+            session_ending = true;
+            if (hri_active) { hri_state = hri_session.cancel().state; hri_active = false; }
+            cancel_current_operation("console_cancelled");
+        }
+        if (command_eof && !session_ending) {
+            shutdown_reason = "parent_pipe_eof";
+            session_ending = true;
+            if (hri_active) { hri_state = hri_session.cancel().state; hri_active = false; }
+            cancel_current_operation("parent_pipe_eof");
+        }
+        if (!session_ending && now >= radio_window_ms) {
+            natural_deadline = true;
+            shutdown_reason = "radio_session_deadline";
+            session_ending = true;
+            if (hri_active) { hri_state = hri_session.tick(now).state; hri_active = false; }
+            cancel_current_operation("radio_session_deadline");
+        }
+        poll_commands();
+
+        if (hri_active && !session_ending) {
+            auto update = hri_session.tick(elapsed_ms());
+            hri_state = update.state;
+            hri_active = hri_state.phase != HriPhase::stopped;
+            for (const auto& command : update.commands) {
+                DWORD actual = 0;
+                const BOOL wrote = WriteFile(port.get(), command.frame.data(),
+                    static_cast<DWORD>(command.frame.size()), &actual, nullptr);
+                const bool full_write = wrote != FALSE && actual == command.frame.size();
+                hri_state = hri_session.write_completed(command.id, full_write, elapsed_ms()).state;
+                hri_active = hri_state.phase != HriPhase::stopped;
+                if (!full_write) { handle_serial_failure("hri_heartbeat_write_failed"); break; }
+            }
+            if (!hri_active && hri_state.stop_reason != wirex::hri_session::StopReason::caller_stopped) {
+                if (hri_state.stop_reason == wirex::hri_session::StopReason::deadline) natural_deadline = true;
+                else set_failure(to_utf8(hri_stop_reason_name(hri_state.stop_reason)));
+                shutdown_reason = to_utf8(hri_stop_reason_name(hri_state.stop_reason));
+                session_ending = true;
+                cancel_current_operation(shutdown_reason);
+            }
+            if (hri_state.y_zero_acknowledged && hri_active && !hri_ready) {
+                hri_ready = true;
+                if (!open_radio_monitor()) {
+                    audio_failed = true;
+                    set_failure("radio_monitor_open_failed");
+                    session_ending = true;
+                } else {
+                    publish("snapshot", "running", "listening", {}, component_json());
+                }
+            }
+        }
+
+        if (downlink && !serial_transport_failed && downlink_state.phase != DownlinkPhase::cleanup_pending &&
+            downlink_state.phase != DownlinkPhase::finished) {
+            update_downlink(downlink->tick(elapsed_ms()));
+            service_actions();
+        }
+
+        if (port.valid() && !serial_transport_failed) {
+            DWORD comm_errors = 0;
+            COMSTAT comm_state{};
+            if (!ClearCommError(port.get(), &comm_errors, &comm_state)) {
+                handle_serial_failure("serial_clear_comm_error_failed");
+            } else if (comm_errors != 0) {
+                set_failure("serial_line_or_receive_error");
+                if (hri_active) { hri_state = hri_session.cancel().state; hri_active = false; }
+                session_ending = true;
+                cancel_current_operation("serial_line_or_receive_error");
+            } else if (comm_state.cbInQue != 0) {
+                const DWORD wanted = std::min<DWORD>(comm_state.cbInQue, static_cast<DWORD>(serial_buffer.size()));
+                DWORD actual = 0;
+                if (!ReadFile(port.get(), serial_buffer.data(), wanted, &actual, nullptr) || actual > wanted) {
+                    handle_serial_failure("serial_read_failed");
+                } else if (actual != 0) {
+                    ++receive_generation;
+                    if (hri_active && !session_ending) {
+                        auto update = hri_session.feed(serial_buffer.data(), actual, elapsed_ms());
+                        hri_state = update.state;
+                        hri_active = hri_state.phase != HriPhase::stopped;
+                        for (const auto& command : update.commands) {
+                            DWORD written = 0;
+                            const BOOL ok = WriteFile(port.get(), command.frame.data(),
+                                static_cast<DWORD>(command.frame.size()), &written, nullptr);
+                            const bool full = ok != FALSE && written == command.frame.size();
+                            hri_state = hri_session.write_completed(command.id, full, elapsed_ms()).state;
+                            hri_active = hri_state.phase != HriPhase::stopped;
+                            if (!full) { handle_serial_failure("hri_response_write_failed"); break; }
+                        }
+                        if (hri_state.y_zero_acknowledged && hri_active && !hri_ready) {
+                            hri_ready = true;
+                            if (!open_radio_monitor()) { audio_failed = true; set_failure("radio_monitor_open_failed"); session_ending = true; }
+                            else publish("snapshot", "running", "listening", {}, component_json());
+                        }
+                    }
+                    if (downlink && receive_generation > downlink_feed_generation &&
+                        downlink_state.phase != DownlinkPhase::cleanup_pending && downlink_state.phase != DownlinkPhase::finished) {
+                        update_downlink(downlink->feed(serial_buffer.data(), actual, elapsed_ms()));
+                        service_actions();
+                    }
+                }
+            }
+        }
+
+        if (operation.active && operation.capturing && microphone_open) {
+            const DWORD waited = WaitForSingleObject(microphone_input.event(), 0);
+            if (waited == WAIT_FAILED) {
+                audio_failed = true;
+                operation.failure_reason = "microphone_capture_wait_failed";
+                cancel_current_operation(operation.failure_reason);
+            } else {
+                for (auto& buffer : microphone_input.buffers()) {
+                    if ((buffer.header.dwFlags & WHDR_DONE) == 0) continue;
+                    const auto bytes = buffer.header.dwBytesRecorded;
+                    if (bytes > buffer.header.dwBufferLength || bytes % sizeof(std::int16_t) != 0) {
+                        audio_failed = true;
+                        operation.failure_reason = "microphone_capture_pcm_invalid";
+                        cancel_current_operation(operation.failure_reason);
+                        break;
+                    }
+                    const auto remaining = max_pcm_bytes - operation.pcm.size();
+                    const auto accepted = std::min<std::size_t>(bytes, remaining);
+                    const auto* pcm_bytes = reinterpret_cast<const std::uint8_t*>(buffer.samples.data());
+                    operation.pcm.insert(operation.pcm.end(), pcm_bytes, pcm_bytes + accepted);
+                    captured_bytes = operation.pcm.size();
+                    if (operation.pcm.size() < max_pcm_bytes &&
+                        microphone_input.requeue(buffer) != MMSYSERR_NOERROR) {
+                        audio_failed = true;
+                        operation.failure_reason = "microphone_capture_requeue_failed";
+                        cancel_current_operation(operation.failure_reason);
+                        break;
+                    }
+                    buffer.header.dwBytesRecorded = 0;
+                }
+                const auto capture_elapsed = elapsed_ms() - operation.capture_started_ms;
+                if (operation.active && operation.capturing &&
+                    (operation.pcm.size() >= max_pcm_bytes || capture_elapsed >= microphone_capture_ms)) {
+                    const bool mic_ok = close_microphone_input();
+                    operation.capturing = false;
+                    report_runtime.radio_session.microphone_capture = mic_ok ? "complete" : "failed";
+                    if (!mic_ok || operation.pcm.empty()) {
+                        audio_failed = true;
+                        operation.failure_reason = !mic_ok ? "microphone_cleanup_failed" : "microphone_capture_empty";
+                        set_failure(operation.failure_reason);
+                        const auto request_id = operation.request_id;
+                        publish("operation_result", "failed", "capture_failed", request_id,
+                            std::string("\"failure_reason\":") + json_escape(operation.failure_reason), operation.failure_reason);
+                        wipe_operation_pcm();
+                        operation = {};
+                        if (hri_active && hri_ready && !open_radio_monitor()) session_ending = true;
+                    } else {
+                        operation.pcm_window_ms = (static_cast<std::uint64_t>(operation.pcm.size()) * 1000U + 95999U) / 96000U + 1000U;
+                        publish("operation_event", "running", "capture_complete", operation.request_id,
+                            "\"captured_pcm_bytes\":" + std::to_string(operation.pcm.size()) + ",\"memory_only\":true");
+                        if (!begin_downlink()) {
+                            operation.failure_reason = "downlink_start_after_capture_failed";
+                            set_failure(operation.failure_reason);
+                            const auto request_id = operation.request_id;
+                            publish("operation_result", "failed", "operation_start_failed", request_id,
+                                std::string("\"failure_reason\":") + json_escape(operation.failure_reason), operation.failure_reason);
+                            wipe_operation_pcm();
+                            operation = {};
+                            if (hri_active && hri_ready && !open_radio_monitor()) session_ending = true;
+                        }
+                    }
+                } else if (operation.active && operation.capturing && capture_elapsed > microphone_capture_ms + microphone_capture_grace_ms) {
+                    operation.failure_reason = "microphone_capture_timeout";
+                    audio_failed = true;
+                    cancel_current_operation(operation.failure_reason);
+                }
+            }
+        }
+
+        service_actions();
+        if (downlink && downlink_state.phase == DownlinkPhase::pcm_active && radio_output_open && !operation.pcm_cancelled) {
+            if (operation.pcm_offset < operation.pcm.size() && radio_output.has_capacity()) {
+                const auto count = std::min<std::size_t>(WaveInput::sample_count * sizeof(std::int16_t),
+                    operation.pcm.size() - operation.pcm_offset);
+                const auto submitted = radio_output.submit(operation.pcm.data() + operation.pcm_offset,
+                    static_cast<DWORD>(count));
+                if (submitted == WaveOutput::SubmitResult::queued) {
+                    operation.pcm_offset += count;
+                    pcm_submitted_bytes += count;
+                } else if (submitted != WaveOutput::SubmitResult::full) {
+                    audio_failed = true;
+                    set_failure("radio_pcm_submit_failed");
+                    update_downlink(downlink->pcm_completed(false, elapsed_ms()));
+                    service_actions();
+                }
+            } else if (operation.pcm_offset == operation.pcm.size() && radio_output.all_drained()) {
+                pcm_drained = true;
+                update_downlink(downlink->pcm_completed(true, elapsed_ms()));
+                service_actions();
+            }
+        }
+        complete_operation_cleanup();
+
+        if (hri_ready && radio_input_open && !operation.active && !session_ending) process_radio_monitor();
+        if (!report_write_failed && elapsed_ms() >= next_snapshot_ms && !session_ending) {
+            publish("snapshot", "running", current_phase(), {}, component_json());
+            next_snapshot_ms = elapsed_ms() + 1000U;
+        }
+        if (session_ending && !operation.active && !downlink) break;
+        Sleep(10);
+    }
+
+    if (hri_active && hri_state.phase != HriPhase::stopped) {
+        hri_state = hri_session.finish(elapsed_ms()).state;
+        hri_active = false;
+    }
+    const bool radio_input_cleanup_ok = close_radio_input();
+    const bool microphone_cleanup_ok = close_microphone_input();
+    bool pc_output_cleanup_ok = !pc_output_open || pc_output.close();
+    pc_output_open = false;
+    bool radio_output_cleanup_ok = radio_output_cleanup_state.close_if_open(radio_output_open,
+        [&]() { return radio_output.close(); });
+    const HANDLE raw_port = port.release();
+    const bool serial_cleanup_ok = raw_port != nullptr && raw_port != INVALID_HANDLE_VALUE && CloseHandle(raw_port) != FALSE;
+    wipe_operation_pcm();
+    cleanup_ok = radio_input_cleanup_ok && microphone_cleanup_ok && pc_output_cleanup_ok && radio_output_cleanup_ok && serial_cleanup_ok;
+    if (!cleanup_ok) set_failure("pc_or_serial_cleanup_failed");
+
+    const bool ended_normally = shutdown_requested && !report_write_failed && !control_failed && cleanup_ok;
+    std::string final_status = "failed";
+    if (report_write_failed || control_failed || !cleanup_ok || serial_transport_failed || audio_failed) final_status = "failed";
+    else if (natural_deadline) final_status = "timed_out";
+    else if (parent_pipe_closed) final_status = "unknown";
+    else if (shutdown_requested || console_cancelled) final_status = "completed";
+    else final_status = "unknown";
+    std::string final_reason = final_failure_reason;
+    if (final_reason.empty()) {
+        if (natural_deadline) final_reason = "radio_session_deadline";
+        else if (parent_pipe_closed) final_reason = "parent_pipe_eof";
+        else if (shutdown_requested) final_reason = "shutdown_requested";
+        else if (console_cancelled) final_reason = "console_cancelled";
+    }
+    report_runtime.final = true;
+    report_runtime.status = final_status;
+    report_runtime.phase = "stopped";
+    report_runtime.failure_reason = final_reason;
+    report_runtime.report_write_failed = report_write_failed;
+    const bool input_cleanup_started = radio_input_started || microphone_input_started ||
+        radio_input_cleanup_state.close_failed() || microphone_input_cleanup_state.close_failed();
+    report_runtime.audio_input_cleanup = !input_cleanup_started ? "not_started" :
+        (radio_input_cleanup_ok && microphone_cleanup_ok ? "succeeded" : "failed");
+    report_runtime.audio_output_cleanup = pc_output_cleanup_ok && radio_output_cleanup_ok ? "succeeded" : "failed";
+    report_runtime.serial_cleanup = serial_cleanup_ok ? "succeeded" : "failed";
+    report_runtime.elapsed_ms = elapsed_ms();
+    report_runtime.downlink.operation_audio_cleanup.assign(radio_output_cleanup_state.status(false));
+    set_report_components();
+    if (!report_writer.write(hri_state, report_runtime, report_error)) {
+        report_write_failed = true;
+        session_final_report_failed = true;
+    }
+    const bool signal_ok = handler_started && control_scope.signal_cleanup_complete();
+    const DWORD signal_error = signal_ok ? ERROR_SUCCESS : GetLastError();
+    const bool unregister_ok = !handler_started || control_scope.unregister_now();
+    const DWORD unregister_error = unregister_ok ? ERROR_SUCCESS : GetLastError();
+    if (!signal_ok || !unregister_ok) {
+        final_status = "failed";
+        final_reason = !signal_ok ? "console_cleanup_signal_failed" : "console_handler_unregister_failed";
+        if (!signal_ok && !unregister_ok) final_reason += ";console_handler_unregister_failed";
+        report_runtime.status = final_status;
+        report_runtime.failure_reason = final_reason;
+        if (!report_writer.write(hri_state, report_runtime, report_error)) session_final_report_failed = true;
+    }
+    if (!signal_ok) std::wcerr << L"无法发出会话清理完成信号：" << win_error(signal_error) << L"\n";
+    if (!unregister_ok) std::wcerr << L"无法注销控制台处理器：" << win_error(unregister_error) << L"\n";
+    publish("session_result", final_status, "stopped", accepted_shutdown_id,
+        std::string("\"failure_reason\":") + json_escape(final_reason) + "," + component_json(), final_reason);
+    if (report_write_failed || session_final_report_failed) return 2;
+    if (ended_normally || (console_cancelled && cleanup_ok && !control_failed)) return 0;
+    return final_status == "timed_out" || final_status == "unknown" ? 0 : 2;
+}
+
 int play_wav(const std::wstring& path, UINT output_id)
 {
     std::vector<std::uint8_t> file_bytes;
@@ -2330,7 +3701,11 @@ void print_help()
                << L"  --hri-downlink-candidate --port COM5 --body-file ABS --file WAV --report-file ABS\n"
                << L"                               Fixed local start/stop T candidates and one bounded WAV; software observations only.\n"
                << L"                               Requires one exact USB WaveOut match; radio state remains unknown.\n"
+               << L"  --hri-radio-session --port COMn --body-file ABS --fixed-wav ABS --radio-input N --pc-output N --mic-input N --report-file ABS [--interactive]\n"
+               << L"                               One 120 s HRI owner; listens after Y/0, accepts sequential user-requested F/M sends, and returns to listening when safe.\n"
+               << L"                               Interactive keys: F fixed WAV, M capture up to 8 s in memory then send, C cancel, Q quit. No automatic downlink.\n"
                << L"  --list-audio                List explicit WaveIn/WaveOut device IDs and names.\n"
+               << L"  --list-audio-json           Emit schema_version 1 device IDs, names, and PCM format-query results only.\n"
                << L"  --monitor --input N --seconds N (1..30)\n"
                << L"                               Measure input PCM; no save/playback/default device.\n"
                << L"  --play-wav --file PATH --output N\n"
@@ -2352,6 +3727,10 @@ int wmain(int argc, wchar_t* argv[])
         list_audio_devices();
         return 0;
     }
+    if (argc == 2 && std::wstring_view(argv[1]) == L"--list-audio-json") {
+        list_audio_devices_json();
+        return 0;
+    }
     if (argc == 4 && std::wstring_view(argv[1]) == L"--version" && std::wstring_view(argv[2]) == L"--port") {
         return query_version(argv[3]);
     }
@@ -2364,6 +3743,37 @@ int wmain(int argc, wchar_t* argv[])
     if (argc > 1 && std::wstring_view(argv[1]) == L"--hri-downlink-candidate") {
         std::wcerr << L"Usage: --hri-downlink-candidate --port COMn --body-file ABS --file ABS --report-file ABS.\n";
         return 2;
+    }
+    if (argc >= 2 && std::wstring_view(argv[1]) == L"--hri-radio-session") {
+        bool interactive = false;
+        for (int index = 2; index < argc; ++index) {
+            if (std::wstring_view(argv[index]) == L"--interactive") interactive = true;
+        }
+        unsigned long radio_input = 0;
+        unsigned long pc_output = 0;
+        unsigned long microphone_input = 0;
+        const bool shape_ok = (argc == 16 || (argc == 17 && interactive)) &&
+            std::wstring_view(argv[2]) == L"--port" &&
+            std::wstring_view(argv[4]) == L"--body-file" &&
+            std::wstring_view(argv[6]) == L"--fixed-wav" &&
+            std::wstring_view(argv[8]) == L"--radio-input" &&
+            std::wstring_view(argv[10]) == L"--pc-output" &&
+            std::wstring_view(argv[12]) == L"--mic-input" &&
+            std::wstring_view(argv[14]) == L"--report-file" &&
+            (argc == 16 || std::wstring_view(argv[16]) == L"--interactive");
+        if (!shape_ok || !parse_uint(argv[9], radio_input) || radio_input > 0xffffffffUL ||
+            !parse_uint(argv[11], pc_output) || pc_output > 0xffffffffUL ||
+            !parse_uint(argv[13], microphone_input) || microphone_input > 0xffffffffUL) {
+            if (interactive) {
+                std::wcerr << L"用法：--hri-radio-session --port COMn --body-file ABS --fixed-wav ABS --radio-input N --pc-output N --mic-input N --report-file ABS [--interactive]。\n";
+            } else {
+                std::cout << "{\"protocol_version\":1,\"type\":\"session_result\",\"run_id\":null,\"seq\":1,\"request_id\":null,\"status\":\"failed\",\"phase\":\"startup_failed\",\"failure_reason\":\"arguments_invalid\"}\n" << std::flush;
+            }
+            return 2;
+        }
+        return hri_radio_session(argv[3], std::filesystem::path(argv[5]), std::filesystem::path(argv[7]),
+            static_cast<UINT>(radio_input), static_cast<UINT>(pc_output), static_cast<UINT>(microphone_input),
+            std::filesystem::path(argv[15]), interactive);
     }
     if (argc >= 12 && std::wstring_view(argv[1]) == L"--hri-listen" &&
         std::wstring_view(argv[2]) == L"--port" && std::wstring_view(argv[4]) == L"--body-file" &&
