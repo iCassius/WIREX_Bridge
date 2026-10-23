@@ -15,3 +15,5 @@
 测试完成后请回传 `last-downlink-status.json` 和 `last-downlink-test.log`，并告知：是否听到语句、音质和音量如何、结束后电台界面与音频状态如何。报告只记录有限软件流程和本机清理结果；它不能证明电台已恢复接收、实际射频行为或 BrandMeister 通路。
 
 本机测试包预期仅含以下七项：`wirex_probe.exe`、`start-hri-downlink-test.cmd`、`start-hri-downlink-test.ps1`、本说明 `README.md`、`manifest.json`、`private/device-y.bin` 和 `assets/voice-test.wav`。请勿加入上行旧入口或测试脚本，以免误启动其它流程。
+
+交付时只提供这个完整文件夹，不再生成 ZIP；用户运行后产生的 JSON 和日志留在文件夹内。

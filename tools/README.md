@@ -19,3 +19,5 @@ start-hri-downlink-test.cmd 是独立的可见控制台入口。生产预检要�
 last-downlink-test.log 只保存计数、经过净化的诊断类别和退出码，不记录音频、协议正文或设备身份。last-downlink-status.json 延续 PID 与进程创建时间的所有者保护，并记录下行阶段、T 写入及匹配记录计数、PCM 进度和 PC 清理状态。报告中的 radio_state 始终是 unknown；operation_result=completed 只代表软件流程和 PC 清理完成，不能证明电台实际出声或停止，需操作者现场确认。此入口使用独立的下行报告和日志，不覆盖上行监听报告。
 
 源码维护人员可运行 powershell.exe -NoLogo -NoProfile -File app/tools/test-start-hri-downlink-test.ps1 做离线 mock 检查。它覆盖动态变化的 WaveOut 编号、目标名称重复、固定 CLI 参数、资产摘要失败、报告所有者保护、日志过滤和非零退出结果；不运行原生 EXE、不打开串口或音频设备。测试只使用带 GUID 的临时目录，清理前核对绝对路径和完整目录名。TestMode 只接受 PowerShell mock 与显式临时资产，允许测试副本模拟固定摘要；生产路径仍严格校验上面两份 SHA-256。这个测试脚本只在源码树中，不放入本地测试包。
+
+本机下行测试以完整文件夹交付，不生成 ZIP。交付时保留包内七项运行资产；用户本机运行产生的 last-downlink-status.json 与 last-downlink-test.log 留在同一目录供回传和核查，不与上行报告混用。
