@@ -6,3 +6,14 @@
 *.exe
 *.lib
 *.exp
+
+# User-provided radio/audio data and local diagnostics stay out of Git.
+*.wav
+*.pcm
+*.adi
+*.log
+/.env
+/.env.*
+!/.env.example
+/private/
+/logs/
