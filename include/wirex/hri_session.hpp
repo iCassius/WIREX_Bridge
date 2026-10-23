@@ -54,6 +54,7 @@ enum class StopReason {
     caller_stopped,
     transport_failure,
     audio_failure,
+    report_failure,
 };
 
 enum class CommandKind {

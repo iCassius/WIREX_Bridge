@@ -81,3 +81,15 @@ build\pcm_gain_test.exe
 本地使用 MSVC x64 `/std:c++17 /EHsc /W4 /permissive- /utf-8 /DNDEBUG /MT` 编译 `hri_session_test.exe` 和包含 `--hri-listen` 的 `wirex_probe.exe`，均退出码0且无编译警告。纯状态测试覆盖固定V0000字节、V/48型号校验、写完成后2500 ms版本应答期限、1000 ms Y节拍、Y/0门控、3000 ms迟到Y/0拒绝、X/0应答、偏移12条件复制计数、同一读批坏帧丢弃动作、取消与期限停止。测试全部通过。
 
 `wirex_probe.exe --help` 退出码0并显示新用法。用相对路径调用`--hri-listen`时，程序在音频设备查询和串口打开前以退出码2拒绝；本轮没有提供外部正文、打开串口或音频流、发送协议帧或执行硬件测试。CMake配置未运行。代码要求外部100字节正文与固定摘要匹配，但不把正文放入项目。
+
+## 关窗后的状态快照
+
+`--hri-listen` 可选接收 `--report-file ABS`；本机启动包把它指向 `last-session-status.json`。native 在打开 COM 口前先创建报告，随后在会话阶段变化时和运行期间最多每秒一次，以同目录临时文件刷新原子快照。报告只保留 run ID、进程 PID/创建时间、时间戳、阶段、V/Y/X与串口计数、采集/提交/丢弃字节数、PC音频和串口清理结果；不含Y模板、串口正文、Radio ID或PCM数据。`radio_state_unknown=true` 与 PC 资源清理字段分开记录。
+
+`final=true` 只在程序已取得音频清理和串口 `CloseHandle` 结果后写入；`status` 另行区分 `completed`、`cancelled` 和 `failed`。Ctrl+C/Ctrl+Break 被处理时会按取消路径清理，并不会记成期限结束。Windows 关闭控制台或强制终止可能打断程序，不能保证最终快照或清理代码运行；此时旧快照保持 `final=false`，阶段和计数表示最后一次成功写盘，未完成的 PC 清理与电台状态仍是 unknown。
+
+下次启动器运行时，会通过报告中的 PID 和精确进程创建时间判断前一进程是否仍活动。若匹配进程仍运行或无法核实所有者，启动器不覆盖日志和快照，也不启动新探测器；确认前一进程已经退出后，才在新 `last-test.log` 中保留旧阶段/计数并标记 `incomplete`、`cleanup_unknown`，随后开始新一轮。该恢复逻辑不会杀进程，也不推断电台是否仍处于某个状态。
+
+本次新增离线验证在 MSVC x64 `/std:c++17 /EHsc /W4 /permissive- /utf-8 /DNDEBUG /MT` 下完成：`session_report_test.exe` 检查快照替换、计数和状态字段；现有 `hri_session_test.exe` 通过；启动器模拟测试检查旧未完成报告、匹配的活动 PID、无法核对的报告所有者和日志保留。另用3字节无效模板运行 native CLI，仅验证报告写入及早期失败路径；程序在读取模板失败后退出2，没有枚举音频、打开串口或访问电台。`wirex_probe.exe --help` 退出0。本地实现与离线验证没有实测关闭控制台事件下 Windows 的处理时序，也没有运行真实 HRI 会话或音频测试；CMake 未运行。
+
+主会话随后单独进行了5秒空闲窗口的元数据/PC清理验证：V/48有效，Y写入4次并收到4个Y/0，收到4个X/100并写完4个X/0，串口接收747字节、请求发送481字节，音频路由累计采集364800字节且无丢块、无裁剪；自然到期后报告为`final=true`、`status=completed`，PC音频及串口句柄清理均报告成功，电台状态仍为 unknown。该次验证没有用户按PTT或人耳听音，也不代表完整HRI初始化、语音效果或RF已验证。

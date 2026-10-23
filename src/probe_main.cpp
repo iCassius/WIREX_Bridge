@@ -8,6 +8,7 @@
 #include "wirex/direct_stream.hpp"
 #include "wirex/hri_session.hpp"
 #include "wirex/pcm_gain.hpp"
+#include "wirex/session_report.hpp"
 #include "wirex/wave_file.hpp"
 
 #include <algorithm>
@@ -21,6 +22,7 @@
 #include <cstring>
 #include <iomanip>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -921,46 +923,118 @@ const wchar_t* hri_stop_reason_name(wirex::hri_session::StopReason reason) noexc
     case StopReason::caller_stopped: return L"caller_stopped";
     case StopReason::transport_failure: return L"transport_failure";
     case StopReason::audio_failure: return L"audio_failure";
+    case StopReason::report_failure: return L"report_failure";
     }
     return L"unknown";
 }
 
-int hri_listen(const std::wstring& port_name, const std::filesystem::path& body_path,
-               UINT input_id, UINT output_id, unsigned long seconds, std::uint32_t gain_milli)
+const char* hri_phase_name(wirex::hri_session::Phase phase) noexcept
 {
+    using wirex::hri_session::Phase;
+    switch (phase) {
+    case Phase::not_started: return "not_started";
+    case Phase::awaiting_version_write: return "awaiting_version_write";
+    case Phase::awaiting_version: return "awaiting_version";
+    case Phase::waiting_for_y_due: return "waiting_for_y_due";
+    case Phase::exchanging: return "exchanging";
+    case Phase::stopped: return "stopped";
+    }
+    return "unknown";
+}
+
+int hri_listen(const std::wstring& port_name, const std::filesystem::path& body_path,
+               UINT input_id, UINT output_id, unsigned long seconds, std::uint32_t gain_milli,
+               const std::optional<std::filesystem::path>& report_path)
+{
+    WinHandle port;
+    const bool report_enabled = report_path.has_value();
+    wirex::session_report::Writer report_writer;
+    wirex::session_report::RuntimeFields report_runtime{};
+    wirex::hri_session::Snapshot report_hri_state{};
+    std::string report_error;
+    if (report_enabled) {
+        if (!wirex::session_report::Writer::create(*report_path, report_writer, report_error)) {
+            std::cerr << "Could not initialize HRI status report: " << report_error << ".\n";
+            return 2;
+        }
+        report_runtime.phase = "preflight";
+        report_runtime.audio_input_cleanup = "not_started";
+        report_runtime.audio_output_cleanup = "not_started";
+        report_runtime.serial_cleanup = "not_opened";
+        if (!report_writer.write(report_hri_state, report_runtime, report_error)) {
+            std::cerr << "Could not create HRI status report before opening the serial port: "
+                      << report_error << ".\n";
+            return 2;
+        }
+    }
+
+    auto finish_early = [&](const char* phase, const char* failure_reason) {
+        const bool serial_was_opened = port.valid();
+        bool serial_close_ok = true;
+        if (port.valid()) {
+            const HANDLE serial_handle = port.release();
+            serial_close_ok = serial_handle != nullptr && serial_handle != INVALID_HANDLE_VALUE &&
+                CloseHandle(serial_handle) != FALSE;
+        }
+        if (report_enabled) {
+            report_runtime.final = true;
+            report_runtime.status = "failed";
+            report_runtime.phase = phase;
+            report_runtime.failure_reason = failure_reason;
+            report_runtime.serial_cleanup = !serial_was_opened ? "not_opened" :
+                (serial_close_ok ? "succeeded" : "failed");
+            if (!report_writer.write(report_hri_state, report_runtime, report_error)) {
+                std::cerr << "Could not finalize HRI status report: " << report_error << ".\n";
+            }
+        }
+        return 2;
+    };
+
+    auto write_preflight_stage = [&](const char* phase) {
+        if (!report_enabled) return true;
+        report_runtime.phase = phase;
+        report_runtime.serial_cleanup = port.valid() ? "pending" : "not_opened";
+        if (report_writer.write(report_hri_state, report_runtime, report_error)) return true;
+        report_runtime.report_write_failed = true;
+        std::cerr << "HRI status report update failed before session start: " << report_error << ".\n";
+        return false;
+    };
+
     std::vector<std::uint8_t> y_body;
-    if (!load_hri_y_template(body_path, y_body)) return 2;
-    if (!prepare_hri_audio_devices(input_id, output_id)) return 2;
+    if (!load_hri_y_template(body_path, y_body)) return finish_early("preflight_failed", "y_template_invalid");
+    if (!prepare_hri_audio_devices(input_id, output_id)) return finish_early("preflight_failed", "audio_preflight_failed");
 
     std::wstring device_path;
     if (!parse_port(port_name, device_path)) {
         std::wcerr << L"Invalid port. Use an explicit COM name such as COM5.\n";
-        return 2;
+        return finish_early("preflight_failed", "port_name_invalid");
     }
-    WinHandle port(CreateFileW(device_path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+    port.reset(CreateFileW(device_path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
     if (!port.valid()) {
         std::wcerr << L"Cannot open " << port_name << L": " << win_error(GetLastError()) << L"\n";
-        return 2;
+        return finish_early("serial_open_failed", "serial_open_failed");
     }
-    if (!configure_serial(port.get(), false)) return 2;
+    if (!write_preflight_stage("serial_opened")) return finish_early("report_update_failed", "metadata_write_failure");
+    if (!configure_serial(port.get(), false)) return finish_early("serial_configuration_failed", "serial_configuration_failed");
     COMMTIMEOUTS serial_timeouts{};
     serial_timeouts.ReadIntervalTimeout = 5;
     serial_timeouts.ReadTotalTimeoutConstant = 10;
     serial_timeouts.WriteTotalTimeoutConstant = 100;
     if (!SetCommTimeouts(port.get(), &serial_timeouts)) {
         std::wcerr << L"Could not set bounded HRI serial timeouts: " << win_error(GetLastError()) << L"\n";
-        return 2;
+        return finish_early("serial_configuration_failed", "serial_timeout_configuration_failed");
     }
     std::uint64_t discarded_bytes = 0;
-    if (!pre_drain_hri_serial(port.get(), discarded_bytes)) return 2;
+    if (!pre_drain_hri_serial(port.get(), discarded_bytes)) return finish_early("serial_pre_drain_failed", "serial_pre_drain_failed");
+    if (!write_preflight_stage("serial_prepared")) return finish_early("report_update_failed", "metadata_write_failure");
 
     WAVEINCAPSW input_caps{};
     WAVEOUTCAPSW output_caps{};
     if (waveInGetDevCapsW(input_id, &input_caps, sizeof(input_caps)) != MMSYSERR_NOERROR ||
         waveOutGetDevCapsW(output_id, &output_caps, sizeof(output_caps)) != MMSYSERR_NOERROR) {
         std::wcerr << L"Could not query selected audio device names.\n";
-        return 2;
+        return finish_early("audio_preflight_failed", "audio_device_query_failed");
     }
     std::cout << "Starting one bounded HRI observation window: " << seconds << " s, selected serial "
               << to_utf8(port_name) << " at 115200 8N1, handshake=None, DTR=false, RTS=false.\n"
@@ -980,13 +1054,13 @@ int hri_listen(const std::wstring& port_name, const std::filesystem::path& body_
     active_timeouts.WriteTotalTimeoutConstant = 100;
     if (!SetCommTimeouts(port.get(), &active_timeouts)) {
         std::wcerr << L"Could not initialize active HRI serial timeouts.\n";
-        return 2;
+        return finish_early("serial_configuration_failed", "active_serial_timeout_configuration_failed");
     }
 
     cancel_requested.store(false);
     if (!SetConsoleCtrlHandler(console_control_handler, TRUE)) {
         std::wcerr << L"Could not register the Ctrl+C handler: " << win_error(GetLastError()) << L"\n";
-        return 2;
+        return finish_early("console_handler_failed", "console_handler_registration_failed");
     }
 
     using Clock = std::chrono::steady_clock;
@@ -1000,7 +1074,11 @@ int hri_listen(const std::wstring& port_name, const std::filesystem::path& body_
     bool io_failed = false;
     bool audio_failed = false;
     bool audio_started = false;
+    bool input_open_attempted = false;
+    bool output_open_attempted = false;
+    bool report_write_failed = report_runtime.report_write_failed;
     std::string io_failure_detail;
+    std::string report_failure_detail;
     WaveInput input;
     WaveOutput output;
     std::uint64_t captured_bytes = 0;
@@ -1011,6 +1089,50 @@ int hri_listen(const std::wstring& port_name, const std::filesystem::path& body_
     wirex::pcm_gain::SignalStats routed_input_stats{};
     wirex::pcm_gain::SignalStats submitted_stats{};
     std::array<std::int16_t, WaveInput::sample_count> routed_samples{};
+
+    auto refresh_report_fields = [&](std::string_view phase, bool final, std::string_view status,
+                                     std::string_view failure_reason, bool input_cleanup_known,
+                                     bool input_cleanup_ok, bool output_cleanup_known,
+                                     bool output_cleanup_ok, std::string_view serial_cleanup) {
+        report_runtime.phase.assign(phase);
+        report_runtime.final = final;
+        report_runtime.status.assign(status);
+        report_runtime.failure_reason.assign(failure_reason);
+        report_runtime.audio_started = audio_started;
+        report_runtime.elapsed_ms = elapsed_ms();
+        report_runtime.captured_bytes = captured_bytes;
+        report_runtime.submitted_bytes = submitted_bytes;
+        report_runtime.dropped_blocks = dropped_blocks;
+        report_runtime.clipped_samples = clipped_samples;
+        report_runtime.report_write_failed = report_write_failed;
+        report_runtime.audio_input_cleanup = !input_open_attempted ? "not_started" :
+            (input_cleanup_known ? (input_cleanup_ok ? "succeeded" : "failed") : "pending");
+        report_runtime.audio_output_cleanup = !output_open_attempted ? "not_started" :
+            (output_cleanup_known ? (output_cleanup_ok ? "succeeded" : "failed") : "pending");
+        report_runtime.serial_cleanup.assign(serial_cleanup);
+    };
+
+    std::string last_report_phase;
+    std::uint64_t next_report_ms = 0;
+    auto write_runtime_report = [&](bool force) -> bool {
+        if (!report_enabled) return true;
+        const auto state = session.snapshot();
+        const std::string phase = audio_started ? "audio_active" : hri_phase_name(state.phase);
+        const auto now = elapsed_ms();
+        if (!force && phase == last_report_phase && now < next_report_ms) return true;
+        refresh_report_fields(phase, false, "running", "", false, false, false, false, "pending");
+        if (!report_writer.write(state, report_runtime, report_error)) {
+            report_write_failed = true;
+            io_failed = true;
+            report_failure_detail = report_error;
+            io_failure_detail = "session status report update failed";
+            std::cerr << "HRI status report update failed: " << report_error << ".\n" << std::flush;
+            return false;
+        }
+        last_report_phase = phase;
+        next_report_ms = now + 1000;
+        return true;
+    };
 
     auto dispatch_commands = [&](const wirex::hri_session::Update& update) -> bool {
         for (const auto& command : update.commands) {
@@ -1031,6 +1153,10 @@ int hri_listen(const std::wstring& port_name, const std::filesystem::path& body_
             }
             if (completion.state.phase == wirex::hri_session::Phase::stopped) return false;
         }
+        if (!write_runtime_report(false)) {
+            (void)session.abort(wirex::hri_session::StopReason::report_failure);
+            return false;
+        }
         return session.snapshot().phase != wirex::hri_session::Phase::stopped;
     };
 
@@ -1046,6 +1172,10 @@ int hri_listen(const std::wstring& port_name, const std::filesystem::path& body_
         auto update = session.tick(elapsed_ms());
         if (update.state.phase == wirex::hri_session::Phase::stopped) break;
         if (!dispatch_commands(update)) break;
+        if (!write_runtime_report(false)) {
+            (void)session.abort(wirex::hri_session::StopReason::report_failure);
+            break;
+        }
         if (session.snapshot().phase == wirex::hri_session::Phase::stopped) break;
 
         DWORD comm_errors = 0;
@@ -1068,17 +1198,23 @@ int hri_listen(const std::wstring& port_name, const std::filesystem::path& body_
             if (actual != 0) {
                 update = session.feed(receive_buffer.data(), actual, elapsed_ms());
                 if (!dispatch_commands(update)) break;
+                if (!write_runtime_report(false)) {
+                    (void)session.abort(wirex::hri_session::StopReason::report_failure);
+                    break;
+                }
                 if (update.state.phase == wirex::hri_session::Phase::stopped ||
                     session.snapshot().phase == wirex::hri_session::Phase::stopped) break;
             }
         }
 
         if (!audio_started && session.snapshot().may_start_audio_route) {
+            output_open_attempted = true;
             if (!output.open(output_id)) {
                 audio_failed = true;
                 (void)session.abort(wirex::hri_session::StopReason::audio_failure);
                 break;
             }
+            input_open_attempted = true;
             if (!input.open(input_id)) {
                 audio_failed = true;
                 (void)session.abort(wirex::hri_session::StopReason::audio_failure);
@@ -1094,6 +1230,10 @@ int hri_listen(const std::wstring& port_name, const std::filesystem::path& body_
             audio_started = true;
             // 直接输出UTF-8字节，避免窄/宽标准流混用时依赖宽字符区域设置转换。
             std::cout << u8"音频路由已打开，进入本次 HRI 监听窗口。\n" << std::flush;
+            if (!write_runtime_report(true)) {
+                (void)session.abort(wirex::hri_session::StopReason::report_failure);
+                break;
+            }
         }
 
         if (audio_started) {
@@ -1154,6 +1294,10 @@ int hri_listen(const std::wstring& port_name, const std::filesystem::path& body_
         } else {
             Sleep(10);
         }
+        if (!write_runtime_report(false)) {
+            (void)session.abort(wirex::hri_session::StopReason::report_failure);
+            break;
+        }
     }
 
     if (cancel_requested.load() && session.snapshot().phase != wirex::hri_session::Phase::stopped) {
@@ -1168,6 +1312,32 @@ int hri_listen(const std::wstring& port_name, const std::filesystem::path& body_
     if (!SetConsoleCtrlHandler(console_control_handler, FALSE)) {
         std::wcerr << L"Could not unregister the Ctrl+C handler: " << win_error(GetLastError()) << L"\n";
         io_failed = true;
+    }
+
+    const bool cancelled = final_state.stop_reason == wirex::hri_session::StopReason::cancelled;
+    const bool ended_by_deadline = final_state.stop_reason == wirex::hri_session::StopReason::deadline;
+    const bool limited_exchange = final_state.limited_exchange_observed;
+    const bool cleanup_ok = input_cleanup_ok && output_cleanup_ok && serial_close_ok;
+    const bool report_failed_run = report_write_failed || io_failed || audio_failed || !cleanup_ok ||
+        !ended_by_deadline || !limited_exchange;
+    if (report_enabled) {
+        const char* run_status = report_failed_run ? (cancelled ? "cancelled" : "failed") : "completed";
+        std::string failure_reason;
+        if (report_write_failed) {
+            failure_reason = "metadata_write_failure";
+            if (!report_failure_detail.empty()) failure_reason += ":" + report_failure_detail;
+        }
+        else if (io_failed) failure_reason = io_failure_detail.empty() ? "serial_or_control_failure" : io_failure_detail;
+        else if (audio_failed) failure_reason = "audio_failure";
+        else if (!cleanup_ok) failure_reason = "pc_cleanup_failure";
+        else if (cancelled) failure_reason = "cancelled_before_deadline";
+        else if (!limited_exchange) failure_reason = "limited_exchange_not_observed";
+        refresh_report_fields("stopped", true, run_status, failure_reason, true, input_cleanup_ok,
+            true, output_cleanup_ok, serial_close_ok ? "succeeded" : "failed");
+        if (!report_writer.write(final_state, report_runtime, report_error)) {
+            report_write_failed = true;
+            std::cerr << "Could not write final HRI status report: " << report_error << ".\n" << std::flush;
+        }
     }
 
     if (!io_failure_detail.empty()) std::cerr << "Serial transport stopped: " << io_failure_detail << ".\n";
@@ -1212,7 +1382,7 @@ int hri_listen(const std::wstring& port_name, const std::filesystem::path& body_
         std::cout << "Limited V/Y exchange observed; complete HRI initialization remains unconfirmed.\n";
     }
     return io_failed || audio_failed || !input_cleanup_ok || !output_cleanup_ok || !serial_close_ok ||
-        !final_state.limited_exchange_observed ? 2 : 0;
+        report_write_failed || !final_state.limited_exchange_observed ? 2 : 0;
 }
 
 int play_wav(const std::wstring& path, UINT output_id)
@@ -1401,6 +1571,7 @@ void print_help()
                << L"  --version --port COM5       Send one Direct V0000 query; wait at most 2500 ms.\n"
                << L"  --hri-listen --port COM5 --body-file ABS --input N --output M --seconds N (1..120) [--gain X]\n"
                << L"                               External 100-byte Y body; start selected PCM route only after valid Y/0.\n"
+               << L"                               Optional --report-file ABS writes bounded atomic metadata snapshots only.\n"
                << L"  --list-audio                List explicit WaveIn/WaveOut device IDs and names.\n"
                << L"  --monitor --input N --seconds N (1..30)\n"
                << L"                               Measure input PCM; no save/playback/default device.\n"
@@ -1426,7 +1597,7 @@ int wmain(int argc, wchar_t* argv[])
     if (argc == 4 && std::wstring_view(argv[1]) == L"--version" && std::wstring_view(argv[2]) == L"--port") {
         return query_version(argv[3]);
     }
-    if ((argc == 12 || argc == 14) && std::wstring_view(argv[1]) == L"--hri-listen" &&
+    if (argc >= 12 && std::wstring_view(argv[1]) == L"--hri-listen" &&
         std::wstring_view(argv[2]) == L"--port" && std::wstring_view(argv[4]) == L"--body-file" &&
         std::wstring_view(argv[6]) == L"--input" && std::wstring_view(argv[8]) == L"--output" &&
         std::wstring_view(argv[10]) == L"--seconds") {
@@ -1434,19 +1605,38 @@ int wmain(int argc, wchar_t* argv[])
         unsigned long output_id = 0;
         unsigned long seconds = 0;
         std::uint32_t gain_milli = wirex::pcm_gain::unity_milli;
+        bool gain_seen = false;
+        bool report_seen = false;
+        std::optional<std::filesystem::path> report_path;
         if (!parse_uint(argv[7], input_id) || input_id > 0xffffffffUL ||
             !parse_uint(argv[9], output_id) || output_id > 0xffffffffUL ||
-            !parse_uint(argv[11], seconds) || seconds < 1 || seconds > 120 ||
-            (argc == 14 && (std::wstring_view(argv[12]) != L"--gain" ||
-                !wirex::pcm_gain::parse_gain(argv[13], gain_milli)))) {
+            !parse_uint(argv[11], seconds) || seconds < 1 || seconds > 120) {
             std::wcerr << L"--input/--output must be explicit device IDs, HRI --seconds must be 1..120, and optional --gain must be 0.25..16.0.\n";
             return 2;
         }
+        for (int index = 12; index < argc;) {
+            const std::wstring_view option(argv[index]);
+            if (option == L"--gain" && !gain_seen && index + 1 < argc) {
+                if (!wirex::pcm_gain::parse_gain(argv[index + 1], gain_milli)) {
+                    std::wcerr << L"Optional --gain must be 0.25..16.0.\n";
+                    return 2;
+                }
+                gain_seen = true;
+                index += 2;
+            } else if (option == L"--report-file" && !report_seen && index + 1 < argc) {
+                report_path = std::filesystem::path(argv[index + 1]);
+                report_seen = true;
+                index += 2;
+            } else {
+                std::wcerr << L"Usage: --hri-listen --port COMn --body-file ABS --input N --output M --seconds 1..120 [--gain X] [--report-file ABS].\n";
+                return 2;
+            }
+        }
         return hri_listen(argv[3], std::filesystem::path(argv[5]), static_cast<UINT>(input_id),
-            static_cast<UINT>(output_id), seconds, gain_milli);
+            static_cast<UINT>(output_id), seconds, gain_milli, report_path);
     }
     if (argc > 1 && std::wstring_view(argv[1]) == L"--hri-listen") {
-        std::wcerr << L"Usage: --hri-listen --port COMn --body-file ABS --input N --output M --seconds 1..120 [--gain X].\n";
+        std::wcerr << L"Usage: --hri-listen --port COMn --body-file ABS --input N --output M --seconds 1..120 [--gain X] [--report-file ABS].\n";
         return 2;
     }
     if (argc == 6 && std::wstring_view(argv[1]) == L"--play-wav" && std::wstring_view(argv[2]) == L"--file" &&

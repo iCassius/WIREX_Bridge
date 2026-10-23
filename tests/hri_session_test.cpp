@@ -350,6 +350,13 @@ void test_fail_closed_no_exit_frames_and_deadlines()
     const auto cancel = cancelled.cancel();
     check(cancel.commands.empty() && cancel.state.stop_reason == StopReason::cancelled,
         "cancellation should stop without emitting an exit record");
+
+    Session report_failed(synthetic_y_body());
+    const auto report_start = report_failed.start(0);
+    complete_write(report_failed, report_start.commands.front(), 0);
+    const auto report_abort = report_failed.abort(StopReason::report_failure);
+    check(report_abort.state.phase == Phase::stopped && report_abort.state.stop_reason == StopReason::report_failure,
+        "metadata persistence failure should stop with its own failure reason");
 }
 
 void test_limited_exchange_requires_version_y_and_y0()
