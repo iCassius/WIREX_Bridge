@@ -6,7 +6,9 @@
 
 #include "wirex/direct_frame.hpp"
 #include "wirex/direct_stream.hpp"
+#include "wirex/hri_downlink_session.hpp"
 #include "wirex/hri_session.hpp"
+#include "wirex/hri_t_payload.hpp"
 #include "wirex/console_lifecycle.hpp"
 #include "wirex/pcm_gain.hpp"
 #include "wirex/session_report.hpp"
@@ -21,6 +23,7 @@
 #include <filesystem>
 #include <fstream>
 #include <cstring>
+#include <deque>
 #include <iomanip>
 #include <iostream>
 #include <optional>
@@ -528,6 +531,15 @@ public:
                 buffer.header.dwBufferLength = static_cast<DWORD>(sizeof(buffer.samples));
             }
         }
+    }
+
+    [[nodiscard]] bool all_drained() noexcept
+    {
+        reap();
+        for (const auto& buffer : buffers_) {
+            if (buffer.queued) return false;
+        }
+        return true;
     }
 
     SubmitResult submit(const void* samples, DWORD byte_count) noexcept
@@ -1418,6 +1430,714 @@ int hri_listen(const std::wstring& port_name, const std::filesystem::path& body_
         report_write_failed || !final_state.limited_exchange_observed ? 2 : 0;
 }
 
+const char* downlink_phase_name(wirex::hri_downlink_session::Phase phase) noexcept
+{
+    using wirex::hri_downlink_session::Phase;
+    switch (phase) {
+    case Phase::idle: return "waiting_for_first_y0";
+    case Phase::start_write_pending:
+    case Phase::start_write_in_progress: return "start_write";
+    case Phase::awaiting_start_record: return "awaiting_start_t_record";
+    case Phase::pcm_ready: return "pcm_ready";
+    case Phase::pcm_active: return "pcm_active";
+    case Phase::pcm_stop_pending: return "pcm_stopping";
+    case Phase::stop_write_pending:
+    case Phase::stop_write_in_progress: return "stop_write";
+    case Phase::awaiting_stop_record: return "awaiting_stop_t_record";
+    case Phase::cleanup_pending: return "cleanup";
+    case Phase::finished: return "finished";
+    }
+    return "unknown";
+}
+
+const char* downlink_status_name(wirex::hri_downlink_session::Status status) noexcept
+{
+    using wirex::hri_downlink_session::Status;
+    switch (status) {
+    case Status::running: return "running";
+    case Status::completed: return "completed";
+    case Status::cancelled: return "cancelled";
+    case Status::failed: return "failed";
+    }
+    return "failed";
+}
+
+const char* downlink_stop_reason_name(wirex::hri_downlink_session::StopReason reason) noexcept
+{
+    using wirex::hri_downlink_session::StopReason;
+    switch (reason) {
+    case StopReason::none: return "none";
+    case StopReason::cancelled_before_start_attempt: return "cancelled_before_start_attempt";
+    case StopReason::cancelled: return "cancelled";
+    case StopReason::invalid_candidate_frame: return "invalid_candidate_frame";
+    case StopReason::invalid_configuration: return "invalid_configuration";
+    case StopReason::invalid_pcm_window: return "invalid_pcm_window";
+    case StopReason::start_write_failed: return "start_write_failed";
+    case StopReason::start_record_timeout: return "start_record_timeout";
+    case StopReason::pcm_failed: return "pcm_failed";
+    case StopReason::pcm_window_expired: return "pcm_window_expired";
+    case StopReason::stop_write_failed: return "stop_write_failed";
+    case StopReason::stop_record_timeout: return "stop_record_timeout";
+    case StopReason::overall_timeout: return "overall_timeout";
+    case StopReason::transport_failed: return "transport_failed";
+    case StopReason::pc_cleanup_failed: return "pc_cleanup_failed";
+    }
+    return "unknown";
+}
+
+bool resolve_candidate_output(UINT& output_id)
+{
+    const std::wstring expected_name = L"扬声器 (2- USB Audio Device)";
+    std::vector<UINT> matches;
+    const auto device_count = waveOutGetNumDevs();
+    for (UINT index = 0; index < device_count; ++index) {
+        WAVEOUTCAPSW caps{};
+        if (waveOutGetDevCapsW(index, &caps, sizeof(caps)) != MMSYSERR_NOERROR) continue;
+        const auto name = device_name(caps.szPname, MAXPNAMELEN);
+        if (name == expected_name && name.find(L"USB") != std::wstring::npos) matches.push_back(index);
+    }
+    if (matches.size() != 1) {
+        std::wcerr << L"下行候选要求当前设备列表中恰有一个名称完全匹配的 USB WaveOut；拒绝默认设备或含糊匹配。\n";
+        return false;
+    }
+    auto format = pcm_format();
+    if (waveOutOpen(nullptr, matches[0], &format, 0, 0, WAVE_FORMAT_QUERY) != MMSYSERR_NOERROR) {
+        std::wcerr << L"唯一匹配的 USB WaveOut 不接受 48 kHz、单声道、16 位 PCM。\n";
+        return false;
+    }
+    output_id = matches[0];
+    return true;
+}
+
+int hri_downlink_candidate(const std::wstring& port_name,
+                           const std::filesystem::path& body_path,
+                           const std::filesystem::path& wav_path,
+                           const std::filesystem::path& report_path)
+{
+    using Clock = std::chrono::steady_clock;
+    using DownlinkSession = wirex::hri_downlink_session::Session;
+    using DownlinkAction = wirex::hri_downlink_session::Action;
+    using DownlinkActionKind = wirex::hri_downlink_session::ActionKind;
+    using DownlinkPhase = wirex::hri_downlink_session::Phase;
+    constexpr std::uint64_t overall_window_ms = wirex::hri_downlink_session::max_flow_duration_ms;
+    constexpr std::size_t max_wav_data_bytes = 8U * 48000U * 2U;
+
+    if (!report_path.is_absolute()) {
+        std::wcerr << L"报告文件路径必须是绝对路径。\n";
+        return 2;
+    }
+
+    wirex::ConsoleHandlerScope control_scope;
+    if (!control_scope.start()) {
+        std::wcerr << L"无法注册控制台取消处理器：" << win_error(GetLastError()) << L"\n";
+        return 2;
+    }
+
+    WinHandle port;
+    WaveOutput output;
+    bool output_open_attempted = false;
+    bool output_cleanup_known = false;
+    bool output_cleanup_ok = true;
+    bool report_write_failed = false;
+    bool report_created = false;
+    wirex::session_report::Writer report_writer;
+    wirex::session_report::RuntimeFields report_runtime{};
+    report_runtime.audio_input_cleanup = "not_used";
+    report_runtime.audio_output_cleanup = "not_started";
+    report_runtime.serial_cleanup = "not_opened";
+    report_runtime.downlink.enabled = true;
+    wirex::hri_session::Snapshot hri_state{};
+    wirex::hri_downlink_session::Snapshot downlink_state{};
+    bool native_start_write_attempted = false;
+    bool native_start_write_completed = false;
+    bool native_stop_write_attempted = false;
+    bool native_stop_write_completed = false;
+    std::string downlink_report_operation_override;
+    std::string downlink_report_failure_override;
+    std::string report_error;
+
+    if (!wirex::session_report::Writer::create(report_path, report_writer, report_error)) {
+        std::cerr << "无法创建候选测试报告：" << report_error << ".\n";
+        (void)control_scope.signal_cleanup_complete();
+        (void)control_scope.unregister_now();
+        return 2;
+    }
+    report_created = true;
+    report_runtime.phase = "hri_downlink_candidate";
+    report_runtime.downlink.phase = "waiting_for_first_y0";
+    if (!report_writer.write(hri_state, report_runtime, report_error)) {
+        std::cerr << "无法写入候选测试初始报告：" << report_error << ".\n";
+        report_write_failed = true;
+    }
+
+    auto update_downlink_report = [&](bool session_started) {
+        auto& fields = report_runtime.downlink;
+        fields.phase = session_started ? downlink_phase_name(downlink_state.phase) : "waiting_for_first_y0";
+        fields.operation_result = session_started ? downlink_status_name(downlink_state.status) : "not_started";
+        fields.failure_reason = !downlink_report_failure_override.empty() ? downlink_report_failure_override :
+            (session_started ? downlink_stop_reason_name(downlink_state.stop_reason) : "none");
+        fields.start_t_write_attempts = native_start_write_attempted ? 1U : 0U;
+        fields.start_t_write_completions = native_start_write_completed ? 1U : 0U;
+        fields.start_matching_t_records = downlink_state.start_matching_t_record_observed ? 1U : 0U;
+        fields.start_matching_t_payload_observed = downlink_state.start_matching_t_record_observed;
+        fields.start_matching_t_payload_bytes = downlink_state.start_matching_t_payload_bytes;
+        fields.stop_t_write_attempts = native_stop_write_attempted ? 1U : 0U;
+        fields.stop_t_write_completions = native_stop_write_completed ? 1U : 0U;
+        fields.stop_matching_t_records = downlink_state.stop_matching_t_record_observed ? 1U : 0U;
+        fields.stop_matching_t_payload_observed = downlink_state.stop_matching_t_record_observed;
+        fields.stop_matching_t_payload_bytes = downlink_state.stop_matching_t_payload_bytes;
+        fields.pcm_submitted_bytes = report_runtime.submitted_bytes;
+        fields.pcm_drained = downlink_state.pcm_succeeded;
+        if (!downlink_report_operation_override.empty()) fields.operation_result = downlink_report_operation_override;
+    };
+
+    auto finish_preflight = [&](const char* phase, const std::string& reason) {
+        output_cleanup_ok = output.close();
+        output_cleanup_known = output_open_attempted;
+        const HANDLE raw_port = port.release();
+        const bool serial_close_ok = raw_port == INVALID_HANDLE_VALUE || raw_port == nullptr || CloseHandle(raw_port) != FALSE;
+        const bool early_cleanup_ok = output_cleanup_ok && serial_close_ok;
+        report_runtime.final = true;
+        report_runtime.status = control_scope.cancel_requested() && early_cleanup_ok ? "cancelled" : "failed";
+        report_runtime.phase = phase;
+        report_runtime.failure_reason = reason;
+        if (!early_cleanup_ok) report_runtime.failure_reason += ";pc_cleanup_failure";
+        report_runtime.audio_output_cleanup = !output_cleanup_known ? "not_started" :
+            (output_cleanup_ok ? "succeeded" : "failed");
+        report_runtime.serial_cleanup = raw_port == INVALID_HANDLE_VALUE || raw_port == nullptr ? "not_opened" :
+            (serial_close_ok ? "succeeded" : "failed");
+        report_runtime.report_write_failed = report_write_failed;
+        if (report_created) {
+            update_downlink_report(false);
+            if (!report_writer.write(hri_state, report_runtime, report_error)) report_write_failed = true;
+        }
+        const bool signal_ok = control_scope.signal_cleanup_complete();
+        const DWORD signal_error = signal_ok ? ERROR_SUCCESS : GetLastError();
+        const bool unregister_ok = control_scope.unregister_now();
+        const DWORD unregister_error = unregister_ok ? ERROR_SUCCESS : GetLastError();
+        if ((!signal_ok || !unregister_ok) && report_created) {
+            report_runtime.status = "failed";
+            report_runtime.failure_reason = !signal_ok ? "console_cleanup_signal_failed" : "console_handler_unregister_failed";
+            if (!signal_ok && !unregister_ok) report_runtime.failure_reason += ";console_handler_unregister_failed";
+            report_runtime.report_write_failed = report_write_failed;
+            if (!report_writer.write(hri_state, report_runtime, report_error)) report_write_failed = true;
+        }
+        if (!signal_ok) std::wcerr << L"无法发出主线程清理完成信号：" << win_error(signal_error) << L"\n";
+        if (!unregister_ok) std::wcerr << L"无法注销控制台处理器：" << win_error(unregister_error) << L"\n";
+        return 2;
+    };
+
+    if (!report_created || report_write_failed) return finish_preflight("preflight_failed", "metadata_write_failure");
+    if (!body_path.is_absolute() || !wav_path.is_absolute() || !report_path.is_absolute()) {
+        return finish_preflight("preflight_failed", "paths_must_be_absolute");
+    }
+    std::vector<std::uint8_t> y_body;
+    if (!load_hri_y_template(body_path, y_body)) return finish_preflight("preflight_failed", "y_template_invalid");
+    std::vector<std::uint8_t> wav_bytes;
+    if (!read_wav_file(wav_path.wstring(), wav_bytes)) return finish_preflight("preflight_failed", "wav_invalid");
+    const auto wav = wirex::wave_file::parse(wav_bytes.data(), wav_bytes.size());
+    if (!wav || wav.info.data_size > max_wav_data_bytes) {
+        std::wcerr << L"下行候选只接受长度不超过 8 秒的 48 kHz 单声道 16 位 PCM WAV。\n";
+        return finish_preflight("preflight_failed", "wav_format_or_duration_invalid");
+    }
+    UINT output_id = 0;
+    if (!resolve_candidate_output(output_id)) return finish_preflight("preflight_failed", "unique_usb_waveout_not_found");
+
+    std::wstring device_path;
+    if (!parse_port(port_name, device_path)) {
+        std::wcerr << L"端口名无效；请明确指定 COM 名称，例如 COM5。\n";
+        return finish_preflight("preflight_failed", "port_name_invalid");
+    }
+    port.reset(CreateFileW(device_path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+    if (!port.valid()) {
+        std::wcerr << L"无法打开串口：" << win_error(GetLastError()) << L"\n";
+        return finish_preflight("serial_open_failed", "serial_open_failed");
+    }
+    if (!configure_serial(port.get(), false)) return finish_preflight("serial_configuration_failed", "serial_configuration_failed");
+    COMMTIMEOUTS serial_timeouts{};
+    serial_timeouts.ReadIntervalTimeout = 5;
+    serial_timeouts.ReadTotalTimeoutConstant = 10;
+    serial_timeouts.WriteTotalTimeoutConstant = 100;
+    if (!SetCommTimeouts(port.get(), &serial_timeouts)) {
+        std::wcerr << L"无法设置有界串口超时：" << win_error(GetLastError()) << L"\n";
+        return finish_preflight("serial_configuration_failed", "serial_timeout_configuration_failed");
+    }
+    std::uint64_t discarded_bytes = 0;
+    if (!pre_drain_hri_serial(port.get(), discarded_bytes)) {
+        return finish_preflight("serial_pre_drain_failed", "serial_pre_drain_failed");
+    }
+    if (control_scope.cancel_requested()) return finish_preflight("cancelled_before_session", "cancelled_before_session");
+
+    using namespace wirex::hri_downlink_session;
+    const auto start_body = wirex::hri_t_payload::build_empty_header_empty_ambe_candidate_body(1, 1, 9);
+    const auto stop_body = wirex::hri_t_payload::build_empty_header_empty_ambe_candidate_body(0, 1, 9);
+    const auto start_frame = wirex::direct_frame::encode({static_cast<std::uint8_t>('T'),
+        std::vector<std::uint8_t>(start_body.begin(), start_body.end())});
+    const auto stop_frame = wirex::direct_frame::encode({static_cast<std::uint8_t>('T'),
+        std::vector<std::uint8_t>(stop_body.begin(), stop_body.end())});
+    if (!start_frame || !stop_frame) return finish_preflight("preflight_failed", "fixed_candidate_frame_build_failed");
+
+    const auto pcm_duration_ms = (static_cast<std::uint64_t>(wav.info.data_size) * 1000U + 95999U) / 96000U;
+    const auto pcm_window_ms = pcm_duration_ms + 1000U;
+    wirex::hri_session::Session hri_session(std::move(y_body), wirex::hri_session::Config{overall_window_ms});
+    std::optional<DownlinkSession> downlink_session;
+    bool downlink_started = false;
+    bool hri_active = false;
+    bool control_failed = false;
+    bool serial_transport_failed = false;
+    bool downlink_write_failed = false;
+    bool audio_failed = false;
+    bool pcm_drained = false;
+    bool cleanup_requested = false;
+    bool final_report_write_failed = false;
+    bool audio_route_started = false;
+    std::string control_failure_reason;
+    std::uint64_t receive_generation = 0;
+    std::uint64_t downlink_feed_generation = 0;
+    std::size_t pcm_offset = wav.info.data_offset;
+    const std::size_t pcm_end = wav.info.data_offset + wav.info.data_size;
+    std::deque<DownlinkAction> pending_actions;
+    std::array<std::uint8_t, 2048> receive_buffer{};
+    const auto session_started = Clock::now();
+    auto elapsed_ms = [&]() -> std::uint64_t {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - session_started).count();
+        return elapsed < 0 ? 0U : static_cast<std::uint64_t>(elapsed);
+    };
+    if (!SetCommTimeouts(port.get(), &serial_timeouts)) {
+        return finish_preflight("serial_configuration_failed", "active_serial_timeout_configuration_failed");
+    }
+    hri_state = hri_session.snapshot();
+
+    auto refresh_report = [&](bool final, std::string_view status, std::string_view failure_reason,
+                              std::string_view phase, bool serial_cleanup_known, bool serial_cleanup_ok) {
+        report_runtime.final = final;
+        report_runtime.status.assign(status);
+        report_runtime.phase.assign(phase);
+        report_runtime.failure_reason.assign(failure_reason);
+        report_runtime.audio_started = audio_route_started;
+        report_runtime.elapsed_ms = elapsed_ms();
+        report_runtime.submitted_bytes = report_runtime.downlink.pcm_submitted_bytes;
+        report_runtime.report_write_failed = report_write_failed;
+        report_runtime.audio_output_cleanup = !output_open_attempted ? "not_started" :
+            (output_cleanup_known ? (output_cleanup_ok ? "succeeded" : "failed") : "pending");
+        report_runtime.serial_cleanup = port.valid() ? "pending" :
+            (serial_cleanup_known ? (serial_cleanup_ok ? "succeeded" : "failed") : "not_opened");
+        update_downlink_report(downlink_started);
+    };
+
+    auto note_control_failure = [&](std::string reason) {
+        if (!control_failed) control_failure_reason = std::move(reason);
+        control_failed = true;
+    };
+
+    auto close_candidate_output = [&]() {
+        if (!output_open_attempted || output_cleanup_known) return;
+        output_cleanup_ok = output.close();
+        output_cleanup_known = true;
+        if (!output_cleanup_ok) note_control_failure("waveout_cleanup_failed");
+    };
+
+    auto queue_downlink_update = [&](wirex::hri_downlink_session::Update update) {
+        const bool event_rejected = update.error != wirex::hri_downlink_session::EventError::none;
+        downlink_state = update.state;
+        for (auto& action : update.actions) pending_actions.push_back(std::move(action));
+        if (!event_rejected) return;
+
+        note_control_failure("downlink_state_event_rejected");
+        if (downlink_started && downlink_session && downlink_state.start_write_attempted &&
+            !serial_transport_failed && port.valid() && downlink_state.phase != DownlinkPhase::cleanup_pending &&
+            downlink_state.phase != DownlinkPhase::finished) {
+            const auto recovery = downlink_session->cancel(elapsed_ms());
+            if (recovery.error == wirex::hri_downlink_session::EventError::none) {
+                downlink_state = recovery.state;
+                for (const auto& action : recovery.actions) pending_actions.push_back(action);
+                return;
+            }
+        }
+        cleanup_requested = true;
+    };
+
+    auto urgent_stop_pending = [&]() {
+        if (!downlink_started) return false;
+        const auto phase = downlink_state.phase;
+        return phase == DownlinkPhase::stop_write_pending || phase == DownlinkPhase::stop_write_in_progress ||
+            phase == DownlinkPhase::awaiting_stop_record || phase == DownlinkPhase::cleanup_pending ||
+            phase == DownlinkPhase::finished;
+    };
+
+    auto cancel_downlink = [&]() {
+        if (!downlink_started || !downlink_session || downlink_state.phase == DownlinkPhase::cleanup_pending ||
+            downlink_state.phase == DownlinkPhase::finished) return;
+        queue_downlink_update(downlink_session->cancel(elapsed_ms()));
+    };
+
+    auto dispatch_hri_commands = [&](const wirex::hri_session::Update& update) {
+        for (const auto& command : update.commands) {
+            if (!hri_active || control_scope.cancel_requested() || urgent_stop_pending()) break;
+            if (!port.valid()) {
+                serial_transport_failed = true;
+                note_control_failure("serial_handle_unavailable");
+                break;
+            }
+            DWORD actual = 0;
+            const BOOL wrote = WriteFile(port.get(), command.frame.data(),
+                static_cast<DWORD>(command.frame.size()), &actual, nullptr);
+            const DWORD write_error = wrote == FALSE ? GetLastError() : ERROR_SUCCESS;
+            const bool full_write = wrote != FALSE && actual == command.frame.size();
+            const auto completion = hri_session.write_completed(command.id, full_write, elapsed_ms());
+            hri_state = completion.state;
+            if (!full_write) {
+                note_control_failure(wrote == FALSE ? "hri_control_write_failed" : "hri_control_short_write");
+                hri_active = false;
+                if (!port.valid() || write_error == ERROR_INVALID_HANDLE) {
+                    serial_transport_failed = true;
+                    note_control_failure("serial_handle_unavailable");
+                    if (downlink_started && downlink_session) {
+                        queue_downlink_update(downlink_session->transport_failed(elapsed_ms()));
+                    } else {
+                        cleanup_requested = true;
+                    }
+                }
+                break;
+            }
+            if (completion.state.phase == wirex::hri_session::Phase::stopped) {
+                note_control_failure(to_utf8(hri_stop_reason_name(completion.state.stop_reason)));
+                hri_active = false;
+                break;
+            }
+        }
+    };
+
+    auto consume_hri_update = [&](const wirex::hri_session::Update& update) {
+        hri_state = update.state;
+        hri_active = update.state.phase != wirex::hri_session::Phase::stopped;
+        if (!hri_active) {
+            const auto reason = update.state.stop_reason;
+            if (reason != wirex::hri_session::StopReason::caller_stopped) {
+                note_control_failure(to_utf8(hri_stop_reason_name(reason)));
+            }
+        }
+        dispatch_hri_commands(update);
+        if (!hri_active && downlink_started && hri_state.stop_reason != wirex::hri_session::StopReason::deadline) {
+            cancel_downlink();
+        }
+        if (hri_state.y_zero_acknowledged && !downlink_started && hri_active && !control_failed) {
+            const auto now = elapsed_ms();
+            if (now >= overall_window_ms) {
+                note_control_failure("overall_window_expired_before_downlink_start");
+                cleanup_requested = true;
+                return;
+            }
+            Config config{};
+            config.overall_timeout_ms = overall_window_ms - now;
+            downlink_session.emplace(start_frame.bytes, stop_frame.bytes, config);
+            downlink_started = true;
+            queue_downlink_update(downlink_session->start(now, pcm_window_ms));
+        }
+    };
+
+    auto service_actions = [&]() {
+        while (!pending_actions.empty() && !cleanup_requested) {
+            auto action = std::move(pending_actions.front());
+            pending_actions.pop_front();
+            if (action.kind == DownlinkActionKind::write_start_candidate && control_scope.cancel_requested()) {
+                cancel_downlink();
+                continue;
+            }
+            switch (action.kind) {
+            case DownlinkActionKind::write_start_candidate:
+            case DownlinkActionKind::write_stop_candidate: {
+                if (!port.valid()) {
+                    serial_transport_failed = true;
+                    note_control_failure("serial_handle_unavailable");
+                    queue_downlink_update(downlink_session->transport_failed(elapsed_ms()));
+                    break;
+                }
+                const auto attempted = downlink_session->write_attempted(action.write_id, elapsed_ms());
+                if (attempted.error != wirex::hri_downlink_session::EventError::none) {
+                    note_control_failure("candidate_write_attempt_rejected");
+                    cleanup_requested = true;
+                    break;
+                }
+                downlink_state = attempted.state;
+                if (action.kind == DownlinkActionKind::write_start_candidate) native_start_write_attempted = true;
+                else native_stop_write_attempted = true;
+                DWORD actual = 0;
+                const BOOL wrote = WriteFile(port.get(), action.frame.data(),
+                    static_cast<DWORD>(action.frame.size()), &actual, nullptr);
+                const DWORD write_error = wrote == FALSE ? GetLastError() : ERROR_SUCCESS;
+                const bool full_write = wrote != FALSE && actual == action.frame.size();
+                if (action.kind == DownlinkActionKind::write_start_candidate) native_start_write_completed = full_write;
+                else native_stop_write_completed = full_write;
+                downlink_feed_generation = receive_generation;
+                if (!full_write) {
+                    downlink_write_failed = true;
+                    note_control_failure(wrote == FALSE ? "candidate_t_write_failed" : "candidate_t_short_write");
+                }
+                if (!port.valid() || write_error == ERROR_INVALID_HANDLE) {
+                    serial_transport_failed = true;
+                    note_control_failure("serial_handle_unavailable");
+                    queue_downlink_update(downlink_session->transport_failed(elapsed_ms()));
+                }
+                queue_downlink_update(downlink_session->write_completed(action.write_id, full_write, elapsed_ms()));
+                if (action.kind == DownlinkActionKind::write_stop_candidate) close_candidate_output();
+                break;
+            }
+            case DownlinkActionKind::allow_pcm:
+                output_open_attempted = true;
+                if (!output.open(output_id)) {
+                    audio_failed = true;
+                    note_control_failure("waveout_open_failed");
+                    queue_downlink_update(downlink_session->pcm_completed(false, elapsed_ms()));
+                    break;
+                }
+                audio_route_started = true;
+                queue_downlink_update(downlink_session->pcm_started(elapsed_ms()));
+                break;
+            case DownlinkActionKind::request_pcm_stop:
+                pcm_drained = false;
+                queue_downlink_update(downlink_session->pcm_completed(false, elapsed_ms()));
+                break;
+            case DownlinkActionKind::cleanup_required:
+                cleanup_requested = true;
+                break;
+            }
+        }
+    };
+
+    auto request_transport_failure = [&]() {
+        serial_transport_failed = true;
+        note_control_failure("serial_transport_failure");
+        if (hri_active) {
+            hri_state = hri_session.abort(wirex::hri_session::StopReason::transport_failure).state;
+            hri_active = false;
+        }
+        if (downlink_started && downlink_session) {
+            queue_downlink_update(downlink_session->transport_failed(elapsed_ms()));
+        } else {
+            cleanup_requested = true;
+        }
+    };
+
+    consume_hri_update(hri_session.start(0));
+    service_actions();
+
+    std::string last_report_phase;
+    std::uint64_t next_report_ms = 0;
+    while (!cleanup_requested) {
+        if (control_scope.cancel_requested()) {
+            note_control_failure("cancelled_by_user");
+            if (hri_active) {
+                hri_state = hri_session.cancel().state;
+                hri_active = false;
+            }
+            cancel_downlink();
+        }
+
+        if (downlink_started && downlink_session && !cleanup_requested) {
+            queue_downlink_update(downlink_session->tick(elapsed_ms()));
+            service_actions();
+        }
+        if (cleanup_requested) break;
+
+        if (hri_active) {
+            consume_hri_update(hri_session.tick(elapsed_ms()));
+            service_actions();
+        }
+        if (cleanup_requested) break;
+
+        if (!port.valid()) {
+            request_transport_failure();
+            service_actions();
+            break;
+        }
+        DWORD comm_errors = 0;
+        COMSTAT comm_state{};
+        if (!ClearCommError(port.get(), &comm_errors, &comm_state)) {
+            request_transport_failure();
+            service_actions();
+            break;
+        }
+        if (comm_errors != 0) {
+            note_control_failure("serial_line_or_receive_error");
+            if (hri_active) {
+                hri_state = hri_session.cancel().state;
+                hri_active = false;
+            }
+            cancel_downlink();
+            service_actions();
+        }
+        if (comm_state.cbInQue != 0) {
+            const DWORD requested = std::min<DWORD>(comm_state.cbInQue, static_cast<DWORD>(receive_buffer.size()));
+            DWORD actual = 0;
+            if (!ReadFile(port.get(), receive_buffer.data(), requested, &actual, nullptr) || actual > requested) {
+                request_transport_failure();
+                service_actions();
+                break;
+            }
+            if (actual != 0) {
+                ++receive_generation;
+                if (hri_active) consume_hri_update(hri_session.feed(receive_buffer.data(), actual, elapsed_ms()));
+                if (downlink_started && downlink_session && receive_generation > downlink_feed_generation &&
+                    downlink_state.phase != DownlinkPhase::cleanup_pending && downlink_state.phase != DownlinkPhase::finished) {
+                    queue_downlink_update(downlink_session->feed(receive_buffer.data(), actual, elapsed_ms()));
+                }
+                service_actions();
+            }
+        }
+        if (cleanup_requested) break;
+
+        if (downlink_started && downlink_session && downlink_state.phase == DownlinkPhase::pcm_active && !audio_failed) {
+            if (control_scope.cancel_requested()) {
+                cancel_downlink();
+                service_actions();
+            } else if (pcm_offset < pcm_end && output.has_capacity()) {
+                const auto chunk_size = std::min<std::size_t>(WaveInput::sample_count * sizeof(std::int16_t), pcm_end - pcm_offset);
+                const auto submitted = output.submit(wav_bytes.data() + pcm_offset, static_cast<DWORD>(chunk_size));
+                if (submitted == WaveOutput::SubmitResult::queued) {
+                    pcm_offset += chunk_size;
+                    report_runtime.submitted_bytes += chunk_size;
+                    report_runtime.downlink.pcm_submitted_bytes = report_runtime.submitted_bytes;
+                } else if (submitted != WaveOutput::SubmitResult::full) {
+                    audio_failed = true;
+                    note_control_failure("waveout_submit_failed");
+                    queue_downlink_update(downlink_session->pcm_completed(false, elapsed_ms()));
+                    service_actions();
+                }
+            } else if (pcm_offset == pcm_end && output.all_drained()) {
+                pcm_drained = true;
+                queue_downlink_update(downlink_session->pcm_completed(true, elapsed_ms()));
+                service_actions();
+            }
+        }
+        if (cleanup_requested) break;
+
+        const auto current_phase = std::string(downlink_started ? downlink_phase_name(downlink_state.phase) : "waiting_for_first_y0") + "/" +
+            hri_phase_name(hri_state.phase);
+        if (!report_write_failed && (current_phase != last_report_phase || elapsed_ms() >= next_report_ms)) {
+            refresh_report(false, "running", "", "hri_downlink_candidate", false, false);
+            if (!report_writer.write(hri_state, report_runtime, report_error)) {
+                report_write_failed = true;
+                note_control_failure("metadata_write_failure");
+                if (hri_active) {
+                    hri_state = hri_session.cancel().state;
+                    hri_active = false;
+                }
+                cancel_downlink();
+            } else {
+                last_report_phase = current_phase;
+                next_report_ms = elapsed_ms() + 1000U;
+            }
+        }
+
+        if (!hri_active && !downlink_started) cleanup_requested = true;
+        if (!cleanup_requested) Sleep(10);
+    }
+
+    if (hri_active) {
+        hri_state = hri_session.finish(elapsed_ms()).state;
+        hri_active = false;
+        if (hri_state.stop_reason != wirex::hri_session::StopReason::caller_stopped) {
+            note_control_failure(to_utf8(hri_stop_reason_name(hri_state.stop_reason)));
+        }
+    }
+    if (downlink_started && native_start_write_attempted && !native_stop_write_attempted &&
+        port.valid() && !serial_transport_failed) {
+        native_stop_write_attempted = true;
+        DWORD actual = 0;
+        const BOOL wrote = WriteFile(port.get(), stop_frame.bytes.data(),
+            static_cast<DWORD>(stop_frame.bytes.size()), &actual, nullptr);
+        const DWORD write_error = wrote == FALSE ? GetLastError() : ERROR_SUCCESS;
+        native_stop_write_completed = wrote != FALSE && actual == stop_frame.bytes.size();
+        downlink_write_failed = downlink_write_failed || wrote == FALSE || actual != stop_frame.bytes.size();
+        downlink_report_operation_override = "failed";
+        downlink_report_failure_override = "native_cleanup_stop_attempt_after_state_error";
+        if (!port.valid() || write_error == ERROR_INVALID_HANDLE) {
+            serial_transport_failed = true;
+            note_control_failure("serial_handle_unavailable_during_final_stop_attempt");
+        }
+    }
+    output_cleanup_ok = output.close();
+    output_cleanup_known = output_open_attempted;
+    const HANDLE raw_port = port.release();
+    const bool serial_close_ok = raw_port != nullptr && raw_port != INVALID_HANDLE_VALUE && CloseHandle(raw_port) != FALSE;
+    if (!output_cleanup_ok) note_control_failure("waveout_cleanup_failed");
+    if (!serial_close_ok) note_control_failure("serial_cleanup_failed");
+    if (downlink_started && downlink_session && downlink_state.phase == DownlinkPhase::cleanup_pending) {
+        queue_downlink_update(downlink_session->cleanup_completed(output_cleanup_ok,
+            serial_close_ok, elapsed_ms()));
+        downlink_state = downlink_session->snapshot();
+    }
+
+    if (downlink_started && native_start_write_attempted &&
+        !downlink_state.stop_matching_t_record_observed &&
+        (downlink_state.status == wirex::hri_downlink_session::Status::cancelled ||
+         downlink_state.status == wirex::hri_downlink_session::Status::running)) {
+        downlink_report_operation_override = "failed";
+        if (downlink_report_failure_override.empty()) {
+            downlink_report_failure_override = "stop_matching_t_record_not_observed";
+        }
+    }
+
+    const bool control_cancelled = control_scope.cancel_requested();
+    const bool candidate_complete = downlink_started && downlink_state.final &&
+        downlink_state.status == wirex::hri_downlink_session::Status::completed &&
+        downlink_state.start_matching_t_record_observed && downlink_state.stop_matching_t_record_observed &&
+        downlink_state.pcm_succeeded && pcm_drained;
+    bool run_failed = control_failed || report_write_failed || downlink_write_failed || audio_failed ||
+        serial_transport_failed || !output_cleanup_ok || !serial_close_ok || !candidate_complete;
+    std::string final_failure = control_failure_reason;
+    if (report_write_failed) final_failure = "metadata_write_failure";
+    else if (serial_transport_failed) final_failure = "serial_transport_failure";
+    else if (downlink_started && downlink_state.stop_reason != wirex::hri_downlink_session::StopReason::none &&
+        downlink_state.status == wirex::hri_downlink_session::Status::failed) {
+        final_failure = downlink_stop_reason_name(downlink_state.stop_reason);
+    } else if (audio_failed) final_failure = "pcm_submission_or_output_failed";
+    else if (!output_cleanup_ok || !serial_close_ok) final_failure = "pc_cleanup_failure";
+    else if (control_cancelled && !final_failure.empty()) final_failure = "cancelled_by_user;" + final_failure;
+    else if (!candidate_complete && final_failure.empty()) final_failure = "candidate_flow_incomplete";
+    const bool cancellation_only = control_cancelled && control_failure_reason == "cancelled_by_user" &&
+        !report_write_failed && !serial_transport_failed && !downlink_write_failed && !audio_failed &&
+        output_cleanup_ok && serial_close_ok &&
+        (!downlink_started || (downlink_state.status == wirex::hri_downlink_session::Status::cancelled &&
+            (!downlink_state.start_write_attempted || downlink_state.stop_matching_t_record_observed)));
+    const char* final_status = !run_failed && candidate_complete ? "completed" :
+        (cancellation_only ? "cancelled" : "failed");
+    refresh_report(true, final_status, final_failure, "stopped", true, serial_close_ok);
+    if (!report_writer.write(hri_state, report_runtime, report_error)) {
+        report_write_failed = true;
+        final_report_write_failed = true;
+        report_runtime.report_write_failed = true;
+    }
+
+    const bool cleanup_signal_ok = control_scope.signal_cleanup_complete();
+    const DWORD cleanup_signal_error = cleanup_signal_ok ? ERROR_SUCCESS : GetLastError();
+    const bool handler_unregister_ok = control_scope.unregister_now();
+    const DWORD handler_unregister_error = handler_unregister_ok ? ERROR_SUCCESS : GetLastError();
+    if (!cleanup_signal_ok || !handler_unregister_ok) {
+        run_failed = true;
+        std::string lifecycle_failure;
+        if (!cleanup_signal_ok) lifecycle_failure = "console_cleanup_signal_failed";
+        if (!handler_unregister_ok) {
+            if (!lifecycle_failure.empty()) lifecycle_failure += ";";
+            lifecycle_failure += "console_handler_unregister_failed";
+        }
+        if (!final_failure.empty()) lifecycle_failure += ";prior_failure=" + final_failure;
+        refresh_report(true, "failed", lifecycle_failure, "stopped", true, serial_close_ok);
+        if (!report_writer.write(hri_state, report_runtime, report_error)) final_report_write_failed = true;
+    }
+    if (!cleanup_signal_ok) std::wcerr << L"无法发出主线程清理完成信号：" << win_error(cleanup_signal_error) << L"\n";
+    if (!handler_unregister_ok) std::wcerr << L"无法注销控制台处理器：" << win_error(handler_unregister_error) << L"\n";
+    if (final_report_write_failed) std::cerr << "无法写入最终候选测试报告：" << report_error << ".\n";
+    if (candidate_complete && !run_failed) {
+        std::cout << "候选软件流程和本机PCM队列清理完成；这不证明无线电已恢复或人耳已听到音频。\n";
+        return 0;
+    }
+    std::cout << "候选流程未完整完成；报告保留实际写入、T记录长度、PCM排空和本机清理结果，radio_state仍为unknown。\n";
+    return 2;
+}
+
 int play_wav(const std::wstring& path, UINT output_id)
 {
     std::vector<std::uint8_t> file_bytes;
@@ -1607,6 +2327,9 @@ void print_help()
                << L"  --hri-listen --port COM5 --body-file ABS --input N --output M --seconds N (1..120) [--gain X]\n"
                << L"                               External 100-byte Y body; start selected PCM route only after valid Y/0.\n"
                << L"                               Optional --report-file ABS writes bounded atomic metadata snapshots only.\n"
+               << L"  --hri-downlink-candidate --port COM5 --body-file ABS --file WAV --report-file ABS\n"
+               << L"                               Fixed local start/stop T candidates and one bounded WAV; software observations only.\n"
+               << L"                               Requires one exact USB WaveOut match; radio state remains unknown.\n"
                << L"  --list-audio                List explicit WaveIn/WaveOut device IDs and names.\n"
                << L"  --monitor --input N --seconds N (1..30)\n"
                << L"                               Measure input PCM; no save/playback/default device.\n"
@@ -1631,6 +2354,16 @@ int wmain(int argc, wchar_t* argv[])
     }
     if (argc == 4 && std::wstring_view(argv[1]) == L"--version" && std::wstring_view(argv[2]) == L"--port") {
         return query_version(argv[3]);
+    }
+    if (argc == 10 && std::wstring_view(argv[1]) == L"--hri-downlink-candidate" &&
+        std::wstring_view(argv[2]) == L"--port" && std::wstring_view(argv[4]) == L"--body-file" &&
+        std::wstring_view(argv[6]) == L"--file" && std::wstring_view(argv[8]) == L"--report-file") {
+        return hri_downlink_candidate(argv[3], std::filesystem::path(argv[5]),
+            std::filesystem::path(argv[7]), std::filesystem::path(argv[9]));
+    }
+    if (argc > 1 && std::wstring_view(argv[1]) == L"--hri-downlink-candidate") {
+        std::wcerr << L"Usage: --hri-downlink-candidate --port COMn --body-file ABS --file ABS --report-file ABS.\n";
+        return 2;
     }
     if (argc >= 12 && std::wstring_view(argv[1]) == L"--hri-listen" &&
         std::wstring_view(argv[2]) == L"--port" && std::wstring_view(argv[4]) == L"--body-file" &&

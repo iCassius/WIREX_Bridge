@@ -45,3 +45,6 @@ Windows 本地诊断 CLI 的参数、固定音频格式、资源清理和验证�
 S1-T HRI T 空 header/空 AMBE 候选正文及离线验收见 [S1-T 验收文档](docs/S1-T验收.md)。
 
 控制台关闭时取消、主线程资源清理和有界等待的实现与验收边界见 [S1-C 关闭窗口清理](docs/S1-C关闭窗口清理.md)。
+
+固定 T3/T0 候选和 WAV 下行流程、本机按键启动、阶段报告及离线验证边界见 [S1-D 本机下行候选验收](docs/S1-D本机下行候选验收.md) 与 [本机测试启动器说明](tools/README.md)。
+供本机测试包复制到根目录的操作者说明源文件位于 [tools/downlink-test-README.md](tools/downlink-test-README.md)。

@@ -73,6 +73,8 @@ int main()
     check(text.find("\"y_write_completed\":3") != std::string::npos, "HRI counts should be recorded");
     check(text.find("\"radio_state\":\"unknown\"") != std::string::npos, "radio state must remain explicitly unknown");
     check(text.find("\"radio_state_unknown\":true") != std::string::npos, "radio state uncertainty must be explicit");
+    check(text.find("\"downlink\"") == std::string::npos,
+        "existing HRI reports must omit the optional downlink object");
     check(text.find("PCM_BODY_SENTINEL") == std::string::npos, "the report must not contain protocol or PCM body text");
     check(text.find("COM5") == std::string::npos && text.find("RadioID") == std::string::npos,
         "the report must not contain a port or radio identity");
@@ -84,6 +86,20 @@ int main()
     runtime.audio_input_cleanup = "succeeded";
     runtime.audio_output_cleanup = "succeeded";
     runtime.serial_cleanup = "succeeded";
+    runtime.downlink.enabled = true;
+    runtime.downlink.phase = "finished";
+    runtime.downlink.operation_result = "failed";
+    runtime.downlink.failure_reason = "stop_record_timeout";
+    runtime.downlink.start_t_write_attempts = 1;
+    runtime.downlink.start_t_write_completions = 1;
+    runtime.downlink.start_matching_t_records = 1;
+    runtime.downlink.start_matching_t_payload_observed = true;
+    runtime.downlink.start_matching_t_payload_bytes = 90;
+    runtime.downlink.stop_t_write_attempts = 1;
+    runtime.downlink.stop_t_write_completions = 1;
+    runtime.downlink.stop_matching_t_records = 0;
+    runtime.downlink.pcm_submitted_bytes = 9600;
+    runtime.downlink.pcm_drained = false;
     hri.phase = wirex::hri_session::Phase::stopped;
     hri.stop_reason = wirex::hri_session::StopReason::cancelled;
     check(writer.write(hri, runtime, error), "final snapshot should atomically replace the running one");
@@ -91,6 +107,13 @@ int main()
     check(text.find("\"final\":true") != std::string::npos, "final snapshot must be marked final");
     check(text.find("\"status\":\"cancelled\"") != std::string::npos, "cancellation must not be called completion");
     check(text.find("\"serial_handle\":\"succeeded\"") != std::string::npos, "PC cleanup results should be recorded");
+    check(text.find("\"operation_result\":\"failed\"") != std::string::npos &&
+        text.find("\"stop_matching_t_records\":0") != std::string::npos &&
+        text.find("\"start_matching_t_payload_bytes\":90") != std::string::npos &&
+        text.find("\"stop_matching_t_payload_bytes\":null") != std::string::npos &&
+        text.find("\"pcm_submitted_bytes\":9600") != std::string::npos &&
+        text.find("\"pcm_drained\":false") != std::string::npos,
+        "candidate reports should record T observations and PCM progress separately");
     check(text.find("\"radio_state\":\"unknown\"") != std::string::npos, "final snapshot must not infer radio state");
     check(!std::filesystem::exists(report_path.wstring() + L".tmp." + std::wstring(writer.run_id().begin(), writer.run_id().end())),
         "atomic replacement should remove its temporary file");

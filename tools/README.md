@@ -9,3 +9,13 @@
 如果用户关闭控制台导致进程来不及写最终快照，最近的快照会保留 `final=false`，其中未完成的 PC 清理结果仍为 pending，电台状态为 unknown。下次运行时，启动器会核对报告中的 PID 和进程创建时间：确认旧进程仍活动或无法确认报告所有者时，会拒绝启动并保留现有文件；确认旧进程已结束后，会先把旧快照的阶段和计数记为 incomplete、cleanup unknown，再开始新一轮。此机制保留关窗前的元数据，不保证 Windows 关闭控制台时应用清理代码已运行。PowerShell 按 UTF-8 解码 CLI 输出，以正确显示 ready 中文行；控制台显示程序运行输出。启动器不保存 PCM 录音或 HRI 正文。此工具包是本机电台诊断切片，不是完整双向语音验收版；它不验证语音 codec、完整 HRI 初始化、RF 效果或人耳确认。
 
 仓库中的源脚本位于 `tools/`。维护人员可运行 `powershell.exe -NoLogo -NoProfile -File tools\test-start-hri-test.ps1` 做离线模拟验证；测试覆盖固定参数、退出码、日志过滤、旧未完成快照、活动进程和无法核对的所有者，并只使用唯一 GUID 子目录中的临时 100 字节文件和 PowerShell 假程序，不打开电台或音频设备。清理前会解析并检查目标仍位于系统临时目录、目录名与本次 GUID 完全相符且不是临时根；校验不通过会报错并保留目录。此测试脚本只随源码仓库提供，不包含在私有电台包内。
+
+## 本地下行候选测试
+
+start-hri-downlink-test.cmd 是独立的可见控制台入口。生产预检要求同目录存在 wirex_probe.exe、private/device-y.bin（100 字节，SHA-256 为 82e0085ccaccb769a83362c5b335ce6b9a0e3ae93afdf2ad4f46eb81f908577f）和 assets/voice-test.wav（SHA-256 为 4beaf3d5539084f33ae05ba02112823edb75985d2f9e03668e2bdf28cd75570d）。启动器只读调用 --list-audio，要求 WaveOut 中恰好有一个名称为“扬声器 (2- USB Audio Device)”的设备；它不固定或传入输出编号，原生候选流程会重新枚举并按名称选择当前编号。
+
+预检完成后，控制台提醒操作者保持 HRI Mode 为 ON、Node Mode 为 DIRECT、关闭官方 WIRES-X 程序、松开手咪 PTT 并调好电台扬声器音量。按任意键后原生流程运行约 20 秒并播放约 7.25 秒的固定语句；无需赶到远程窗口操作，运行中可按 Ctrl+C 取消。启动器同步等待原生程序正常退出，不安装服务、不启动后台进程、不自动重试。
+
+last-downlink-test.log 只保存计数、经过净化的诊断类别和退出码，不记录音频、协议正文或设备身份。last-downlink-status.json 延续 PID 与进程创建时间的所有者保护，并记录下行阶段、T 写入及匹配记录计数、PCM 进度和 PC 清理状态。报告中的 radio_state 始终是 unknown；operation_result=completed 只代表软件流程和 PC 清理完成，不能证明电台实际出声或停止，需操作者现场确认。此入口使用独立的下行报告和日志，不覆盖上行监听报告。
+
+源码维护人员可运行 powershell.exe -NoLogo -NoProfile -File app/tools/test-start-hri-downlink-test.ps1 做离线 mock 检查。它覆盖动态变化的 WaveOut 编号、目标名称重复、固定 CLI 参数、资产摘要失败、报告所有者保护、日志过滤和非零退出结果；不运行原生 EXE、不打开串口或音频设备。测试只使用带 GUID 的临时目录，清理前核对绝对路径和完整目录名。TestMode 只接受 PowerShell mock 与显式临时资产，允许测试副本模拟固定摘要；生产路径仍严格校验上面两份 SHA-256。这个测试脚本只在源码树中，不放入本地测试包。

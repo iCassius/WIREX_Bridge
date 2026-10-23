@@ -267,8 +267,29 @@ bool Writer::write(const hri_session::Snapshot& hri, const RuntimeFields& runtim
          << ",\"report_write_failed\":" << (runtime.report_write_failed ? "true" : "false")
          << ",\"pc_cleanup\":{\"audio_input\":" << json_string(runtime.audio_input_cleanup)
          << ",\"audio_output\":" << json_string(runtime.audio_output_cleanup)
-         << ",\"serial_handle\":" << json_string(runtime.serial_cleanup) << '}'
-         << ",\"radio_state\":\"unknown\",\"radio_state_unknown\":true}\n";
+         << ",\"serial_handle\":" << json_string(runtime.serial_cleanup) << '}';
+    if (runtime.downlink.enabled) {
+        const auto& downlink = runtime.downlink;
+        json << ",\"downlink\":{\"phase\":" << json_string(downlink.phase)
+             << ",\"operation_result\":" << json_string(downlink.operation_result)
+             << ",\"failure_reason\":" << json_string(downlink.failure_reason)
+             << ",\"start_t_write_attempts\":" << downlink.start_t_write_attempts
+             << ",\"start_t_write_completions\":" << downlink.start_t_write_completions
+             << ",\"start_matching_t_records\":" << downlink.start_matching_t_records
+             << ",\"start_matching_t_payload_bytes\":";
+        if (downlink.start_matching_t_payload_observed) json << downlink.start_matching_t_payload_bytes;
+        else json << "null";
+        json << ",\"stop_t_write_attempts\":" << downlink.stop_t_write_attempts
+             << ",\"stop_t_write_completions\":" << downlink.stop_t_write_completions
+             << ",\"stop_matching_t_records\":" << downlink.stop_matching_t_records
+             << ",\"stop_matching_t_payload_bytes\":";
+        if (downlink.stop_matching_t_payload_observed) json << downlink.stop_matching_t_payload_bytes;
+        else json << "null";
+        json << ",\"pcm_submitted_bytes\":" << downlink.pcm_submitted_bytes
+             << ",\"pcm_drained\":" << (downlink.pcm_drained ? "true" : "false")
+             << ",\"radio_state\":\"unknown\",\"radio_state_unknown\":true}";
+    }
+    json << ",\"radio_state\":\"unknown\",\"radio_state_unknown\":true}\n";
     const auto contents = json.str();
     return write_atomic(path_, contents, run_id_, error);
 }

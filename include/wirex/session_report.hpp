@@ -8,6 +8,25 @@
 
 namespace wirex::session_report {
 
+struct DownlinkFields {
+    bool enabled{false};
+    std::string phase{"not_started"};
+    std::string operation_result{"not_started"};
+    std::string failure_reason{};
+    std::uint64_t start_t_write_attempts{};
+    std::uint64_t start_t_write_completions{};
+    std::uint64_t start_matching_t_records{};
+    bool start_matching_t_payload_observed{false};
+    std::uint64_t start_matching_t_payload_bytes{};
+    std::uint64_t stop_t_write_attempts{};
+    std::uint64_t stop_t_write_completions{};
+    std::uint64_t stop_matching_t_records{};
+    bool stop_matching_t_payload_observed{false};
+    std::uint64_t stop_matching_t_payload_bytes{};
+    std::uint64_t pcm_submitted_bytes{};
+    bool pcm_drained{false};
+};
+
 struct RuntimeFields {
     bool final{false};
     bool audio_started{false};
@@ -23,6 +42,7 @@ struct RuntimeFields {
     std::uint64_t submitted_bytes{};
     std::uint64_t dropped_blocks{};
     std::uint64_t clipped_samples{};
+    DownlinkFields downlink{};
 };
 
 class Writer {
