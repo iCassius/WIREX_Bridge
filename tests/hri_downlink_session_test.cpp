@@ -351,6 +351,56 @@ void test_overall_limit_and_cleanup_failure()
         "本机资源回收失败必须记入 final，且不能覆盖更早的整体超时原因");
 }
 
+void test_operation_cleanup_keeps_shared_serial_open_for_next_round()
+{
+    auto complete_operation = [](std::uint64_t base, bool& serial_cleanup_reported) {
+        Session session = make_session();
+        (void)session.start(base);
+        (void)session.write_attempted(1, base + 1);
+        (void)session.write_completed(1, true, base + 2);
+        (void)feed_t(session, base + 3, 'A');
+        (void)session.pcm_started(base + 4);
+        (void)session.pcm_completed(true, base + 5);
+        (void)session.write_attempted(2, base + 6);
+        (void)session.write_completed(2, true, base + 7);
+        (void)feed_t(session, base + 8, 'B');
+        const auto cleanup = session.operation_cleanup_completed(true, base + 9);
+        serial_cleanup_reported = cleanup.state.serial_cleanup_reported;
+        check(cleanup.error == EventError::none && cleanup.state.final &&
+            cleanup.state.status == Status::completed && cleanup.state.audio_cleanup_reported &&
+            cleanup.state.audio_cleanup_succeeded && !cleanup.state.serial_cleanup_reported,
+            "每轮下行PCM资源清理完成后应结束该操作，同时如实保留共享串口打开状态");
+        return cleanup.state.final;
+    };
+
+    bool first_serial_cleanup = true;
+    bool second_serial_cleanup = true;
+    check(complete_operation(0, first_serial_cleanup), "第一轮下行应能完成");
+    check(complete_operation(100, second_serial_cleanup), "共享会话仍持有串口时第二轮下行也应能完成");
+    check(!first_serial_cleanup && !second_serial_cleanup,
+        "操作级完成不得伪报会话串口已经关闭");
+}
+
+void test_legacy_cleanup_still_requires_serial_close()
+{
+    Session session = make_session();
+    (void)session.start(0);
+    (void)session.write_attempted(1, 1);
+    (void)session.write_completed(1, true, 2);
+    (void)feed_t(session, 3, 'A');
+    (void)session.pcm_started(4);
+    (void)session.pcm_completed(true, 5);
+    (void)session.write_attempted(2, 6);
+    (void)session.write_completed(2, true, 7);
+    (void)feed_t(session, 8, 'B');
+
+    const auto cleanup = session.cleanup_completed(true, false, 9);
+    check(cleanup.error == EventError::none && cleanup.state.final &&
+        cleanup.state.status == Status::failed && cleanup.state.audio_cleanup_succeeded &&
+        cleanup.state.serial_cleanup_reported && !cleanup.state.serial_cleanup_succeeded,
+        "旧会话清理API仍须将串口关闭失败记为failed");
+}
+
 } // namespace
 
 int main()
@@ -363,8 +413,11 @@ int main()
     test_production_start_and_stop_deadlines();
     test_cancelled_stop_wait_is_bounded_to_500ms();
     test_cancel_advances_time_before_the_next_tick();
+    test_operation_cleanup_keeps_shared_serial_open_for_next_round();
+    test_legacy_cleanup_still_requires_serial_close();
     test_pcm_deadline_requests_stop_and_transport_fault_blocks_retry();
     test_overall_limit_and_cleanup_failure();
+    test_operation_cleanup_keeps_shared_serial_open_for_next_round();
     if (failures != 0) {
         std::cerr << failures << " 个有限下行协调器检查失败。\n";
         return 1;

@@ -139,6 +139,8 @@ public:
     [[nodiscard]] Update cancel(std::uint64_t now_ms);
     [[nodiscard]] Update transport_failed(std::uint64_t now_ms);
     [[nodiscard]] Update tick(std::uint64_t now_ms);
+    [[nodiscard]] Update operation_cleanup_completed(bool audio_cleanup_succeeded,
+                                                     std::uint64_t now_ms);
     [[nodiscard]] Update cleanup_completed(bool audio_cleanup_succeeded,
                                            bool serial_cleanup_succeeded,
                                            std::uint64_t now_ms);
@@ -166,6 +168,7 @@ private:
     bool transport_failed_{false};
     bool overall_expired_{false};
     bool cleanup_reported_{false};
+    bool operation_cleanup_only_{false};
 
     [[nodiscard]] Update make_update() const;
     [[nodiscard]] bool observe_time(std::uint64_t now_ms, Update& update);

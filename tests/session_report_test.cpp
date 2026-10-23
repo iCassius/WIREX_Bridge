@@ -32,6 +32,18 @@ std::string read_all(const std::filesystem::path& path)
 
 int main()
 {
+    wirex::session_report::RuntimeFields event_runtime{};
+    event_runtime.radio_session.enabled = true;
+    wirex::session_report::apply_radio_event(event_runtime, "snapshot", "running", "listening");
+    wirex::session_report::apply_radio_event(event_runtime, "request_result", "accepted", "stopping");
+    wirex::session_report::apply_radio_event(event_runtime, "operation_result", "completed", "operation_finished");
+    check(event_runtime.status == "running" && event_runtime.phase == "listening" &&
+        event_runtime.radio_session.phase == "listening" && event_runtime.radio_session.request_status == "accepted",
+        "request and operation results must not overwrite a live session's top-level state");
+    wirex::session_report::apply_radio_event(event_runtime, "session_result", "completed", "stopped");
+    check(event_runtime.status == "completed" && event_runtime.phase == "stopped",
+        "only a session_result should finish the top-level session state");
+
     const auto root = std::filesystem::temp_directory_path() /
         ("wirex-session-report-test-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
     std::error_code create_error;
@@ -100,6 +112,16 @@ int main()
     runtime.downlink.stop_matching_t_records = 0;
     runtime.downlink.pcm_submitted_bytes = 9600;
     runtime.downlink.pcm_drained = false;
+    runtime.downlink.operation_audio_cleanup = "succeeded";
+    runtime.radio_session.enabled = true;
+    runtime.radio_session.seq = 17;
+    runtime.radio_session.phase = "listening";
+    runtime.radio_session.last_request_id = "request_9";
+    runtime.radio_session.request_status = "failed";
+    runtime.radio_session.operation_count = 2;
+    runtime.radio_session.radio_audio_input = "running";
+    runtime.radio_session.pc_audio_output = "running";
+    runtime.radio_session.microphone_capture = "idle";
     hri.phase = wirex::hri_session::Phase::stopped;
     hri.stop_reason = wirex::hri_session::StopReason::cancelled;
     check(writer.write(hri, runtime, error), "final snapshot should atomically replace the running one");
@@ -114,6 +136,12 @@ int main()
         text.find("\"pcm_submitted_bytes\":9600") != std::string::npos &&
         text.find("\"pcm_drained\":false") != std::string::npos,
         "candidate reports should record T observations and PCM progress separately");
+    check(text.find("\"operation_audio_cleanup\":\"succeeded\"") != std::string::npos &&
+        text.find("\"radio_session\":{\"seq\":17") != std::string::npos &&
+        text.find("\"last_request_id\":\"request_9\"") != std::string::npos &&
+        text.find("\"operation_count\":2") != std::string::npos &&
+        text.find("\"serial_handle\":\"succeeded\"") != std::string::npos,
+        "session report should separate last operation cleanup from final shared serial cleanup");
     check(text.find("\"radio_state\":\"unknown\"") != std::string::npos, "final snapshot must not infer radio state");
     check(!std::filesystem::exists(report_path.wstring() + L".tmp." + std::wstring(writer.run_id().begin(), writer.run_id().end())),
         "atomic replacement should remove its temporary file");

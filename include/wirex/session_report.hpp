@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 namespace wirex::session_report {
 
@@ -25,6 +26,22 @@ struct DownlinkFields {
     std::uint64_t stop_matching_t_payload_bytes{};
     std::uint64_t pcm_submitted_bytes{};
     bool pcm_drained{false};
+    std::string operation_audio_cleanup{"not_started"};
+};
+
+struct RadioSessionFields {
+    bool enabled{false};
+    std::uint64_t seq{};
+    std::string phase{"starting"};
+    std::string active_request_id{};
+    std::string last_request_id{};
+    std::string request_status{"none"};
+    std::string request_failure_reason{};
+    std::uint64_t operation_count{};
+    std::string radio_audio_input{"not_started"};
+    std::string pc_audio_output{"not_started"};
+    std::string microphone_capture{"idle"};
+    std::uint64_t microphone_capture_bytes{};
 };
 
 struct RuntimeFields {
@@ -43,7 +60,12 @@ struct RuntimeFields {
     std::uint64_t dropped_blocks{};
     std::uint64_t clipped_samples{};
     DownlinkFields downlink{};
+    RadioSessionFields radio_session{};
 };
+
+// 请求与操作结果只更新各自字段；仅snapshot/session_result推进会话顶层状态。
+void apply_radio_event(RuntimeFields& runtime, std::string_view type, std::string_view status,
+                       std::string_view phase);
 
 class Writer {
 public:
