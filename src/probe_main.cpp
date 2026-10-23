@@ -7,6 +7,7 @@
 #include "wirex/direct_frame.hpp"
 #include "wirex/direct_stream.hpp"
 #include "wirex/hri_session.hpp"
+#include "wirex/console_lifecycle.hpp"
 #include "wirex/pcm_gain.hpp"
 #include "wirex/session_report.hpp"
 #include "wirex/wave_file.hpp"
@@ -30,15 +31,9 @@
 
 namespace {
 
-std::atomic_bool cancel_requested{false};
-
-BOOL WINAPI console_control_handler(DWORD control)
+wirex::ConsoleLifecycle& console_lifecycle() noexcept
 {
-    if (control == CTRL_C_EVENT || control == CTRL_BREAK_EVENT) {
-        cancel_requested.store(true);
-        return TRUE;
-    }
-    return FALSE;
+    return wirex::ConsoleLifecycle::process();
 }
 
 class WinHandle {
@@ -559,7 +554,7 @@ public:
                              std::chrono::steady_clock::time_point deadline) noexcept
     {
         for (;;) {
-            if (cancel_requested.load()) return SubmitResult::cancelled;
+            if (console_lifecycle().cancel_requested()) return SubmitResult::cancelled;
             const auto submitted = submit(samples, byte_count);
             if (submitted != SubmitResult::full) return submitted;
             const auto now = std::chrono::steady_clock::now();
@@ -579,7 +574,7 @@ public:
             bool any_queued = false;
             for (const auto& buffer : buffers_) any_queued = any_queued || buffer.queued;
             if (!any_queued) return DrainResult::complete;
-            if (cancel_requested.load()) return DrainResult::cancelled;
+            if (console_lifecycle().cancel_requested()) return DrainResult::cancelled;
             const auto now = std::chrono::steady_clock::now();
             if (now >= deadline) return DrainResult::timed_out;
             const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
@@ -648,6 +643,7 @@ int audio_loop(UINT input_id, UINT output_id, unsigned long seconds, std::uint32
         std::wcerr << L"Could not query the selected audio device names.\n";
         return 2;
     }
+    wirex::ConsoleHandlerScope control_scope;
 
     std::cout << "Routing selected input to selected output for " << seconds << " s; PCM 48000 Hz, mono, signed 16-bit.\n"
               << "Explicit software gain=" << gain_milli / 1000U << "." << std::setw(3) << std::setfill('0') << gain_milli % 1000U
@@ -664,9 +660,8 @@ int audio_loop(UINT input_id, UINT output_id, unsigned long seconds, std::uint32
         return output_cleanup_ok ? 2 : 3;
     }
 
-    cancel_requested.store(false);
-    if (!SetConsoleCtrlHandler(console_control_handler, TRUE)) {
-        std::wcerr << L"Could not register the Ctrl+C handler: " << win_error(GetLastError()) << L"\n";
+    if (!control_scope.start()) {
+        std::wcerr << L"Could not register the console control handler: " << win_error(GetLastError()) << L"\n";
         const bool input_cleanup_ok = input.close();
         const bool output_cleanup_ok = output.close();
         return input_cleanup_ok && output_cleanup_ok ? 2 : 3;
@@ -683,7 +678,7 @@ int audio_loop(UINT input_id, UINT output_id, unsigned long seconds, std::uint32
     bool failed = false;
     HANDLE events[] = {input.event(), output.event()};
 
-    while (!cancel_requested.load() && std::chrono::steady_clock::now() < deadline) {
+    while (!control_scope.cancel_requested() && std::chrono::steady_clock::now() < deadline) {
         const DWORD wait_result = WaitForMultipleObjects(2, events, FALSE, 100);
         if (wait_result == WAIT_FAILED) {
             std::wcerr << L"WaitForMultipleObjects failed: " << win_error(GetLastError()) << L"\n";
@@ -740,14 +735,15 @@ int audio_loop(UINT input_id, UINT output_id, unsigned long seconds, std::uint32
         if (failed) break;
     }
 
-    if (!SetConsoleCtrlHandler(console_control_handler, FALSE)) {
-        std::wcerr << L"Could not unregister the Ctrl+C handler: " << win_error(GetLastError()) << L"\n";
-        failed = true;
-    }
     const bool input_cleanup_ok = input.close();
     const bool output_cleanup_ok = output.close();
+    if (!control_scope.signal_cleanup_complete()) failed = true;
+    if (!control_scope.unregister_now()) {
+        std::wcerr << L"Could not unregister the console control handler: " << win_error(GetLastError()) << L"\n";
+        failed = true;
+    }
     if (input_cleanup_ok && output_cleanup_ok) {
-        if (cancel_requested.load()) std::cout << "Audio route cancelled; reset and close calls succeeded for owned audio resources.\n";
+        if (control_scope.cancel_requested()) std::cout << "Audio route cancelled; reset and close calls succeeded for owned audio resources.\n";
         else std::cout << "Audio route stopped; reset and close calls succeeded for owned audio resources.\n";
     } else {
         std::cout << "Audio route stopped, but at least one audio cleanup call failed; inspect the error output.\n";
@@ -946,6 +942,7 @@ int hri_listen(const std::wstring& port_name, const std::filesystem::path& body_
                UINT input_id, UINT output_id, unsigned long seconds, std::uint32_t gain_milli,
                const std::optional<std::filesystem::path>& report_path)
 {
+    wirex::ConsoleHandlerScope control_scope;
     WinHandle port;
     const bool report_enabled = report_path.has_value();
     wirex::session_report::Writer report_writer;
@@ -1057,9 +1054,8 @@ int hri_listen(const std::wstring& port_name, const std::filesystem::path& body_
         return finish_early("serial_configuration_failed", "active_serial_timeout_configuration_failed");
     }
 
-    cancel_requested.store(false);
-    if (!SetConsoleCtrlHandler(console_control_handler, TRUE)) {
-        std::wcerr << L"Could not register the Ctrl+C handler: " << win_error(GetLastError()) << L"\n";
+    if (!control_scope.start()) {
+        std::wcerr << L"Could not register the console control handler: " << win_error(GetLastError()) << L"\n";
         return finish_early("console_handler_failed", "console_handler_registration_failed");
     }
 
@@ -1137,7 +1133,7 @@ int hri_listen(const std::wstring& port_name, const std::filesystem::path& body_
     auto dispatch_commands = [&](const wirex::hri_session::Update& update) -> bool {
         for (const auto& command : update.commands) {
             if (session.snapshot().phase == wirex::hri_session::Phase::stopped) return false;
-            if (cancel_requested.load()) {
+            if (control_scope.cancel_requested()) {
                 (void)session.cancel();
                 return false;
             }
@@ -1164,7 +1160,7 @@ int hri_listen(const std::wstring& port_name, const std::filesystem::path& body_
     bool active = dispatch_commands(initial);
     std::array<std::uint8_t, 1024> receive_buffer{};
     while (active) {
-        if (cancel_requested.load()) {
+        if (control_scope.cancel_requested()) {
             (void)session.cancel();
             break;
         }
@@ -1300,7 +1296,7 @@ int hri_listen(const std::wstring& port_name, const std::filesystem::path& body_
         }
     }
 
-    if (cancel_requested.load() && session.snapshot().phase != wirex::hri_session::Phase::stopped) {
+    if (control_scope.cancel_requested() && session.snapshot().phase != wirex::hri_session::Phase::stopped) {
         (void)session.cancel();
     }
     const auto final_state = session.snapshot();
@@ -1309,18 +1305,15 @@ int hri_listen(const std::wstring& port_name, const std::filesystem::path& body_
     const HANDLE serial_handle = port.release();
     const bool serial_close_ok = serial_handle != nullptr && serial_handle != INVALID_HANDLE_VALUE &&
         CloseHandle(serial_handle) != FALSE;
-    if (!SetConsoleCtrlHandler(console_control_handler, FALSE)) {
-        std::wcerr << L"Could not unregister the Ctrl+C handler: " << win_error(GetLastError()) << L"\n";
-        io_failed = true;
-    }
-
     const bool cancelled = final_state.stop_reason == wirex::hri_session::StopReason::cancelled;
     const bool ended_by_deadline = final_state.stop_reason == wirex::hri_session::StopReason::deadline;
     const bool limited_exchange = final_state.limited_exchange_observed;
     const bool cleanup_ok = input_cleanup_ok && output_cleanup_ok && serial_close_ok;
     const bool report_failed_run = report_write_failed || io_failed || audio_failed || !cleanup_ok ||
         !ended_by_deadline || !limited_exchange;
-    if (report_enabled) {
+    const bool close_wait_timed_out = control_scope.close_wait_timed_out();
+    bool final_report_write_failed = false;
+    if (report_enabled && !close_wait_timed_out) {
         const char* run_status = report_failed_run ? (cancelled ? "cancelled" : "failed") : "completed";
         std::string failure_reason;
         if (report_write_failed) {
@@ -1336,10 +1329,50 @@ int hri_listen(const std::wstring& port_name, const std::filesystem::path& body_
             true, output_cleanup_ok, serial_close_ok ? "succeeded" : "failed");
         if (!report_writer.write(final_state, report_runtime, report_error)) {
             report_write_failed = true;
-            std::cerr << "Could not write final HRI status report: " << report_error << ".\n" << std::flush;
+            final_report_write_failed = true;
         }
     }
 
+    const bool cleanup_signal_ok = control_scope.signal_cleanup_complete();
+    const DWORD cleanup_signal_error = cleanup_signal_ok ? ERROR_SUCCESS : GetLastError();
+    const bool handler_unregister_ok = control_scope.unregister_now();
+    const DWORD handler_unregister_error = handler_unregister_ok ? ERROR_SUCCESS : GetLastError();
+    if (!cleanup_signal_ok) io_failed = true;
+    if (!handler_unregister_ok) io_failed = true;
+
+    if (report_enabled && !close_wait_timed_out && (!cleanup_signal_ok || !handler_unregister_ok)) {
+        std::string lifecycle_failure_reason;
+        if (!cleanup_signal_ok) lifecycle_failure_reason = "console_cleanup_signal_failed";
+        if (!handler_unregister_ok) {
+            if (!lifecycle_failure_reason.empty()) lifecycle_failure_reason += ";";
+            lifecycle_failure_reason += "console_handler_unregister_failed";
+        }
+        if (!report_runtime.failure_reason.empty()) {
+            lifecycle_failure_reason += ";prior_failure=" + report_runtime.failure_reason;
+        }
+        report_write_failed = report_write_failed || final_report_write_failed;
+        refresh_report_fields("stopped", true, "failed", lifecycle_failure_reason,
+            true, input_cleanup_ok, true, output_cleanup_ok, serial_close_ok ? "succeeded" : "failed");
+        std::string lifecycle_report_error;
+        if (!report_writer.write(final_state, report_runtime, lifecycle_report_error)) {
+            report_write_failed = true;
+            final_report_write_failed = true;
+            report_runtime.report_write_failed = true;
+            report_error = lifecycle_report_error;
+        } else {
+            final_report_write_failed = false;
+        }
+    }
+
+    if (!cleanup_signal_ok) {
+        std::wcerr << L"Could not signal main-thread cleanup completion: " << win_error(cleanup_signal_error) << L"\n";
+    }
+    if (!handler_unregister_ok) {
+        std::wcerr << L"Could not unregister the console control handler: " << win_error(handler_unregister_error) << L"\n";
+    }
+    if (final_report_write_failed) {
+        std::cerr << "Could not write final HRI status report: " << report_error << ".\n" << std::flush;
+    }
     if (!io_failure_detail.empty()) std::cerr << "Serial transport stopped: " << io_failure_detail << ".\n";
     std::wcout << L"HRI state stopped: " << hri_stop_reason_name(final_state.stop_reason)
                << L"; V query writes=" << final_state.counters.version_query_write_requested << L"/"
@@ -1381,7 +1414,7 @@ int hri_listen(const std::wstring& port_name, const std::filesystem::path& body_
     if (final_state.limited_exchange_observed) {
         std::cout << "Limited V/Y exchange observed; complete HRI initialization remains unconfirmed.\n";
     }
-    return io_failed || audio_failed || !input_cleanup_ok || !output_cleanup_ok || !serial_close_ok ||
+    return close_wait_timed_out || io_failed || audio_failed || !input_cleanup_ok || !output_cleanup_ok || !serial_close_ok ||
         report_write_failed || !final_state.limited_exchange_observed ? 2 : 0;
 }
 
@@ -1409,11 +1442,11 @@ int play_wav(const std::wstring& path, UINT output_id)
               << "); PCM 48000 Hz, mono, signed 16-bit; WAV data=" << wav.info.data_size << " bytes.\n"
               << "No default device, resampling, file writing, or PTT is used.\n";
 
+    wirex::ConsoleHandlerScope control_scope;
     WaveOutput output;
     if (!output.open(output_id)) return 2;
-    cancel_requested.store(false);
-    if (!SetConsoleCtrlHandler(console_control_handler, TRUE)) {
-        std::wcerr << L"Could not register the Ctrl+C handler: " << win_error(GetLastError()) << L"\n";
+    if (!control_scope.start()) {
+        std::wcerr << L"Could not register the console control handler: " << win_error(GetLastError()) << L"\n";
         return output.close() ? 2 : 3;
     }
 
@@ -1429,7 +1462,7 @@ int play_wav(const std::wstring& path, UINT output_id)
     bool failed = false;
 
     while (offset < data_end) {
-        if (cancel_requested.load()) {
+        if (control_scope.cancel_requested()) {
             cancelled = true;
             break;
         }
@@ -1455,12 +1488,13 @@ int play_wav(const std::wstring& path, UINT output_id)
         else failed = true;
     }
 
-    if (!SetConsoleCtrlHandler(console_control_handler, FALSE)) {
-        std::wcerr << L"Could not unregister the Ctrl+C handler: " << win_error(GetLastError()) << L"\n";
-        failed = true;
-    }
     const bool cleanup_ok = output.close();
     if (!cleanup_ok) failed = true;
+    if (!control_scope.signal_cleanup_complete()) failed = true;
+    if (!control_scope.unregister_now()) {
+        std::wcerr << L"Could not unregister the console control handler: " << win_error(GetLastError()) << L"\n";
+        failed = true;
+    }
 
     if (drained && cleanup_ok && !failed) {
         std::cout << "WAV playback completed; all " << submitted_bytes << " PCM bytes were submitted and drained.\n";
@@ -1487,11 +1521,11 @@ int monitor_input(UINT input_id, unsigned long seconds)
     std::cout << "Monitoring input " << input_id << " (" << to_utf8(device_name(caps.szPname, MAXPNAMELEN)) << ") for " << seconds
               << " s; PCM 48000 Hz, mono, signed 16-bit; no audio is saved or played.\n";
 
+    wirex::ConsoleHandlerScope control_scope;
     WaveInput input;
     if (!input.open(input_id)) return 2;
-    cancel_requested.store(false);
-    if (!SetConsoleCtrlHandler(console_control_handler, TRUE)) {
-        std::wcerr << L"Could not register the Ctrl+C handler: " << win_error(GetLastError()) << L"\n";
+    if (!control_scope.start()) {
+        std::wcerr << L"Could not register the console control handler: " << win_error(GetLastError()) << L"\n";
         const bool cleanup_ok = input.close();
         return cleanup_ok ? 2 : 3;
     }
@@ -1502,7 +1536,7 @@ int monitor_input(UINT input_id, unsigned long seconds)
     std::uint32_t peak = 0;
     bool failed = false;
 
-    while (!cancel_requested.load() && std::chrono::steady_clock::now() < deadline) {
+    while (!control_scope.cancel_requested() && std::chrono::steady_clock::now() < deadline) {
         const DWORD wait_result = WaitForSingleObject(input.event(), 250);
         if (wait_result == WAIT_FAILED) {
             std::wcerr << L"WaitForSingleObject failed: " << win_error(GetLastError()) << L"\n";
@@ -1550,13 +1584,14 @@ int monitor_input(UINT input_id, unsigned long seconds)
             report_at = now + std::chrono::seconds(1);
         }
     }
-    if (!SetConsoleCtrlHandler(console_control_handler, FALSE)) {
-        std::wcerr << L"Could not unregister the Ctrl+C handler: " << win_error(GetLastError()) << L"\n";
+    const bool cleanup_ok = input.close();
+    if (!control_scope.signal_cleanup_complete()) failed = true;
+    if (!control_scope.unregister_now()) {
+        std::wcerr << L"Could not unregister the console control handler: " << win_error(GetLastError()) << L"\n";
         failed = true;
     }
-    const bool cleanup_ok = input.close();
     if (cleanup_ok) {
-        if (cancel_requested.load()) std::wcout << L"Monitor cancelled; reset and close calls succeeded for audio input.\n";
+        if (control_scope.cancel_requested()) std::wcout << L"Monitor cancelled; reset and close calls succeeded for audio input.\n";
         else std::wcout << L"Monitor stopped; reset and close calls succeeded for audio input.\n";
     } else {
         std::wcout << L"Monitor stopped, but at least one audio cleanup call failed; inspect the error output.\n";
