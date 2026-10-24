@@ -46,6 +46,12 @@ DMRHost 的网络对象构造函数会把 RX/TX frequency、power、color code�
 
 这些是公开客户端的组包方式和本地默认值，不是 BM 4602 接受某一字段值的服务器端证明。本文没有修改 `WIREX Bridge` 标识来冒充 MMDVM/DroidStar，也没有把 DroidStar 默认值当成 BM 必须值。
 
+### RPTC 尾部字段的实现语义
+
+用户确认此前成功登录 BM 的 Android 客户端是 DroidStar；当时保存的实际 `Software ID` / `Package ID` 值未提供，不能假设其使用了上游默认值。DroidStar 上游默认 `Software ID=20200922`、`Package ID=MMDVM_MMDVM_HS_Hat`，并将这两个字符串写入 RPTC 尾部的两个 40 字节字段。[BM 自有 DMRHost 的 `DMRNetwork.h`](https://github.com/BrandMeister/DMRHost/blob/dev/DMRNetwork.h#L28-L68) 将相应成员命名为 `m_version` 和 `m_hwType`；其 [`MMDVMHost.cpp`](https://github.com/BrandMeister/DMRHost/blob/dev/MMDVMHost.cpp#L631-L676) 传入主机软件 `VERSION` 与实际调制解调器的 `getHWType()`，[`DMRNetwork.cpp`](https://github.com/BrandMeister/DMRHost/blob/dev/DMRNetwork.cpp#L492-L529) 再把它们写入这两个字段。因此，标准 MMDVMHost 实现把这两项作为软件版本和硬件类型发送；DroidStar 使用的是自己的 Software ID / Package ID 命名与默认值。
+
+当前 WIREX profile 的 `version="1.0"` 写入第一个字段，`software="WIREX Bridge"` 写入第二个、即 DMRHost 称为 `hwType` 的字段。这是可能影响 BM 配置接受度的候选差异，但没有 BM 服务端字段规则或单字段实测证明它导致 `MSTNAK`。目前也没有找到公开的通用软件节点 package token 或注册流程；不能据 DroidStar 默认值把本软件标成物理 `MMDVM_MMDVM_HS_Hat`，也不能据此认定拒绝原因。
+
 ## BrandMeister 官方配置说明能确认的范围
 
 - [Pi-Star / MMDVM 热点说明](https://help.brandmeister.network/hotspots/connecting-hotspots/pi-star-mmdvm/) 要求设置 simplex frequency，允许坐标保留当前值或输入坐标，并要求选择 color code。它还把 GPS 坐标无效或格式不正确（常见情况是小数点缺失）列为网络状态异常的可能原因。

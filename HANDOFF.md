@@ -6,7 +6,9 @@
 
 ## 当前 BM + FTX-1 候选
 
-步骤 1–4 native 候选源码提交为 `17f3433ae4cd6820622033ddb1910c030cb260f2`，基线为 `3c943413928e1443a2eaa722f730a1e95fdd15b2`。该提交的 Windows PowerShell 5.1 / VS 2019 clean build 运行 24 项离线测试并通过，产物与审阅证据见 [`docs/BM联调推进.md`](docs/BM联调推进.md) 和当时的便携目录。它们是 17f3433 版本的历史证据，不涵盖当前尚待审查和 clean build 的改动。当前源码增加 BM 测试预设、46001 组呼 native 禁发策略和 BM 登录状态诊断；这项便利与禁发改动不会修复已知的 RPTC `MSTNAK`。四次 network-only 探测均在认证 ACK 后的 RPTC 配置阶段被 Master 拒绝；即使第四次使用 RX/TX 145.1 MHz 和 CC1，仍收到 `MSTNAK`，服务端原因未知。完整 native + COM/WinMM 以及电台联合测试尚未运行。BM 上行编码前固定应用 16x 软件 PCM 增益，复用 `pcm_gain::SignalStats` 记录增益前后统计和削顶数；新 BM 链路的声音效果仍待真实联合测试。步骤 5 身份已由用户准备，UI 与 RF 节点实测暂缓。
+步骤 1–4 native 候选源码提交为 `17f3433ae4cd6820622033ddb1910c030cb260f2`，基线为 `3c943413928e1443a2eaa722f730a1e95fdd15b2`。该提交的 Windows PowerShell 5.1 / VS 2019 clean build 运行 24 项离线测试并通过，产物与审阅证据见 [`docs/BM联调推进.md`](docs/BM联调推进.md) 和当时的便携目录。它们是 17f3433 版本的历史证据，不涵盖 aec0471 的后续改动。当前源码增加 BM 测试预设、46001 组呼 native 禁发策略和 BM 登录状态诊断；这项便利与禁发改动不会修复已知的 RPTC `MSTNAK`。四次 network-only 探测均在认证 ACK 后的 RPTC 配置阶段被 Master 拒绝；即使第四次使用 RX/TX 145.1 MHz 和 CC1，仍收到 `MSTNAK`，服务端原因未知。完整 native + COM/WinMM 以及电台联合测试尚未运行。BM 上行编码前固定应用 16x 软件 PCM 增益，复用 `pcm_gain::SignalStats` 记录增益前后统计和削顶数；新 BM 链路的声音效果仍待真实联合测试。步骤 5 身份已由用户准备，UI 与 RF 节点实测暂缓。
+
+当前源码提交为 `aec04710e9d5b32f416b3b78c3812615fedd1988`。根会话从该 clean HEAD 使用 VS 2019 x64 正式 builder 运行全部 25 项离线测试并通过，产物在 `build/_work/wirex-bridge-aec0471-20261024-104627/`。根会话还审计了 `build/bm-radio-bridge-aec0471/`：13 个实际文件（含 manifest 和 excluded 本机凭据），manifest 中 11 个普通文件的长度与 SHA-256 全部匹配；EXE 与 clean build 相同，包内 `--help` 返回 0 并列出中文预设，`--list-audio-json` 返回 0 且 schema version 为 1。凭据未被读取或哈希，日志目录为空。以上均为软件构建与包内容检查，不代表 BM `ready` 或真实设备联测通过。
 
 ## 产品目标与当前里程碑
 

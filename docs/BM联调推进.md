@@ -15,7 +15,7 @@
 
 四次有界 network-only 探测都通过 RPTL/RPTK challenge 和认证 ACK，随后在 RPTC 配置阶段收到 Master 的 `MSTNAK`，生产状态机报告 `master_rejected` 并退回 `backoff`，始终没有进入 `ready`。第三次把 RX/TX 频率改为用户提供的 145.1 MHz 元数据，第四次再单独把 CC0 改为 CC1，仍被拒绝。Master 拒绝原因未知；认证 ACK 成功不能说成设备已登录，也没有证明密码错误。两项只用于 network-only 诊断，native 测试预设仍使用用户原先确认的 CC0。详细字段、阶段记录和实现资料见 [`BM网络登录诊断.md`](BM网络登录诊断.md)。
 
-当前待审查源码增量增加三项测试预设、忽略 Git 的本机密码文件读取、46001 组呼发射拒绝以及 BM 状态/控制数据报计数诊断。新预设便于重现后续测试并保护全国组呼，但不会修复 RPTC 拒绝。此前 17f3433 的 24 项 clean-build 结果不覆盖这些改动；当前源码待根会话审查后从干净提交重建和重新运行测试。探测工具默认不应由 builder 或自动化调用；其真实网络执行需要单独显式启动并遵守目标确认与授权要求。
+当前源码增量增加三项测试预设、忽略 Git 的本机密码文件读取、46001 组呼发射拒绝以及 BM 状态/控制数据报计数诊断。新预设便于重现后续测试并保护全国组呼，但不会修复 RPTC 拒绝。源码提交 `aec04710e9d5b32f416b3b78c3812615fedd1988` 已由根会话从干净 HEAD 正式构建，25 项离线测试全部通过。探测工具默认不应由 builder 或自动化调用；其真实网络执行需要单独显式启动并遵守目标确认与授权要求。
 
 ## 当前候选与离线证据
 
@@ -37,6 +37,8 @@ build/_work/wirex-bridge-17f3433-20261024-044905/
 
 根会话审阅确认便携目录共 12 个文件，其中 11 条 manifest 文件记录的长度和 SHA-256 与磁盘一致，包内 EXE 与上述 clean build 产物相同。包内 `--help` 退出码为 0 且显示完整中文帮助；`--list-audio-json` 退出码为 0，输出 schema version 1、3 个输入设备和 5 个输出设备，未打开音频流。静态依赖检查只列出 4 个 Windows 系统 DLL，未发现 Qt 或厂商 DLL。这些检查不等同于真实 BM、HRI、音频或电台联合验收。
 
+上述 `17f3433` 便携目录是历史候选。当前候选位于 `build/bm-radio-bridge-aec0471/`，来源为提交 `aec04710e9d5b32f416b3b78c3812615fedd1988` 的 clean build `build/_work/wirex-bridge-aec0471-20261024-104627/`。根会话确认 builder 退出码为 0，25 项离线测试全部通过；独立包审计确认目录有 13 个实际文件，其中 manifest 记录 11 个非秘密文件，长度和 SHA-256 全部匹配，EXE 与 clean build 产物一致。包内 `--help` 退出码为 0 并显示中文预设，`--list-audio-json` 退出码为 0、schema version 为 1。用户授权的密码文件只保留在本机包的 `private/` 中；它没有进入 manifest 文件列表，也未读取、测量或哈希。`logs/` 为空；候选不是 ZIP，不含 `wirex_probe.exe`。包审计和离线测试都不证明真实 BM 桥接或电台行为。
+
 `bm_bridge_loopback_test` 使用生产 BM Session、WinSock UDP、DMR codec/pipeline 和 HRI stream coordinator；fake Master 仅绑定 localhost，HRI T3/T0 与音频播放回执由测试替身提供。它覆盖 TX/EOT、短呼叫先于 T3 结束、private Echo 回包按本机 ID 筛选、丢 EOT watchdog、断线代次隔离和取消后 EOT/RPTCL 顺序。测试没有打开 COM/WinMM，也没有连接真实 Master。
 
 便携包把 `start-bm-radio-bridge.ps1`、`.cmd`、`wirex_bridge.exe`、`private/device-y.bin` 和 `logs/` 放在同一根目录；默认启动只访问这几个包内路径，不搜索包外仓库。源码开发时调用 `tools/start-bm-radio-bridge.ps1` 必须显式指定 `-BridgePath`、`-BodyFile` 与 `-StatusDirectory`；缺少状态目录时，启动器在调用 native 前拒绝运行。构建和启动说明见 [`../tools/bm-radio-bridge-README.md`](../tools/bm-radio-bridge-README.md)。
@@ -49,5 +51,5 @@ build/_work/wirex-bridge-17f3433-20261024-044905/
 
 - 四次 network-only 探测都完成 challenge/认证 ACK，但均在 RPTC 收到 `MSTNAK`/`master_rejected`，从未进入 `ready`。第四次使用 145.1 MHz 与 CC1 仍被拒绝，Master 拒绝原因未知；这不构成已登录或密码错误证据。没有完成 native 桥接会话或真实网络持续运行验证。
 - 尚未打开真实 HRI COM、WinMM WaveIn/WaveOut 或电台；没有验证真实设备上的 T3/T0 时序、播放、串口恢复或声音效果。
-- 步骤 5 的完整 BM 桥接联调和步骤 6 电台联合端到端测试尚未通过。根会话需要审查当前源码并进行 clean build、离线测试和候选包复核；之后由操作者按准备情况安排真实 BM 与 FTX-1 端点联合测试，不把离线 fake Master 或 network-only 探测写成完整桥接通过。
+- 步骤 5 的完整 BM 桥接联调和步骤 6 电台联合端到端测试尚未通过。根会话已完成当前源码 clean build、25 项离线测试和候选包审计；之后由操作者按准备情况安排真实 BM 与 FTX-1 端点联合测试，不把离线 fake Master、包内安全探测或 network-only 探测写成完整桥接通过。
 - DIRECT 电台扬声器路径是本候选目标；C4FM RF 节点、自动 PTT、UI 和 RF 节点实测均不在本轮范围内。
