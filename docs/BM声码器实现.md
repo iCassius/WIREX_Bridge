@@ -49,16 +49,17 @@ DMR 72-bit 语音码字没有独立 CRC。解码器可以报告它观察到的�
 
 ## Windows 构建和离线测试
 
-MSVC x64 Release 使用 Visual Studio 2019 Build Tools，编译器 `19.29.30159.0`。构建只编译 MBE/IMBE codec、第一方适配器和测试，不链接 Qt、DroidStar UI、WinMM、COM 或网络层。上游 codec 源以 `/W0` 编译；第一方适配器和测试以 `/W4 /permissive-` 编译，没有警告输出。优化和运行库参数为 `/O2 /MT /EHsc /std:c++17 /DNDEBUG`。
+MSVC x64 Release 使用 Visual Studio 2019 Build Tools，编译器 `19.29.30159.0`。正式离线构建入口会核对固定 DroidStar manifest 的 57 个本地 SHA-256，分别以 `/W0` 编译上游 codec 源、以 `/W4 /permissive-` 编译第一方源，并用 `/O2 /MT /EHsc /std:c++17` 从源码构建 native 候选和测试；不依赖旧的忽略文件夹内脚本或预编译 EXE。
 
-在 app Git 根目录执行本机生成的独立构建入口：
+在 app Git 根目录使用 Windows PowerShell 5.1 执行正式构建并运行离线测试：
 
 ```powershell
-cmd.exe /c .\build\_work\bm-codec\build-test-release.cmd
-.\build\_work\bm-codec\dmr_vocoder_test.exe
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tools\build-bm-bridge.ps1
 ```
 
-产物位于 `build/_work/bm-codec/`。最近一次构建和测试输出：
+产物位于 `build/_work/wirex-bridge-<commit>-<状态>-<UTC 时间>/`，含 `dmr_vocoder_test.exe`。也可用 `-CompileOnly` 仅构建，不运行离线测试。正式入口会一并重建原 `wirex_probe.exe`，但保持它原有链接清单。
+
+codec 测试运行输出示例：
 
 ```text
 DMR vocoder golden, upstream-decoder, reset, and FEC checks passed.
@@ -68,4 +69,4 @@ decode_20ms: n=512 avg=94.701us p50=93.100us p99=116.400us max=254.100us
 
 测试文件 [`tests/dmr_vocoder_test.cpp`](../tests/dmr_vocoder_test.cpp) 覆盖连续静音与确定三角波的固定 9 字节黄金序列、与直接调用固定上游 `MBEVocoder` decoder 的 PCM 逐样本比较、独立 TX 状态、TX/RX reset、单 bit FEC 修正、不可纠错 `R` conceal、连续错误后 `M` 静音和 `E` erasure 静音。测试向量来自固定上游源码的本地源代码对照和合成错误帧，不是空口录制或独立 DVSI 编码器参考；这些测试不作为 BrandMeister、设备互通或语音听感证据。
 
-本次没有修改 `CMakeLists.txt`，也没有把声码器接入 native 主程序、HRI、BM 网络、串口、真实音频设备或 RF。独立构建说明 Windows 下源码可编译且每 20 ms 的 codec 调用远低于 20 ms CPU 时间；它不证明完整音频 pipeline、BM 通话或 FTX-1 实机通过。
+声码器独立切片当时没有修改 `CMakeLists.txt`，也没有把声码器接入 native 主程序、HRI 或 BM 网络；当前集成范围和正式构建结果见 [BM 联调推进](BM联调推进.md)。整合候选的离线测试仍不证明真实 BM、COM/WinMM 音频或 FTX-1 实机通过。

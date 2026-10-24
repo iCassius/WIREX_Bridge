@@ -2,9 +2,9 @@
 
 ## 范围和状态
 
-本切片实现 Homebrew/MMDVM 登录状态机、DMRD 入口与出口、Windows UDP transport，以及只绑定 localhost 的 fake Master 测试。状态机不创建线程或 socket；调用方传入单调毫秒并收发队列中的 UDP 数据报。`probe_main.cpp`、`CMakeLists.txt`、HRI、UI 和 RF 路径没有接入本切片。
+本切片实现 Homebrew/MMDVM 登录状态机、DMRD 入口与出口、Windows UDP transport，以及只绑定 localhost 的 fake Master 测试。状态机不创建线程或 socket；调用方传入单调毫秒并收发队列中的 UDP 数据报。开发本切片时，`probe_main.cpp`、`CMakeLists.txt`、HRI、UI 和 RF 路径尚未接入；当前 native 整合状态见 [BM 联调推进](BM联调推进.md)。
 
-实现基线为 `cc26db32913db45ff56068800d12f0b683dfd2f3`。代码和两项离线测试已经在 `build/_work/bm-session` 编译并运行成功；这只证明本机编译、合成协议处理和 loopback UDP 行为，不代表真实 BrandMeister 登录、FTX-1 联调、codec 或电台/RF 验收。
+实现起点为 `cc26db32913db45ff56068800d12f0b683dfd2f3`。该切片的两项离线测试曾在 `build/_work/bm-session` 编译并运行成功；当前正式构建及组合 loopback 结果见 [BM 联调推进](BM联调推进.md)。离线结果不代表真实 BrandMeister 登录或电台/RF 验收。
 
 ## 接口与状态
 

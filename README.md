@@ -1,6 +1,6 @@
-# WIREX Bridge：协议与本地诊断切片
+# WIREX Bridge：协议、本地诊断与 BM 语音桥接候选
 
-这是后续 WIREX Bridge 的独立 C++17 子项目。本地切片提供 DMRD 固定 55 字节数据报和 DIRECT 单记录 envelope 的纯函数解析与编码，也提供 Windows 本地诊断入口，可查询一次 DIRECT 版本、枚举音频设备、测量输入电平、把指定 PCM 输入短时路由到指定 PCM 输出（可显式指定有限软件增益并检查饱和裁剪），播放受限格式的短 WAV 文件，或运行有界的单进程 HRI 监听原型。它还没有完整 HRI 初始化、语音编解码、网络/BM 或 RF 桥接。
+这是 WIREX Bridge 的 C++17 子项目，提供 DMRD 固定 55 字节数据报和 DIRECT 单记录 envelope 的解析与编码、Windows 本地诊断入口，以及 AMBE+2 声码器、DMR 通话、BrandMeister Homebrew 会话与 native 语音桥接候选。当前 `wirex_bridge.exe` 将 BM 网络音频接到 FTX-1 DIRECT 电台扬声器，并由操作者显式控制 BM DMRD 上行；上行编码前固定应用 16x 软件 PCM 增益，状态报告记录增益前后统计和削顶数。真实 BM、COM/WinMM 音频和电台联合测试尚未运行，新 BM 链路的声音结果仍待验，候选不代表实机或 RF 验收。当前源码末尾的状态报告门限和固定增益修复尚未重新执行完整构建与 24 项离线测试；当前阶段、构建产物及接续步骤见 [BM 联调推进](docs/BM联调推进.md)。
 
 解析只接受长度恰为 55 字节且首四字节为 `DMRD` 的数据报。24-bit source/destination ID 按大端读写；超出 `0xFFFFFF` 的编码请求返回错误，不截断。flags、四个 stream ID 字节和 33 字节 payload 均按原样保留；stream ID 不转成整数，也不推断其主机序。BER 与 RSSI 是各一个原始字节。
 

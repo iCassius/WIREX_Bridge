@@ -1,5 +1,9 @@
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
+#ifdef WIREX_ENABLE_BM_BRIDGE
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#endif
 #include <windows.h>
 #include <mmsystem.h>
 #include <bcrypt.h>
@@ -19,6 +23,13 @@
 #include "wirex/session_timing.hpp"
 #include "wirex/wave_output_open.hpp"
 #include "wirex/wave_file.hpp"
+#ifdef WIREX_ENABLE_BM_BRIDGE
+#include "wirex/bm_session.hpp"
+#include "wirex/bm_udp.hpp"
+#include "wirex/bm_voice_pipeline.hpp"
+#include "wirex/dmrd.hpp"
+#include "wirex/hri_stream_session.hpp"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -30,10 +41,13 @@
 #include <fstream>
 #include <cstring>
 #include <deque>
+#include <functional>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <memory>
+#include <new>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -552,9 +566,15 @@ public:
         WAVEHDR header{};
         bool prepared{false};
         bool queued{false};
+        std::uint64_t playback_generation{};
     };
     enum class SubmitResult { queued, full, failed, cancelled, timed_out };
     enum class DrainResult { complete, failed, cancelled, timed_out };
+    static constexpr std::size_t max_completion_tokens = 8U;
+    struct CompletedFrames {
+        std::uint64_t generation{};
+        std::size_t count{};
+    };
 
     ~WaveOutput() { close(); }
     WaveOutput(const WaveOutput&) = delete;
@@ -617,9 +637,39 @@ public:
             if (buffer.queued && (buffer.header.dwFlags & WHDR_DONE) != 0) {
                 buffer.queued = false;
                 buffer.header.dwBufferLength = static_cast<DWORD>(sizeof(buffer.samples));
+                if (buffer.playback_generation != 0U) {
+                    if (completion_count_ < completions_.size()) {
+                        const std::size_t write = (completion_read_ + completion_count_) % completions_.size();
+                        completions_[write] = CompletedFrames{buffer.playback_generation, 1U};
+                        ++completion_count_;
+                    } else {
+                        completion_overflow_ = true;
+                    }
+                    buffer.playback_generation = 0U;
+                }
             }
         }
     }
+
+    // 回报本次已完成的20 ms PCM缓冲，供声码器管线回收其有界未确认帧。
+    [[nodiscard]] bool take_completed_frames(CompletedFrames& completed) noexcept
+    {
+        // 完成标志只在访问WAVEHDR时回收；即使调用方只取完成计数，也必须先扫描。
+        reap();
+        if (completion_count_ == 0U) return false;
+        completed = completions_[completion_read_];
+        completion_read_ = (completion_read_ + 1U) % completions_.size();
+        --completion_count_;
+        while (completion_count_ != 0U &&
+               completions_[completion_read_].generation == completed.generation) {
+            completed.count += completions_[completion_read_].count;
+            completion_read_ = (completion_read_ + 1U) % completions_.size();
+            --completion_count_;
+        }
+        return true;
+    }
+
+    [[nodiscard]] bool completion_overflowed() const noexcept { return completion_overflow_; }
 
     [[nodiscard]] bool all_drained() noexcept
     {
@@ -631,6 +681,19 @@ public:
     }
 
     SubmitResult submit(const void* samples, DWORD byte_count) noexcept
+    {
+        return submit_for_generation(samples, byte_count, 0U);
+    }
+
+    SubmitResult submit_playback_frame(const void* samples, DWORD byte_count,
+                                       std::uint64_t generation) noexcept
+    {
+        if (generation == 0U) return SubmitResult::failed;
+        return submit_for_generation(samples, byte_count, generation);
+    }
+
+    SubmitResult submit_for_generation(const void* samples, DWORD byte_count,
+                                       std::uint64_t generation) noexcept
     {
         if (device_ == nullptr || samples == nullptr || byte_count == 0 ||
             byte_count > sizeof(buffers_[0].samples) || byte_count % sizeof(std::int16_t) != 0) {
@@ -645,6 +708,7 @@ public:
             const auto written = waveOutWrite(device_, &buffer.header, sizeof(buffer.header));
             if (written != MMSYSERR_NOERROR) return SubmitResult::failed;
             buffer.queued = true;
+            buffer.playback_generation = generation;
             return SubmitResult::queued;
         }
         return SubmitResult::full;
@@ -690,6 +754,7 @@ public:
         if (device_ == nullptr) {
             event_.reset();
             for (auto& buffer : buffers_) secure_wipe(buffer.samples.data(), sizeof(buffer.samples));
+            clear_playback_completions();
             return !device_cleanup_state_.close_failed();
         }
         bool cleanup_ok = true;
@@ -725,14 +790,29 @@ public:
             cleanup_ok = false;
         }
         device_cleanup_state_.record_close_result(cleanup_ok);
-        if (device_ == nullptr) event_.reset();
+        if (device_ == nullptr) {
+            event_.reset();
+            clear_playback_completions();
+        }
         return cleanup_ok && !device_cleanup_state_.close_failed();
     }
 
 private:
+    void clear_playback_completions() noexcept
+    {
+        completion_read_ = 0U;
+        completion_count_ = 0U;
+        completion_overflow_ = false;
+        for (auto& buffer : buffers_) buffer.playback_generation = 0U;
+    }
+
     HWAVEOUT device_{nullptr};
     WinHandle event_{};
     std::array<Buffer, buffer_count> buffers_{};
+    std::array<CompletedFrames, max_completion_tokens> completions_{};
+    std::size_t completion_read_{};
+    std::size_t completion_count_{};
+    bool completion_overflow_{};
     wirex::wave_output_open::State device_cleanup_state_{};
 };
 
@@ -3819,6 +3899,1568 @@ int monitor_input(UINT input_id, unsigned long seconds)
     return failed || !cleanup_ok ? 2 : 0;
 }
 
+#ifdef WIREX_ENABLE_BM_BRIDGE
+
+constexpr std::uint64_t bm_bridge_window_ms = 120000U;
+constexpr std::uint64_t bm_bridge_cleanup_ms = 3000U;
+
+bool write_bm_bytes(HANDLE output, const void* data, std::size_t size) noexcept
+{
+    if (output == nullptr || output == INVALID_HANDLE_VALUE) return false;
+    const auto* bytes = static_cast<const std::uint8_t*>(data);
+    std::size_t offset = 0U;
+    while (offset < size) {
+        const DWORD count = static_cast<DWORD>(std::min<std::size_t>(size - offset, 0x7fffffffU));
+        DWORD written = 0U;
+        if (!WriteFile(output, bytes + offset, count, &written, nullptr) || written == 0U) return false;
+        offset += written;
+    }
+    return true;
+}
+
+bool write_bm_wide(HANDLE output, std::wstring_view text) noexcept
+{
+    if (output == nullptr || output == INVALID_HANDLE_VALUE) return false;
+    DWORD mode = 0U;
+    if (GetConsoleMode(output, &mode)) {
+        std::size_t offset = 0U;
+        while (offset < text.size()) {
+            const DWORD count = static_cast<DWORD>(std::min<std::size_t>(text.size() - offset, 0x7fffffffU));
+            DWORD written = 0U;
+            if (!WriteConsoleW(output, text.data() + offset, count, &written, nullptr) || written == 0U) return false;
+            offset += written;
+        }
+        return true;
+    }
+    if (text.empty()) return true;
+    if (text.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) return false;
+    const int required = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text.data(),
+        static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
+    if (required <= 0) return false;
+    try {
+        std::string utf8(static_cast<std::size_t>(required), '\0');
+        if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text.data(),
+            static_cast<int>(text.size()), utf8.data(), required, nullptr, nullptr) != required) return false;
+        return write_bm_bytes(output, utf8.data(), utf8.size());
+    } catch (...) {
+        return false;
+    }
+}
+
+bool write_bm_utf8(HANDLE output, std::string_view text) noexcept
+{
+    if (output == nullptr || output == INVALID_HANDLE_VALUE) return false;
+    DWORD mode = 0U;
+    if (!GetConsoleMode(output, &mode)) return write_bm_bytes(output, text.data(), text.size());
+    if (text.empty()) return true;
+    if (text.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) return false;
+    const int required = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(),
+        static_cast<int>(text.size()), nullptr, 0);
+    if (required <= 0) return false;
+    try {
+        std::wstring wide(static_cast<std::size_t>(required), L'\0');
+        if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(),
+            static_cast<int>(text.size()), wide.data(), required) != required) return false;
+        return write_bm_wide(output, wide);
+    } catch (...) {
+        return false;
+    }
+}
+
+bool bm_stderr(std::wstring_view text) noexcept
+{
+    return write_bm_wide(GetStdHandle(STD_ERROR_HANDLE), text);
+}
+
+bool bm_stdout(std::string_view text) noexcept
+{
+    return write_bm_utf8(GetStdHandle(STD_OUTPUT_HANDLE), text);
+}
+
+bool parse_ascii_uint(std::string_view text, std::uint32_t& value) noexcept
+{
+    if (text.empty()) return false;
+    std::uint64_t parsed = 0U;
+    for (const char ch : text) {
+        if (ch < '0' || ch > '9') return false;
+        parsed = parsed * 10U + static_cast<unsigned>(ch - '0');
+        if (parsed > 0xffffffffU) return false;
+    }
+    value = static_cast<std::uint32_t>(parsed);
+    return true;
+}
+
+bool read_ascii_line(const wchar_t* prompt, std::string& value, std::size_t max_size,
+                     bool allow_empty = false)
+{
+    std::wstring line;
+    if (!bm_stderr(prompt)) return false;
+    if (!std::getline(std::wcin, line)) return false;
+    if (line.size() > max_size || (!allow_empty && line.empty())) return false;
+    value.clear();
+    value.reserve(line.size());
+    for (const wchar_t ch : line) {
+        if (ch < 0x20 || ch > 0x7e) return false;
+        value.push_back(static_cast<char>(ch));
+    }
+    return allow_empty || !value.empty();
+}
+
+bool read_uint_line(const wchar_t* prompt, std::uint32_t& value)
+{
+    std::string line;
+    return read_ascii_line(prompt, line, 10U) && parse_ascii_uint(line, value);
+}
+
+class ConsoleInputModeRestore final {
+public:
+    explicit ConsoleInputModeRestore(HANDLE input) noexcept : input_(input)
+    {
+        if (input_ != nullptr && input_ != INVALID_HANDLE_VALUE && GetConsoleMode(input_, &original_)) {
+            const DWORD hidden = original_ & ~(ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT);
+            active_ = hidden != original_ && SetConsoleMode(input_, hidden) != FALSE;
+            if (hidden == original_) active_ = true;
+        }
+    }
+
+    ~ConsoleInputModeRestore()
+    {
+        (void)restore();
+    }
+
+    ConsoleInputModeRestore(const ConsoleInputModeRestore&) = delete;
+    ConsoleInputModeRestore& operator=(const ConsoleInputModeRestore&) = delete;
+    [[nodiscard]] bool active() const noexcept { return active_; }
+    [[nodiscard]] bool restore() noexcept
+    {
+        if (!active_) return true;
+        if (SetConsoleMode(input_, original_) == FALSE) return false;
+        active_ = false;
+        return true;
+    }
+
+private:
+    HANDLE input_{};
+    DWORD original_{};
+    bool active_{};
+};
+
+struct WidePasswordBufferWiper final {
+    std::array<wchar_t, 257U>& buffer;
+    ~WidePasswordBufferWiper() { SecureZeroMemory(buffer.data(), sizeof(buffer)); }
+};
+
+bool read_hidden_password(std::string& password, const wirex::ConsoleHandlerScope& control_scope)
+{
+    HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+    ConsoleInputModeRestore mode(input);
+    if (!mode.active()) return false;
+    std::array<wchar_t, 257U> buffer{};
+    const WidePasswordBufferWiper buffer_wiper{buffer};
+    (void)buffer_wiper;
+    std::size_t length = 0U;
+    if (!bm_stderr(L"BM 密码（隐藏输入；不会写入文件或日志）：")) return false;
+    bool accepted = false;
+    const ULONGLONG deadline = GetTickCount64() + 300000U;
+    for (;;) {
+        if (control_scope.cancel_requested() || GetTickCount64() >= deadline) break;
+        const DWORD wait = WaitForSingleObject(input, 100U);
+        if (wait == WAIT_TIMEOUT) continue;
+        if (wait != WAIT_OBJECT_0) break;
+        wchar_t ch{};
+        DWORD read = 0U;
+        if (!ReadConsoleW(input, &ch, 1U, &read, nullptr) || read != 1U) break;
+        if (ch == L'\r' || ch == L'\n') {
+            accepted = length != 0U;
+            break;
+        }
+        if (ch == L'\x1b' || ch == L'\x03' || ch == L'\x1a') break;
+        if (ch == L'\b') {
+            if (length != 0U) buffer[--length] = L'\0';
+            continue;
+        }
+        if (ch < 0x20 || ch > 0x7e || length == 256U) break;
+        buffer[length++] = ch;
+    }
+    (void)bm_stderr(L"\n");
+    if (accepted) {
+        if (!password.empty()) SecureZeroMemory(password.data(), password.size());
+        password.clear();
+        password.reserve(length);
+        for (std::size_t index = 0U; index < length; ++index) {
+            password.push_back(static_cast<char>(buffer[index]));
+        }
+    }
+    const bool mode_restored = mode.restore();
+    (void)FlushConsoleInputBuffer(input);
+    return accepted && mode_restored;
+}
+
+void wipe_password(std::string& value) noexcept
+{
+    if (!value.empty()) SecureZeroMemory(value.data(), value.size());
+    value.clear();
+}
+
+bool parse_ipv4_literal(std::string_view text, std::array<std::uint8_t, 4U>& address) noexcept
+{
+    std::size_t offset = 0U;
+    for (std::size_t octet = 0U; octet < address.size(); ++octet) {
+        const auto separator = text.find('.', offset);
+        const auto end = separator == std::string_view::npos ? text.size() : separator;
+        const auto part = text.substr(offset, end - offset);
+        std::uint32_t value = 0U;
+        if (part.empty() || part.size() > 3U || !parse_ascii_uint(part, value) || value > 255U) return false;
+        address[octet] = static_cast<std::uint8_t>(value);
+        if (octet + 1U == address.size()) return end == text.size();
+        if (separator == std::string_view::npos) return false;
+        offset = separator + 1U;
+    }
+    return false;
+}
+
+struct AddressLookup final {
+    OVERLAPPED overlapped{};
+    HANDLE event{};
+    PADDRINFOEXW result{};
+};
+
+// 只解析操作者输入的主机名，限定等待时间并固定首个 IPv4 结果；不会猜测 Master。
+bool resolve_master_ipv4(std::string_view host,
+                         std::array<std::uint8_t, 4U>& address) noexcept
+{
+    if (parse_ipv4_literal(host, address)) return true;
+    if (host.empty() || host.size() > 253U) return false;
+    std::wstring wide_host;
+    try {
+        wide_host.reserve(host.size());
+        for (const unsigned char ch : host) {
+            if (ch <= 0x20U || ch >= 0x7fU) return false;
+            wide_host.push_back(static_cast<wchar_t>(ch));
+        }
+    } catch (...) {
+        return false;
+    }
+
+    WSADATA wsa_data{};
+    if (WSAStartup(MAKEWORD(2, 2), &wsa_data) != 0) return false;
+    AddressLookup* lookup = new (std::nothrow) AddressLookup{};
+    if (lookup == nullptr) {
+        WSACleanup();
+        return false;
+    }
+    lookup->event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (lookup->event == nullptr) {
+        delete lookup;
+        WSACleanup();
+        return false;
+    }
+    lookup->overlapped.hEvent = lookup->event;
+    ADDRINFOEXW hints{};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_protocol = IPPROTO_UDP;
+    timeval timeout{};
+    timeout.tv_sec = 3;
+    HANDLE operation = nullptr;
+    const INT started = GetAddrInfoExW(wide_host.c_str(), nullptr, NS_DNS, nullptr,
+        &hints, &lookup->result, &timeout, &lookup->overlapped, nullptr, &operation);
+    INT completion = started;
+    bool safe_to_release = true;
+    if (started == WSA_IO_PENDING) {
+        const DWORD waited = WaitForSingleObject(lookup->event, 3500U);
+        if (waited == WAIT_OBJECT_0) {
+            completion = GetAddrInfoExOverlappedResult(&lookup->overlapped);
+        } else {
+            if (operation != nullptr) (void)GetAddrInfoExCancel(&operation);
+            // 取消会通知重叠事件；若提供程序未及时完成，保留操作上下文直到进程退出，避免悬空 OVERLAPPED。
+            if (WaitForSingleObject(lookup->event, 500U) == WAIT_OBJECT_0) {
+                completion = GetAddrInfoExOverlappedResult(&lookup->overlapped);
+            } else {
+                safe_to_release = false;
+            }
+        }
+    }
+
+    bool resolved = false;
+    if (safe_to_release && completion == 0 && lookup->result != nullptr) {
+        for (const auto* item = lookup->result; item != nullptr; item = item->ai_next) {
+            if (item->ai_family != AF_INET || item->ai_addr == nullptr ||
+            item->ai_addrlen < sizeof(sockaddr_in)) continue;
+            const auto* ipv4 = reinterpret_cast<const sockaddr_in*>(item->ai_addr);
+            std::memcpy(address.data(), &ipv4->sin_addr, address.size());
+            resolved = true;
+            break;
+        }
+    }
+    if (safe_to_release) {
+        if (lookup->result != nullptr) FreeAddrInfoExW(lookup->result);
+        CloseHandle(lookup->event);
+        delete lookup;
+        WSACleanup();
+    }
+    return resolved;
+}
+
+std::string ipv4_text(const std::array<std::uint8_t, 4U>& address)
+{
+    return std::to_string(address[0]) + "." + std::to_string(address[1]) + "." +
+        std::to_string(address[2]) + "." + std::to_string(address[3]);
+}
+
+const char* bm_state_name(wirex::bm::State state) noexcept
+{
+    using wirex::bm::State;
+    switch (state) {
+    case State::idle: return "idle";
+    case State::waiting_login_ack: return "waiting_login_ack";
+    case State::waiting_auth_ack: return "waiting_auth_ack";
+    case State::waiting_config_ack: return "waiting_config_ack";
+    case State::waiting_options_ack: return "waiting_options_ack";
+    case State::ready: return "ready";
+    case State::backoff: return "backoff";
+    case State::stopped: return "stopped";
+    }
+    return "unknown";
+}
+
+const char* hri_stream_phase_name(wirex::hri_stream_session::Phase phase) noexcept
+{
+    using wirex::hri_stream_session::Phase;
+    switch (phase) {
+    case Phase::idle: return "idle";
+    case Phase::start_write_pending: return "start_write_pending";
+    case Phase::start_write_in_progress: return "start_write_in_progress";
+    case Phase::awaiting_start_record: return "awaiting_start_record";
+    case Phase::playing: return "playing";
+    case Phase::draining: return "draining";
+    case Phase::stop_write_pending: return "stop_write_pending";
+    case Phase::stop_write_in_progress: return "stop_write_in_progress";
+    case Phase::awaiting_stop_record: return "awaiting_stop_record";
+    case Phase::faulted: return "faulted";
+    }
+    return "unknown";
+}
+
+void print_bm_bridge_help()
+{
+    (void)write_bm_wide(GetStdHandle(STD_OUTPUT_HANDLE),
+        L"wirex_bridge - 本地 DIRECT / BrandMeister 声音桥接候选\n"
+        L"  --help\n"
+        L"  --list-audio-json\n"
+        L"  --run --port COMn --body-file ABS --input N --output N --status-file ABS\n"
+        L"运行期间 T 开始/结束 DMRD 上行，Q 停止并退出；电台手咪 PTT 仍由操作者手动操作。\n"
+        L"BM DMRD 上行使用固定 16x 软件增益；状态报告记录增益前后 PCM 统计与削顶样本数。\n"
+        L"Master 支持 IPv4 字面量或主机名；密码在本机控制台隐藏输入（仅 ASCII 可打印字符，允许空格）。\n");
+}
+
+struct BmBridgeCounters {
+    std::uint64_t tx_datagrams{};
+    std::uint64_t rx_datagrams{};
+    std::uint64_t tx_audio_samples{};
+    wirex::pcm_gain::SignalStats tx_pcm_input_stats{};
+    wirex::pcm_gain::SignalStats tx_pcm_gained_stats{};
+    std::uint64_t tx_pcm_clipped_samples{};
+    std::uint64_t pcm_playback_frames{};
+    std::uint64_t calls_started{};
+    std::uint64_t calls_ended{};
+    std::uint64_t rejected_calls{};
+    std::uint64_t reconnects{};
+};
+
+bool append_bridge_status(std::ofstream& file, std::string_view event, std::uint64_t elapsed_ms,
+                          wirex::bm::State bm_state, wirex::hri_session::Phase hri_phase,
+                          const BmBridgeCounters& counters)
+{
+    if (!file) return false;
+    file << "{\"event\":\"" << event << "\",\"elapsed_ms\":" << elapsed_ms
+         << ",\"bm_state\":\"" << bm_state_name(bm_state)
+         << "\",\"hri_phase\":\"" << hri_phase_name(hri_phase)
+         << "\",\"tx_datagrams\":" << counters.tx_datagrams
+         << ",\"rx_datagrams\":" << counters.rx_datagrams
+         << ",\"tx_audio_samples\":" << counters.tx_audio_samples
+         << ",\"tx_input_gain_milli\":16000"
+         << ",\"tx_pcm_input_samples\":" << counters.tx_pcm_input_stats.sample_count
+         << ",\"tx_pcm_input_rms_dbfs\":" << wirex::pcm_gain::rms_dbfs(counters.tx_pcm_input_stats)
+         << ",\"tx_pcm_input_peak\":" << counters.tx_pcm_input_stats.peak
+         << ",\"tx_pcm_gained_rms_dbfs\":" << wirex::pcm_gain::rms_dbfs(counters.tx_pcm_gained_stats)
+         << ",\"tx_pcm_gained_peak\":" << counters.tx_pcm_gained_stats.peak
+         << ",\"tx_pcm_clipped_samples\":" << counters.tx_pcm_clipped_samples
+         << ",\"playback_frames\":" << counters.pcm_playback_frames
+         << ",\"calls_started\":" << counters.calls_started
+         << ",\"calls_ended\":" << counters.calls_ended
+         << ",\"rejected_calls\":" << counters.rejected_calls
+         << ",\"reconnects\":" << counters.reconnects << "}\n";
+    if (!file) return false;
+    file.flush();
+    return static_cast<bool>(file);
+}
+
+struct ProfileSecretGuard {
+    wirex::bm::Profile& profile;
+    ~ProfileSecretGuard() { wipe_password(profile.password); }
+};
+
+int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& body_path,
+                  UINT input_id, UINT output_id, wirex::bm::Endpoint master,
+                  wirex::bm::Profile profile, wirex::dmr_call::CallConfig call_template,
+                  std::ofstream& status_file, wirex::ConsoleHandlerScope& control_scope);
+
+int bm_bridge_main(int argc, wchar_t* argv[])
+{
+    if (argc == 2 && std::wstring_view(argv[1]) == L"--help") {
+        print_bm_bridge_help();
+        return 0;
+    }
+    if (argc == 2 && std::wstring_view(argv[1]) == L"--list-audio-json") {
+        list_audio_devices_json();
+        return 0;
+    }
+    const bool shape_ok = argc == 12 && std::wstring_view(argv[1]) == L"--run" &&
+        std::wstring_view(argv[2]) == L"--port" && std::wstring_view(argv[4]) == L"--body-file" &&
+        std::wstring_view(argv[6]) == L"--input" && std::wstring_view(argv[8]) == L"--output" &&
+        std::wstring_view(argv[10]) == L"--status-file";
+    if (!shape_ok) {
+        print_bm_bridge_help();
+        return 2;
+    }
+
+    unsigned long input_number = 0UL;
+    unsigned long output_number = 0UL;
+    if (!parse_uint(argv[7], input_number) || input_number > 0xffffffffUL ||
+        !parse_uint(argv[9], output_number) || output_number > 0xffffffffUL) {
+        (void)bm_stderr(L"WaveIn/WaveOut 必须是本次枚举得到的非负设备 ID。\n");
+        return 2;
+    }
+    const UINT input_id = static_cast<UINT>(input_number);
+    const UINT output_id = static_cast<UINT>(output_number);
+    const std::filesystem::path body_path(argv[5]);
+    const std::filesystem::path status_path(argv[11]);
+    if (!body_path.is_absolute() || !status_path.is_absolute()) {
+        (void)bm_stderr(L"Y 素材与状态报告都必须使用绝对路径。\n");
+        return 2;
+    }
+    std::wstring device_path;
+    if (!parse_port(argv[3], device_path)) {
+        (void)bm_stderr(L"串口名无效；请输入明确的 COM 端口。\n");
+        return 2;
+    }
+
+    HANDLE stdin_handle = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD console_mode = 0U;
+    if (stdin_handle == nullptr || stdin_handle == INVALID_HANDLE_VALUE ||
+        !GetConsoleMode(stdin_handle, &console_mode)) {
+        (void)bm_stderr(L"BM 联合测试入口需要可见的本机控制台。\n");
+        return 2;
+    }
+
+    std::ofstream status_file(status_path, std::ios::binary | std::ios::trunc);
+    if (!status_file) {
+        (void)bm_stderr(L"无法在指定目录创建状态报告；尚未打开设备。\n");
+        return 2;
+    }
+    std::vector<std::uint8_t> y_body;
+    if (!load_hri_y_template(body_path, y_body)) return 2;
+    if (input_id >= waveInGetNumDevs() || output_id >= waveOutGetNumDevs() ||
+        !prepare_hri_audio_devices(input_id, output_id)) {
+        (void)bm_stderr(L"所选 WaveIn/WaveOut 设备未通过范围和 48 kHz PCM 能力查询。尚未打开音频流。\n");
+        return 2;
+    }
+    WAVEINCAPSW input_caps{};
+    WAVEOUTCAPSW output_caps{};
+    if (waveInGetDevCapsW(input_id, &input_caps, sizeof(input_caps)) != MMSYSERR_NOERROR ||
+        waveOutGetDevCapsW(output_id, &output_caps, sizeof(output_caps)) != MMSYSERR_NOERROR) {
+        (void)bm_stderr(L"无法读取所选 WaveIn/WaveOut 设备信息；尚未打开设备。\n");
+        return 2;
+    }
+    UINT exact_radio_output_id = 0U;
+    if (!resolve_candidate_output(exact_radio_output_id) || output_id != exact_radio_output_id) {
+        (void)bm_stderr(L"所选 WaveOut 必须是本机列表中唯一完整名称匹配且通过 48 kHz 查询的电台 USB 输出；不回退到电脑扬声器。\n");
+        return 2;
+    }
+
+    std::string callsign;
+    std::string host_text;
+    std::string call_kind_text;
+    std::uint32_t gateway_id = 0U;
+    std::uint32_t source_id = 0U;
+    std::uint32_t talkgroup_id = 0U;
+    std::uint32_t master_port = 0U;
+    std::uint32_t slot_number = 0U;
+    std::uint32_t color_code = 0U;
+    if (!read_ascii_line(L"呼号（最多 8 个 ASCII 字符）：", callsign, 8U) ||
+        !read_uint_line(L"Gateway ID（1..4294967295）：", gateway_id) || gateway_id == 0U ||
+        !read_uint_line(L"本机 DMR Source ID（1..16777215）：", source_id) ||
+        source_id == 0U || source_id > wirex::dmrd::max_id24 ||
+        !read_uint_line(L"目标 Talkgroup ID 或单呼 Radio ID（1..16777215）：", talkgroup_id) ||
+        talkgroup_id == 0U || talkgroup_id > wirex::dmrd::max_id24 ||
+        !read_uint_line(L"Timeslot（1 或 2）：", slot_number) || (slot_number != 1U && slot_number != 2U) ||
+        !read_uint_line(L"Color Code（0..15）：", color_code) || color_code > 15U ||
+        !read_ascii_line(L"BM Master IPv4 地址或主机名（例如 master.example.net）：", host_text, 253U) ||
+        !read_uint_line(L"BM Master UDP 端口（1..65535）：", master_port) ||
+        master_port == 0U || master_port > 65535U ||
+        !read_ascii_line(L"呼叫类型（G=组呼，P=单呼）：", call_kind_text, 1U) ||
+        (call_kind_text != "G" && call_kind_text != "P")) {
+        (void)bm_stderr(L"输入字段无效；没有打开 COM、WinMM 或 UDP。\n");
+        return 2;
+    }
+    wirex::bm::Endpoint endpoint{};
+    if (!resolve_master_ipv4(host_text, endpoint.address)) {
+        (void)bm_stderr(L"Master IPv4 地址解析失败或超出 3.5 秒有界等待；没有打开设备。\n");
+        return 2;
+    }
+    endpoint.port = static_cast<std::uint16_t>(master_port);
+    const auto resolved_address = ipv4_text(endpoint.address);
+    const std::wstring resolved_address_wide(resolved_address.begin(), resolved_address.end());
+    const std::wstring host_text_wide(host_text.begin(), host_text.end());
+    const std::wstring call_kind_text_wide(call_kind_text.begin(), call_kind_text.end());
+
+    wirex::bm::Profile profile{};
+    ProfileSecretGuard secret_guard{profile};
+    profile.gateway_id = gateway_id;
+    profile.callsign = callsign;
+    profile.color_code = static_cast<std::uint8_t>(color_code);
+    profile.slot_flags = '4';
+    profile.version = "1.0";
+    profile.software = "WIREX Bridge";
+    profile.location = "DIRECT";
+    profile.description = "FTX-1";
+    // DIRECT 没有可声明的射频坐标；发送格式要求数值字段，按零值填写且不代表实际位置。
+    profile.latitude = "0";
+    profile.longitude = "0";
+    wirex::dmr_call::CallConfig call_template{};
+    call_template.source_id = source_id;
+    call_template.destination_id = talkgroup_id;
+    call_template.gateway_id = gateway_id;
+    call_template.slot = slot_number == 1U ? wirex::dmr_call::Slot::ts1 : wirex::dmr_call::Slot::ts2;
+    call_template.kind = call_kind_text == "G" ? wirex::dmr_call::CallKind::group
+                                                : wirex::dmr_call::CallKind::private_call;
+    call_template.color_code = static_cast<std::uint8_t>(color_code);
+
+    std::wostringstream configuration_text;
+    configuration_text << L"\n本次设备与配置：COM=" << argv[3]
+                       << L"；Radio WaveIn=" << input_id << L" " << device_name(input_caps.szPname, MAXPNAMELEN)
+                       << L"；Radio WaveOut=" << output_id << L" " << device_name(output_caps.szPname, MAXPNAMELEN)
+                       << L"；目标ID=" << talkgroup_id << L"；类型=" << call_kind_text_wide
+                       << L"；TS=" << slot_number << L"；CC=" << color_code
+                       << L"；Master=" << host_text_wide << L" -> " << resolved_address_wide
+                       << L":" << master_port << L"。\n"
+                       << L"没有选择 PC monitor。T 只控制 BM DMRD 上行；软件不会发送 RF/PTT 命令。\n";
+    (void)bm_stderr(configuration_text.str());
+    std::string confirmation;
+    if (!read_ascii_line(L"输入 START 才打开本次 COM、音频与 BM UDP 会话：", confirmation, 16U) ||
+        confirmation != "START") {
+        (void)bm_stderr(L"未输入 START；没有打开 COM、WinMM 或 UDP。\n");
+        return 0;
+    }
+
+    wirex::ConsoleHandlerScope control_scope;
+    if (!control_scope.start()) {
+        (void)bm_stderr(L"无法注册控制台收尾处理器；没有打开设备。\n");
+        return 2;
+    }
+    if (!read_hidden_password(profile.password, control_scope)) {
+        (void)bm_stderr(L"隐藏密码输入已取消或无效；没有打开设备。\n");
+        wipe_password(profile.password);
+        return control_scope.cancel_requested() ? 0 : 2;
+    }
+
+    BmBridgeCounters counters{};
+    if (!append_bridge_status(status_file, "preflight_passed", 0U, wirex::bm::State::idle,
+                              wirex::hri_session::Phase::not_started, counters)) {
+        wipe_password(profile.password);
+        (void)bm_stderr(L"无法写入或刷新启动前状态报告；已清除隐藏密码，尚未打开设备。\n");
+        return 2;
+    }
+    return run_bm_bridge(argv[3], body_path, input_id, output_id, endpoint,
+                         std::move(profile), call_template, status_file, control_scope);
+}
+
+int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& body_path,
+                  UINT input_id, UINT output_id, wirex::bm::Endpoint master,
+                  wirex::bm::Profile profile, wirex::dmr_call::CallConfig call_template,
+                  std::ofstream& status_file, wirex::ConsoleHandlerScope& control_scope)
+{
+    using Clock = std::chrono::steady_clock;
+    using StreamSession = wirex::hri_stream_session::Session;
+    using StreamAction = wirex::hri_stream_session::Action;
+    using StreamActionKind = wirex::hri_stream_session::ActionKind;
+    using StreamPhase = wirex::hri_stream_session::Phase;
+    using StreamReason = wirex::hri_stream_session::Reason;
+    using Pipeline = wirex::bm_voice::BmVoicePipeline;
+    using PipelineEventKind = wirex::bm_voice::EventKind;
+    using HriPhase = wirex::hri_session::Phase;
+    ProfileSecretGuard secret_guard{profile};
+    BmBridgeCounters counters{};
+    std::string failure_reason;
+    bool failed = false;
+    bool status_report_failed = false;
+    bool shutdown_requested = false;
+    bool cleanup_forced = false;
+    bool hri_active = false;
+    bool hri_ready = false;
+    bool radio_input_open = false;
+    bool radio_output_open = false;
+    bool pending_receive_start = false;
+    bool pending_receive_ended = false;
+    bool pending_playback_drain = false;
+    bool downlink_blocked = false;
+    bool t_key_down = false;
+    bool q_key_down = false;
+    std::string shutdown_reason;
+    std::optional<Clock::time_point> cleanup_deadline;
+    const auto run_started = Clock::now();
+    auto elapsed_ms = [&]() -> std::uint64_t {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - run_started).count();
+        return elapsed < 0 ? 0U : static_cast<std::uint64_t>(elapsed);
+    };
+    auto set_failure = [&](std::string_view reason) {
+        if (failure_reason.empty()) failure_reason.assign(reason);
+        failed = true;
+    };
+    std::vector<std::uint8_t> y_body;
+    if (!load_hri_y_template(body_path, y_body)) {
+        failure_reason = "y_template_invalid";
+        failed = true;
+        return 2;
+    }
+    const auto start_body = wirex::hri_t_payload::build_empty_header_empty_ambe_candidate_body(1, 1, 9U);
+    const auto stop_body = wirex::hri_t_payload::build_empty_header_empty_ambe_candidate_body(0, 1, 9U);
+    const auto start_frame_result = wirex::direct_frame::encode({static_cast<std::uint8_t>('T'),
+        std::vector<std::uint8_t>(start_body.begin(), start_body.end())});
+    const auto stop_frame_result = wirex::direct_frame::encode({static_cast<std::uint8_t>('T'),
+        std::vector<std::uint8_t>(stop_body.begin(), stop_body.end())});
+    if (!start_frame_result || !stop_frame_result) {
+        (void)bm_stderr(L"Could not build the pinned HRI speaker start/stop candidates.\n");
+        return 2;
+    }
+
+    std::unique_ptr<Pipeline> pipeline;
+    std::unique_ptr<StreamSession> stream_session;
+    try {
+        pipeline = std::make_unique<Pipeline>();
+        stream_session = std::make_unique<StreamSession>(start_frame_result.bytes, stop_frame_result.bytes,
+            wirex::hri_stream_session::Config{wirex::hri_stream_session::default_start_record_timeout_ms,
+                wirex::hri_stream_session::default_stop_record_timeout_ms,
+                wirex::hri_stream_session::max_call_window_ms});
+    } catch (...) {
+        (void)bm_stderr(L"Bridge software state allocation failed before devices were opened.\n");
+        return 2;
+    }
+    wirex::bm_voice::ReceiveFilter receive_filter{};
+    receive_filter.destination_id = call_template.kind == wirex::dmr_call::CallKind::group
+        ? call_template.destination_id : call_template.source_id;
+    receive_filter.match_slot = true;
+    receive_filter.slot = call_template.slot;
+    receive_filter.match_call_kind = true;
+    receive_filter.call_kind = call_template.kind;
+    if (pipeline->set_receive_filter(receive_filter) != wirex::bm_voice::Error::none) {
+        (void)bm_stderr(L"The selected DMR receive filter is invalid.\n");
+        return 2;
+    }
+
+    wirex::bm::Session bm_session;
+    if (!bm_session.start(std::move(profile), master, 0U)) {
+        (void)bm_stderr(L"BM profile validation failed; no socket or device was opened.\n");
+        return 2;
+    }
+    wirex::bm::UdpTransport transport;
+    WinHandle port;
+    WaveInput radio_input;
+    WaveOutput radio_output;
+    wirex::hri_session::Session hri_session(std::move(y_body),
+        wirex::hri_session::Config{wirex::session_timing::active_window_ms});
+    wirex::hri_session::Snapshot hri_state{};
+    std::wstring device_path;
+    if (!parse_port(port_name, device_path)) {
+        failure_reason = "port_name_invalid";
+        failed = true;
+    } else {
+        port.reset(CreateFileW(device_path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+        if (!port.valid() || !configure_serial(port.get(), false)) {
+            failure_reason = "serial_open_or_configure_failed";
+            failed = true;
+        } else {
+            COMMTIMEOUTS timeouts{};
+            timeouts.ReadIntervalTimeout = 5U;
+            timeouts.ReadTotalTimeoutConstant = 10U;
+            timeouts.WriteTotalTimeoutConstant = 100U;
+            if (!SetCommTimeouts(port.get(), &timeouts)) {
+                failure_reason = "serial_timeout_config_failed";
+                failed = true;
+            }
+        }
+    }
+    std::uint64_t discarded_serial_bytes = 0U;
+    if (!failed && !pre_drain_hri_serial(port.get(), discarded_serial_bytes)) {
+        failure_reason = "serial_pre_drain_failed";
+        failed = true;
+    }
+    if (!failed && !transport.open(master)) {
+        failure_reason = "udp_open_failed";
+        failed = true;
+    }
+    if (failed) {
+        bm_session.stop(0U);
+        const HANDLE raw = port.release();
+        if (raw != nullptr && raw != INVALID_HANDLE_VALUE) (void)CloseHandle(raw);
+        (void)transport.close();
+        std::wstring failure_text = L"Bridge startup failed before HRI or BM payload traffic: ";
+        failure_text.append(failure_reason.begin(), failure_reason.end());
+        failure_text.append(L".\n");
+        (void)bm_stderr(failure_text);
+        if (!append_bridge_status(status_file, failure_reason, 0U, bm_session.snapshot().state,
+                                  hri_state.phase, counters)) {
+            (void)bm_stderr(L"无法写入或刷新启动失败状态报告。\n");
+        }
+        return 2;
+    }
+
+    auto status = [&](std::string_view event) {
+        if (status_report_failed) return;
+        const auto state = bm_session.snapshot().state;
+        if (!append_bridge_status(status_file, event, elapsed_ms(), state, hri_state.phase, counters)) {
+            status_report_failed = true;
+            set_failure("status_report_write_failed");
+            (void)bm_stderr(L"运行状态报告写入或刷新失败；将执行有界收尾并以退出码 2 结束。\n");
+            return;
+        }
+        std::ostringstream line;
+        line << "status=" << event << " bm=" << bm_state_name(state)
+             << " hri=" << hri_phase_name(hri_state.phase)
+             << " tx_datagrams=" << counters.tx_datagrams
+             << " rx_datagrams=" << counters.rx_datagrams
+             << " tx_input_gain=16x tx_pcm_clipped_samples=" << counters.tx_pcm_clipped_samples
+             << " calls=" << counters.calls_started << "/" << counters.calls_ended
+             << " radio_state=unknown\n";
+        (void)bm_stdout(line.str());
+    };
+
+    bool serial_failed = false;
+    bool network_ready_seen = false;
+    bool shutdown_tx_terminator_pending = false;
+    bool shutdown_tx_terminator_reported = false;
+    std::array<std::uint8_t, 4U> active_tx_stream_id{};
+    std::array<std::uint8_t, 4U> shutdown_tx_stream_id{};
+    auto stop_tx_input = [&]() -> bool {
+        if (!radio_input_open) return !radio_input.close_failed();
+        const bool closed = radio_input.close();
+        radio_input_open = false;
+        return closed;
+    };
+    auto is_shutdown_terminator = [&](const wirex::dmr_call::TxPacket& packet) {
+        return shutdown_tx_terminator_pending &&
+            packet.kind == wirex::dmr_call::PacketKind::terminator_with_lc &&
+            packet.datagram.stream_id == shutdown_tx_stream_id;
+    };
+    auto report_shutdown_terminator_not_sent = [&](std::string_view reason) {
+        if (!shutdown_tx_terminator_pending || shutdown_tx_terminator_reported) return;
+        shutdown_tx_terminator_pending = false;
+        shutdown_tx_terminator_reported = true;
+        status(reason);
+    };
+
+    std::function<void(wirex::hri_stream_session::Update)> service_stream_update;
+    service_stream_update = [&](wirex::hri_stream_session::Update update) {
+        std::deque<StreamAction> pending;
+        for (auto& action : update.actions) pending.push_back(std::move(action));
+        while (!pending.empty()) {
+            auto action = std::move(pending.front());
+            pending.pop_front();
+            switch (action.kind) {
+            case StreamActionKind::write_start_candidate:
+            case StreamActionKind::write_stop_candidate: {
+                const auto now_ms = elapsed_ms();
+                const auto attempted = stream_session->write_attempted(action.write_id, now_ms);
+                if (attempted.error != wirex::hri_stream_session::Error::none) {
+                    set_failure("hri_stream_write_state_error");
+                    break;
+                }
+                DWORD written = 0U;
+                const BOOL wrote = WriteFile(port.get(), action.frame.data(),
+                    static_cast<DWORD>(action.frame.size()), &written, nullptr);
+                const bool full = wrote != FALSE && written == action.frame.size();
+                if (!full) {
+                    serial_failed = true;
+                    set_failure("hri_stream_serial_write_failed");
+                }
+                auto completed = stream_session->write_completed(action.write_id, full, elapsed_ms());
+                for (auto& follow_up : completed.actions) pending.push_back(std::move(follow_up));
+                if (completed.error != wirex::hri_stream_session::Error::none) {
+                    set_failure("hri_stream_write_completion_error");
+                }
+                status(action.kind == StreamActionKind::write_start_candidate ? "hri_t3_write" : "hri_t0_write");
+                break;
+            }
+            case StreamActionKind::playback_permitted: {
+                const auto result = pipeline->playback_ready(Clock::now());
+                if (result != wirex::bm_voice::Error::none) {
+                    set_failure("pipeline_playback_start_failed");
+                    downlink_blocked = true;
+                    service_stream_update(stream_session->cancel(StreamReason::transport_failed, elapsed_ms()));
+                } else {
+                    status("hri_t3_observed_playback_enabled");
+                }
+                break;
+            }
+            case StreamActionKind::cancel_playback:
+                pipeline->cancel_rx();
+                pending_receive_start = false;
+                pending_playback_drain = false;
+                if (radio_output_open) {
+                    const bool closed = radio_output.close();
+                    radio_output_open = false;
+                    if (!closed) set_failure("waveout_cancel_cleanup_failed");
+                }
+                status("playback_cancelled_and_queue_cleared");
+                break;
+            case StreamActionKind::call_finished: {
+                const auto state = stream_session->snapshot();
+                ++counters.calls_ended;
+                if (state.reason == StreamReason::none && state.stop_write_succeeded &&
+                    state.stop_t_record_observed) {
+                    status("downlink_call_drained_t0_observed");
+                } else {
+                    if (!state.stop_write_succeeded || !state.stop_t_record_observed ||
+                        state.reason == StreamReason::stop_write_failed ||
+                        state.reason == StreamReason::stop_record_timeout) {
+                        downlink_blocked = true;
+                    }
+                    if (state.reason == StreamReason::stop_write_failed) {
+                        set_failure("hri_t0_write_failed");
+                    }
+                    if (state.stop_write_attempted && state.stop_write_succeeded &&
+                        !state.stop_t_record_observed) {
+                        set_failure("hri_t0_record_timeout");
+                    }
+                    status("downlink_call_bounded_cleanup_incomplete");
+                }
+                if (stream_session->snapshot().phase == StreamPhase::faulted) {
+                    downlink_blocked = true;
+                }
+                break;
+            }
+            }
+        }
+    };
+
+    auto apply_hri_update = [&](wirex::hri_session::Update update) {
+        hri_state = update.state;
+        for (const auto& command : update.commands) {
+            DWORD written = 0U;
+            const BOOL wrote = WriteFile(port.get(), command.frame.data(),
+                static_cast<DWORD>(command.frame.size()), &written, nullptr);
+            const bool full = wrote != FALSE && written == command.frame.size();
+            hri_state = hri_session.write_completed(command.id, full, elapsed_ms()).state;
+            if (!full) {
+                serial_failed = true;
+                set_failure("hri_control_serial_write_failed");
+                break;
+            }
+        }
+        if (update.state.phase == HriPhase::stopped &&
+            update.state.stop_reason != wirex::hri_session::StopReason::none &&
+            update.state.stop_reason != wirex::hri_session::StopReason::caller_stopped) {
+            set_failure("hri_control_session_stopped");
+        }
+        if (hri_state.y_zero_acknowledged && !hri_ready && hri_state.phase != HriPhase::stopped) {
+            if (!radio_output.open(output_id)) {
+                set_failure("radio_waveout_open_failed");
+            } else {
+                radio_output_open = true;
+                hri_ready = true;
+                status("hri_y0_observed_radio_speaker_ready");
+            }
+        }
+    };
+
+    auto begin_stream_for_pending_rx = [&]() {
+        if (!pending_receive_start || !hri_ready || shutdown_requested) return;
+        const auto pipeline_state = pipeline->snapshot();
+        if (pipeline_state.rx_state == wirex::bm_voice::RxState::idle) {
+            pending_receive_start = false;
+            pending_receive_ended = false;
+            return;
+        }
+        const auto stream_state = stream_session->snapshot();
+        if (downlink_blocked || stream_state.phase != StreamPhase::idle || !network_ready_seen) {
+            ++counters.rejected_calls;
+            pending_receive_start = false;
+            pending_receive_ended = false;
+            pipeline->cancel_rx();
+            if (stream_state.phase != StreamPhase::idle && stream_state.phase != StreamPhase::faulted) {
+                // Receiver替换流时旧播放队列已不再属于当前通话；复位电台输出并收尾旧T会话。
+                service_stream_update(stream_session->cancel(StreamReason::cancelled, elapsed_ms()));
+            }
+            if (radio_output_open) {
+                if (!radio_output.close()) set_failure("radio_waveout_busy_cleanup_failed");
+                radio_output_open = false;
+            }
+            status("downlink_call_rejected_busy_or_hri_cleanup_incomplete");
+            return;
+        }
+        if (!radio_output_open) {
+            if (!hri_state.y_zero_acknowledged || !radio_output.open(output_id)) {
+                ++counters.rejected_calls;
+                pending_receive_start = false;
+                pending_receive_ended = false;
+                pipeline->cancel_rx();
+                downlink_blocked = true;
+                set_failure("radio_waveout_reopen_failed");
+                status("downlink_rejected_without_ready_radio_waveout");
+                return;
+            }
+            radio_output_open = true;
+            status("radio_waveout_reopened_after_network_reconnect");
+        }
+        const auto now_ms = elapsed_ms();
+        if (now_ms >= bm_bridge_window_ms) {
+            ++counters.rejected_calls;
+            pending_receive_start = false;
+            pending_receive_ended = false;
+            pipeline->cancel_rx();
+            return;
+        }
+        auto update = stream_session->begin_call(now_ms, bm_bridge_window_ms - now_ms);
+        pending_receive_start = false;
+        const bool ended_before_hri_start = pending_receive_ended;
+        pending_receive_ended = false;
+        if (update.state.phase == StreamPhase::faulted) {
+            ++counters.rejected_calls;
+            downlink_blocked = true;
+        } else {
+            ++counters.calls_started;
+        }
+        service_stream_update(std::move(update));
+        // BM 可以在电台首次 T3 之前结束短呼叫，保留这个顺序并在许可播放后排空尾音。
+        if (ended_before_hri_start && stream_session->snapshot().phase != StreamPhase::idle &&
+            stream_session->snapshot().phase != StreamPhase::faulted) {
+            service_stream_update(stream_session->network_ended(elapsed_ms()));
+        }
+    };
+
+    auto drain_pipeline_events = [&]() {
+        while (const auto event = pipeline->take_event()) {
+            switch (event->kind) {
+            case PipelineEventKind::receive_started:
+                pending_receive_start = true;
+                begin_stream_for_pending_rx();
+                break;
+            case PipelineEventKind::network_ended:
+                if (stream_session->snapshot().phase != StreamPhase::idle &&
+                    stream_session->snapshot().phase != StreamPhase::faulted) {
+                    service_stream_update(stream_session->network_ended(elapsed_ms()));
+                } else if (pending_receive_start) {
+                    pending_receive_ended = true;
+                }
+                break;
+            case PipelineEventKind::playback_drained:
+                pending_playback_drain = true;
+                break;
+            case PipelineEventKind::receive_cancelled:
+                break;
+            case PipelineEventKind::playback_start_timeout:
+                pending_receive_start = false;
+                pending_receive_ended = false;
+                ++counters.rejected_calls;
+                status("hri_t3_start_window_expired_media_cleared");
+                break;
+            case PipelineEventKind::collision:
+                ++counters.rejected_calls;
+                if (stream_session->snapshot().phase != StreamPhase::idle &&
+                    stream_session->snapshot().phase != StreamPhase::faulted) {
+                    service_stream_update(stream_session->cancel(StreamReason::cancelled, elapsed_ms()));
+                }
+                status("half_duplex_collision_rejected");
+                break;
+            case PipelineEventKind::queue_overflow:
+                ++counters.rejected_calls;
+                set_failure("pipeline_queue_bound_reached");
+                break;
+            }
+        }
+    };
+
+    auto begin_shutdown = [&](std::string_view reason) {
+        if (shutdown_requested) return;
+        shutdown_requested = true;
+        shutdown_reason.assign(reason);
+        cleanup_deadline = Clock::now() + std::chrono::milliseconds{bm_bridge_cleanup_ms};
+        pending_receive_start = false;
+        pending_receive_ended = false;
+        (void)stop_tx_input();
+        const auto now_ms = elapsed_ms();
+        if (pipeline->snapshot().tx_state != wirex::bm_voice::TxState::idle) {
+            shutdown_tx_stream_id = active_tx_stream_id;
+            shutdown_tx_terminator_pending = true;
+            shutdown_tx_terminator_reported = false;
+            if (bm_session.snapshot().state == wirex::bm::State::ready) {
+                const auto stopped = pipeline->stop_tx(Clock::now());
+                if (stopped != wirex::bm_voice::Error::none) {
+                    pipeline->cancel_tx();
+                    set_failure("tx_exit_terminator_failed");
+                    report_shutdown_terminator_not_sent("shutdown_tx_terminator_not_sent_pipeline_rejected");
+                } else {
+                    status("shutdown_tx_terminator_queued_for_udp_send");
+                }
+            } else {
+                pipeline->cancel_tx();
+                report_shutdown_terminator_not_sent("shutdown_tx_terminator_not_sent_network_lost");
+            }
+        }
+        if (hri_active && hri_state.phase != HriPhase::stopped) {
+            hri_state = hri_session.cancel().state;
+            hri_active = false;
+        }
+        const auto stream_phase = stream_session->snapshot().phase;
+        if (stream_phase != StreamPhase::idle && stream_phase != StreamPhase::faulted) {
+            service_stream_update(stream_session->cancel(StreamReason::cancelled, now_ms));
+        } else if (pipeline->snapshot().rx_state != wirex::bm_voice::RxState::idle) {
+            pipeline->cancel_rx();
+            if (radio_output_open) {
+                if (!radio_output.close()) set_failure("radio_waveout_shutdown_cleanup_failed");
+                radio_output_open = false;
+            }
+        }
+        status("shutdown_requested");
+    };
+
+    status("started");
+    if (!status_report_failed) {
+        (void)bm_stdout(u8"T：显式开始/结束 BM DMRD 语音；如需上行，请由操作者物理按住/松开手咪 PTT。\n"
+                        u8"Q/Ctrl+C：停止并退出。本机运行最多120秒，清理窗口最多3秒。\n"
+                        u8"网络下行只播放到选定的 Radio WaveOut；不发送 RF/PTT 控制命令。\n");
+    } else {
+        begin_shutdown("status_report_write_failed");
+    }
+
+    auto handle_network_loss = [&](std::string_view reason) {
+        const bool was_ready = network_ready_seen;
+        network_ready_seen = false;
+        if (was_ready) ++counters.reconnects;
+        (void)stop_tx_input();
+        pipeline->cancel_tx();
+        pipeline->cancel_rx();
+        pending_receive_start = false;
+        pending_receive_ended = false;
+        pending_playback_drain = false;
+        if (radio_output_open) {
+            if (!radio_output.close()) set_failure("radio_waveout_network_cleanup_failed");
+            radio_output_open = false;
+        }
+        const auto phase = stream_session->snapshot().phase;
+        if (shutdown_tx_terminator_pending) {
+            report_shutdown_terminator_not_sent("shutdown_tx_terminator_not_sent_network_lost");
+        }
+        if (phase != StreamPhase::idle && phase != StreamPhase::faulted) {
+            service_stream_update(stream_session->cancel(StreamReason::network_lost, elapsed_ms()));
+        }
+        status(reason);
+    };
+
+    auto drain_bm_outbound = [&]() {
+        for (auto& packet : bm_session.take_outbound()) {
+            const bool is_rptcl = packet.kind == wirex::bm::PacketKind::control &&
+                packet.bytes.size() == 9U && packet.bytes[0U] == 'R' && packet.bytes[1U] == 'P' &&
+                packet.bytes[2U] == 'T' && packet.bytes[3U] == 'C' && packet.bytes[4U] == 'L';
+            bool is_shutdown_terminator = false;
+            if (shutdown_tx_terminator_pending && packet.kind == wirex::bm::PacketKind::application) {
+                const auto decoded = wirex::dmrd::decode(packet.bytes.data(), packet.bytes.size());
+                is_shutdown_terminator = decoded && decoded.datagram.stream_id == shutdown_tx_stream_id &&
+                    (decoded.datagram.flags & 0x3FU) == 0x22U;
+            }
+            if (!transport.is_open() || !transport.send(packet.bytes.data(), packet.bytes.size())) {
+                if (is_shutdown_terminator) {
+                    report_shutdown_terminator_not_sent("shutdown_tx_terminator_udp_send_failed");
+                }
+                if (is_rptcl) status("bm_rptcl_local_udp_send_failed");
+                transport.close();
+                bm_session.transport_lost(elapsed_ms());
+                handle_network_loss("bm_udp_send_lost");
+                return false;
+            }
+            if (is_shutdown_terminator) {
+                shutdown_tx_terminator_pending = false;
+                shutdown_tx_terminator_reported = true;
+                status("shutdown_tx_terminator_udp_send_succeeded");
+            }
+            if (is_rptcl) status("bm_rptcl_local_udp_send_succeeded");
+            if (packet.kind == wirex::bm::PacketKind::application) ++counters.tx_datagrams;
+        }
+        return true;
+    };
+
+    auto pump_tx_datagrams = [&]() {
+        while (auto packet = pipeline->take_outbound()) {
+            if (bm_session.snapshot().state != wirex::bm::State::ready) {
+                if (is_shutdown_terminator(*packet)) {
+                    report_shutdown_terminator_not_sent("shutdown_tx_terminator_not_sent_network_lost");
+                }
+                pipeline->cancel_tx();
+                (void)stop_tx_input();
+                status("tx_stopped_bm_not_ready");
+                return;
+            }
+            const auto encoded = wirex::dmrd::encode(packet->datagram);
+            if (!encoded || !bm_session.send_dmrd(encoded.bytes.data(), encoded.bytes.size(), elapsed_ms())) {
+                if (is_shutdown_terminator(*packet)) {
+                    report_shutdown_terminator_not_sent("shutdown_tx_terminator_not_sent_bm_queue_rejected");
+                }
+                pipeline->cancel_tx();
+                (void)stop_tx_input();
+                status("tx_datagram_rejected_and_queue_cleared");
+                return;
+            }
+        }
+    };
+
+    auto process_t_key = [&]() {
+        const auto pstate = pipeline->snapshot();
+        if (pstate.tx_state == wirex::bm_voice::TxState::active) {
+            if (!stop_tx_input()) {
+                pipeline->cancel_tx();
+                set_failure("wavein_tx_stop_failed");
+                return;
+            }
+            const auto ended = pipeline->end_tx(Clock::now());
+            if (ended != wirex::bm_voice::Error::none) {
+                pipeline->cancel_tx();
+                set_failure("tx_audio_flush_failed");
+            } else {
+                status("tx_audio_draining_to_dmr_terminator");
+            }
+            return;
+        }
+        if (pstate.tx_state == wirex::bm_voice::TxState::draining) {
+            status("tx_busy_draining");
+            return;
+        }
+        const auto stream_phase = stream_session->snapshot().phase;
+        if (shutdown_requested || !network_ready_seen || !hri_ready || downlink_blocked ||
+            stream_phase != StreamPhase::idle || pstate.rx_state != wirex::bm_voice::RxState::idle) {
+            status("tx_start_rejected_busy_or_endpoint_not_ready");
+            return;
+        }
+        auto call = call_template;
+        const auto random_result = BCryptGenRandom(nullptr, call.stream_id.data(),
+            static_cast<ULONG>(call.stream_id.size()), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+        if (random_result < 0) {
+            set_failure("stream_id_random_failed");
+            return;
+        }
+        const auto began = pipeline->begin_tx(call,
+            wirex::bm_voice::Readiness{network_ready_seen, hri_ready}, Clock::now());
+        if (began != wirex::bm_voice::Error::none) {
+            status("tx_start_rejected_by_pipeline");
+            return;
+        }
+        if (!radio_input.open(input_id)) {
+            pipeline->cancel_tx();
+            status("radio_wavein_open_failed_tx_cancelled");
+            return;
+        }
+        active_tx_stream_id = call.stream_id;
+        radio_input_open = true;
+        status("tx_started_explicitly_by_t_key");
+    };
+
+    bool exception_while_running = false;
+    try {
+        if (!shutdown_requested) {
+            const auto initial = hri_session.start(0U);
+            hri_state = initial.state;
+            hri_active = hri_state.phase != HriPhase::stopped;
+            apply_hri_update(initial);
+        }
+
+        while (true) {
+            const auto stream_phase_at_loop_start = stream_session->snapshot().phase;
+            if (shutdown_requested && pipeline->snapshot().tx_state == wirex::bm_voice::TxState::idle &&
+                (stream_phase_at_loop_start == StreamPhase::idle || stream_phase_at_loop_start == StreamPhase::faulted)) {
+                break;
+            }
+            if (failed && !shutdown_requested) begin_shutdown(failure_reason);
+            const auto stream_phase_after_failure_check = stream_session->snapshot().phase;
+            if (shutdown_requested && pipeline->snapshot().tx_state == wirex::bm_voice::TxState::idle &&
+                (stream_phase_after_failure_check == StreamPhase::idle ||
+                 stream_phase_after_failure_check == StreamPhase::faulted)) {
+                break;
+            }
+            const auto now = Clock::now();
+            const auto now_ms = elapsed_ms();
+            if (!shutdown_requested && now_ms >= bm_bridge_window_ms) {
+                begin_shutdown("120s_run_window_expired");
+            }
+            if (!shutdown_requested && control_scope.cancel_requested()) {
+                begin_shutdown("console_cancel_requested");
+            }
+            if (control_scope.close_wait_timed_out()) {
+                set_failure("console_close_cleanup_deadline_expired");
+                cleanup_forced = true;
+                break;
+            }
+
+            DWORD queued_keys = 0U;
+            HANDLE input_handle = GetStdHandle(STD_INPUT_HANDLE);
+            if (input_handle == nullptr || input_handle == INVALID_HANDLE_VALUE ||
+                !GetNumberOfConsoleInputEvents(input_handle, &queued_keys)) {
+                set_failure("console_key_poll_failed");
+                begin_shutdown("console_key_poll_failed");
+            } else {
+                std::array<INPUT_RECORD, 32U> key_records{};
+                while (queued_keys != 0U) {
+                    DWORD read = 0U;
+                    const DWORD count = std::min<DWORD>(queued_keys, static_cast<DWORD>(key_records.size()));
+                    if (!ReadConsoleInputW(input_handle, key_records.data(), count, &read) || read == 0U || read > count) {
+                        set_failure("console_key_read_failed");
+                        begin_shutdown("console_key_read_failed");
+                        break;
+                    }
+                    queued_keys -= read;
+                    for (DWORD index = 0U; index < read; ++index) {
+                        const auto& record = key_records[index];
+                        if (record.EventType != KEY_EVENT) continue;
+                        wchar_t key = record.Event.KeyEvent.uChar.UnicodeChar;
+                        if (key >= L'a' && key <= L'z') key = static_cast<wchar_t>(key - L'a' + L'A');
+                        if (record.Event.KeyEvent.bKeyDown) {
+                            if (key == L'T' && !t_key_down) process_t_key();
+                            if (key == L'Q' && !q_key_down) begin_shutdown("user_requested_exit");
+                            if (key == L'T') t_key_down = true;
+                            if (key == L'Q') q_key_down = true;
+                        } else {
+                            if (key == L'T') t_key_down = false;
+                            if (key == L'Q') q_key_down = false;
+                        }
+                    }
+                }
+            }
+
+            if (!shutdown_requested && hri_active) {
+                const auto update = hri_session.tick(now_ms);
+                apply_hri_update(update);
+                hri_active = hri_state.phase != HriPhase::stopped;
+            }
+            service_stream_update(stream_session->tick(now_ms));
+            begin_stream_for_pending_rx();
+
+            if (port.valid() && !serial_failed) {
+                DWORD comm_errors = 0U;
+                COMSTAT comm_state{};
+                if (!ClearCommError(port.get(), &comm_errors, &comm_state) || comm_errors != 0U) {
+                    serial_failed = true;
+                    set_failure("serial_transport_error");
+                    begin_shutdown("serial_transport_error");
+                } else if (comm_state.cbInQue != 0U) {
+                    std::array<std::uint8_t, 2048U> serial_bytes{};
+                    const DWORD wanted = std::min<DWORD>(comm_state.cbInQue,
+                        static_cast<DWORD>(serial_bytes.size()));
+                    DWORD actual = 0U;
+                    if (!ReadFile(port.get(), serial_bytes.data(), wanted, &actual, nullptr) || actual > wanted) {
+                        serial_failed = true;
+                        set_failure("serial_read_failed");
+                        begin_shutdown("serial_read_failed");
+                    } else if (actual != 0U) {
+                        if (hri_active && !shutdown_requested) {
+                            apply_hri_update(hri_session.feed(serial_bytes.data(), actual, elapsed_ms()));
+                            hri_active = hri_state.phase != HriPhase::stopped;
+                        }
+                        const auto stream_phase = stream_session->snapshot().phase;
+                        if (stream_phase != StreamPhase::idle && stream_phase != StreamPhase::faulted) {
+                            service_stream_update(stream_session->feed(serial_bytes.data(), actual, elapsed_ms()));
+                        }
+                        begin_stream_for_pending_rx();
+                    }
+                }
+            }
+
+            auto network_before = bm_session.snapshot().state;
+            bm_session.tick(now_ms);
+            if (!transport.is_open() && bm_session.snapshot().state == wirex::bm::State::waiting_login_ack) {
+                if (!transport.open(master)) {
+                    bm_session.transport_lost(now_ms);
+                    set_failure("udp_reopen_failed");
+                }
+            }
+            if (transport.is_open() && !drain_bm_outbound()) {
+                if (network_before == wirex::bm::State::ready) handle_network_loss("bm_reconnect_started");
+            }
+            for (std::size_t attempt = 0U; attempt < 8U && transport.is_open(); ++attempt) {
+                auto received = transport.receive(0U);
+                if (received.kind == wirex::bm::ReceiveKind::timeout) break;
+                if (received.kind != wirex::bm::ReceiveKind::datagram) {
+                    const bool was_ready = bm_session.snapshot().state == wirex::bm::State::ready;
+                    transport.close();
+                    bm_session.transport_lost(elapsed_ms());
+                    if (was_ready) handle_network_loss("bm_udp_receive_lost");
+                    break;
+                }
+                const auto prior_state = bm_session.snapshot().state;
+                (void)bm_session.on_datagram(received.bytes.data(), received.bytes.size(),
+                    received.source, elapsed_ms());
+                auto current_state = bm_session.snapshot().state;
+                if (prior_state != wirex::bm::State::ready && current_state == wirex::bm::State::ready) {
+                    network_ready_seen = true;
+                    status("bm_session_ready_by_server_packets");
+                }
+                if (prior_state == wirex::bm::State::ready && current_state != wirex::bm::State::ready) {
+                    handle_network_loss("bm_session_left_ready_state");
+                }
+                while (auto incoming = bm_session.take_received_dmrd()) {
+                    const auto decoded = wirex::dmrd::decode(incoming->bytes.data(), incoming->bytes.size());
+                    if (!decoded) {
+                        ++counters.rejected_calls;
+                        continue;
+                    }
+                    const auto active_pipeline = pipeline->snapshot();
+                    const auto active_hri = stream_session->snapshot();
+                    const bool hri_busy = active_hri.phase != StreamPhase::idle;
+                    if (downlink_blocked || (hri_busy &&
+                        (active_pipeline.rx_state == wirex::bm_voice::RxState::idle ||
+                         decoded.datagram.stream_id != active_pipeline.receive_call.stream_id))) {
+                        // HRI仍在T0收尾或上一通话播放时，不允许新网络流覆盖当前呼叫状态。
+                        ++counters.rejected_calls;
+                        continue;
+                    }
+                    ++counters.rx_datagrams;
+                    const auto accepted = pipeline->ingest_rx(decoded.datagram, Clock::now());
+                    if (accepted.error != wirex::bm_voice::Error::none &&
+                        accepted.error != wirex::bm_voice::Error::filtered &&
+                        accepted.error != wirex::bm_voice::Error::half_duplex_collision) {
+                        ++counters.rejected_calls;
+                    }
+                    drain_pipeline_events();
+                }
+                if (!drain_bm_outbound()) break;
+            }
+            if (network_ready_seen && bm_session.snapshot().state != wirex::bm::State::ready) {
+                handle_network_loss("bm_session_reconnecting");
+            } else if (bm_session.snapshot().state == wirex::bm::State::ready) {
+                network_ready_seen = true;
+            }
+
+            const auto before_pipeline_tick = pipeline->snapshot();
+            const auto pipeline_tick_error = pipeline->tick(Clock::now());
+            if (pipeline_tick_error == wirex::bm_voice::Error::deadline_missed) {
+                const auto after_pipeline_tick = pipeline->snapshot();
+                if (before_pipeline_tick.tx_state != wirex::bm_voice::TxState::idle &&
+                    after_pipeline_tick.tx_state == wirex::bm_voice::TxState::idle) {
+                    if (!stop_tx_input()) set_failure("wavein_deadline_cleanup_failed");
+                    ++counters.rejected_calls;
+                    status("tx_deadline_missed_call_terminated_with_one_eot");
+                }
+                if (before_pipeline_tick.rx_state != wirex::bm_voice::RxState::idle &&
+                    after_pipeline_tick.rx_state == wirex::bm_voice::RxState::idle) {
+                    ++counters.rejected_calls;
+                    pending_receive_start = false;
+                    pending_receive_ended = false;
+                    pending_playback_drain = false;
+                    const auto stream_phase = stream_session->snapshot().phase;
+                    if (stream_phase != StreamPhase::idle && stream_phase != StreamPhase::faulted) {
+                        service_stream_update(stream_session->cancel(StreamReason::transport_failed, elapsed_ms()));
+                    }
+                    status("rx_deadline_missed_media_cleared_hri_t0_cleanup");
+                }
+            } else if (pipeline_tick_error != wirex::bm_voice::Error::none &&
+                       pipeline_tick_error != wirex::bm_voice::Error::filtered &&
+                       pipeline_tick_error != wirex::bm_voice::Error::half_duplex_collision) {
+                set_failure("voice_pipeline_tick_failed");
+            }
+            drain_pipeline_events();
+            begin_stream_for_pending_rx();
+
+            if (radio_input_open && pipeline->snapshot().tx_state == wirex::bm_voice::TxState::active) {
+                const DWORD input_wait = WaitForSingleObject(radio_input.event(), 0U);
+                if (input_wait == WAIT_FAILED) {
+                    set_failure("radio_wavein_event_failed");
+                } else {
+                    for (auto& buffer : radio_input.buffers()) {
+                        if ((buffer.header.dwFlags & WHDR_DONE) == 0) continue;
+                        const DWORD bytes = buffer.header.dwBytesRecorded;
+                        if (bytes > buffer.header.dwBufferLength || bytes % sizeof(std::int16_t) != 0U) {
+                            set_failure("radio_wavein_pcm_invalid");
+                            break;
+                        }
+                        const auto samples = static_cast<std::size_t>(bytes / sizeof(std::int16_t));
+                        if (samples != 0U) {
+                            const auto gain = wirex::pcm_gain::apply(buffer.samples.data(), samples, 16000U);
+                            if (!gain.valid) {
+                                set_failure("tx_pcm_gain_failed");
+                                break;
+                            }
+                            wirex::pcm_gain::accumulate(counters.tx_pcm_input_stats, gain.before);
+                            wirex::pcm_gain::accumulate(counters.tx_pcm_gained_stats, gain.after);
+                            if (gain.clipped_samples >
+                                std::numeric_limits<std::uint64_t>::max() - counters.tx_pcm_clipped_samples) {
+                                counters.tx_pcm_clipped_samples = std::numeric_limits<std::uint64_t>::max();
+                            } else {
+                                counters.tx_pcm_clipped_samples += gain.clipped_samples;
+                            }
+                            const auto pushed = pipeline->push_tx_audio(buffer.samples.data(), samples, Clock::now());
+                            if (!pushed) {
+                                set_failure("tx_audio_queue_rejected");
+                                break;
+                            }
+                            counters.tx_audio_samples += samples;
+                        }
+                        buffer.header.dwBytesRecorded = 0U;
+                        if (radio_input.requeue(buffer) != MMSYSERR_NOERROR) {
+                            set_failure("radio_wavein_requeue_failed");
+                            break;
+                        }
+                    }
+                }
+            }
+            if (failed && !shutdown_requested) begin_shutdown(failure_reason);
+
+            pump_tx_datagrams();
+            if (transport.is_open()) (void)drain_bm_outbound();
+
+            if (radio_output_open) {
+                radio_output.reap();
+                if (radio_output.completion_overflowed()) {
+                    set_failure("waveout_completion_queue_overflow");
+                    begin_shutdown("waveout_completion_queue_overflow");
+                }
+                WaveOutput::CompletedFrames completed{};
+                while (radio_output.take_completed_frames(completed)) {
+                    const auto acknowledged = pipeline->acknowledge_playback(
+                        completed.generation, completed.count, Clock::now());
+                    if (acknowledged != wirex::bm_voice::Error::none &&
+                        acknowledged != wirex::bm_voice::Error::stale_playback_ack) {
+                        set_failure("playback_frame_ack_failed");
+                    }
+                    if (acknowledged == wirex::bm_voice::Error::none) {
+                        counters.pcm_playback_frames += completed.count;
+                    }
+                }
+                for (std::size_t submitted = 0U; submitted < 3U && radio_output.has_capacity(); ++submitted) {
+                    wirex::bm_voice::PlaybackFrame frame{};
+                    if (!pipeline->take_playback_pcm(frame)) break;
+                    const auto byte_count = static_cast<DWORD>(frame.sample_count * sizeof(std::int16_t));
+                    const auto result = radio_output.submit_playback_frame(frame.pcm.data(),
+                        byte_count, frame.generation);
+                    if (result != WaveOutput::SubmitResult::queued) {
+                        pipeline->cancel_rx();
+                        if (!radio_output.close()) set_failure("waveout_submit_cleanup_failed");
+                        radio_output_open = false;
+                        set_failure("waveout_playback_submit_failed");
+                        break;
+                    }
+                }
+                drain_pipeline_events();
+                if (pending_playback_drain && radio_output.all_drained() &&
+                    stream_session->snapshot().phase == StreamPhase::draining) {
+                    pending_playback_drain = false;
+                    service_stream_update(stream_session->playback_drained(elapsed_ms()));
+                }
+            }
+
+            pump_tx_datagrams();
+            if (transport.is_open()) (void)drain_bm_outbound();
+            if (failed && !shutdown_requested) begin_shutdown(failure_reason);
+
+            if (shutdown_requested && cleanup_deadline && Clock::now() >= *cleanup_deadline) {
+                cleanup_forced = pipeline->snapshot().tx_state != wirex::bm_voice::TxState::idle ||
+                    pipeline->snapshot().rx_state != wirex::bm_voice::RxState::idle ||
+                    (stream_session->snapshot().phase != StreamPhase::idle &&
+                     stream_session->snapshot().phase != StreamPhase::faulted);
+                if (cleanup_forced) {
+                    report_shutdown_terminator_not_sent("shutdown_tx_terminator_not_sent_cleanup_deadline");
+                    pipeline->cancel_tx();
+                    pipeline->cancel_rx();
+                    (void)stop_tx_input();
+                    if (radio_output_open) {
+                        (void)radio_output.close();
+                        radio_output_open = false;
+                    }
+                    set_failure("cleanup_deadline_exceeded");
+                }
+                break;
+            }
+            const auto stream_phase = stream_session->snapshot().phase;
+            if (shutdown_requested && pipeline->snapshot().tx_state == wirex::bm_voice::TxState::idle &&
+                (stream_phase == StreamPhase::idle || stream_phase == StreamPhase::faulted)) {
+                break;
+            }
+            Sleep(5U);
+        }
+    } catch (...) {
+        exception_while_running = true;
+        set_failure("runtime_exception");
+        shutdown_requested = true;
+        shutdown_reason = "runtime_exception";
+        cleanup_deadline = Clock::now() + std::chrono::milliseconds{bm_bridge_cleanup_ms};
+        pending_receive_start = false;
+        (void)stop_tx_input();
+        if (hri_active && hri_state.phase != HriPhase::stopped) {
+            hri_state = hri_session.cancel().state;
+            hri_active = false;
+        }
+        const auto state = stream_session->snapshot();
+        if (state.start_write_attempted && !state.stop_write_attempted && port.valid()) {
+            DWORD written = 0U;
+            const BOOL wrote = WriteFile(port.get(), stop_frame_result.bytes.data(),
+                static_cast<DWORD>(stop_frame_result.bytes.size()), &written, nullptr);
+            if (wrote == FALSE || written != stop_frame_result.bytes.size()) {
+                set_failure("exception_cleanup_t0_write_failed");
+            }
+        }
+        pipeline->cancel_tx();
+        pipeline->cancel_rx();
+        if (radio_output_open) {
+            (void)radio_output.close();
+            radio_output_open = false;
+        }
+    }
+
+    if (!shutdown_requested) begin_shutdown("runtime_loop_ended");
+    report_shutdown_terminator_not_sent("shutdown_tx_terminator_not_sent_cleanup_ended");
+    if (pipeline->snapshot().tx_state != wirex::bm_voice::TxState::idle) {
+        pipeline->cancel_tx();
+    }
+    pipeline->cancel_rx();
+    const bool input_cleanup_ok = stop_tx_input();
+    const bool output_cleanup_ok = radio_output.close();
+    radio_output_open = false;
+    const HANDLE raw_port = port.release();
+    const bool serial_cleanup_ok = raw_port == nullptr || raw_port == INVALID_HANDLE_VALUE || CloseHandle(raw_port) != FALSE;
+    const bool bm_ready_before_stop = bm_session.snapshot().state == wirex::bm::State::ready;
+    if (bm_session.snapshot().state != wirex::bm::State::stopped) {
+        bm_session.stop(elapsed_ms());
+        if (bm_ready_before_stop) {
+            if (transport.is_open()) {
+                status("bm_rptcl_local_send_queued");
+                (void)drain_bm_outbound();
+            } else {
+                status("bm_rptcl_not_sent_transport_closed");
+            }
+        } else {
+            status("bm_rptcl_not_queued_bm_not_ready");
+        }
+    }
+    transport.close();
+    const bool signal_ok = control_scope.signal_cleanup_complete();
+    const bool unregister_ok = control_scope.unregister_now();
+    if (!input_cleanup_ok || !output_cleanup_ok || !serial_cleanup_ok || !signal_ok || !unregister_ok) {
+        set_failure("owned_resource_cleanup_failed");
+    }
+    if (exception_while_running) status("stopped_after_runtime_exception");
+    else status(failed ? "stopped_with_failure" : "stopped");
+    if (failed) {
+        std::wstring final_text = L"BM + FTX-1 bridge stopped with bounded cleanup; reason=";
+        final_text.append(failure_reason.begin(), failure_reason.end());
+        if (status_report_failed) final_text.append(L"; status_report=failed");
+        final_text.append(L". radio_state=unknown.\n");
+        (void)bm_stderr(final_text);
+    } else {
+        (void)bm_stderr(L"BM + FTX-1 bridge stopped; radio_state=unknown.\n");
+    }
+    return failed ? 2 : 0;
+}
+
+#endif // WIREX_ENABLE_BM_BRIDGE
+
 void print_help()
 {
     std::wcout << L"wirex_probe - offline-first FTX-1 DIRECT diagnostic CLI\n"
@@ -3849,6 +5491,14 @@ void print_help()
 
 int wmain(int argc, wchar_t* argv[])
 {
+#ifdef WIREX_ENABLE_BM_BRIDGE
+    try {
+        return bm_bridge_main(argc, argv);
+    } catch (...) {
+        (void)bm_stderr(L"Native BM bridge failed before or during controlled startup; no credential or payload details were recorded.\n");
+        return 2;
+    }
+#else
     if (argc == 2 && std::wstring_view(argv[1]) == L"--help") {
         print_help();
         return 0;
@@ -3992,4 +5642,5 @@ int wmain(int argc, wchar_t* argv[])
     }
     print_help();
     return 2;
+#endif
 }

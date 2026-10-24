@@ -235,6 +235,133 @@ if(WIN32)
 endif()
 
 if(WIN32)
+    add_library(wirex_dmr_signal third_party/dmr_signal/dmr_signal.cpp)
+    target_include_directories(wirex_dmr_signal PUBLIC third_party/dmr_signal)
+    target_compile_features(wirex_dmr_signal PUBLIC cxx_std_17)
+    if(MSVC)
+        target_compile_options(wirex_dmr_signal PRIVATE /W4 /permissive- /utf-8)
+    endif()
+
+    add_library(wirex_dmr_call src/dmr_call.cpp)
+    target_include_directories(wirex_dmr_call PUBLIC include)
+    target_compile_features(wirex_dmr_call PUBLIC cxx_std_17)
+    target_link_libraries(wirex_dmr_call PUBLIC wirex_dmrd wirex_dmr_signal)
+    if(MSVC)
+        target_compile_options(wirex_dmr_call PRIVATE /W4 /permissive- /utf-8)
+    endif()
+
+    add_library(wirex_dmr_upstream
+        third_party/droidstar_mbe/upstream/imbe_vocoder/aux_sub.cc
+        third_party/droidstar_mbe/upstream/imbe_vocoder/basicop2.cc
+        third_party/droidstar_mbe/upstream/imbe_vocoder/ch_decode.cc
+        third_party/droidstar_mbe/upstream/imbe_vocoder/ch_encode.cc
+        third_party/droidstar_mbe/upstream/imbe_vocoder/dc_rmv.cc
+        third_party/droidstar_mbe/upstream/imbe_vocoder/decode.cc
+        third_party/droidstar_mbe/upstream/imbe_vocoder/dsp_sub.cc
+        third_party/droidstar_mbe/upstream/imbe_vocoder/encode.cc
+        third_party/droidstar_mbe/upstream/imbe_vocoder/imbe_vocoder.cc
+        third_party/droidstar_mbe/upstream/imbe_vocoder/imbe_vocoder_impl.cc
+        third_party/droidstar_mbe/upstream/imbe_vocoder/math_sub.cc
+        third_party/droidstar_mbe/upstream/imbe_vocoder/pe_lpf.cc
+        third_party/droidstar_mbe/upstream/imbe_vocoder/pitch_est.cc
+        third_party/droidstar_mbe/upstream/imbe_vocoder/pitch_ref.cc
+        third_party/droidstar_mbe/upstream/imbe_vocoder/qnt_sub.cc
+        third_party/droidstar_mbe/upstream/imbe_vocoder/rand_gen.cc
+        third_party/droidstar_mbe/upstream/imbe_vocoder/sa_decode.cc
+        third_party/droidstar_mbe/upstream/imbe_vocoder/sa_encode.cc
+        third_party/droidstar_mbe/upstream/imbe_vocoder/sa_enh.cc
+        third_party/droidstar_mbe/upstream/imbe_vocoder/tbls.cc
+        third_party/droidstar_mbe/upstream/imbe_vocoder/uv_synt.cc
+        third_party/droidstar_mbe/upstream/imbe_vocoder/v_synt.cc
+        third_party/droidstar_mbe/upstream/imbe_vocoder/v_uv_det.cc
+        third_party/droidstar_mbe/upstream/mbe/ambe.cpp
+        third_party/droidstar_mbe/upstream/mbe/ambe3600x2400.cpp
+        third_party/droidstar_mbe/upstream/mbe/ambe3600x2450.cpp
+        third_party/droidstar_mbe/upstream/mbe/mbevocoder.cpp)
+    target_include_directories(wirex_dmr_upstream PUBLIC third_party/droidstar_mbe/upstream)
+    target_compile_features(wirex_dmr_upstream PUBLIC cxx_std_17)
+    target_compile_definitions(wirex_dmr_upstream PRIVATE _USE_MATH_DEFINES)
+    if(MSVC)
+        target_compile_options(wirex_dmr_upstream PRIVATE /W0 /permissive-)
+    endif()
+
+    add_library(wirex_dmr_vocoder src/dmr_vocoder.cpp)
+    target_include_directories(wirex_dmr_vocoder PUBLIC include)
+    target_compile_features(wirex_dmr_vocoder PUBLIC cxx_std_17)
+    target_link_libraries(wirex_dmr_vocoder PUBLIC wirex_dmr_upstream)
+    if(MSVC)
+        target_compile_options(wirex_dmr_vocoder PRIVATE /W4 /permissive- /utf-8)
+    endif()
+
+    add_library(wirex_pcm_resampler src/pcm_resampler.cpp)
+    target_include_directories(wirex_pcm_resampler PUBLIC include)
+    target_compile_features(wirex_pcm_resampler PUBLIC cxx_std_17)
+    if(MSVC)
+        target_compile_options(wirex_pcm_resampler PRIVATE /W4 /permissive- /utf-8)
+    endif()
+
+    add_library(wirex_bm_session src/bm_session.cpp)
+    target_include_directories(wirex_bm_session PUBLIC include)
+    target_compile_features(wirex_bm_session PUBLIC cxx_std_17)
+    target_link_libraries(wirex_bm_session PUBLIC bcrypt)
+    if(MSVC)
+        target_compile_options(wirex_bm_session PRIVATE /W4 /permissive- /utf-8)
+    endif()
+
+    add_library(wirex_bm_udp src/bm_udp.cpp)
+    target_include_directories(wirex_bm_udp PUBLIC include)
+    target_compile_features(wirex_bm_udp PUBLIC cxx_std_17)
+    target_link_libraries(wirex_bm_udp PUBLIC wirex_bm_session ws2_32)
+    if(MSVC)
+        target_compile_options(wirex_bm_udp PRIVATE /W4 /permissive- /utf-8)
+    endif()
+
+    add_library(wirex_bm_voice_pipeline src/bm_voice_pipeline.cpp)
+    target_include_directories(wirex_bm_voice_pipeline PUBLIC include)
+    target_compile_features(wirex_bm_voice_pipeline PUBLIC cxx_std_17)
+    target_link_libraries(wirex_bm_voice_pipeline PUBLIC wirex_dmr_call wirex_dmr_vocoder wirex_pcm_resampler)
+    if(MSVC)
+        target_compile_options(wirex_bm_voice_pipeline PRIVATE /W4 /permissive- /utf-8)
+    endif()
+
+    add_library(wirex_hri_stream_session src/hri_stream_session.cpp)
+    target_include_directories(wirex_hri_stream_session PUBLIC include)
+    target_compile_features(wirex_hri_stream_session PUBLIC cxx_std_17)
+    target_link_libraries(wirex_hri_stream_session PUBLIC wirex_direct_stream wirex_direct_frame)
+    if(MSVC)
+        target_compile_options(wirex_hri_stream_session PRIVATE /W4 /permissive- /utf-8)
+    endif()
+
+    add_executable(dmr_call_test tests/dmr_call_test.cpp)
+    target_link_libraries(dmr_call_test PRIVATE wirex_dmr_call)
+    add_executable(bm_session_test tests/bm_session_test.cpp)
+    target_link_libraries(bm_session_test PRIVATE wirex_bm_session)
+    add_executable(bm_udp_test tests/bm_udp_test.cpp)
+    target_link_libraries(bm_udp_test PRIVATE wirex_bm_udp)
+    add_executable(dmr_vocoder_test tests/dmr_vocoder_test.cpp)
+    target_link_libraries(dmr_vocoder_test PRIVATE wirex_dmr_vocoder)
+    add_executable(pcm_resampler_test tests/pcm_resampler_test.cpp)
+    target_link_libraries(pcm_resampler_test PRIVATE wirex_pcm_resampler)
+    add_executable(bm_voice_pipeline_test tests/bm_voice_pipeline_test.cpp)
+    target_link_libraries(bm_voice_pipeline_test PRIVATE wirex_bm_voice_pipeline)
+    add_executable(hri_stream_session_test tests/hri_stream_session_test.cpp)
+    target_link_libraries(hri_stream_session_test PRIVATE wirex_hri_stream_session)
+    add_executable(bm_bridge_loopback_test tests/bm_bridge_loopback_test.cpp)
+    target_link_libraries(bm_bridge_loopback_test PRIVATE
+        wirex_bm_session wirex_bm_udp wirex_bm_voice_pipeline wirex_hri_stream_session ws2_32)
+
+    add_executable(wirex_bridge src/probe_main.cpp)
+    target_compile_features(wirex_bridge PRIVATE cxx_std_17)
+    target_compile_definitions(wirex_bridge PRIVATE WIREX_ENABLE_BM_BRIDGE)
+    if(MSVC)
+        target_compile_options(wirex_bridge PRIVATE /W4 /permissive- /utf-8)
+    endif()
+    target_link_libraries(wirex_bridge PRIVATE
+        wirex_direct_stream wirex_direct_frame wirex_hri_session wirex_hri_downlink_session
+        wirex_hri_radio_protocol wirex_hri_t_payload wirex_wave_file wirex_pcm_gain
+        wirex_console_lifecycle wirex_session_report wirex_bm_session wirex_bm_udp
+        wirex_bm_voice_pipeline wirex_hri_stream_session winmm bcrypt ws2_32 user32)
+
     add_executable(wirex_probe src/probe_main.cpp)
     target_compile_features(wirex_probe PRIVATE cxx_std_17)
     if(MSVC)
@@ -262,4 +389,12 @@ if(WIN32)
     add_test(NAME console_lifecycle_test COMMAND console_lifecycle_test)
     set_tests_properties(console_lifecycle_test PROPERTIES SKIP_RETURN_CODE 77)
     add_test(NAME session_report_test COMMAND session_report_test)
+    add_test(NAME dmr_call_test COMMAND dmr_call_test)
+    add_test(NAME bm_session_test COMMAND bm_session_test)
+    add_test(NAME bm_udp_test COMMAND bm_udp_test)
+    add_test(NAME dmr_vocoder_test COMMAND dmr_vocoder_test)
+    add_test(NAME pcm_resampler_test COMMAND pcm_resampler_test)
+    add_test(NAME bm_voice_pipeline_test COMMAND bm_voice_pipeline_test)
+    add_test(NAME hri_stream_session_test COMMAND hri_stream_session_test)
+    add_test(NAME bm_bridge_loopback_test COMMAND bm_bridge_loopback_test)
 endif()
