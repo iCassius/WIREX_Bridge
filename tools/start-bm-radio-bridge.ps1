@@ -147,8 +147,6 @@ function Get-HriSerialDevices {
             ProductId = $identity.Groups[1].Value.ToUpperInvariant()
             FriendlyName = $friendlyName
             BusDescription = $busDescription
-            ParentInstanceId = [string](Get-PnpPropertyData -InstanceId $instanceId -KeyName 'DEVPKEY_Device_Parent')
-            ContainerId = [string](Get-PnpPropertyData -InstanceId $instanceId -KeyName 'DEVPKEY_Device_ContainerId')
             PortName = if ($portMatch.Success) { $portMatch.Groups[1].Value.ToUpperInvariant() } else { '' }
             IsHri = ($busDescription -match '(?i)\bHRI\b')
         }
@@ -161,46 +159,42 @@ function Read-PortSelection {
     if ($Ports.Count -eq 0) { throw '当前没有枚举到 Windows COM 端口。' }
     $current = @($Ports | ForEach-Object { ([string]$_).ToUpperInvariant() })
     $presentHri = @($HriDevices | Where-Object { $_.IsHri -and $_.PortName -and $current -contains $_.PortName })
-    if (-not $Port -and $presentHri.Count -eq 1) {
-        $device = $presentHri[0]
-        Write-Host ("PnP 唯一识别到 YAESU HRI USB 接口：{0} · VID_26AA&PID_{1}" -f $device.PortName, $device.ProductId)
-        Write-Host ("  实例：{0}" -f $device.InstanceId)
-        Write-Host ("  父实例：{0}；容器：{1}" -f $device.ParentInstanceId, $device.ContainerId)
-        Write-Host '  此次 COM 选择只读取 PnP 和串口登记信息，没有打开串口。'
-        return $device.PortName
+    $com5Matches = @($presentHri | Where-Object { $_.PortName -ieq 'COM5' })
+    if (-not $Port -and $current -contains 'COM5' -and $presentHri.Count -eq 1 -and $com5Matches.Count -eq 1) {
+        Write-Host ("已识别电台串口 COM5 · VID_26AA&PID_{0}" -f $com5Matches[0].ProductId)
+        return 'COM5'
     }
 
     if (-not $Port) {
         if ($presentHri.Count -gt 1) {
-            Write-Host 'PnP 找到多个当前 YAESU HRI USB 接口；请选择其中一个实例：'
+            Write-Host '请选择本次使用的 HRI 串口：'
             foreach ($device in $presentHri) {
-                Write-Host ("  {0} · VID_26AA&PID_{1} · {2}" -f $device.PortName, $device.ProductId, $device.InstanceId)
-                Write-Host ("    父实例：{0}；容器：{1}" -f $device.ParentInstanceId, $device.ContainerId)
+                Write-Host ("  {0} · VID_26AA&PID_{1}" -f $device.PortName, $device.ProductId)
             }
         } else {
-            Write-Host '没有唯一的 PnP YAESU HRI USB 接口；当前 COM 只作手工选择：'
+            Write-Host '请选择本次使用的 HRI 串口：'
             foreach ($item in $current) {
                 $matches = @($HriDevices | Where-Object { $_.PortName -ieq $item })
                 if ($matches.Count -eq 1) {
-                    Write-Host ("  {0} · VID_26AA&PID_{1} · {2}" -f $item, $matches[0].ProductId, $matches[0].InstanceId)
+                    Write-Host ("  {0} · VID_26AA&PID_{1}" -f $item, $matches[0].ProductId)
                 } else {
-                    Write-Host "  $item · 未由 PnP 确认为 HRI 接口"
+                    Write-Host "  $item"
                 }
             }
         }
     }
     $restrictToHri = (-not $Port -and $presentHri.Count -gt 1)
     while ($true) {
-        $selected = if ($Port) { $Port } else { Read-Host '输入本次 HRI COM 端口；选择只作人工确认，不会扫描或打开候选端口' }
+        $selected = if ($Port) { $Port } else { Read-Host '输入本次 HRI COM 端口' }
         $selected = ([string]$selected).Trim().ToUpperInvariant()
         $isCurrent = @($current | Where-Object { $_ -ieq $selected }).Count -eq 1
         $isHriCandidate = @($presentHri | Where-Object { $_.PortName -ieq $selected }).Count -eq 1
         if ($isCurrent -and (-not $restrictToHri -or $isHriCandidate)) {
             $selectedDevice = @($presentHri | Where-Object { $_.PortName -ieq $selected })
             if ($selectedDevice.Count -eq 1) {
-                Write-Host ("已按人工选择 {0}：{1}" -f $selected, $selectedDevice[0].InstanceId)
+                Write-Host ("已选择 HRI 串口 {0}" -f $selected)
             } else {
-                Write-Host "已按人工选择 $selected；PnP 未确认该端口属于 YAESU HRI。" -ForegroundColor Yellow
+                Write-Host ("已选择串口 {0}" -f $selected)
             }
             return $selected
         }
@@ -211,32 +205,35 @@ function Read-PortSelection {
 
 function Read-WaveInSelection {
     param([Parameter(Mandatory=$true)][object[]]$Devices)
-    if ($Devices.Count -eq 0) { throw '当前没有枚举到 WaveIn 设备。' }
-    Write-Host '选择 Radio WaveIn：'
-    foreach ($device in $Devices) {
-        $support = if ($device.pcm_48000_mono_s16_supported) { '48 kHz PCM 可用' } else { '不支持目标 PCM' }
-        Write-Host ("  ID {0}: {1} · {2}" -f $device.id, $device.name, $support)
+    $available = @($Devices | Where-Object {
+        $_.pcm_48000_mono_s16_supported -and -not [string]::IsNullOrWhiteSpace([string]$_.endpoint_id)
+    })
+    if ($available.Count -eq 0) { throw '没有可用的 48 kHz WaveIn 端点；请检查电台 USB 音频连接后重试。' }
+    Write-Host '请选择电台音频输入：'
+    foreach ($device in $available) {
+        Write-Host ("  ID {0}: {1} · 48 kHz PCM 可用" -f $device.id, $device.name)
     }
     while ($true) {
         $text = if ($WaveIn) { $WaveIn } else { Read-Host '输入本次枚举得到的 Radio WaveIn ID' }
         $id = 0
         if ([int]::TryParse([string]$text, [ref]$id)) {
-            $matches = @($Devices | Where-Object { [int]$_.id -eq $id })
-            if ($matches.Count -eq 1 -and $matches[0].pcm_48000_mono_s16_supported) { return $matches[0] }
+            $matches = @($available | Where-Object { [int]$_.id -eq $id })
+            if ($matches.Count -eq 1) { return $matches[0] }
         }
-        Write-Host 'ID 无效或该 WaveIn 不支持 48 kHz、单声道、16 位 PCM。' -ForegroundColor Yellow
+        Write-Host '请输入列表中的 WaveIn ID。' -ForegroundColor Yellow
         $WaveIn = ''
     }
 }
 
 function Read-WaveOutSelection {
     param([Parameter(Mandatory=$true)][object[]]$Devices)
-    $available = @($Devices | Where-Object { $_.pcm_48000_mono_s16_supported })
-    if ($available.Count -eq 0) { throw '没有支持 48 kHz、单声道、16 位 PCM 的 WaveOut 设备。' }
-    Write-Host '选择 Radio WaveOut：'
-    foreach ($device in $Devices) {
-        $support = if ($device.pcm_48000_mono_s16_supported) { '48 kHz PCM 可用' } else { '不支持目标 PCM' }
-        Write-Host ("  ID {0}: {1} · {2}" -f $device.id, $device.name, $support)
+    $available = @($Devices | Where-Object {
+        $_.pcm_48000_mono_s16_supported -and -not [string]::IsNullOrWhiteSpace([string]$_.endpoint_id)
+    })
+    if ($available.Count -eq 0) { throw '没有可用的 48 kHz WaveOut 端点；请检查电台 USB 音频连接后重试。' }
+    Write-Host '请选择电台音频输出：'
+    foreach ($device in $available) {
+        Write-Host ("  ID {0}: {1} · 48 kHz PCM 可用" -f $device.id, $device.name)
     }
     while ($true) {
         $text = if ($WaveOut) { $WaveOut } else { Read-Host '输入本次枚举得到的 Radio WaveOut ID' }
@@ -245,96 +242,24 @@ function Read-WaveOutSelection {
             $matches = @($available | Where-Object { [int]$_.id -eq $id })
             if ($matches.Count -eq 1) { return $matches[0] }
         }
-        Write-Host 'ID 无效或该 WaveOut 不支持 48 kHz、单声道、16 位 PCM。' -ForegroundColor Yellow
+        Write-Host '请输入列表中的 WaveOut ID。' -ForegroundColor Yellow
         $WaveOut = ''
     }
 }
 
-function Get-NearestNonRootUsbHub {
-    param([Parameter(Mandatory=$true)][string]$InstanceId)
-    if (-not (Get-Command Get-PnpDevice -ErrorAction SilentlyContinue)) { return $null }
-    $current = $InstanceId
-    $seen = @{}
-    for ($depth = 0; $depth -lt 12 -and $current -and -not $seen.ContainsKey($current); $depth++) {
-        $seen[$current] = $true
-        $parent = [string](Get-PnpPropertyData -InstanceId $current -KeyName 'DEVPKEY_Device_Parent')
-        if (-not $parent) { return $null }
-        if ($parent -match '(?i)^USB\\ROOT_HUB') { return $null }
-        $compatibleIds = @(Get-PnpPropertyData -InstanceId $parent -KeyName 'DEVPKEY_Device_CompatibleIds' |
-            ForEach-Object { [string]$_ })
-        if (@($compatibleIds | Where-Object { $_ -match '(?i)^USB\\USB(20|30)_HUB$' }).Count -gt 0) {
-            $locations = @(Get-PnpPropertyData -InstanceId $parent -KeyName 'DEVPKEY_Device_LocationPaths' |
-                ForEach-Object { [string]$_ })
-            return [pscustomobject]@{ InstanceId = $parent; LocationPaths = $locations }
-        }
-        $current = $parent
-    }
-    return $null
-}
-
-function Test-PnpDescendantOf {
-    param([Parameter(Mandatory=$true)][string]$InstanceId, [Parameter(Mandatory=$true)][string]$AncestorInstanceId)
-    $current = $InstanceId
-    $seen = @{}
-    for ($depth = 0; $depth -lt 12 -and $current -and -not $seen.ContainsKey($current); $depth++) {
-        $seen[$current] = $true
-        $parent = [string](Get-PnpPropertyData -InstanceId $current -KeyName 'DEVPKEY_Device_Parent')
-        if (-not $parent) { return $false }
-        if ($parent -ieq $AncestorInstanceId) { return $true }
-        $current = $parent
-    }
-    return $false
-}
-
-function Find-ConfirmedRadioAudioPair {
-    param([Parameter(Mandatory=$true)][object]$RadioSerial, [Parameter(Mandatory=$true)][object]$Devices)
-    if (-not $RadioSerial.IsHri -or -not (Get-Command Get-PnpDevice -ErrorAction SilentlyContinue)) { return $null }
-    $audioAdapters = @(Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object {
-        $_.InstanceId -match '(?i)^USB\\VID_0D8C&PID_0016\\'
+function Find-UsbAudioNamePair {
+    param([Parameter(Mandatory=$true)][object]$Devices)
+    $inputMatches = @($Devices.wave_inputs | Where-Object {
+        $_.name -match '(?i)USB Audio' -and $_.pcm_48000_mono_s16_supported -and
+            -not [string]::IsNullOrWhiteSpace([string]$_.endpoint_id)
     })
-    if ($audioAdapters.Count -ne 1) { return $null }
-    $audioAdapter = $audioAdapters[0]
-    $radioHub = Get-NearestNonRootUsbHub -InstanceId $RadioSerial.InstanceId
-    $audioHub = Get-NearestNonRootUsbHub -InstanceId $audioAdapter.InstanceId
-    if ($null -eq $radioHub -or $null -eq $audioHub -or
-        $radioHub.InstanceId -ine $audioHub.InstanceId) { return $null }
-
-    $audioContainerId = [string](Get-PnpPropertyData -InstanceId $audioAdapter.InstanceId -KeyName 'DEVPKEY_Device_ContainerId')
-    if ([string]::IsNullOrWhiteSpace($audioContainerId)) { return $null }
-    $inputMatches = @()
-    $outputMatches = @()
-    foreach ($wave in @($Devices.wave_inputs)) {
-        if ([string]::IsNullOrWhiteSpace([string]$wave.endpoint_id)) { continue }
-        $instanceId = 'SWD\MMDEVAPI\' + [string]$wave.endpoint_id
-        $endpoint = Get-PnpDevice -InstanceId $instanceId -ErrorAction SilentlyContinue
-        if ($null -eq $endpoint -or $endpoint.Class -cne 'AudioEndpoint') { continue }
-        $containerId = [string](Get-PnpPropertyData -InstanceId $instanceId -KeyName 'DEVPKEY_Device_ContainerId')
-        if ($containerId -ine $audioContainerId -or
-            -not (Test-PnpDescendantOf -InstanceId $instanceId -AncestorInstanceId $audioAdapter.InstanceId)) { continue }
-        $inputMatches += [pscustomobject]@{ Wave = $wave; Endpoint = $endpoint }
-    }
-    foreach ($wave in @($Devices.wave_outputs)) {
-        if ([string]::IsNullOrWhiteSpace([string]$wave.endpoint_id)) { continue }
-        $instanceId = 'SWD\MMDEVAPI\' + [string]$wave.endpoint_id
-        $endpoint = Get-PnpDevice -InstanceId $instanceId -ErrorAction SilentlyContinue
-        if ($null -eq $endpoint -or $endpoint.Class -cne 'AudioEndpoint') { continue }
-        $containerId = [string](Get-PnpPropertyData -InstanceId $instanceId -KeyName 'DEVPKEY_Device_ContainerId')
-        if ($containerId -ine $audioContainerId -or
-            -not (Test-PnpDescendantOf -InstanceId $instanceId -AncestorInstanceId $audioAdapter.InstanceId)) { continue }
-        $outputMatches += [pscustomobject]@{ Wave = $wave; Endpoint = $endpoint }
-    }
-    if ($inputMatches.Count -ne 1 -or $outputMatches.Count -ne 1 -or
-        -not $inputMatches[0].Wave.pcm_48000_mono_s16_supported -or
-        -not $outputMatches[0].Wave.pcm_48000_mono_s16_supported) { return $null }
-    return [pscustomobject]@{
-        Input = $inputMatches[0].Wave
-        Output = $outputMatches[0].Wave
-        AudioAdapter = $audioAdapter
-        UsbHub = $radioHub
-        Endpoints = @($inputMatches[0].Endpoint, $outputMatches[0].Endpoint)
-    }
+    $outputMatches = @($Devices.wave_outputs | Where-Object {
+        $_.name -match '(?i)USB Audio' -and $_.pcm_48000_mono_s16_supported -and
+            -not [string]::IsNullOrWhiteSpace([string]$_.endpoint_id)
+    })
+    if ($inputMatches.Count -ne 1 -or $outputMatches.Count -ne 1) { return $null }
+    return [pscustomobject]@{ Input = $inputMatches[0]; Output = $outputMatches[0] }
 }
-
 function Test-StatusDirectory {
     param([Parameter(Mandatory=$true)][string]$Path)
     $directory = [System.IO.Path]::GetFullPath($Path)
@@ -373,43 +298,16 @@ try {
     $radioSerial = if ($radioSerialMatches.Count -eq 1) { $radioSerialMatches[0] } else { $null }
 
     $audioPair = $null
-    if ($radioSerial) { $audioPair = Find-ConfirmedRadioAudioPair -RadioSerial $radioSerial -Devices $devices }
+    if ($radioSerial) { $audioPair = Find-UsbAudioNamePair -Devices $devices }
     if ($WaveIn -and -not $WaveOut) { throw '手工指定音频设备时必须同时传入 -WaveIn 和 -WaveOut。' }
     if ($WaveOut -and -not $WaveIn) { throw '手工指定音频设备时必须同时传入 -WaveIn 和 -WaveOut。' }
     if ($WaveIn -or $WaveOut) { $audioPair = $null }
     if ($audioPair) {
-        if (-not $audioPair.Input.pcm_48000_mono_s16_supported -or
-            -not $audioPair.Output.pcm_48000_mono_s16_supported) {
-            throw '与 HRI 同一 PnP 容器关联的 WaveIn/WaveOut 不支持目标 PCM。'
-        }
         $radioInput = $audioPair.Input
         $radioOutput = $audioPair.Output
-        Write-Host 'WaveIn、WaveOut 与唯一 USB Audio VID_0D8C&PID_0016 设备相符，并与 YAESU HRI 共用最近非根 USB Hub；已按 endpoint ID 关联到 WinMM ID。'
-        Write-Host ("  USB 音频实例：{0}" -f $audioPair.AudioAdapter.InstanceId)
-        Write-Host ("  共用 Hub：{0}" -f $audioPair.UsbHub.InstanceId)
-        foreach ($endpoint in $audioPair.Endpoints) {
-            Write-Host ("  音频端点：{0} · 实例 {1}" -f $endpoint.FriendlyName, $endpoint.InstanceId)
-        }
+        Write-Host '已选择名称含 USB Audio 的唯一 WaveIn 和 WaveOut。'
     } else {
-        $audioEndpoints = @(Get-PnpDevice -PresentOnly -Class AudioEndpoint -ErrorAction SilentlyContinue | ForEach-Object {
-            $instanceId = [string]$_.InstanceId
-            [pscustomobject]@{
-                InstanceId = $instanceId
-                FriendlyName = [string](Get-PnpPropertyData -InstanceId $instanceId -KeyName 'DEVPKEY_Device_FriendlyName')
-                ParentInstanceId = [string](Get-PnpPropertyData -InstanceId $instanceId -KeyName 'DEVPKEY_Device_Parent')
-                ContainerId = [string](Get-PnpPropertyData -InstanceId $instanceId -KeyName 'DEVPKEY_Device_ContainerId')
-            }
-        })
-        Write-Host 'Windows 未唯一确认 USB Audio VID/PID、最近非根 Hub 和 WinMM endpoint ID 的对应关系；需要手工选输入和输出。' -ForegroundColor Yellow
-        if ($audioEndpoints.Count -gt 0) {
-            Write-Host '当前 Windows 音频端点 PnP 信息（名称仅用于显示）：'
-            foreach ($endpoint in $audioEndpoints) {
-                Write-Host ("  {0} · 实例 {1} · 父实例 {2} · 容器 {3}" -f $endpoint.FriendlyName, $endpoint.InstanceId, $endpoint.ParentInstanceId, $endpoint.ContainerId)
-            }
-        } else {
-            Write-Host '当前无法读取 Windows AudioEndpoint PnP 信息。'
-        }
-        Write-Host '请手工选择连接到 FTX-1 的成对端点；程序不会按本地化名称或第一个 USB 设备猜选。'
+        Write-Host '请选择连接到电台的 WaveIn 和 WaveOut：'
         $radioInput = Read-WaveInSelection -Devices @($devices.wave_inputs)
         $radioOutput = Read-WaveOutSelection -Devices @($devices.wave_outputs)
     }
@@ -417,7 +315,7 @@ try {
     $waveoutEndpointId = [string]$radioOutput.endpoint_id
     if ([string]::IsNullOrWhiteSpace($waveinEndpointId) -or
         [string]::IsNullOrWhiteSpace($waveoutEndpointId)) {
-        throw '本机 WinMM 无法为所选 WaveIn/WaveOut 返回稳定 endpoint ID；不能在 native 打开前确认端点身份，请先恢复 endpoint ID 查询能力。'
+        throw '本机 WinMM 未返回所选 WaveIn/WaveOut 的 endpoint ID；请检查 Windows 音频端点后重试。'
     }
     if ($StatusDirectory) { $statusDirectoryPath = $StatusDirectory }
     else { $statusDirectoryPath = Join-Path $script:packageRoot 'logs' }
@@ -427,28 +325,23 @@ try {
     $script:statusPath = $statusPath
 
     Write-Host ''
-    Write-Host '启动前已核对：Y 素材长度与 SHA-256、日志目录写权限、当前 PnP/COM 身份和所选端点的 48 kHz 能力。'
-    Write-Host '本机 DIRECT 没有声明射频频率或坐标；BM 配置使用数值 0 表示未配置坐标。'
-    if ($selectedPreset -eq 'manual') {
-        Write-Host '手工入口会在可见控制台逐项读取 BM 配置，并隐藏输入密码。'
-    } else {
-        Write-Host "本次预设：$selectedPreset；身份、Master、端口、时隙、色码和目标已固定。"
-        Write-Host 'native 从本机私有明文密码文件读取凭据；文件内容不会传入命令行或日志。'
+    $audioSummary = if ($audioPair) { 'USB Audio' } else { '已选择音频输入和输出' }
+    $presetSummary = switch ($selectedPreset) {
+        'parrot-cn' { '鹦鹉 460997' }
+        'parrot-global' { '全球回声 9990' }
+        'listen-46001' { '46001 组呼收听' }
+        default { '手工 BM 配置' }
     }
-    Write-Host '无需输入 START；完成上述选择后 native 会在当前前台进程中打开 COM、WinMM 和 BM UDP 并进入待机。'
+    Write-Host ("请确认本次设备：{0} · {1} · {2}" -f $portName, $audioSummary, $presetSummary)
+    Write-Host '等待 BM 和电台连接。'
     if ($selectedPreset -eq 'listen-46001') {
-        Write-Host '46001 严格仅接收；native 拒绝 T，且不会产生 LC 或 DMRD 上行数据报。'
-    } elseif ($selectedPreset -eq 'manual') {
-        Write-Host '手工入口保留原 BM 参数输入。默认按 ready 后有效手咪 PTT 边沿发送；诊断时可显式传入 -ManualPtt 改用键盘 T。'
+        Write-Host '连接后在电台扬声器收听 BM 组呼，按 Q 停止并退出。'
     } else {
-        Write-Host '默认 ready 后按有效手咪 PTT 边沿开始/结束上行；键盘 T 与音频噪声不会发起上行。'
+        Write-Host '连接后按住手咪讲话；松开后等待 BM 回声。按 Q 停止并退出。'
     }
-    Write-Host '本次不连接 PC monitor，也不发送 RF/PTT 控制命令。'
     Write-Host ("COM: {0} · Radio WaveIn: ID {1} · {2}" -f $portName, $radioInput.id, $radioInput.name)
     Write-Host ("Radio WaveOut: ID {0} · {1}" -f $radioOutput.id, $radioOutput.name)
-    Write-Host ("WinMM endpoint ID：WaveIn {0}；WaveOut {1}" -f $waveinEndpointId, $waveoutEndpointId)
-    if (-not $audioPair) { Write-Host '所选音频端点与电台的物理关系由操作者确认；PnP 没有唯一证明该关系。' -ForegroundColor Yellow }
-    if ($ManualPtt) { Write-Host '诊断模式已启用：键盘 T 可显式请求 BM 上行；手咪 PTT 自动边沿被此诊断选项替代。' -ForegroundColor Yellow }
+    if ($ManualPtt) { Write-Host '诊断模式已启用：按 T 开始或结束 BM 上行。' }
     Write-Host ("状态报告：{0}" -f $statusPath)
     Write-Host ''
     $arguments = @('--run', '--port', $portName, '--body-file', $body,
@@ -463,15 +356,15 @@ try {
     $script:nativeInvoked = $true
     & $executable @arguments
     $exitCode = [int]$LASTEXITCODE
-    Write-Host "native 退出码：$exitCode；退出码不证明声音、BM 实际登录或 RF 结果。"
+    Write-Host "程序已退出，退出码：$exitCode"
     Write-Host "状态报告：$statusPath"
     exit $exitCode
 } catch {
     if ($script:nativeInvoked) {
-        Write-Host "native 已调用；设备和网络是否打开或完成收尾状态未知：$($_.Exception.Message)" -ForegroundColor Red
-        if ($script:statusPath) { Write-Host "请检查 native 控制台和状态报告：$($script:statusPath)" }
+        Write-Host "运行失败：$($_.Exception.Message)" -ForegroundColor Red
+        if ($script:statusPath) { Write-Host "请检查状态报告：$($script:statusPath)" }
     } else {
-        Write-Host "启动前检查失败：$($_.Exception.Message)；native 核心尚未调用。" -ForegroundColor Red
+        Write-Host "启动检查失败：$($_.Exception.Message)；请修正后重新启动。" -ForegroundColor Red
     }
     exit 2
 }

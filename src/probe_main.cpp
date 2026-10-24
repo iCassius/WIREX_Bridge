@@ -4430,7 +4430,7 @@ void print_bm_bridge_help()
         L"不传测试预设时保留逐项手工配置和隐藏密码输入。预设密码文件为本机私有明文 UTF-8 文本。\n"
         L"WaveIn/WaveOut endpoint ID来自本次 WinMM 枚举；打开和重开音频流前都会核对。\n"
         L"默认在 BM/HRI ready 后用有效 HRI 手咪PTT边沿控制上行；--manual-ptt 显式启用键盘 T 诊断模式。\n"
-        L"Q 停止并退出；程序不控制电台PTT/RF，不使用VOX。\n"
+        L"Q 停止并退出；电台手咪 PTT 控制 BM 上行。\n"
         L"BM DMRD 上行使用固定 16x 软件增益；状态报告记录增益前后 PCM 统计与削顶样本数。\n"
         L"Master 支持 IPv4 字面量或主机名；手工密码在控制台隐藏输入，预设从私有 UTF-8 文件读取。\n"
         L"两种密码入口只接受可打印 ASCII；手工隐藏输入允许空格。\n");
@@ -4486,7 +4486,8 @@ const char* ptt_level_name(wirex::hri_session::PttLevel level) noexcept
 
 bool append_bridge_status(std::ofstream& file, std::string_view event, std::uint64_t elapsed_ms,
                           const wirex::bm::Snapshot& bm_snapshot,
-                          wirex::hri_session::Phase hri_phase,
+                          const wirex::hri_session::Snapshot& hri_snapshot,
+                          const wirex::hri_ptt_gate::Snapshot& ptt_gate_snapshot,
                           const BmBridgeCounters& counters)
 {
     if (!file) return false;
@@ -4500,8 +4501,22 @@ bool append_bridge_status(std::ofstream& file, std::string_view event, std::uint
          << ",\"application_rx_datagrams\":" << counters.application_rx_datagrams
          << ",\"last_input_result\":\""
          << (counters.has_last_input_result ? bm_input_result_name(counters.last_input_result) : "none")
-         << "\",\"hri_phase\":\"" << hri_phase_name(hri_phase)
-         << "\",\"ptt_last_state\":\"" << ptt_level_name(counters.last_ptt_level)
+         << "\",\"hri_phase\":\"" << hri_phase_name(hri_snapshot.phase)
+         << "\",\"hri_y_zero_ack_records\":" << hri_snapshot.counters.y_zero_ack_received
+         << ",\"hri_y_writes\":" << hri_snapshot.counters.y_write_completed
+         << ",\"hri_x100_records\":" << hri_snapshot.counters.x100_received
+         << ",\"hri_x_copy_records\":" << hri_snapshot.counters.x_copy_branch_count
+         << ",\"hri_x_config_records\":" << hri_snapshot.counters.unsupported_config_import_records
+         << ",\"hri_x_ack_writes\":" << hri_snapshot.counters.x0_write_completed
+         << ",\"hri_x_ack_requested\":" << hri_snapshot.counters.x0_write_requested
+         << ",\"hri_other_valid_records\":" << hri_snapshot.counters.other_valid_records
+         << ",\"hri_malformed_records\":" << hri_snapshot.counters.malformed_records
+         << ",\"hri_valid_records\":" << hri_snapshot.counters.valid_records
+         << ",\"ptt_gate_ready\":" << (ptt_gate_snapshot.ready ? "true" : "false")
+         << ",\"ptt_gate_armed\":" << (ptt_gate_snapshot.armed ? "true" : "false")
+         << ",\"ptt_gate_pressed_latched\":" << (ptt_gate_snapshot.pressed_latched ? "true" : "false")
+         << ",\"ptt_gate_tx_active\":" << (ptt_gate_snapshot.tx_active ? "true" : "false")
+         << ",\"ptt_last_state\":\"" << ptt_level_name(counters.last_ptt_level)
          << "\",\"ptt_observations\":" << counters.ptt_observations
          << ",\"ptt_unknown_observations\":" << counters.ptt_unknown_observations
          << ",\"ptt_tx_starts\":" << counters.ptt_tx_starts
@@ -4771,11 +4786,6 @@ int bm_bridge_main(int argc, wchar_t* argv[])
         return 2;
     }
     endpoint.port = static_cast<std::uint16_t>(master_port);
-    const auto resolved_address = ipv4_text(endpoint.address);
-    const std::wstring resolved_address_wide(resolved_address.begin(), resolved_address.end());
-    const std::wstring host_text_wide(host_text.begin(), host_text.end());
-    const std::wstring call_kind_text_wide(call_kind_text.begin(), call_kind_text.end());
-
     profile.gateway_id = gateway_id;
     profile.callsign = callsign;
     // 这些是 BM RPTC 节点字段，不用于调谐 FTX-1 或发射 RF。
@@ -4791,30 +4801,6 @@ int bm_bridge_main(int argc, wchar_t* argv[])
     call_template.color_code = static_cast<std::uint8_t>(color_code);
     tx_policy = wirex::bm_test_profile::policy_for(call_template);
 
-    std::wostringstream configuration_text;
-    configuration_text << L"\n本次设备与配置：COM=" << argv[3]
-                       << L"；Radio WaveIn=" << input_id << L" " << device_name(input_caps.szPname, MAXPNAMELEN)
-                       << L"；Radio WaveOut=" << output_id << L" " << device_name(output_caps.szPname, MAXPNAMELEN)
-                       << L"；目标ID=" << talkgroup_id << L"；类型=" << call_kind_text_wide
-                       << L"；TS=" << slot_number << L"；CC=" << color_code
-                       << L"；Master=" << host_text_wide << L" -> " << resolved_address_wide
-                       << L":" << master_port << L"。\n"
-                       << L"没有选择 PC monitor。软件不会发送 RF/PTT 命令。\n";
-    if (selected_preset) {
-        const std::wstring preset_name(selected_preset->id.begin(), selected_preset->id.end());
-        configuration_text << L"固定测试预设：" << preset_name << L"。BM 密码来自本机私有文件，明文仅保存在该本机文件中。\n";
-    }
-    if (wirex::bm_test_profile::permits_transmit(tx_policy)) {
-        if (manual_ptt) {
-            configuration_text << L"诊断手动 PTT 模式：按 T 显式开始/结束 BM DMRD 上行；默认启动路径不启用 T。\n";
-        } else {
-            configuration_text << L"待机模式：忽略 T；BM/HRI ready后只按校验通过的手咪PTT边沿开始或结束上行。\n";
-        }
-    } else {
-        configuration_text << L"严格仅接收：T 键会拒绝，不调用发送管线，不产生 LC 或 DMRD。\n";
-    }
-    (void)bm_stderr(configuration_text.str());
-
     wirex::ConsoleHandlerScope control_scope;
     if (!control_scope.start()) {
         (void)bm_stderr(L"无法注册控制台收尾处理器；没有打开设备。\n");
@@ -4827,8 +4813,10 @@ int bm_bridge_main(int argc, wchar_t* argv[])
     }
 
     BmBridgeCounters counters{};
+    const wirex::hri_session::Snapshot hri_preflight_snapshot{};
+    const wirex::hri_ptt_gate::Snapshot ptt_preflight_snapshot{};
     if (!append_bridge_status(status_file, "preflight_passed", 0U, wirex::bm::Snapshot{},
-                              wirex::hri_session::Phase::not_started, counters)) {
+                              hri_preflight_snapshot, ptt_preflight_snapshot, counters)) {
         wipe_password(profile.password);
         (void)bm_stderr(L"无法写入或刷新启动前状态报告；已清除隐藏密码，尚未打开设备。\n");
         return 2;
@@ -4986,7 +4974,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         failure_text.append(L".\n");
         (void)bm_stderr(failure_text);
         if (!append_bridge_status(status_file, failure_reason, 0U, bm_session.snapshot(),
-                                  hri_state.phase, counters)) {
+                                  hri_state, ptt_gate.snapshot(), counters)) {
             (void)bm_stderr(L"无法写入或刷新启动失败状态报告。\n");
         }
         return 2;
@@ -4995,42 +4983,15 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
     auto status = [&](std::string_view event) {
         if (status_report_failed) return;
         const auto snapshot = bm_session.snapshot();
-        if (!append_bridge_status(status_file, event, elapsed_ms(), snapshot, hri_state.phase, counters)) {
+        if (!append_bridge_status(status_file, event, elapsed_ms(), snapshot, hri_state,
+                                  ptt_gate.snapshot(), counters)) {
             status_report_failed = true;
             set_failure("status_report_write_failed");
             (void)bm_stderr(L"运行状态报告写入或刷新失败；将执行有界收尾并以退出码 2 结束。\n");
-            return;
         }
-        std::ostringstream line;
-        line << "status=" << event << " bm=" << bm_state_name(snapshot.state)
-             << " bm_failure=" << bm_failure_name(snapshot.last_failure)
-             << " bm_consecutive_failures=" << snapshot.consecutive_failures
-             << " control_tx=" << counters.control_tx_succeeded << "/" << counters.control_tx_attempted
-             << " control_rx=" << counters.control_rx_datagrams
-             << " last_input_result=" << (counters.has_last_input_result
-                    ? bm_input_result_name(counters.last_input_result) : "none")
-             << " hri=" << hri_phase_name(hri_state.phase)
-             << " ptt=" << ptt_level_name(counters.last_ptt_level)
-             << " tx_datagrams=" << counters.tx_datagrams
-             << " rx_datagrams=" << counters.rx_datagrams
-             << " rx_filtered=" << counters.rx_filtered_datagrams
-             << " rx_filter_dst/slot/kind/protocol=" << counters.rx_filtered_destination_id << "/"
-             << counters.rx_filtered_slot << "/" << counters.rx_filtered_call_kind << "/"
-             << counters.rx_filtered_protocol
-             << " last_rx=";
-        if (counters.has_last_rx_header) {
-            line << counters.last_rx_source_id << ">" << counters.last_rx_destination_id
-                 << "/TS" << static_cast<unsigned int>(counters.last_rx_slot)
-                 << "/" << counters.last_rx_call_kind;
-        } else {
-            line << "none";
-        }
-        line
-             << " tx_input_gain=16x tx_pcm_clipped_samples=" << counters.tx_pcm_clipped_samples
-             << " calls=" << counters.calls_started << "/" << counters.calls_ended
-             << " radio_state=unknown\n";
-        (void)bm_stdout(line.str());
     };
+
+    std::uint64_t next_runtime_snapshot_ms = 5000U;
 
     auto last_logged_bm_snapshot = bm_session.snapshot();
     auto log_bm_transition = [&](std::string_view event) {
@@ -5059,15 +5020,15 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         operator_ready_instructions_shown = true;
         if (wirex::bm_test_profile::permits_transmit(tx_policy)) {
             if (!manual_ptt) {
-                (void)bm_stdout(u8"已连接并就绪：等待电台手咪PTT；收到ready后的有效按下边沿才开始BM上行，松开边沿结束本次上行。键盘T不生效。\n");
+                (void)bm_stdout(u8"已连接并就绪。先松开一次手咪 PTT，再按住手咪讲话；松开后等待 BM 回声。按 Q 停止并退出。\n");
             } else if (call_template.kind == wirex::dmr_call::CallKind::private_call &&
                 (call_template.destination_id == 460997U || call_template.destination_id == 9990U)) {
-                (void)bm_stdout(u8"已就绪：BM 已连接且电台 Y0 状态已确认。先按电脑 T 启动网络上行，再按住手咪 PTT 说话；松开 PTT 后再按 T 结束，并等待回声。\n");
+                (void)bm_stdout(u8"已连接并就绪。按 T 开始 BM 上行，按住手咪讲话；松开后按 T 结束本次上行并等待回声。按 Q 退出。\n");
             } else {
-                (void)bm_stdout(u8"已就绪：BM 已连接且电台 Y0 状态已确认。先按电脑 T 启动网络上行，再按住手咪 PTT 说话；松开 PTT 后再按 T 结束本次上行。\n");
+                (void)bm_stdout(u8"已连接并就绪。按 T 开始 BM 上行，按住手咪讲话；松开后按 T 结束本次上行。按 Q 退出。\n");
             }
         } else {
-            (void)bm_stdout(u8"已就绪：BM 已连接且电台 Y0 状态已确认。当前全国频道 46001 预设仅接收，T 不会启动上行。\n");
+            (void)bm_stdout(u8"已连接并就绪。可在所选电台扬声器收听 BM 组呼。按 Q 停止并退出。\n");
         }
     };
     auto stop_tx_input = [&]() -> bool {
@@ -5120,6 +5081,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         radio_input_open = true;
         if (!manual_ptt) ++counters.ptt_tx_starts;
         status(manual_ptt ? "tx_started_explicitly_by_t_key" : "tx_started_from_radio_ptt_down");
+        (void)bm_stdout(u8"上行已开始，请继续讲话。\n");
         return true;
     };
     auto consume_tx_wave_buffer = [&](WaveInput::Buffer& buffer, bool requeue) {
@@ -5202,8 +5164,17 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
             return;
         }
         if (action == PttAction::end_tx) {
-            if (end_tx_call()) ++counters.ptt_tx_ends;
-            else ptt_gate.disarm_until_release();
+            if (end_tx_call()) {
+                ++counters.ptt_tx_ends;
+                if (call_template.kind == wirex::dmr_call::CallKind::private_call &&
+                    (call_template.destination_id == 460997U || call_template.destination_id == 9990U)) {
+                    (void)bm_stdout(u8"上行已结束，请等待 BM 回声。\n");
+                } else {
+                    (void)bm_stdout(u8"上行已结束，可继续收听。\n");
+                }
+            } else {
+                ptt_gate.disarm_until_release();
+            }
             return;
         }
         if (action == PttAction::call_timeout) {
@@ -5258,6 +5229,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         case wirex::hri_session::PttLevel::released: level = PttLevel::released; break;
         case wirex::hri_session::PttLevel::unknown: level = PttLevel::unknown; break;
         }
+        const bool ptt_level_changed = counters.last_ptt_level != observation.level;
         ++counters.ptt_observations;
         counters.last_ptt_level = observation.level;
         if (observation.level == wirex::hri_session::PttLevel::unknown) {
@@ -5276,6 +5248,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         } else {
             handle_ptt_gate_action(action, "radio_ptt_action");
         }
+        if (ptt_level_changed) status("radio_ptt_level_changed");
     };
     auto is_shutdown_terminator = [&](const wirex::dmr_call::TxPacket& packet) {
         return shutdown_tx_terminator_pending &&
@@ -5572,23 +5545,18 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
     if (!status_report_failed) {
         if (wirex::bm_test_profile::permits_transmit(tx_policy)) {
             if (manual_ptt) {
-                (void)bm_stdout(u8"诊断模式 T：手动开始/结束 BM DMRD 语音；该开关不会操作电台PTT/RF。\n"
-                                u8"Q/Ctrl+C：停止并退出。本机诊断窗口最多120秒，清理窗口最多3秒。\n"
-                                u8"网络下行只播放到选定的 Radio WaveOut。\n");
+                (void)bm_stdout(u8"诊断模式：按 T 开始或结束 BM 上行。按 Q 停止并退出。\n");
             } else {
-                (void)bm_stdout(u8"本机持续待机；有效手咪PTT按下边沿开始BM上行，松开边沿结束；不使用VOX。\n"
-                                u8"Q/Ctrl+C：停止并退出，关闭流程有界。单次通话最多120秒。\n"
-                                u8"网络下行只播放到选定的 Radio WaveOut；程序不控制电台PTT/RF。\n");
+                (void)bm_stdout(u8"等待 BM 与电台连接。\n"
+                                u8"连接后按住手咪讲话；松开后等待回声。按 Q 或 Ctrl+C 停止并退出。\n");
             }
         } else {
             if (continuous_run) {
-                (void)bm_stdout(u8"严格仅接收：手咪PTT和键盘T都不启动BM DMRD上行，不产生LC或DMRD数据报。\n"
-                                u8"本机持续前台待机；Q/Ctrl+C停止并退出，关闭流程有界。\n"
-                                u8"网络下行只播放到选定的 Radio WaveOut；不控制电台PTT/RF。\n");
+                (void)bm_stdout(u8"等待 BM 与电台连接。\n"
+                                u8"连接后在所选电台扬声器收听 BM 组呼。按 Q 或 Ctrl+C 停止并退出。\n");
             } else {
-                (void)bm_stdout(u8"严格仅接收：手咪PTT和键盘T都不启动BM DMRD上行，不产生LC或DMRD数据报。\n"
-                                u8"Q/Ctrl+C停止并退出；诊断窗口最多120秒，清理窗口最多3秒。\n"
-                                u8"网络下行只播放到选定的 Radio WaveOut；不控制电台PTT/RF。\n");
+                (void)bm_stdout(u8"等待 BM 与电台连接。\n"
+                                u8"连接后在所选电台扬声器收听 BM 组呼。按 Q 或 Ctrl+C 停止并退出。\n");
             }
         }
     } else {
@@ -5742,6 +5710,10 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
             synchronize_ptt_gate();
             const auto now = Clock::now();
             const auto now_ms = elapsed_ms();
+            if (now_ms >= next_runtime_snapshot_ms) {
+                status("runtime_snapshot");
+                next_runtime_snapshot_ms = now_ms + 5000U;
+            }
             if (!manual_ptt) {
                 handle_ptt_gate_action(ptt_gate.tick(now_ms), "ptt_call_timer_event");
             }

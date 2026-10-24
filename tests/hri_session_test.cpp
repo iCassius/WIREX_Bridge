@@ -249,7 +249,7 @@ void test_extended_hri_bounds()
         "more than 1024 valid records in one bounded session should fail closed");
 }
 
-void test_ptt_observations_require_valid_nonconfig_x100_and_record_readiness()
+void test_ptt_observations_require_valid_x100_and_y0_readiness()
 {
     using namespace wirex::hri_session;
     Session session(synthetic_y_body(), Config{max_window_ms, true});
@@ -267,45 +267,84 @@ void test_ptt_observations_require_valid_nonconfig_x100_and_record_readiness()
     complete_write(session, y.commands.front(), 1100);
 
     auto before_y0 = feed_record(session, Record{'X', x_body}, 1110);
-    check(before_y0.ptt_observations.size() == 1 &&
-        before_y0.ptt_observations[0].level == PttLevel::pressed &&
-        !before_y0.ptt_observations[0].y_zero_acknowledged,
-        "a validated nonconfig X100 should expose its ordered press observation without inventing readiness");
+    check(before_y0.ptt_observations.empty() && before_y0.state.counters.x100_received == 1U,
+        "a valid X100 before Y0 should be counted without producing a PTT observation");
     for (const auto& command : before_y0.commands) complete_write(session, command, 1110);
 
     auto y0 = feed_record(session, Record{'Y', {}}, 1120);
     check(y0.state.y_zero_acknowledged && y0.ptt_observations.empty(),
         "a valid Y0 should establish readiness but is not itself a PTT observation");
 
-    x_body[11] = '1';
-    x_body[12] = '2';
-    auto config_record = feed_record(session, Record{'X', x_body}, 1130);
-    check(config_record.ptt_observations.empty(),
-        "X[11]=ASCII 1 configuration records must not produce a PTT observation");
-    for (const auto& command : config_record.commands) complete_write(session, command, 1130);
-
     x_body[11] = '0';
     x_body[12] = '0';
-    auto after_y0 = feed_record(session, Record{'X', x_body}, 1140);
+    auto after_y0 = feed_record(session, Record{'X', x_body}, 1130);
     check(after_y0.ptt_observations.size() == 1 &&
         after_y0.ptt_observations[0].level == PttLevel::released &&
         after_y0.ptt_observations[0].y_zero_acknowledged,
-        "a post-Y0 X100 ASCII 0 should expose released state with readiness provenance");
-    for (const auto& command : after_y0.commands) complete_write(session, command, 1140);
+        "a post-Y0 valid X100 ASCII 0 should expose released state with readiness provenance");
+    for (const auto& command : after_y0.commands) complete_write(session, command, 1130);
 
     x_body[12] = '1';
-    auto unknown = feed_record(session, Record{'X', x_body}, 1150);
+    auto unknown = feed_record(session, Record{'X', x_body}, 1140);
     check(unknown.ptt_observations.size() == 1 &&
         unknown.ptt_observations[0].level == PttLevel::unknown &&
         unknown.ptt_observations[0].y_zero_acknowledged,
         "ASCII 1 in the observed PTT field must remain unknown, never pressed");
-    for (const auto& command : unknown.commands) complete_write(session, command, 1150);
+    for (const auto& command : unknown.commands) complete_write(session, command, 1140);
 
     x_body[12] = '?';
-    auto other_unknown = feed_record(session, Record{'X', x_body}, 1160);
+    auto other_unknown = feed_record(session, Record{'X', x_body}, 1150);
     check(other_unknown.ptt_observations.size() == 1 &&
         other_unknown.ptt_observations[0].level == PttLevel::unknown,
         "every other PTT byte must remain unknown");
+
+    Session config_branch(synthetic_y_body(), Config{max_window_ms, true});
+    begin_with_valid_version(config_branch, 0, 100);
+    const auto config_y = config_branch.tick(1100);
+    if (config_y.commands.empty()) {
+        check(false, "configuration-branch PTT test should produce its first Y");
+        return;
+    }
+    complete_write(config_branch, config_y.commands.front(), 1100);
+    const auto config_y0 = feed_record(config_branch, Record{'Y', {}}, 1120);
+    check(config_y0.state.y_zero_acknowledged,
+        "configuration-branch PTT test should confirm Y0 before reading X100");
+
+    x_body = synthetic_y_body();
+    x_body[11] = '1';
+    x_body[12] = '2';
+    const auto config_press = feed_record(config_branch, Record{'X', x_body}, 1130);
+    check(config_press.ptt_observations.size() == 1 &&
+        config_press.ptt_observations[0].level == PttLevel::pressed &&
+        config_press.ptt_observations[0].y_zero_acknowledged,
+        "X[11]=ASCII 1 must still expose a post-Y0 X[12] press observation");
+    check(config_press.state.counters.unsupported_config_import_records == 1U &&
+        config_press.state.counters.x_copy_branch_count == 0U &&
+        config_press.state.counters.y_byte12_changed_count == 0U,
+        "PTT extraction from the configuration branch must leave the Y-copy path unchanged");
+    for (const auto& command : config_press.commands) complete_write(config_branch, command, 1130);
+
+    const auto y_after_config_press = config_branch.tick(2100);
+    check(y_after_config_press.commands.size() == 1 &&
+        y_after_config_press.commands[0].kind == CommandKind::y_record,
+        "configuration-branch press should leave the next periodic Y request active");
+    if (y_after_config_press.commands.empty()) return;
+    const auto decoded_after_config_press = wirex::direct_frame::decode(
+        y_after_config_press.commands[0].frame.data(), y_after_config_press.commands[0].frame.size());
+    check(decoded_after_config_press && decoded_after_config_press.record.payload[12] == '0',
+        "X[12] press from X[11]=ASCII 1 must not be copied into the next Y body");
+    complete_write(config_branch, y_after_config_press.commands[0], 2100);
+
+    x_body[12] = '0';
+    const auto config_release = feed_record(config_branch, Record{'X', x_body}, 2110);
+    check(config_release.ptt_observations.size() == 1 &&
+        config_release.ptt_observations[0].level == PttLevel::released &&
+        config_release.ptt_observations[0].y_zero_acknowledged,
+        "X[11]=ASCII 1 must still expose a post-Y0 X[12] release observation");
+    check(config_release.state.counters.x_copy_branch_count == 0U &&
+        config_release.state.counters.y_byte12_changed_count == 0U,
+        "configuration-branch PTT release must not modify the Y-copy counters");
+    for (const auto& command : config_release.commands) complete_write(config_branch, command, 2110);
 }
 
 void test_continuous_mode_removes_cumulative_limits_but_keeps_local_bounds()
@@ -548,7 +587,7 @@ int main()
     test_y_ack_x_ack_and_conditional_next_y_byte();
     test_extended_hri_bounds();
     test_continuous_mode_removes_cumulative_limits_but_keeps_local_bounds();
-    test_ptt_observations_require_valid_nonconfig_x100_and_record_readiness();
+    test_ptt_observations_require_valid_x100_and_y0_readiness();
     test_fail_closed_no_exit_frames_and_deadlines();
     test_limited_exchange_requires_version_y_and_y0();
     if (failures != 0) {

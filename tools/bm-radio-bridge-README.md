@@ -2,7 +2,7 @@
 
 此入口把 BrandMeister DMRD 与 FTX-1 DIRECT 音频路径接在一个可见的 native 控制台进程中。两次有界 network-only 私呼测试已从真实 BM Echo 服务收到 TS2 回声：旧 TS1 filter 曾拒绝整条回声；调整三个 DIRECT preset 为 TS2 后，RX-only pipeline 产生了呼叫开始、voice 和结束事件。测试使用合成 PCM，没有打开 HRI 或音频设备，也不证明真实用户语音、扬声器播放或 RF 效果。详见 [BM 回声诊断](../docs/BM回声无播放诊断.md)。
 
-旧 profile 的 `MSTNAK` 和其原因仍是历史诊断；`2183cef` clean build 的 25 项测试及旧便携包审计也只适用于该提交。源码提交 1c8c6fd00081ea8b029c756f537168f4efce4994 的正式 clean build 与 26 项离线测试全部通过；构建输出位于 build/_work/wirex-bridge-1c8c6fd-20261024-161127，日志为 build/_work/bm-auto-ptt-1c8c6fd-build.log。便携候选 build/bm-radio-bridge-1c8c6fd 已通过 root 包审计。真实自动 PTT + BM + 电台扬声器回声仍待用户联合实测；历史网络登录过程见 [BM 4602 网络登录诊断](../docs/BM网络登录诊断.md)。
+旧 profile 的 `MSTNAK` 和其原因仍是历史诊断；`2183cef` clean build 的 25 项测试及旧便携包审计也只适用于该提交。源码提交 `1c8c6fd00081ea8b029c756f537168f4efce4994` 的正式 clean build 与 26 项离线测试全部通过；构建输出位于 `build/_work/wirex-bridge-1c8c6fd-20261024-161127`，日志为 `build/_work/bm-auto-ptt-1c8c6fd-build.log`。便携候选 `build/bm-radio-bridge-1c8c6fd` 已通过 root 包审计。随后发现该旧候选在配置标记 `X[11]=0x31` 的 X/100 分支不产生 PTT observations；当前源码工作树已修复该提取路径并通过聚焦 HRI Session 测试，但尚未执行新的正式 26 项全测或制作新包。旧便携目录保持冻结。真实自动 PTT + BM + 电台扬声器回声仍待端到端验证；历史网络登录过程见 [BM 4602 网络登录诊断](../docs/BM网络登录诊断.md)。
 
 ## 构建
 
@@ -39,11 +39,18 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tools\build-bm
 .\start-bm-radio-bridge.ps1
 ```
 
-启动器会从脚本同目录的 `private\device-y.bin` 校验固定的 100 字节 Y 素材及 SHA-256，检查同目录 `logs` 可写，并只读查询当前 PnP/COM 与音频端点。HRI 串口按 USB VID `26AA`、PID `0030` 或更高、PnP 总线描述中的 `HRI` 以及当前 COM 登记联合识别；只有唯一候选才自动选择，多个或缺失时显示实例 ID、父实例和容器并等待手工选择。它不会打开候选 COM 来扫描。PowerShell 7 和 Windows PowerShell 5.1 的生产 PnP 设备发现函数均已确认唯一 COM5 与 WaveIn 1、WaveOut 3 的端点对应关系。Windows PowerShell 5.1 的 PnP/CIM 查询可能耗时数分钟，请保持前台窗口并等待完成；该查询只读设备信息，不打开 COM、音频流或 BM 网络。
+## 快速操作
 
-WaveIn/WaveOut 不按本地化名称或第一个 USB 设备猜选。native 用 `DRV_QUERYFUNCTIONINSTANCEIDSIZE` 和 `DRV_QUERYFUNCTIONINSTANCEID` 将当前 WinMM ID 对应到 Windows 音频 endpoint ID；这两个消息只查询标识，不打开音频流。启动器要求只有一个 USB Audio `VID_0D8C&PID_0016` 设备，其最近的非根 USB Hub 与唯一 HRI 串口相同，并且该音频设备的 PnP AudioEndpoint 实例能按 endpoint ID 唯一映射到一个 WaveIn 和一个 WaveOut。只有满足这些条件且两端都支持目标 PCM 时才自动选择。
+1. 运行 `start-bm-radio-bridge.cmd`，确认显示的 COM 端口、USB Audio 和 BM 预设。
+2. 等待 BM 和电台连接。
+3. 连接就绪后，先松开一次手咪 PTT，再按住手咪讲话；松开后等待 BM 回声。
+4. 按 `Q` 停止并退出。
 
-如果产品实例重复、最近非根 USB Hub 不同或 WinMM ID 不能唯一对应到 PnP AudioEndpoint，启动器会显示当前实例、父链和 Hub 信息，再等待手工选择 WaveIn/WaveOut。完成自动或手工选择后，启动器把这次 WinMM 枚举返回的 WaveIn/WaveOut endpoint ID 传给 native；native 在启动前核对 ID 和 48 kHz PCM 能力，并在每次打开或重开音频流前再次核对，设备 ID若已改指向别的端点就停止。若 Windows 无法查询任一 endpoint ID，启动器会明确失败，不能通过手工挑选绕过身份核对。此 BM 入口不按本地化设备名称拒绝端点；旧的独立诊断入口仍保留原有唯一名称 guard。[Microsoft：Endpoint ID strings](https://learn.microsoft.com/en-us/windows/win32/coreaudio/endpoint-id-strings)，[Microsoft：waveInMessage](https://learn.microsoft.com/en-us/windows/win32/api/mmeapi/nf-mmeapi-waveinmessage)。
+如果设备列表没有唯一显示 COM5 或 USB Audio，按窗口提示选择 HRI 串口、WaveIn 和 WaveOut。
+
+启动器从脚本目录读取 Y 素材和本机 BM 密码文件，自动优先选择唯一、经 PnP 确认为 HRI 的 COM5。WaveIn 和 WaveOut 分别按设备名中唯一的 `USB Audio` 关键词选择，并要求两端支持 48 kHz 单声道 16 位 PCM。若候选不唯一，启动器显示可选设备并等待本次选择。Windows PowerShell 5.1 的只读设备发现函数已实测在约 10.4 秒内选择 COM5、WaveIn 1 和 WaveOut 3；不同系统的设备枚举耗时可能不同。
+
+启动器将本次 WinMM 枚举得到的 WaveIn/WaveOut endpoint ID 传给 native。native 在启动前和每次打开或重开音频流前核对该 ID 与 PCM 能力。Windows 音频驱动提供的 endpoint ID 查询用于确认 WinMM ID 对应的 Windows 音频端点身份，不需要按设备本地化名称确定身份。[Microsoft：Endpoint ID strings](https://learn.microsoft.com/en-us/windows/win32/coreaudio/endpoint-id-strings)，[Microsoft：waveInMessage](https://learn.microsoft.com/en-us/windows/win32/api/mmeapi/nf-mmeapi-waveinmessage)。
 
 默认预设为中国鹦鹉单呼 460997，不显示预设菜单。也可用 `-Preset parrot-cn`、`-Preset parrot-global`、`-Preset listen-46001` 或 `-Preset manual` 指定；手工入口保留原先逐项输入。固定预设使用下表中的呼号、身份、Master、端口、时隙、色码和目标。预设密码从 `private\bm-device-password.txt` 读取，密码值不进入进程参数，PowerShell 启动器也不读取或显示文件正文。可以用 `-PasswordFile ABS` 指定另一处本机文件。
 
@@ -57,7 +64,7 @@ WaveIn/WaveOut 不按本地化名称或第一个 USB 设备猜选。native 用 `
 
 所有 native 配置和 network-only 探测共用同一组 BM 节点元数据：RX/TX `438800000`、power `0`、latitude `0.000000`、longitude `00.000000`、height `0`、location `DIRECT`、description `FTX-1`、slot flags `'4'`、URL `www.qrz.com`、version `20261024`、软件类型 `MMDVM_WIREX_Bridge`，options 为空。手工入口仍保留用户输入的 CC；三个预设使用经 E3 组合测试的 CC1。`438800000` 只作为 BM RPTC 节点元数据，不会设置 CAT 频率或使电台发射。BM 网页节点详情中的 `Firmware`/类型文字是程序上报的软件节点标识，不是 FTX-1 固件，也不表示连接了实体 MMDVM Hat。
 
-启动联合候选前，关闭官方 WIRES-X 程序，将 FTX-1 设为 HRI `ON`、Node Mode `DIRECT` 并确认 USB 连接；下行只使用本机电台扬声器。默认入口读取通过 HRI 校验的非配置 X/100 记录中 `X[0x0c]`：在 Y/0 已 ready 后，ASCII `2`（`0x32`）作为按住边沿，ASCII `0`（`0x30`）作为松开边沿。三轮观察都得到此映射，但只在当前 FTX-1 + HRI DIRECT 条件下支持它；启动期 Y/0 尚未确认时的 `0x31` 不作为 PTT。有效的新按下边沿开始 BM 上行采集，松开结束并排空本次音频；忙碌、未知状态、链路丢失和单通话 120 秒到期会解除许可，须再次松开后才允许下一通。默认不响应键盘 `T`，也不用 VOX 或音频噪声发起上行；程序不发送电台 PTT/RF 控制命令。显式传入 `-ManualPtt` 才启用键盘 `T` 诊断路径。手工入口目标若是组呼 46001，native 策略仍严格仅接收。PTT 状态观察的设备范围和限制见 [HRI 手咪 PTT 研究](../docs/HRI手咪PTT事件研究.md)。
+连接电台前，关闭官方 WIRES-X 程序，并将 FTX-1 设为 HRI `ON`、Node Mode `DIRECT`。当前有效 HRI X/100 在 Y/0 ready 后，正文 `X[0x0c]` 的 ASCII `2`（`0x32`）表示按住，ASCII `0`（`0x30`）表示松开；用户两轮受控观察还确认这两种值也出现在 `X[0x0b]=0x31` 的记录中。native 在 Y/0 ready 后从有效 X/100 独立提取 PTT 字节；配置导入分支仍不导入配置，也不修改既有 Y 模板复制规则。修复后的 idle observer 运行中，119 条配置分支 X/100 产生 119 个 Session PTT observations；该次没有手咪动作，因此不作为新的按键边沿验证。启动期 Y/0 尚未确认时的记录不会产生 PTT 观察。每次通话结束、忙碌、未知状态或链路失效后，必须重新观察到松开才能接受下一次按下。`-ManualPtt` 显式启用键盘 `T` 诊断路径。完整观察记录和适用范围见 [HRI 手咪 PTT 研究](../docs/HRI手咪PTT事件研究.md)。
 
 选择手工入口时，native 仍逐项询问呼号、Gateway ID、本机 Source ID、目标 Talkgroup 或单呼 Radio ID、呼叫类型（`G` 组呼 / `P` 单呼）、Timeslot、Color Code、Master 地址和端口。组呼收包按所选 TG 过滤；单呼发送目标是用户输入的远端 ID，接收过滤按本机 Source ID 识别返回单呼。Master 地址可输入 IPv4 或 ASCII 主机名；主机名会通过 Windows 有界解析转换为 IPv4，控制台显示固定地址供核对。当前只支持 IPv4。DIRECT 没有可声明的地理坐标或 RF 频率；RPTC 中使用上述固定格式的空位置坐标和节点元数据，不代表设备所在位置或 CAT/RF 频率。手工 Color Code 仍按用户输入传给 BM。
 
@@ -65,7 +72,7 @@ WaveIn/WaveOut 不按本地化名称或第一个 USB 设备猜选。native 用 `
 
 完成必要的设备选择后，启动器直接运行 native，不再要求输入 `START`。手工入口在 native 控制台隐藏输入密码；预设入口从指定私有文件读取密码。文件最多 128 字节，只接受非空可打印 ASCII 内容和至多一个文件行尾；密码值不放入命令行、环境变量、日志、报告或 Git。native 在打开设备前验证文件，并在运行结束时擦除其进程内密码缓冲。手工隐藏输入仍允许空格。
 
-默认连接会在可见前台进程中持续待机，直到 `Q`、Ctrl+C、窗口关闭或错误触发有界收尾；没有全局 120 秒自动退出，也不创建后台服务。单通话最多 120 秒；每次通话结束或 PTT 状态失效后，须重新观察到松开再按下。显式 `-ManualPtt` 才启用键盘 `T` 诊断路径，并保留旧的 120 秒诊断窗口。上行进入 codec 前固定应用 16x 软件 PCM 增益，并将既有 `pcm_gain::SignalStats` 的增益前后样本数、RMS、峰值及削顶数写入状态报告；该固定倍率沿用用户确认的旧独立原型人工试听结果，新 BM 链路的声音仍待真实联合测试验证。网络下行只播放到所选 Radio WaveOut。程序不发送 RF/PTT 控制命令。状态报告保留最近一个已解码 DMRD 头的源/目标 ID、时隙、组呼/单呼类型，以及按目标、时隙、呼叫类型和协议头统计的过滤数量；不会记录原始 DMRD 或语音内容。屏幕和 `logs\bm-bridge-*.jsonl` 记录 `bm_state`、`bm_failure`、连续失败数、控制 UDP 收发计数和最近 `InputResult`，不记录密码、挑战盐或认证散列。若本次运行从未达到 BM `ready`，最终报告明确标记未确认 BM 连接，native 返回退出码 2；这和 HRI 状态分开判断。
+默认连接会在可见前台进程中持续待机，直到 `Q`、Ctrl+C、窗口关闭或错误触发有界收尾；没有全局 120 秒自动退出，也不创建后台服务。单通话最多 120 秒；每次通话结束或 PTT 状态失效后，须重新观察到松开再按下。显式 `-ManualPtt` 才启用键盘 `T` 诊断路径，并保留旧的 120 秒诊断窗口。上行进入 codec 前固定应用 16x 软件 PCM 增益，并将既有 `pcm_gain::SignalStats` 的增益前后样本数、RMS、峰值及削顶数写入状态报告；该固定倍率沿用用户确认的旧独立原型人工试听结果，新 BM 链路的声音仍待真实联合测试验证。网络下行只播放到所选 Radio WaveOut。状态报告保留最近一个已解码 DMRD 头的源/目标 ID、时隙、组呼/单呼类型，以及按目标、时隙、呼叫类型和协议头统计的过滤数量；不会记录原始 DMRD 或语音内容。native 每至少 5 秒向 `logs\bm-bridge-*.jsonl` 写入一条运行快照，并在 PTT observation 状态变化时写事件；详细 HRI、Y 模板复制、配置分支、gate 和上行计数只写入该 JSONL。控制台显示连接状态和操作者下一步动作。日志不记录密码、挑战盐、认证散列、原始协议正文或音频。若本次运行从未达到 BM `ready`，最终报告明确标记未确认 BM 连接，native 返回退出码 2；BM 与 HRI 状态分别记录。
 
 当 BM 已进入 `ready` 且 HRI 已确认 Y0 时，控制台显示等待手咪 PTT 的状态。按下边沿开始 BM 上行，松开边沿结束；忙碌期间按下会被拒绝，松开后重新按下才会再启动。`-ManualPtt` 诊断入口改用显式键盘 `T`。46001 仅接收预设始终拒绝上行。
 

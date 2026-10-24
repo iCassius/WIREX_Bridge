@@ -16,10 +16,12 @@
 - `2183cef` 旧候选的 clean build 曾通过 25 项离线测试并通过便携包审计。随后 native 日志显示 BM 到达 `ready` 且收到了 291 个 DMRD 数据报，但 `calls_started=0`、`calls_ended=0`；原日志没有 DMRD 头元数据，不能仅凭计数认定收到回声。
 - 两次有界 network-only 私呼测试使用生产 Session、UDP transport、Transmitter 和 RX-only pipeline，均只向 460997 发送一通 1.98 秒合成 PCM。首次从 TS1 发出后，BM 实际回送 TS2 private stream；本机 ID、呼叫类型、LC 与 CC1 匹配，旧 TS1 filter 将 37 个包全部拒绝。三个 DIRECT preset 因此改为 TS2，过滤仍精确匹配本机目的 ID、单一时隙和呼叫类型。
 - 第二次测试从新 `parrot-cn` preset 动态取得呼叫参数，BM 回声被 TS2 filter 接受；Receiver 产生 1 个 start、32 个 voice、1 个 end 事件。RX-only 测试未启用播放，也没有真实 HRI/扬声器路径。
-- 用户确认的三轮 HRI DIRECT 手咪测试在 Y/0 ready 后，每轮按住时从有效 X/100 的 `X[0x0c]` 观察到 `0x32`（ASCII `2`），松开时为 `0x30`（ASCII `0`）。当前候选据此用串口边沿触发上行采集；该映射只在本次 FTX-1 + HRI DIRECT 条件下得到支持，不能说明 RF 已发射。
-- root 对本轮设备选择逻辑作了只读核对，唯一 HRI 候选为 COM5，WaveIn 1 与 WaveOut 3 映射到匹配的音频 endpoint；核对没有打开 COM、音频流或 BM。二轮独立审查已修复此前发现的 P1/P2 并复核关键路径，静态检查未发现新阻断。源码提交 1c8c6fd00081ea8b029c756f537168f4efce4994 的正式 clean build 与 26 项离线测试全部通过；构建输出位于 build/_work/wirex-bridge-1c8c6fd-20261024-161127，日志为 build/_work/bm-auto-ptt-1c8c6fd-build.log。便携候选 build/bm-radio-bridge-1c8c6fd 已由 root 独立包审计通过：11 个非秘密文件长度/SHA-256 全匹配，EXE 与 clean build 一致，启动脚本解析、native help、音频枚举、空 logs 和本机密码仅存在检查均通过。密码内容、大小和哈希未读取或记录。自动 PTT + BM + FTX-1 扬声器回声联合实测仍待用户执行。
+- 用户完成的五轮 HRI DIRECT 手咪观察支持当前 FTX-1 + HRI DIRECT 下，Y/0 ready 后有效 X/100 的 X[12] 按住值为 ASCII `2`、松开值为 ASCII `0`。另一次 120 秒 idle observer 在 120006 ms 正常退出，记录 119 个 Y/0、119 个 X/100；119 个 X/100 均为配置标记 `X[11]=0x31`，Session 产生 119 个 PTT observations，传输未失败。该次运行没有手咪按键动作，不能用 idle observations 作为实机 PTT 边沿验证。
+- 用户实测旧 native 候选时，BM 保持 ready 约 194.9 秒，但 `ptt_observations=0`、TX 计数均为 0。对照记录显示，Y/0 ready 后 X[11] 均为 `0x31`；此前两轮手咪按住/松开时 X[12] 分别出现 `0x32`/`0x30`。根因是旧 Session 只在非配置的 Y 模板复制分支产生 PTT observation。当前工作树已把 PTT 字节提取独立于 Y 模板复制，配置分支仍不导入配置且不改 Y 模板规则；聚焦 HRI Session 测试通过。此修复尚未完成正式 clean build 和 26 项全测。
+- Windows PowerShell 5.1 的只读生产设备发现函数已通过：唯一选择 COM5、WaveIn 1、WaveOut 3，耗时 10398 ms。启动器按名称关键词 `USB Audio` 选择唯一输入和输出，并把 endpoint ID 交给 native 核对。设备枚举没有打开 COM、音频流或 BM。
+- 历史源码提交 `1c8c6fd00081ea8b029c756f537168f4efce4994` 的正式 clean build、26 项离线测试和便携包审计已通过；这些证据不覆盖本轮 Session、console、launcher 修改。旧便携候选 `build/bm-radio-bridge-1c8c6fd` 保持冻结。当前修改尚未正式 clean build、运行全套 26 项测试或打包；自动 PTT + BM + FTX-1 扬声器回声联合实测仍待执行。
 
-当前 native 默认由有效手咪 PTT 串口边沿开始/结束 BM 上行，不要求启动输入 `START` 或按键 `T`。程序在可见前台持续待机，由 `Q`、Ctrl+C、关闭窗口或错误触发有界退出；没有全局 120 秒退出，单通话最多 120 秒。`-ManualPtt` 仍是显式诊断入口。分层实测与过滤原因见 [`BM回声无播放诊断.md`](BM回声无播放诊断.md)，手咪状态观察见 [`HRI手咪PTT事件研究.md`](HRI手咪PTT事件研究.md)。
+当前工作树的 native 候选已将有效 X/100 的 X[12] 状态观察与 Y 模板复制解耦；它仍需新的正式 clean build、全套离线测试和端到端验收。设计目标是由有效手咪 PTT 边沿开始/结束 BM 上行，进程在可见前台持续待机，由 `Q` 等停止请求退出；单通话最多 120 秒。`-ManualPtt` 是显式诊断入口。分层实测与过滤原因见 [`BM回声无播放诊断.md`](BM回声无播放诊断.md)，手咪状态观察见 [`HRI手咪PTT事件研究.md`](HRI手咪PTT事件研究.md)。
 
 ## 2026-10-24 网络诊断历史
 

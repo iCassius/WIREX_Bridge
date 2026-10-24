@@ -262,9 +262,12 @@ void log_records(const wirex::direct_stream::FeedResult& parsed,
                   << static_cast<unsigned>(record.type) << std::dec << std::nouppercase
                   << " payload_len=" << record.payload.size();
         if (record.type == 'X' && record.payload.size() == wirex::hri_session::y_body_size) {
+            const auto config_marker = record.payload[11];
             const auto candidate = record.payload[12];
-            std::cout << " x12_candidate=0x" << std::hex << std::uppercase
-                      << static_cast<unsigned>(candidate) << std::dec << std::nouppercase;
+            std::cout << " x11_config_marker=0x" << std::hex << std::uppercase
+                      << static_cast<unsigned>(config_marker)
+                      << " x12_candidate=0x" << static_cast<unsigned>(candidate)
+                      << std::dec << std::nouppercase;
         }
         std::cout << " y_writes=" << completed_y_writes << "\n" << std::flush;
     }
@@ -308,7 +311,7 @@ void print_usage()
 {
     std::wcout << L"Usage: hri_ptt_observer.exe --port COMn --body-file <private-100-byte-Y-fixture>\n"
         L"Runs one foreground observation window of at most 120 seconds.\n"
-        L"The log contains only record type/length/time, X[12] candidate byte, and Y write count.\n"
+        L"The log contains record type/length/time, X[11]/X[12] single-byte metadata, HRI counters, and PTT observation counts.\n"
         L"The observer sends only the existing V query, the supplied validated Y fixture, and empty X acknowledgements.\n"
         L"It does not send T/PTT/CAT commands, open audio, connect to a network service, or save received payloads.\n";
 }
@@ -354,7 +357,7 @@ int wmain(int argc, wchar_t** argv)
     std::wcout << L"HRI hand-mic PTT candidate observer: " << port_name << L", maximum 120 seconds.\n"
         L"The tool will open the specified COM port and send only V, the supplied Y fixture, and empty X acknowledgements.\n"
         L"It never writes T/PTT/CAT commands, opens audio, or starts network speech. Press Ctrl+C to stop.\n"
-        L"X[12] is logged as an unclassified candidate byte; do not interpret it as press/release until separately verified.\n"
+        L"No raw HRI payload is logged.\n"
         L"Local timing markers: press 1 for released baseline, 2 when physically pressing and holding, 3 after releasing.\n"
         L"These keys only annotate the console log; they never write to COM.\n"
         L"No raw payload or audio is written to disk.\n" << std::flush;
@@ -398,6 +401,7 @@ int wmain(int argc, wchar_t** argv)
     std::array<std::uint8_t, 1024> receive_buffer{};
     bool transport_failed = false;
     bool announced_y0 = false;
+    std::uint64_t ptt_observations_total = 0;
     OperatorMarkerState marker_state = OperatorMarkerState::none;
     while (session.snapshot().phase != wirex::hri_session::Phase::stopped) {
         if (g_cancel_requested.load(std::memory_order_relaxed)) {
@@ -434,6 +438,18 @@ int wmain(int argc, wchar_t** argv)
                 log_records(metadata, read_at, session.snapshot().counters.y_write_completed);
 
                 update = session.feed(receive_buffer.data(), actual, read_at);
+                const auto& counts = update.state.counters;
+                ptt_observations_total += update.ptt_observations.size();
+                std::cout << "t_ms=" << read_at
+                          << " event=session_update"
+                          << " hri_phase=" << static_cast<unsigned>(update.state.phase)
+                          << " y0_records=" << counts.y_zero_ack_received
+                          << " x100_records=" << counts.x100_received
+                          << " x_copy_records=" << counts.x_copy_branch_count
+                          << " x_config_records=" << counts.unsupported_config_import_records
+                          << " ptt_observations_in_update=" << update.ptt_observations.size()
+                          << " ptt_observations_total=" << ptt_observations_total
+                          << "\n" << std::flush;
                 if (!dispatch_commands(update, session, port.get(), read_at)) break;
                 if (update.state.y_zero_acknowledged && !announced_y0) {
                     announced_y0 = true;
@@ -449,7 +465,11 @@ int wmain(int argc, wchar_t** argv)
     const auto final = session.snapshot();
     std::cout << "observer_stopped reason=" << stop_reason_name(final.stop_reason)
               << " elapsed_ms=" << elapsed_ms()
+              << " y0_records=" << final.counters.y_zero_ack_received
               << " x100_records=" << final.counters.x100_received
+              << " x_copy_records=" << final.counters.x_copy_branch_count
+              << " x_config_records=" << final.counters.unsupported_config_import_records
+              << " ptt_observations=" << ptt_observations_total
               << " y_writes=" << final.counters.y_write_completed
               << " x_ack_writes=" << final.counters.x0_write_completed
               << " transport_failed=" << (transport_failed ? "true" : "false") << "\n" << std::flush;

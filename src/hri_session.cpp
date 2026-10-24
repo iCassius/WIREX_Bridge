@@ -177,16 +177,20 @@ Update Session::feed(const std::uint8_t* bytes, std::size_t size, std::uint64_t 
                 stop(StopReason::x_ack_limit);
                 break;
             }
-            // 只复制已确认的对象字段对应字节；不为该字节赋予业务名称或含义。
+            // 非配置导入分支仍只复制已确认的对象字段；配置分支不导入配置。
             if (record.payload[11] != '1') {
                 counters_.x_copy_branch_count++;
                 if (y_body_[12] != record.payload[12]) counters_.y_byte12_changed_count++;
                 y_body_[12] = record.payload[12];
+            }
+
+            // PTT 状态只在 Y/0 已被当前会话接受后从独立字段观察；不依赖配置导入分支。
+            if (counters_.y_zero_ack_received != 0U) {
                 PttLevel ptt_level = PttLevel::unknown;
                 if (record.payload[12] == '2') ptt_level = PttLevel::pressed;
                 else if (record.payload[12] == '0') ptt_level = PttLevel::released;
                 update.ptt_observations.push_back(PttObservation{
-                    ptt_level, counters_.y_zero_ack_received != 0U});
+                    ptt_level, true});
             }
             (void)queue_command(CommandKind::x_ack, direct_frame::Record{'X', {}}, update);
             if (phase_ == Phase::stopped) break;
