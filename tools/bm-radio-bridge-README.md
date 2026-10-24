@@ -2,7 +2,7 @@
 
 此入口把 BrandMeister DMRD 与 FTX-1 DIRECT 音频路径接在一个可见的 native 控制台进程中。两次有界 network-only 私呼测试已从真实 BM Echo 服务收到 TS2 回声：旧 TS1 filter 曾拒绝整条回声；调整三个 DIRECT preset 为 TS2 后，RX-only pipeline 产生了呼叫开始、voice 和结束事件。测试使用合成 PCM，没有打开 HRI 或音频设备，也不证明真实用户语音、扬声器播放或 RF 效果。详见 [BM 回声诊断](../docs/BM回声无播放诊断.md)。
 
-旧 profile 的 `MSTNAK` 和其原因仍是历史诊断；`2183cef` clean build 的 25 项测试及旧便携包审计也只适用于该提交。源码提交 `1c8c6fd00081ea8b029c756f537168f4efce4994` 的正式 clean build 与 26 项离线测试全部通过；构建输出位于 `build/_work/wirex-bridge-1c8c6fd-20261024-161127`，日志为 `build/_work/bm-auto-ptt-1c8c6fd-build.log`。便携候选 `build/bm-radio-bridge-1c8c6fd` 已通过 root 包审计。随后发现该旧候选在配置标记 `X[11]=0x31` 的 X/100 分支不产生 PTT observations；当前源码工作树已修复该提取路径并通过聚焦 HRI Session 测试，但尚未执行新的正式 26 项全测或制作新包。旧便携目录保持冻结。真实自动 PTT + BM + 电台扬声器回声仍待端到端验证；历史网络登录过程见 [BM 4602 网络登录诊断](../docs/BM网络登录诊断.md)。
+旧 profile 的 `MSTNAK` 和其原因仍是历史诊断；`2183cef` clean build 的 25 项测试及旧便携包审计也只适用于该提交。源码提交 `1c8c6fd00081ea8b029c756f537168f4efce4994` 的正式 clean build 与 26 项离线测试全部通过；构建输出位于 `build/_work/wirex-bridge-1c8c6fd-20261024-161127`，日志为 `build/_work/bm-auto-ptt-1c8c6fd-build.log`。便携候选 `build/bm-radio-bridge-1c8c6fd` 已通过 root 包审计。随后发现该旧候选在配置标记 `X[11]=0x31` 的 X/100 分支不产生 PTT observations；源码提交 `005c5e8e6d95a3ce2f29cf928d59e90c7551ffb1` 已修复该提取路径并通过正式 clean build 和 26 项离线测试。构建目录为 `build/_work/wirex-bridge-005c5e8-20261024-203101`，日志为 `build/_work/bm-ptt-config-005c5e8-build.log`，EXE SHA-256 为 `981715B37518DE6821F0F3F57F8BF743E53C91C0C85126AC34D40159DE2D1B2C`。便携候选 `build/bm-radio-bridge-005c5e8` 已通过 root 独立验包：11 项非秘密文件长度/SHA-256、实际 inventory、EXE 与 clean build、launcher 与源码、PS1 BOM/PS5.1 AST、safe help/audio schema 与 endpoint、空 logs 和本机凭据仅存在检查均通过，密码内容未读取。旧便携目录 `build/bm-radio-bridge-1c8c6fd` 保持冻结。自动 PTT + BM + 电台扬声器回声仍待端到端验证；历史网络登录过程见 [BM 4602 网络登录诊断](../docs/BM网络登录诊断.md)。
 
 ## 构建
 
@@ -85,6 +85,7 @@ root 对当前启动选择逻辑作了只读核对，唯一 HRI 候选为 COM5�
 - 源码构建与 fake Master loopback 测试属于离线软件证据。
 - 设备能力查询只读取本机 WinMM 列表和格式支持，不打开音频流。
 - 旧 profile 的 RPTC `MSTNAK` 仍是历史结果，拒绝原因未知。之后两次真实 BM network-only Echo 测试已回送 TS2 private stream；第二次使用 TS2 preset 后 RX-only pipeline 产生了 start/voice/end。这不是“无真实 Echo”，但仍没有验证 native 自动 PTT、HRI/COM/WinMM 播放或电台端到端回声。详见 [网络登录诊断](../docs/BM网络登录诊断.md) 和 [BM 回声诊断](../docs/BM回声无播放诊断.md)。
-- 源码提交 1c8c6fd00081ea8b029c756f537168f4efce4994 的正式 clean build 与 26 项离线测试全部通过；构建输出位于 build/_work/wirex-bridge-1c8c6fd-20261024-161127，日志为 build/_work/bm-auto-ptt-1c8c6fd-build.log。便携候选 build/bm-radio-bridge-1c8c6fd 已通过 root 包审计；自动 PTT + BM + FTX-1 扬声器回声联合实测仍待用户执行。
+- 当前源码提交 `005c5e8e6d95a3ce2f29cf928d59e90c7551ffb1` 的正式 clean build 与 26 项离线测试全部通过；构建目录为 `build/_work/wirex-bridge-005c5e8-20261024-203101`，日志为 `build/_work/bm-ptt-config-005c5e8-build.log`。便携候选 `build/bm-radio-bridge-005c5e8` 已通过 root 独立审计：11 项非秘密文件长度/SHA-256 与实际 inventory 匹配，EXE 与 clean build 一致，启动器源码、PS1 BOM/PS5.1 AST、safe help、audio schema/endpoint、空 logs 和本机凭据仅存在状态均通过。修复后 idle observer 正常运行 120006 ms，记录 119 个 Y/0、119 个配置分支 X/100 和 119 个 PTT observations；该次没有手咪动作。自动 PTT + BM + FTX-1 扬声器回声联合实测仍待用户执行。
+- 旧便携候选 `build/bm-radio-bridge-1c8c6fd` 的包审计只覆盖旧提交，旧目录保持冻结。
 - HRI T3/T0 的 `T` 记录只是阶段观察，不作为严格硬件 ACK；`radio_state` 保持 `unknown`。
 - BM 语音、网络断线、HRI 收尾和资源关闭的候选行为仍需在后续明确授权的联合测试中验证。
