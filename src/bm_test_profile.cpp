@@ -8,13 +8,13 @@ namespace {
 constexpr std::array<Preset, 3U> presets{{
     {"parrot-cn", "中国鹦鹉 460997", "BI7KGD", "43.129.83.124",
      461135501U, 4611355U, 460997U, 62031U, dmr_call::Slot::ts1,
-     dmr_call::CallKind::private_call, 0U},
+     dmr_call::CallKind::private_call, 1U},
     {"parrot-global", "通用鹦鹉 9990", "BI7KGD", "43.129.83.124",
      461135501U, 4611355U, 9990U, 62031U, dmr_call::Slot::ts1,
-     dmr_call::CallKind::private_call, 0U},
+     dmr_call::CallKind::private_call, 1U},
     {"listen-46001", "全国频道 46001（仅接收）", "BI7KGD", "43.129.83.124",
      461135501U, 4611355U, 46001U, 62031U, dmr_call::Slot::ts1,
-     dmr_call::CallKind::group, 0U},
+     dmr_call::CallKind::group, 1U},
 }};
 
 } // namespace

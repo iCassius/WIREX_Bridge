@@ -1,14 +1,16 @@
 # WIREX Bridge 交接入口
 
-> **BM + FTX-1 接续入口：** 用户已授权继续实现 BM + 电台联合测试候选。步骤进度、当前基线、文件所有权和未启动项见 [`docs/BM联调推进.md`](docs/BM联调推进.md)。截至 2026-10-24，四次 network-only 探测均通过 RPTL/RPTK challenge 与认证 ACK，但在 RPTC 收到 `MSTNAK`（`master_rejected`），从未进入 `ready`。第四次使用 RX/TX 145.1 MHz 元数据与 CC1 仍被拒绝；Master 拒绝原因未知。native 测试预设保持用户原先确认的 CC0。详见 [`docs/BM网络登录诊断.md`](docs/BM网络登录诊断.md)。这不是成功登录，也没有证明密码错误。真实 native、设备/HRI 联测、UI 与 RF 节点实测仍未完成。
+> **BM + FTX-1 接续入口：** 用户已授权继续实现 BM + 电台联合测试候选。步骤进度、当前基线、文件所有权和未启动项见 [`docs/BM联调推进.md`](docs/BM联调推进.md)。旧 profile 的四轮纯 network-only 探测，以及用户在 `aec0471` 旧候选上运行的一次 native 会话中的五次登录尝试，都在 RPTC 收到 `MSTNAK`（`master_rejected`）；旧 profile 的拒绝原因仍未知。aec0471 会话打开了 COM/HRI，用户观察到 BM 红 X/PTT 状态，HRI/Y0 控制握手约 1.125 秒，但 BM 没有进入 `ready` 或传送 DMRD 语音。之后 A/D/E1/E2/E3 network-only 对照中，E3 组合到达 BM `ready`，诊断工具也报告本机 UDP 发送 `RPTCL` 成功。此结果只覆盖 BM 控制配置和本机关闭包发送，尚未证明 native 桥接或 DMR Echo 语音。当前未提交源码已采用 E3 节点元数据和 CC1，仍待根会话审查与 clean build。详见 [`docs/BM网络登录诊断.md`](docs/BM网络登录诊断.md)。旧 profile 的认证 ACK 不是 BM `ready`，也没有证明密码错误。新源码 native、设备/HRI 联测、UI 与 RF 节点实测仍未完成。
 
 本仓库是 native 程序和 UI 的 Git 根目录。本文和 [`docs/交接与阶段同步.md`](docs/交接与阶段同步.md) 为接续实施或审查的自包含入口；不要依赖仓库外的 research 目录。较早的 `app/docs` 文档仍有指向 `../../research/...` 的链接，只克隆本仓库时这些链接无法解析。
 
 ## 当前 BM + FTX-1 候选
 
-步骤 1–4 native 候选源码提交为 `17f3433ae4cd6820622033ddb1910c030cb260f2`，基线为 `3c943413928e1443a2eaa722f730a1e95fdd15b2`。该提交的 Windows PowerShell 5.1 / VS 2019 clean build 运行 24 项离线测试并通过，产物与审阅证据见 [`docs/BM联调推进.md`](docs/BM联调推进.md) 和当时的便携目录。它们是 17f3433 版本的历史证据，不涵盖 aec0471 的后续改动。当前源码增加 BM 测试预设、46001 组呼 native 禁发策略和 BM 登录状态诊断；这项便利与禁发改动不会修复已知的 RPTC `MSTNAK`。四次 network-only 探测均在认证 ACK 后的 RPTC 配置阶段被 Master 拒绝；即使第四次使用 RX/TX 145.1 MHz 和 CC1，仍收到 `MSTNAK`，服务端原因未知。完整 native + COM/WinMM 以及电台联合测试尚未运行。BM 上行编码前固定应用 16x 软件 PCM 增益，复用 `pcm_gain::SignalStats` 记录增益前后统计和削顶数；新 BM 链路的声音效果仍待真实联合测试。步骤 5 身份已由用户准备，UI 与 RF 节点实测暂缓。
+步骤 1–4 native 候选源码提交为 `17f3433ae4cd6820622033ddb1910c030cb260f2`，基线为 `3c943413928e1443a2eaa722f730a1e95fdd15b2`。该提交的 Windows PowerShell 5.1 / VS 2019 clean build 运行 24 项离线测试并通过，产物与审阅证据见 [`docs/BM联调推进.md`](docs/BM联调推进.md) 和当时的便携目录。它们是早期版本的历史证据。后续 aec0471 增加了 BM 测试预设、46001 组呼 native 禁发策略和 BM 登录状态诊断；这些功能本身不修复旧 RPTC `MSTNAK`。当前源码进一步共用已被 E3 网络对照接受的节点元数据、把预设 CC 更新为 1，并加入 BM 与 HRI Y0 同时就绪后的中文操作提示。当前源码尚未 clean build，不能沿用 aec0471 的构建或包审计结果。完整 native + COM/WinMM 以及电台联合测试尚未运行；BM 上行 16x 增益的声音效果仍待真实联合测试。步骤 5 身份已由用户准备，UI 与 RF 节点实测暂缓。
 
-当前源码提交为 `aec04710e9d5b32f416b3b78c3812615fedd1988`。根会话从该 clean HEAD 使用 VS 2019 x64 正式 builder 运行全部 25 项离线测试并通过，产物在 `build/_work/wirex-bridge-aec0471-20261024-104627/`。根会话还审计了 `build/bm-radio-bridge-aec0471/`：13 个实际文件（含 manifest 和 excluded 本机凭据），manifest 中 11 个普通文件的长度与 SHA-256 全部匹配；EXE 与 clean build 相同，包内 `--help` 返回 0 并列出中文预设，`--list-audio-json` 返回 0 且 schema version 为 1。凭据未被读取或哈希，日志目录为空。以上均为软件构建与包内容检查，不代表 BM `ready` 或真实设备联测通过。
+`aec04710e9d5b32f416b3b78c3812615fedd1988` 是上一个已构建的源码提交。根会话从该 clean HEAD 使用 VS 2019 x64 正式 builder 运行全部 25 项离线测试并通过，产物在 `build/_work/wirex-bridge-aec0471-20261024-104627/`。根会话还审计了 `build/bm-radio-bridge-aec0471/`：13 个实际文件（含 manifest 和 excluded 本机凭据），manifest 中 11 个普通文件的长度与 SHA-256 全部匹配；EXE 与 clean build 相同，包内 `--help` 返回 0 并列出当时的中文预设，`--list-audio-json` 返回 0 且 schema version 为 1。凭据未被读取或哈希，日志目录为空。该提交和便携包是旧 profile 版本的历史验证，不含当前 E3 metadata helper、CC1 预设变更或就绪提示。
+
+E3 network-only 对照使用 `BI7KGD`/Gateway ID `461135501`，RPTC 元数据为 RX/TX `438800000`、power `0`、CC `1`、latitude `0.000000`、longitude `00.000000`、height `0`、location `DIRECT`、description `FTX-1`、slot flags `'4'`、URL `www.qrz.com`、version `20261024`、节点类型 `MMDVM_WIREX_Bridge`、options 空。结果到达 BM `ready`，工具本机发送 `RPTCL` 成功。当前 native 与诊断工具共用轻量元数据 helper，避免 RPTC 配置不一致；helper 不改 Gateway、呼号、密码或调用方色码。`438800000` 是 BM 节点元数据，不会改变 CAT 或 RF。该节点类型表示虚拟 MMDVM 兼容 WIREX 节点，不声明物理 Hat；BM 网页 Firmware/类型文字也不是 FTX-1 固件。E3 还没有经过真实 DMRD Echo、native + HRI/COM/WinMM 或电台端到端验证。
 
 ## 产品目标与当前里程碑
 

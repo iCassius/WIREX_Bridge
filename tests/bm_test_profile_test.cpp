@@ -1,10 +1,16 @@
 #include "wirex/bm_test_profile.hpp"
+#include "wirex/bm_network_metadata.hpp"
+#include "wirex/bm_session.hpp"
 
 #include <array>
 #include <cstdio>
 #include <cstdlib>
+#include <cstddef>
 #include <optional>
+#include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -27,7 +33,7 @@ void check_common_identity(const wirex::bm_test_profile::Preset& preset)
     check(preset.master_ipv4 == "43.129.83.124", "preset uses the pinned BrandMeister IPv4 address");
     check(preset.master_port == 62031U, "preset uses BrandMeister UDP port 62031");
     check(preset.slot == Slot::ts1, "preset uses TS1");
-    check(preset.color_code == 0U, "preset uses color code 0");
+    check(preset.color_code == 1U, "preset uses the BM-accepted color code 1");
     check(preset.kind == CallKind::private_call || preset.kind == CallKind::group,
           "preset has a DMR call kind");
 }
@@ -45,6 +51,130 @@ wirex::dmr_call::CallConfig call_for(const wirex::bm_test_profile::Preset& prese
     return call;
 }
 
+void append_id(std::vector<std::uint8_t>& bytes, std::uint32_t id)
+{
+    bytes.push_back(static_cast<std::uint8_t>((id >> 24U) & 0xffU));
+    bytes.push_back(static_cast<std::uint8_t>((id >> 16U) & 0xffU));
+    bytes.push_back(static_cast<std::uint8_t>((id >> 8U) & 0xffU));
+    bytes.push_back(static_cast<std::uint8_t>(id & 0xffU));
+}
+
+std::vector<std::uint8_t> rptc_for(wirex::bm::Profile profile)
+{
+    using wirex::bm::Endpoint;
+    using wirex::bm::InputResult;
+    using wirex::bm::PacketKind;
+    using wirex::bm::Session;
+    const Endpoint master{{127U, 0U, 0U, 1U}, 62031U};
+    Session session;
+    if (!session.start(std::move(profile), master, 0U)) {
+        check(false, "metadata profile is accepted by the production BM Session validator");
+        return {};
+    }
+    auto outbound = session.take_outbound();
+    if (outbound.size() != 1U || outbound[0].kind != PacketKind::control ||
+        outbound[0].bytes.size() != 8U ||
+        std::string(outbound[0].bytes.begin(), outbound[0].bytes.begin() + 4) != "RPTL") {
+        check(false, "production Session starts with the expected login packet");
+        return {};
+    }
+
+    std::vector<std::uint8_t> challenge{'R', 'P', 'T', 'A', 'C', 'K', 1U, 2U, 3U, 4U};
+    if (session.on_datagram(challenge.data(), challenge.size(), master, 1U) != InputResult::accepted) {
+        check(false, "production Session accepts the offline test challenge");
+        return {};
+    }
+    outbound = session.take_outbound();
+    if (outbound.size() != 1U || outbound[0].bytes.size() != 40U ||
+        std::string(outbound[0].bytes.begin(), outbound[0].bytes.begin() + 4) != "RPTK") {
+        check(false, "production Session creates an authentication packet for the test profile");
+        return {};
+    }
+
+    std::vector<std::uint8_t> auth_ack{'R', 'P', 'T', 'A', 'C', 'K'};
+    append_id(auth_ack, 461135501U);
+    if (session.on_datagram(auth_ack.data(), auth_ack.size(), master, 2U) != InputResult::accepted) {
+        check(false, "production Session accepts the matching offline test acknowledgement");
+        return {};
+    }
+    outbound = session.take_outbound();
+    if (outbound.size() != 1U || outbound[0].kind != PacketKind::control ||
+        outbound[0].bytes.size() != 302U ||
+        std::string(outbound[0].bytes.begin(), outbound[0].bytes.begin() + 4) != "RPTC") {
+        check(false, "production Session generates the exact RPTC metadata packet");
+        return {};
+    }
+    check(true, "production Session generates the exact RPTC metadata packet");
+    return outbound[0].bytes;
+}
+
+std::string field(const std::vector<std::uint8_t>& packet, std::size_t offset, std::size_t length)
+{
+    if (offset > packet.size() || length > packet.size() - offset) return {};
+    return std::string(packet.begin() + static_cast<std::ptrdiff_t>(offset),
+                       packet.begin() + static_cast<std::ptrdiff_t>(offset + length));
+}
+
+void check_rptc_metadata(const std::vector<std::uint8_t>& packet,
+                         std::string_view callsign_field, std::string_view cc_field)
+{
+    check(packet.size() == 302U, "RPTC metadata packet has the protocol-defined length");
+    const std::array<std::uint8_t, 4U> expected_gateway{{0x1bU, 0x7cU, 0x5eU, 0x8dU}};
+    check(field(packet, 4U, 4U) == std::string(expected_gateway.begin(), expected_gateway.end()),
+          "RPTC preserves the configured Gateway ID");
+    check(field(packet, 8U, 8U) == std::string(callsign_field),
+          "RPTC preserves and serializes the caller's callsign");
+    check(field(packet, 16U, 9U) == "438800000" && field(packet, 25U, 9U) == "438800000",
+          "RPTC contains the accepted 438.8 MHz BM node metadata in fixed-width fields");
+    check(field(packet, 34U, 2U) == "00" && field(packet, 36U, 2U) == cc_field,
+          "RPTC serializes power 0 and the caller-selected color code");
+    check(field(packet, 38U, 8U) == "0.000000" && field(packet, 46U, 9U) == "00.000000",
+          "RPTC uses the accepted fixed-width coordinate strings");
+    check(field(packet, 55U, 3U) == "000" &&
+              field(packet, 58U, 20U) == std::string("DIRECT") + std::string(14U, ' ') &&
+              field(packet, 78U, 19U) == std::string("FTX-1") + std::string(14U, ' '),
+          "RPTC contains the validated height, location, and device description fields");
+    check(packet.size() > 97U && packet[97U] == static_cast<std::uint8_t>('4'),
+          "RPTC preserves the selected slot-flags field");
+    check(field(packet, 98U, 124U) == std::string("www.qrz.com") + std::string(113U, ' ') &&
+              field(packet, 222U, 40U) == std::string("20261024") + std::string(32U, ' ') &&
+              field(packet, 262U, 40U) == std::string("MMDVM_WIREX_Bridge") +
+                  std::string(40U - std::string("MMDVM_WIREX_Bridge").size(), ' '),
+          "RPTC contains the accepted URL, software version, and virtual node type at fixed widths");
+}
+
+void test_shared_network_metadata()
+{
+    wirex::bm::Profile preset{};
+    preset.gateway_id = 461135501U;
+    preset.callsign = "BI7KGD";
+    preset.password = "offline-secret-sentinel";
+    preset.color_code = 1U;
+    preset.options = "stale-option";
+    const auto preset_password = preset.password;
+    wirex::bm::apply_network_metadata(preset);
+    check(preset.gateway_id == 461135501U && preset.callsign == "BI7KGD",
+          "shared BM metadata does not overwrite Gateway ID or callsign");
+    check(preset.password == preset_password,
+          "shared BM metadata does not overwrite the secret");
+    check(preset.color_code == 1U,
+          "preset caller retains its explicitly selected color code");
+    check(preset.options.empty(), "shared metadata clears the old optional RPTC options");
+    check_rptc_metadata(rptc_for(std::move(preset)), "BI7KGD  ", "01");
+
+    wirex::bm::Profile manual{};
+    manual.gateway_id = 461135501U;
+    manual.callsign = "N0MAN";
+    manual.password = "manual-secret-sentinel";
+    manual.color_code = 7U;
+    const auto manual_password = manual.password;
+    wirex::bm::apply_network_metadata(manual);
+    check(manual.gateway_id == 461135501U && manual.callsign == "N0MAN" &&
+              manual.password == manual_password && manual.color_code == 7U,
+          "shared BM metadata preserves manual identity, password, and color-code input");
+    check_rptc_metadata(rptc_for(std::move(manual)), "N0MAN   ", "07");
+}
+
 } // namespace
 
 int main()
@@ -53,6 +183,8 @@ int main()
     using bm_test_profile::TxPolicy;
     using bm_test_profile::TxStartStatus;
     using dmr_call::CallKind;
+
+    test_shared_network_metadata();
 
     const auto china = bm_test_profile::find("parrot-cn");
     const auto global = bm_test_profile::find("parrot-global");

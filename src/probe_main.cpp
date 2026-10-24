@@ -25,6 +25,7 @@
 #include "wirex/wave_file.hpp"
 #ifdef WIREX_ENABLE_BM_BRIDGE
 #include "wirex/bm_session.hpp"
+#include "wirex/bm_network_metadata.hpp"
 #include "wirex/bm_test_profile.hpp"
 #include "wirex/bm_udp.hpp"
 #include "wirex/bm_voice_pipeline.hpp"
@@ -4565,15 +4566,9 @@ int bm_bridge_main(int argc, wchar_t* argv[])
 
     profile.gateway_id = gateway_id;
     profile.callsign = callsign;
+    // 这些是 BM RPTC 节点字段，不用于调谐 FTX-1 或发射 RF。
+    wirex::bm::apply_network_metadata(profile);
     profile.color_code = static_cast<std::uint8_t>(color_code);
-    profile.slot_flags = '4';
-    profile.version = "1.0";
-    profile.software = "WIREX Bridge";
-    profile.location = "DIRECT";
-    profile.description = "FTX-1";
-    // DIRECT 没有可声明的射频坐标；发送格式要求数值字段，按零值填写且不代表实际位置。
-    profile.latitude = "0";
-    profile.longitude = "0";
     wirex::dmr_call::CallConfig call_template{};
     call_template.source_id = source_id;
     call_template.destination_id = talkgroup_id;
@@ -4813,10 +4808,29 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
     bool serial_failed = false;
     bool network_ready_seen = false;
     bool bm_ever_ready = false;
+    bool operator_ready_instructions_shown = false;
     bool shutdown_tx_terminator_pending = false;
     bool shutdown_tx_terminator_reported = false;
     std::array<std::uint8_t, 4U> active_tx_stream_id{};
     std::array<std::uint8_t, 4U> shutdown_tx_stream_id{};
+    auto maybe_show_operator_ready_instructions = [&]() {
+        if (operator_ready_instructions_shown || shutdown_requested || failed || !network_ready_seen ||
+            bm_session.snapshot().state != wirex::bm::State::ready || !hri_ready ||
+            !hri_state.y_zero_acknowledged) {
+            return;
+        }
+        operator_ready_instructions_shown = true;
+        if (wirex::bm_test_profile::permits_transmit(tx_policy)) {
+            if (call_template.kind == wirex::dmr_call::CallKind::private_call &&
+                (call_template.destination_id == 460997U || call_template.destination_id == 9990U)) {
+                (void)bm_stdout(u8"已就绪：BM 已连接且电台 Y0 状态已确认。先按电脑 T 启动网络上行，再按住手咪 PTT 说话；松开 PTT 后再按 T 结束，并等待回声。\n");
+            } else {
+                (void)bm_stdout(u8"已就绪：BM 已连接且电台 Y0 状态已确认。先按电脑 T 启动网络上行，再按住手咪 PTT 说话；松开 PTT 后再按 T 结束本次上行。\n");
+            }
+        } else {
+            (void)bm_stdout(u8"已就绪：BM 已连接且电台 Y0 状态已确认。当前全国频道 46001 预设仅接收，T 不会启动上行。\n");
+        }
+    };
     auto stop_tx_input = [&]() -> bool {
         if (!radio_input_open) return !radio_input.close_failed();
         const bool closed = radio_input.close();
@@ -4945,6 +4959,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 radio_output_open = true;
                 hri_ready = true;
                 status("hri_y0_observed_radio_speaker_ready");
+                maybe_show_operator_ready_instructions();
             }
         }
     };
@@ -5118,6 +5133,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
     auto handle_network_loss = [&](std::string_view reason) {
         const bool was_ready = network_ready_seen;
         network_ready_seen = false;
+        operator_ready_instructions_shown = false;
         if (was_ready) ++counters.reconnects;
         (void)stop_tx_input();
         pipeline->cancel_tx();
@@ -5425,6 +5441,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 if (prior_state != wirex::bm::State::ready && current_state == wirex::bm::State::ready) {
                     network_ready_seen = true;
                     bm_ever_ready = true;
+                    maybe_show_operator_ready_instructions();
                 }
                 if (prior_state == wirex::bm::State::ready && current_state != wirex::bm::State::ready) {
                     handle_network_loss("bm_session_left_ready_state");
@@ -5461,6 +5478,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
             } else if (bm_session.snapshot().state == wirex::bm::State::ready) {
                 network_ready_seen = true;
                 bm_ever_ready = true;
+                maybe_show_operator_ready_instructions();
             }
 
             const auto before_pipeline_tick = pipeline->snapshot();

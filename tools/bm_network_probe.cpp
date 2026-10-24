@@ -18,6 +18,7 @@
 #include <windows.h>
 
 #include "wirex/bm_session.hpp"
+#include "wirex/bm_network_metadata.hpp"
 #include "wirex/bm_udp.hpp"
 
 #include <algorithm>
@@ -172,9 +173,10 @@ std::string_view prefix(const std::uint8_t* bytes, std::size_t size) noexcept
         return bytes != nullptr && size >= tag.size() &&
                std::equal(tag.begin(), tag.end(), bytes);
     };
-    constexpr std::array<std::string_view, 15> known{{
+    // RPTCL 与 RPTC 共享前四字节，先识别完整的 9 字节关闭包。
+    constexpr std::array<std::string_view, 16> known{{
         "MSTPONG", "RPTPING", "RPTPONG", "MSTACK", "MSTNAK", "MSTCL",
-        "RPTACK", "RPTL", "RPTK", "RPTC", "RPTO", "DMRD", "DMRA",
+        "RPTACK", "RPTL", "RPTK", "RPTCL", "RPTC", "RPTO", "DMRD", "DMRA",
         "DMRG", "UNKNOWN"
     }};
     for (const auto tag : known) {
@@ -262,9 +264,11 @@ bool send_queued(Session& session,
             erase_bytes(item.bytes.data(), item.bytes.size());
         }
         if (!sent) {
+            std::cout << "TX_RESULT prefix=" << tag << " result=failed\n";
             session.transport_lost(elapsed_ms(origin));
             return false;
         }
+        std::cout << "TX_RESULT prefix=" << tag << " result=sent\n";
     }
     return true;
 }
@@ -291,19 +295,8 @@ int main(int argc, char* argv[])
     profile.password = std::move(password);
     erase_string(password);
     profile.callsign = "BI7KGD";
-    profile.rx_frequency = 0U;
-    profile.tx_frequency = 0U;
-    profile.power = 0U;
-    profile.color_code = 0U;
-    profile.latitude = "0";
-    profile.longitude = "0";
-    profile.height = 0U;
-    profile.location = "DIRECT";
-    profile.description = "FTX-1";
-    profile.slot_flags = '4';
-    profile.version = "1.0";
-    profile.software = "WIREX Bridge";
-    profile.options.clear();
+    wirex::bm::apply_network_metadata(profile);
+    profile.color_code = 1U;
 
     const Endpoint master{{43U, 129U, 83U, 124U}, 62031U};
     UdpTransport transport;
@@ -342,9 +335,15 @@ int main(int argc, char* argv[])
         }
         if (snapshot.state == State::ready) {
             session.stop(now);
-            (void)send_queued(session, transport, sent_prefixes, origin);
+            const bool queued_sends_succeeded =
+                send_queued(session, transport, sent_prefixes, origin);
+            const bool close_sent = queued_sends_succeeded &&
+                sent_prefixes.find("RPTCL") != sent_prefixes.end();
             emit_snapshot(session.snapshot());
-            exit_code = 0;
+            if (!close_sent) {
+                std::cout << "RPTCL_RESULT result=not_sent\n";
+            }
+            exit_code = close_sent ? 0 : 5;
             break;
         }
         if (!send_queued(session, transport, sent_prefixes, origin)) {
@@ -389,9 +388,15 @@ int main(int argc, char* argv[])
         }
         if (snapshot.state == State::ready) {
             session.stop(elapsed_ms(origin));
-            (void)send_queued(session, transport, sent_prefixes, origin);
+            const bool queued_sends_succeeded =
+                send_queued(session, transport, sent_prefixes, origin);
+            const bool close_sent = queued_sends_succeeded &&
+                sent_prefixes.find("RPTCL") != sent_prefixes.end();
             emit_snapshot(session.snapshot());
-            exit_code = 0;
+            if (!close_sent) {
+                std::cout << "RPTCL_RESULT result=not_sent\n";
+            }
+            exit_code = close_sent ? 0 : 5;
             break;
         }
         if (!send_queued(session, transport, sent_prefixes, origin)) {

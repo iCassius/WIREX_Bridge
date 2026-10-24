@@ -1,6 +1,8 @@
 # BM 4602 网络登录诊断
 
-本文记录 2026-10-24 对 BrandMeister 4602 的四次有界 network-only 探测，以及对公开 BM、MMDVM 与 DroidStar 实现和配置说明的核对。探测没有进入 `ready`，不能作为设备已上线或生产验收的证据。
+本文保留旧 RPTC profile 的四轮拒绝记录，并补充 2026-10-24 对照 DroidStar/DMRHost 配置后的 A、D、E1、E2、E3 有界 network-only 结果。旧 profile 全部收到 `MSTNAK`；E3 组合 profile 到达 `ready` 并由诊断工具本机 UDP 发送 `RPTCL` 成功。E3 只验证 BM 控制配置阶段，不代表已完成 DMR Echo 语音、HRI/COM、WinMM 或 RF 联测。
+
+用户确认其 Android 成功登录 BM 的客户端是 DroidStar；截图 Gateway ID 为 `461135502`。本轮配置对照使用用户授权的独立 Gateway ID `461135501`，没有修改或复用 ESSID `02` 的配置。
 
 ## 范围与基线
 
@@ -11,7 +13,9 @@
 - 四次探测都由同一份生产 `Session` 状态机处理。没有修改 `src/bm_session.cpp` 或 `src/bm_udp.cpp`。
 - 执行的绝对时刻没有由 probe 记录，本文保留日期和已知的实际耗时，不补造时间戳。
 
-## 四次配置与实测结果
+用户另提供了旧 aec0471 候选的一次 native 会话日志：会话约 26.6 秒，期间有五次 BM 登录尝试；每次都通过 challenge/auth ACK，但旧 RPTC profile 收到 `MSTNAK`，BM 从未进入 `ready`。该次会话确实打开 COM/HRI，用户观察到 BM 红 X/PTT 状态；日志中的 HRI/Y0 控制握手耗时约 1.125 秒，BM TX/RX 与音频计数均为 0。HRI 控制握手和用户界面观察不代表 BM DMRD 语音通话成功。这些记录对应 E3 之前的 profile，不代表当前可接受的 RPTC 元数据。
+
+## 历史：旧 profile 的四次配置与实测结果
 
 四次使用相同呼号和 gateway ID（RadioID 信息已由用户核实）。第一次复制当时 native 的 DIRECT 配置；第二次只改变坐标字符串格式；第三次复制第二次配置，仅把 RX/TX frequency 从零改成用户提供的 145.100 MHz 元数据；第四次复制第三次配置，仅把 color code 从 0 改成 1。后两次没有修改电台配置或发射 RF。
 
@@ -50,7 +54,29 @@ DMRHost 的网络对象构造函数会把 RX/TX frequency、power、color code�
 
 用户确认此前成功登录 BM 的 Android 客户端是 DroidStar；当时保存的实际 `Software ID` / `Package ID` 值未提供，不能假设其使用了上游默认值。DroidStar 上游默认 `Software ID=20200922`、`Package ID=MMDVM_MMDVM_HS_Hat`，并将这两个字符串写入 RPTC 尾部的两个 40 字节字段。[BM 自有 DMRHost 的 `DMRNetwork.h`](https://github.com/BrandMeister/DMRHost/blob/dev/DMRNetwork.h#L28-L68) 将相应成员命名为 `m_version` 和 `m_hwType`；其 [`MMDVMHost.cpp`](https://github.com/BrandMeister/DMRHost/blob/dev/MMDVMHost.cpp#L631-L676) 传入主机软件 `VERSION` 与实际调制解调器的 `getHWType()`，[`DMRNetwork.cpp`](https://github.com/BrandMeister/DMRHost/blob/dev/DMRNetwork.cpp#L492-L529) 再把它们写入这两个字段。因此，标准 MMDVMHost 实现把这两项作为软件版本和硬件类型发送；DroidStar 使用的是自己的 Software ID / Package ID 命名与默认值。
 
-当前 WIREX profile 的 `version="1.0"` 写入第一个字段，`software="WIREX Bridge"` 写入第二个、即 DMRHost 称为 `hwType` 的字段。这是可能影响 BM 配置接受度的候选差异，但没有 BM 服务端字段规则或单字段实测证明它导致 `MSTNAK`。目前也没有找到公开的通用软件节点 package token 或注册流程；不能据 DroidStar 默认值把本软件标成物理 `MMDVM_MMDVM_HS_Hat`，也不能据此认定拒绝原因。
+旧 WIREX profile 的 `version="1.0"` 写入第一个字段，`software="WIREX Bridge"` 写入第二个、即 DMRHost 称为 `hwType` 的字段。这可能影响 BM 配置接受度，但早期 A profile 即使只把第二字段改成 `MMDVM_MMDVM_HS_Hat` 仍被拒绝，因而不能把该字符串单独认定为旧拒绝原因。E 系列的结果和已接受的虚拟节点标识见下文。不能据 DroidStar 默认值把本软件标成物理 `MMDVM_MMDVM_HS_Hat`。
+
+## 当前对照：A、D 与 E 系列配置
+
+这些对照都使用生产 `Session`/`UdpTransport` 向固定 BM 4602 发送控制包，使用呼号 `BI7KGD`、Gateway ID `461135501` 和同一份本机凭据。它们没有打开 native 桥接、COM、WinMM，也没有发送 DMRD 或语音。A 是旧 WIREX profile 的一次变体；D 是完整 DroidStar 参数参考；E1–E3 从 D 逐项改成适用于本程序的虚拟节点元数据。
+
+| 配置 | 相对前项的差异 | 关键 RPTC 字段 | 观测结果 |
+| --- | --- | --- | --- |
+| A | 旧 WIREX profile 仅将第二个 40 字节尾字段替换成 `MMDVM_MMDVM_HS_Hat` | 旧频率 `0`/`0`、power `0`、CC `0`、坐标字符串 `0`/`0`、version `1.0` | RPTC 后 `MSTNAK` |
+| D | 完整 DroidStar 参数参考 | 438800000/438800000、power `1`、CC `1`、`0.000000`/`00.000000`、URL `www.qrz.com`、version `20200922`、第二字段 `MMDVM_MMDVM_HS_Hat` | Session 到达 `ready` |
+| E1 | 仅把 D 的第二个 40 字节字段改为 `MMDVM_WIREX_Bridge` | 其他字段与 D 相同 | 到达 `ready`；诊断工具报告本机 UDP `RPTCL` send 成功 |
+| E2 | 仅把 E1 的第一个 40 字节字段改为 `20261024` | 其他字段与 E1 相同 | 到达 `ready`；诊断工具报告本机 UDP `RPTCL` send 成功 |
+| E3 | 仅把 E2 的 power 从 `1` 改成 `0` | 其他字段与 E2 相同 | 到达 `ready`；诊断工具报告本机 UDP `RPTCL` send 成功 |
+
+已确认可用于本程序的 E3 profile 为：呼号 `BI7KGD`、Gateway ID `461135501`、RX/TX metadata `438800000`、power `0`、CC `1`、latitude `0.000000`、longitude `00.000000`、height `0`、location `DIRECT`、description `FTX-1`、slot flags `'4'`、URL `www.qrz.com`、version `20261024`、第二个 40 字节字段 `MMDVM_WIREX_Bridge`、options 空。native 的 DMR 配置继续使用 TS1、Source ID `4611355` 与原有三个目标 ID。`438800000` 是 BM 节点配置元数据，不会修改 CAT 频率或发射 RF。`MMDVM_WIREX_Bridge` 表示本程序提供的虚拟 MMDVM 兼容节点类型，不声明存在实体 MMDVM Hat。
+
+这些对照确认 E3 整体配置可通过 BM 控制配置阶段；它们没有证明旧 profile 的拒绝由某一个字段单独造成。D/E 系列在相同参考 profile 上的单项更改维持 `ready`，不等于已识别旧 profile 的服务端拒绝规则。`RPTCL` 的 send 成功只表示本机 UDP 调用成功，不表示 BM 返回了关闭确认。BM 网页显示的节点 `Firmware`/类型文本来自程序上报的 RPTC 标识，不是 FTX-1 电台固件，也不是实体 Hat 声明。
+
+## 当前共享元数据 helper 的生产源码复核
+
+这次复核与上面的历史 E3 A/D/E 对照分开记录。根会话从当前共享 `apply_network_metadata(Profile&)` 源码编译 `build/_work/bm-probe-final-e3-20261024/bm_network_probe.exe`，并显式运行 `--run-network-only`。本次结果在 118 ms 内完成：BM 对 RPTC 返回 config ACK，生产 `Session` 进入 `ready`，程序实际调用本机 UDP 发送 9 字节 `RPTCL`（send 成功），随后报告 `stopped` 并以退出码 0 结束。
+
+本次只运行了 network-only 诊断工具，没有启动 native bridge、HRI、COM、WinMM 音频、PTT 或 RF，也没有残留进程。保存的构建和运行证据位于该 ignored build 目录，包括 `network.stdout.log`、`run_summary.txt`、`source_sha256.txt` 等文件。结果确认当前共享 helper 生成的 RPTC 配置可通过 BM 控制配置阶段；`RPTCL` 成功仍只表示本机 UDP send 成功，不代表 BM 确认关闭，也没有测试 DMRD、Echo 音频或真实电台声音。
 
 ## BrandMeister 官方配置说明能确认的范围
 
@@ -59,8 +85,8 @@ DMRHost 的网络对象构造函数会把 RX/TX frequency、power、color code�
 - [通用热点说明](https://help.brandmeister.network/hotspots/connecting-hotspots/) 要求已分配的 7 位 DMR ID、BrandMeister 账户与 hotspot security，并说明实际电台与热点一般需要使用一致的频率、色码和 talkgroup 设置。
 - 在已查阅的 BM 官方热点/MMDVM说明中，没有找到禁止 `power=0`、`CC=0`、`version=1.0` 或要求某个固定 RPTC software/package ID 的协议条款；也没有找到解释 RPTC 后 `MSTNAK` 的字段级错误码。官方说明要求 RF 热点配置有效频率，但没有明确写出 BM Master 对 Homebrew RPTC 中 `frequency=0` 必定返回 `MSTNAK`。
 
-第三轮在其他字段不变时把 RX/TX 从零改为用户提供的 145.100 MHz 元数据，仍收到 `MSTNAK`；第四轮仅把 color code 从 0 改为 1，仍收到 `MSTNAK`。用户确认其既往成功配置可使用 CC0 或 CC1，且 MMDVM 配置可使用 VHF/UHF 频率。这两轮结果只说明单独改频率或单独改色码都未解决当前 DIRECT profile 的拒绝，不能据此判断服务端拒绝规则。两项改动仅用于独立 network-only 探测；native 测试预设仍保持用户原先确认的 CC0，没有随诊断更改。BM OpenSpot 页面只描述该产品 RF 热点的配置，不能外推为 BM 全网频率规则。Pi-Star 说明允许坐标沿用默认值或输入位置，并把坐标格式问题列为连接异常的可能原因；第二轮已按 MMDVM 的固定小数格式发送，但结果仍是 `MSTNAK`。`power=0`、版本和软件/package 字符串是否触发服务端规则仍无官方证据。`MSTNAK` 没有提供字段级错误码；继续前需要 BM 服务端侧的拒绝原因或 DIRECT 节点的明确配置要求。在获得该信息前停止探测，不改生产 Session，也不伪装其他客户端。
+第三轮在其他字段不变时把 RX/TX 从零改为用户提供的 145.100 MHz 元数据，仍收到 `MSTNAK`；第四轮仅把 color code 从 0 改为 1，仍收到 `MSTNAK`。用户确认其既往配置可使用 CC0 或 CC1，且 MMDVM 配置可使用 VHF/UHF 频率。这些旧 profile 测试只说明单独改频率或色码不足以通过 RPTC；之后 A 变体也表明只换节点类型字符串仍不足。E3 通过的是完整组合，不能据此推导旧拒绝的单字段原因。native 测试预设现在按已接受的配置使用 CC1。BM OpenSpot 页面只描述该产品 RF 热点，不能外推为 BM 全网频率规则。Pi-Star 说明允许坐标保留默认值或输入位置，并把坐标格式列为可能因素；第二轮 canonical 坐标仍收到 `MSTNAK`。旧 profile 的 `power=0`、version 和软件/package 标识是否参与拒绝目前没有可识别的字段级服务端原因。
 
 ## 独立诊断工具
 
-[`tools/bm_network_probe.cpp`](../tools/bm_network_probe.cpp) 是用于同一生产 Session/UdpTransport 流程的独立源码，保存的 profile 与当前 native 配置一致；第二次试验的坐标格式差异只记录在上文。它固定指向 BM 4602，最多运行 15 秒，只发送唯一的 RPTL/RPTK/RPTC；只有生产 Session 确认 `ready` 时才发送 RPTCL。无参数或 `--help` 只显示用法，不读取密码、不创建 socket；只有显式传入 `--run-network-only` 才会开始真实网络诊断。它只读取本机私有密码文件，不接受密码命令行参数。这个工具不能由通用构建脚本、自动测试或默认启动流程调用；每次未来人工执行前都需要确认网络目标和用户授权。
+[`tools/bm_network_probe.cpp`](../tools/bm_network_probe.cpp) 与 native 共用 `apply_network_metadata(Profile&)`，以免两处 RPTC 参数漂移；调用方单独给定 CC。它固定指向 BM 4602，最多运行 15 秒，只发送唯一的 RPTL/RPTK/RPTC；只有生产 Session 确认 `ready` 时才发送 RPTCL。此前工具把 RPTCL 按 RPTC 前缀归类的问题已修复：现在先检查完整 9 字节关闭包，并记录每个控制包本机 UDP send 成败；只有 RPTCL 实际 send 成功才返回成功退出码。无参数或 `--help` 只显示用法，不读取密码、不创建 socket；只有显式传入 `--run-network-only` 才会开始真实网络诊断。它只读取本机私有密码文件，不接受密码命令行参数，不能由通用 builder、自动测试或默认启动流程调用。
