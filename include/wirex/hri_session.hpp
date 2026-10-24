@@ -19,6 +19,9 @@ inline constexpr std::size_t max_transmit_bytes = 32 * 1024;
 inline constexpr std::uint32_t max_valid_records = 1024;
 inline constexpr std::uint32_t max_y_write_calls = 120;
 inline constexpr std::uint32_t max_x_ack_write_calls = 256;
+inline constexpr std::size_t max_continuous_feed_bytes = 2048;
+inline constexpr std::size_t max_continuous_records_per_feed = 512;
+inline constexpr std::size_t max_pending_writes = 256;
 
 enum class Phase {
     not_started,
@@ -51,6 +54,7 @@ enum class StopReason {
     write_failed,
     unexpected_write_completion,
     incomplete_record,
+    pending_write_limit,
     caller_stopped,
     transport_failure,
     audio_failure,
@@ -61,6 +65,18 @@ enum class CommandKind {
     version_query,
     y_record,
     x_ack,
+};
+
+enum class PttLevel {
+    unknown,
+    pressed,
+    released,
+};
+
+struct PttObservation {
+    PttLevel level{PttLevel::unknown};
+    // True only when a valid Y0 record had already been accepted before this X100.
+    bool y_zero_acknowledged{};
 };
 
 struct Command {
@@ -103,11 +119,13 @@ struct Snapshot {
 
 struct Update {
     std::vector<Command> commands;
+    std::vector<PttObservation> ptt_observations;
     Snapshot state{};
 };
 
 struct Config {
     std::uint64_t window_ms{max_window_ms};
+    bool continuous{false};
 };
 
 // 纯函数状态机：调用者通过 write_completed() 报告串口写入结果；本类不访问设备。

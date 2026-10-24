@@ -6,6 +6,7 @@
 #endif
 #include <windows.h>
 #include <mmsystem.h>
+#include <mmddk.h>
 #include <bcrypt.h>
 
 #include "wirex/direct_frame.hpp"
@@ -31,6 +32,7 @@
 #include "wirex/bm_voice_pipeline.hpp"
 #include "wirex/dmrd.hpp"
 #include "wirex/hri_stream_session.hpp"
+#include "wirex/hri_ptt_gate.hpp"
 #endif
 
 #include <algorithm>
@@ -115,6 +117,39 @@ std::wstring mm_error(MMRESULT code)
         return message.data();
     }
     return L"MMRESULT " + std::to_wstring(code);
+}
+
+std::optional<std::wstring> wave_endpoint_id(bool input, UINT device_id)
+{
+    const auto wave_id = static_cast<UINT_PTR>(device_id);
+    DWORD size_bytes = 0U;
+    const auto size_result = input
+        ? waveInMessage(reinterpret_cast<HWAVEIN>(wave_id), DRV_QUERYFUNCTIONINSTANCEIDSIZE,
+            reinterpret_cast<DWORD_PTR>(&size_bytes), 0U)
+        : waveOutMessage(reinterpret_cast<HWAVEOUT>(wave_id), DRV_QUERYFUNCTIONINSTANCEIDSIZE,
+            reinterpret_cast<DWORD_PTR>(&size_bytes), 0U);
+    if (size_result != MMSYSERR_NOERROR || size_bytes < sizeof(wchar_t) ||
+        size_bytes > 65536U || size_bytes % sizeof(wchar_t) != 0U) {
+        return std::nullopt;
+    }
+
+    std::vector<wchar_t> buffer(static_cast<std::size_t>(size_bytes) / sizeof(wchar_t), L'\0');
+    const auto id_result = input
+        ? waveInMessage(reinterpret_cast<HWAVEIN>(wave_id), DRV_QUERYFUNCTIONINSTANCEID,
+            reinterpret_cast<DWORD_PTR>(buffer.data()), size_bytes)
+        : waveOutMessage(reinterpret_cast<HWAVEOUT>(wave_id), DRV_QUERYFUNCTIONINSTANCEID,
+            reinterpret_cast<DWORD_PTR>(buffer.data()), size_bytes);
+    if (id_result != MMSYSERR_NOERROR) return std::nullopt;
+    const auto terminator = std::find(buffer.begin(), buffer.end(), L'\0');
+    if (terminator == buffer.begin() || terminator == buffer.end()) return std::nullopt;
+    return std::wstring(buffer.begin(), terminator);
+}
+
+bool wave_endpoint_matches(bool input, UINT device_id, std::wstring_view expected_endpoint_id)
+{
+    if (expected_endpoint_id.empty()) return false;
+    const auto current = wave_endpoint_id(input, device_id);
+    return current && *current == expected_endpoint_id;
 }
 
 std::wstring device_name(const wchar_t* name, std::size_t capacity)
@@ -406,10 +441,15 @@ void list_audio_devices_json()
         WAVEINCAPSW caps{};
         const auto result = waveInGetDevCapsW(id, &caps, sizeof(caps));
         const auto name = result == MMSYSERR_NOERROR ? to_utf8(device_name(caps.szPname, MAXPNAMELEN)) : "";
+        const auto endpoint_id = result == MMSYSERR_NOERROR ? wave_endpoint_id(true, id) : std::nullopt;
         const auto format = pcm_format();
         const bool pcm_supported = result == MMSYSERR_NOERROR &&
             waveInOpen(nullptr, id, &format, 0, 0, WAVE_FORMAT_QUERY) == MMSYSERR_NOERROR;
         std::cout << "{\"id\":" << id << ",\"name\":" << json_escape(name)
+                  << ",\"endpoint_id\":";
+        if (endpoint_id) std::cout << json_escape(to_utf8(*endpoint_id));
+        else std::cout << "null";
+        std::cout
                   << ",\"pcm_48000_mono_s16_supported\":" << (pcm_supported ? "true" : "false") << '}';
     }
     std::cout << "],\"wave_outputs\":[";
@@ -418,10 +458,15 @@ void list_audio_devices_json()
         WAVEOUTCAPSW caps{};
         const auto result = waveOutGetDevCapsW(id, &caps, sizeof(caps));
         const auto name = result == MMSYSERR_NOERROR ? to_utf8(device_name(caps.szPname, MAXPNAMELEN)) : "";
+        const auto endpoint_id = result == MMSYSERR_NOERROR ? wave_endpoint_id(false, id) : std::nullopt;
         const auto format = pcm_format();
         const bool pcm_supported = result == MMSYSERR_NOERROR &&
             waveOutOpen(nullptr, id, &format, 0, 0, WAVE_FORMAT_QUERY) == MMSYSERR_NOERROR;
         std::cout << "{\"id\":" << id << ",\"name\":" << json_escape(name)
+                  << ",\"endpoint_id\":";
+        if (endpoint_id) std::cout << json_escape(to_utf8(*endpoint_id));
+        else std::cout << "null";
+        std::cout
                   << ",\"pcm_48000_mono_s16_supported\":" << (pcm_supported ? "true" : "false") << '}';
     }
     std::cout << "]}\n" << std::flush;
@@ -442,9 +487,14 @@ public:
     WaveInput& operator=(const WaveInput&) = delete;
     WaveInput() = default;
 
-    bool open(UINT device_id)
+    bool open(UINT device_id, const std::wstring* expected_endpoint_id = nullptr)
     {
         if (device_ != nullptr || close_failed_) return false;
+        if (expected_endpoint_id != nullptr &&
+            !wave_endpoint_matches(true, device_id, *expected_endpoint_id)) {
+            std::wcerr << L"WaveIn endpoint ID 与启动前核对值不同；拒绝打开其他音频设备。\n";
+            return false;
+        }
         auto format = pcm_format();
         const auto query = waveInOpen(nullptr, device_id, &format, 0, 0, WAVE_FORMAT_QUERY);
         if (query != MMSYSERR_NOERROR) {
@@ -496,6 +546,18 @@ public:
     {
         secure_wipe(buffer.samples.data(), sizeof(buffer.samples));
         return waveInAddBuffer(device_, &buffer.header, sizeof(buffer.header));
+    }
+
+    bool stop_capture() noexcept
+    {
+        if (device_ == nullptr || !started_) return device_ != nullptr;
+        const auto stopped = waveInStop(device_);
+        if (stopped != MMSYSERR_NOERROR) {
+            std::wcerr << L"waveInStop failed while ending capture: " << mm_error(stopped) << L"\n";
+            return false;
+        }
+        started_ = false;
+        return true;
     }
 
     [[nodiscard]] bool is_open() const noexcept { return device_ != nullptr; }
@@ -583,9 +645,14 @@ public:
     WaveOutput& operator=(const WaveOutput&) = delete;
     WaveOutput() = default;
 
-    bool open(UINT device_id)
+    bool open(UINT device_id, const std::wstring* expected_endpoint_id = nullptr)
     {
         if (device_ != nullptr || !device_cleanup_state_.reopen_allowed()) return false;
+        if (expected_endpoint_id != nullptr &&
+            !wave_endpoint_matches(false, device_id, *expected_endpoint_id)) {
+            std::wcerr << L"WaveOut endpoint ID 与启动前核对值不同；拒绝打开其他音频设备。\n";
+            return false;
+        }
         auto format = pcm_format();
         const auto query = waveOutOpen(nullptr, device_id, &format, 0, 0, WAVE_FORMAT_QUERY);
         if (query != MMSYSERR_NOERROR) {
@@ -1105,6 +1172,7 @@ const wchar_t* hri_stop_reason_name(wirex::hri_session::StopReason reason) noexc
     case StopReason::write_failed: return L"write_failed";
     case StopReason::unexpected_write_completion: return L"unexpected_write_completion";
     case StopReason::incomplete_record: return L"incomplete_record";
+    case StopReason::pending_write_limit: return L"pending_write_limit";
     case StopReason::caller_stopped: return L"caller_stopped";
     case StopReason::transport_failure: return L"transport_failure";
     case StopReason::audio_failure: return L"audio_failure";
@@ -1680,6 +1748,30 @@ bool resolve_candidate_output(UINT& output_id)
     auto format = pcm_format();
     if (waveOutOpen(nullptr, matches[0], &format, 0, 0, WAVE_FORMAT_QUERY) != MMSYSERR_NOERROR) {
         std::wcerr << L"唯一匹配的 USB WaveOut 不接受 48 kHz、单声道、16 位 PCM。\n";
+        return false;
+    }
+    output_id = matches[0];
+    return true;
+}
+
+bool resolve_candidate_output(UINT& output_id, std::wstring_view expected_endpoint_id)
+{
+    if (expected_endpoint_id.empty()) {
+        std::wcerr << L"BM bridge 需要本次 WinMM 枚举返回的 WaveOut endpoint ID。\n";
+        return false;
+    }
+    std::vector<UINT> matches;
+    const auto device_count = waveOutGetNumDevs();
+    for (UINT index = 0U; index < device_count; ++index) {
+        if (wave_endpoint_matches(false, index, expected_endpoint_id)) matches.push_back(index);
+    }
+    if (matches.size() != 1U) {
+        std::wcerr << L"指定的 WaveOut endpoint ID 未在当前 WinMM 列表中唯一出现。\n";
+        return false;
+    }
+    const auto format = pcm_format();
+    if (waveOutOpen(nullptr, matches[0], &format, 0U, 0U, WAVE_FORMAT_QUERY) != MMSYSERR_NOERROR) {
+        std::wcerr << L"所选 WaveOut endpoint 已不支持 48 kHz、单声道、16 位 PCM。\n";
         return false;
     }
     output_id = matches[0];
@@ -4334,10 +4426,11 @@ void print_bm_bridge_help()
         L"wirex_bridge - 本地 DIRECT / BrandMeister 声音桥接候选\n"
         L"  --help\n"
         L"  --list-audio-json\n"
-        L"  --run --port COMn --body-file ABS --input N --output N --status-file ABS [--test-preset parrot-cn|parrot-global|listen-46001 --password-file ABS]\n"
+        L"  --run --port COMn --body-file ABS --input N --output N --status-file ABS --expected-wavein-endpoint ID --expected-waveout-endpoint ID [--test-preset parrot-cn|parrot-global|listen-46001 --password-file ABS] [--manual-ptt]\n"
         L"不传测试预设时保留逐项手工配置和隐藏密码输入。预设密码文件为本机私有明文 UTF-8 文本。\n"
-        L"可发射预设中，T 开始/结束 DMRD 上行；listen-46001 的 T 始终拒绝且不产生 DMRD。\n"
-        L"Q 停止并退出；电台手咪 PTT 仍由操作者手动操作。\n"
+        L"WaveIn/WaveOut endpoint ID来自本次 WinMM 枚举；打开和重开音频流前都会核对。\n"
+        L"默认在 BM/HRI ready 后用有效 HRI 手咪PTT边沿控制上行；--manual-ptt 显式启用键盘 T 诊断模式。\n"
+        L"Q 停止并退出；程序不控制电台PTT/RF，不使用VOX。\n"
         L"BM DMRD 上行使用固定 16x 软件增益；状态报告记录增益前后 PCM 统计与削顶样本数。\n"
         L"Master 支持 IPv4 字面量或主机名；手工密码在控制台隐藏输入，预设从私有 UTF-8 文件读取。\n"
         L"两种密码入口只接受可打印 ASCII；手工隐藏输入允许空格。\n");
@@ -4361,7 +4454,35 @@ struct BmBridgeCounters {
     std::uint64_t calls_ended{};
     std::uint64_t rejected_calls{};
     std::uint64_t reconnects{};
+    std::uint64_t ptt_observations{};
+    std::uint64_t ptt_unknown_observations{};
+    std::uint64_t ptt_tx_starts{};
+    std::uint64_t ptt_tx_ends{};
+    std::uint64_t ptt_tx_timeouts{};
+    std::uint64_t ptt_start_rejections{};
+    wirex::hri_session::PttLevel last_ptt_level{wirex::hri_session::PttLevel::unknown};
+    bool has_last_rx_header{};
+    std::uint32_t last_rx_source_id{};
+    std::uint32_t last_rx_destination_id{};
+    std::uint8_t last_rx_slot{1U};
+    char last_rx_call_kind{'G'};
+    std::uint64_t rx_filtered_datagrams{};
+    std::uint64_t rx_filtered_destination_id{};
+    std::uint64_t rx_filtered_slot{};
+    std::uint64_t rx_filtered_call_kind{};
+    std::uint64_t rx_filtered_protocol{};
 };
+
+const char* ptt_level_name(wirex::hri_session::PttLevel level) noexcept
+{
+    using wirex::hri_session::PttLevel;
+    switch (level) {
+    case PttLevel::unknown: return "unknown";
+    case PttLevel::pressed: return "pressed";
+    case PttLevel::released: return "released";
+    }
+    return "unknown";
+}
 
 bool append_bridge_status(std::ofstream& file, std::string_view event, std::uint64_t elapsed_ms,
                           const wirex::bm::Snapshot& bm_snapshot,
@@ -4380,7 +4501,24 @@ bool append_bridge_status(std::ofstream& file, std::string_view event, std::uint
          << ",\"last_input_result\":\""
          << (counters.has_last_input_result ? bm_input_result_name(counters.last_input_result) : "none")
          << "\",\"hri_phase\":\"" << hri_phase_name(hri_phase)
-         << "\",\"tx_datagrams\":" << counters.tx_datagrams
+         << "\",\"ptt_last_state\":\"" << ptt_level_name(counters.last_ptt_level)
+         << "\",\"ptt_observations\":" << counters.ptt_observations
+         << ",\"ptt_unknown_observations\":" << counters.ptt_unknown_observations
+         << ",\"ptt_tx_starts\":" << counters.ptt_tx_starts
+         << ",\"ptt_tx_ends\":" << counters.ptt_tx_ends
+         << ",\"ptt_tx_timeouts\":" << counters.ptt_tx_timeouts
+         << ",\"ptt_start_rejections\":" << counters.ptt_start_rejections
+         << ",\"last_rx_header_valid\":" << (counters.has_last_rx_header ? "true" : "false")
+         << ",\"last_rx_source_id\":" << counters.last_rx_source_id
+         << ",\"last_rx_destination_id\":" << counters.last_rx_destination_id
+         << ",\"last_rx_slot\":" << static_cast<unsigned int>(counters.last_rx_slot)
+         << ",\"last_rx_call_kind\":\"" << counters.last_rx_call_kind << "\""
+         << ",\"rx_filtered_datagrams\":" << counters.rx_filtered_datagrams
+         << ",\"rx_filtered_destination_id\":" << counters.rx_filtered_destination_id
+         << ",\"rx_filtered_slot\":" << counters.rx_filtered_slot
+         << ",\"rx_filtered_call_kind\":" << counters.rx_filtered_call_kind
+         << ",\"rx_filtered_protocol\":" << counters.rx_filtered_protocol
+         << ",\"tx_datagrams\":" << counters.tx_datagrams
          << ",\"rx_datagrams\":" << counters.rx_datagrams
          << ",\"tx_audio_samples\":" << counters.tx_audio_samples
          << ",\"tx_input_gain_milli\":16000"
@@ -4406,9 +4544,13 @@ struct ProfileSecretGuard {
 };
 
 int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& body_path,
-                  UINT input_id, UINT output_id, wirex::bm::Endpoint master,
+                  UINT input_id, UINT output_id,
+                  const std::wstring& expected_wavein_endpoint_id,
+                  const std::wstring& expected_waveout_endpoint_id,
+                  wirex::bm::Endpoint master,
                   wirex::bm::Profile profile, wirex::dmr_call::CallConfig call_template,
                   wirex::bm_test_profile::TxPolicy tx_policy,
+                  bool manual_ptt,
                   std::ofstream& status_file, wirex::ConsoleHandlerScope& control_scope);
 
 int bm_bridge_main(int argc, wchar_t* argv[])
@@ -4421,30 +4563,94 @@ int bm_bridge_main(int argc, wchar_t* argv[])
         list_audio_devices_json();
         return 0;
     }
-    const bool common_shape = (argc == 12 || argc == 16) && std::wstring_view(argv[1]) == L"--run" &&
+    const bool common_shape = argc >= 12 && std::wstring_view(argv[1]) == L"--run" &&
         std::wstring_view(argv[2]) == L"--port" && std::wstring_view(argv[4]) == L"--body-file" &&
         std::wstring_view(argv[6]) == L"--input" && std::wstring_view(argv[8]) == L"--output" &&
         std::wstring_view(argv[10]) == L"--status-file";
-    const bool preset_shape = argc == 16 && std::wstring_view(argv[12]) == L"--test-preset" &&
-        std::wstring_view(argv[14]) == L"--password-file";
-    const bool shape_ok = common_shape && (argc == 12 || preset_shape);
-    if (!shape_ok) {
+    if (!common_shape) {
         print_bm_bridge_help();
         return 2;
     }
 
     std::optional<wirex::bm_test_profile::Preset> selected_preset;
     std::filesystem::path password_file_path;
-    if (preset_shape) {
-        const std::wstring_view preset_id(argv[13]);
-        if (preset_id == L"parrot-cn") selected_preset = wirex::bm_test_profile::find("parrot-cn");
-        else if (preset_id == L"parrot-global") selected_preset = wirex::bm_test_profile::find("parrot-global");
-        else if (preset_id == L"listen-46001") selected_preset = wirex::bm_test_profile::find("listen-46001");
+    std::wstring preset_id;
+    std::wstring expected_wavein_endpoint_id;
+    std::wstring expected_waveout_endpoint_id;
+    bool manual_ptt = false;
+    bool manual_ptt_seen = false;
+    bool preset_seen = false;
+    bool password_file_seen = false;
+    bool wavein_endpoint_seen = false;
+    bool waveout_endpoint_seen = false;
+    for (int index = 12; index < argc;) {
+        const std::wstring_view option(argv[index]);
+        if (option == L"--manual-ptt") {
+            if (manual_ptt_seen) {
+                (void)bm_stderr(L"--manual-ptt 不可重复指定。\n");
+                return 2;
+            }
+            manual_ptt = true;
+            manual_ptt_seen = true;
+            ++index;
+            continue;
+        }
+        if (index + 1 >= argc) {
+            (void)bm_stderr(L"BM bridge 可选参数缺少取值。\n");
+            return 2;
+        }
+        const std::wstring_view value(argv[index + 1]);
+        if (option == L"--test-preset") {
+            if (preset_seen || value.empty()) {
+                (void)bm_stderr(L"--test-preset 不可重复或留空。\n");
+                return 2;
+            }
+            preset_id.assign(value);
+            preset_seen = true;
+        } else if (option == L"--password-file") {
+            if (password_file_seen || value.empty()) {
+                (void)bm_stderr(L"--password-file 不可重复或留空。\n");
+                return 2;
+            }
+            password_file_path = std::filesystem::path(std::wstring(value));
+            password_file_seen = true;
+        } else if (option == L"--expected-wavein-endpoint") {
+            if (wavein_endpoint_seen || value.empty() || value.size() > 4096U) {
+                (void)bm_stderr(L"--expected-wavein-endpoint 不可重复、留空或超过长度上限。\n");
+                return 2;
+            }
+            expected_wavein_endpoint_id.assign(value);
+            wavein_endpoint_seen = true;
+        } else if (option == L"--expected-waveout-endpoint") {
+            if (waveout_endpoint_seen || value.empty() || value.size() > 4096U) {
+                (void)bm_stderr(L"--expected-waveout-endpoint 不可重复、留空或超过长度上限。\n");
+                return 2;
+            }
+            expected_waveout_endpoint_id.assign(value);
+            waveout_endpoint_seen = true;
+        } else {
+            (void)bm_stderr(L"BM bridge 收到未知可选参数。\n");
+            return 2;
+        }
+        index += 2;
+    }
+    if (preset_seen != password_file_seen) {
+        (void)bm_stderr(L"固定预设必须同时提供 --test-preset 和 --password-file。\n");
+        return 2;
+    }
+    if (!wavein_endpoint_seen || !waveout_endpoint_seen) {
+        (void)bm_stderr(L"BM bridge 必须提供本次 WinMM 枚举的 WaveIn/WaveOut endpoint ID；当前系统无法查询ID时不能确认设备归属。\n");
+        return 2;
+    }
+    if (preset_seen) {
+        const std::wstring_view selected_id(preset_id);
+        if (selected_id == L"parrot-cn") selected_preset = wirex::bm_test_profile::find("parrot-cn");
+        else if (selected_id == L"parrot-global") selected_preset = wirex::bm_test_profile::find("parrot-global");
+        else if (selected_id == L"listen-46001") selected_preset = wirex::bm_test_profile::find("listen-46001");
         if (!selected_preset) {
             (void)bm_stderr(L"测试预设无效；没有打开 COM、WinMM 或 UDP。\n");
             return 2;
         }
-        password_file_path = std::filesystem::path(argv[15]);
         if (!password_file_path.is_absolute()) {
             (void)bm_stderr(L"BM 私有密码文件必须使用绝对路径；没有打开设备。\n");
             return 2;
@@ -4499,6 +4705,11 @@ int bm_bridge_main(int argc, wchar_t* argv[])
         (void)bm_stderr(L"所选 WaveIn/WaveOut 设备未通过范围和 48 kHz PCM 能力查询。尚未打开音频流。\n");
         return 2;
     }
+    if (!wave_endpoint_matches(true, input_id, expected_wavein_endpoint_id) ||
+        !wave_endpoint_matches(false, output_id, expected_waveout_endpoint_id)) {
+        (void)bm_stderr(L"所选WinMM设备的endpoint ID与本次启动器枚举结果不一致或无法查询；尚未打开音频流。\n");
+        return 2;
+    }
     WAVEINCAPSW input_caps{};
     WAVEOUTCAPSW output_caps{};
     if (waveInGetDevCapsW(input_id, &input_caps, sizeof(input_caps)) != MMSYSERR_NOERROR ||
@@ -4507,8 +4718,9 @@ int bm_bridge_main(int argc, wchar_t* argv[])
         return 2;
     }
     UINT exact_radio_output_id = 0U;
-    if (!resolve_candidate_output(exact_radio_output_id) || output_id != exact_radio_output_id) {
-        (void)bm_stderr(L"所选 WaveOut 必须是本机列表中唯一完整名称匹配且通过 48 kHz 查询的电台 USB 输出；不回退到电脑扬声器。\n");
+    if (!resolve_candidate_output(exact_radio_output_id, expected_waveout_endpoint_id) ||
+        output_id != exact_radio_output_id) {
+        (void)bm_stderr(L"本次选择的 WaveOut endpoint ID未唯一匹配到当前WinMM设备，或未通过PCM能力查询。\n");
         return 2;
     }
 
@@ -4589,21 +4801,19 @@ int bm_bridge_main(int argc, wchar_t* argv[])
                        << L":" << master_port << L"。\n"
                        << L"没有选择 PC monitor。软件不会发送 RF/PTT 命令。\n";
     if (selected_preset) {
-        const std::wstring preset_id(selected_preset->id.begin(), selected_preset->id.end());
-        configuration_text << L"固定测试预设：" << preset_id << L"。BM 密码来自本机私有文件，明文仅保存在该本机文件中。\n";
+        const std::wstring preset_name(selected_preset->id.begin(), selected_preset->id.end());
+        configuration_text << L"固定测试预设：" << preset_name << L"。BM 密码来自本机私有文件，明文仅保存在该本机文件中。\n";
     }
     if (wirex::bm_test_profile::permits_transmit(tx_policy)) {
-        configuration_text << L"T 键显式开始/结束 BM DMRD 上行；手咪 PTT 仍由操作者手动操作。\n";
+        if (manual_ptt) {
+            configuration_text << L"诊断手动 PTT 模式：按 T 显式开始/结束 BM DMRD 上行；默认启动路径不启用 T。\n";
+        } else {
+            configuration_text << L"待机模式：忽略 T；BM/HRI ready后只按校验通过的手咪PTT边沿开始或结束上行。\n";
+        }
     } else {
         configuration_text << L"严格仅接收：T 键会拒绝，不调用发送管线，不产生 LC 或 DMRD。\n";
     }
     (void)bm_stderr(configuration_text.str());
-    std::string confirmation;
-    if (!read_ascii_line(L"输入 START 才打开本次 COM、音频与 BM UDP 会话：", confirmation, 16U) ||
-        confirmation != "START") {
-        (void)bm_stderr(L"未输入 START；没有打开 COM、WinMM 或 UDP。\n");
-        return 0;
-    }
 
     wirex::ConsoleHandlerScope control_scope;
     if (!control_scope.start()) {
@@ -4623,14 +4833,19 @@ int bm_bridge_main(int argc, wchar_t* argv[])
         (void)bm_stderr(L"无法写入或刷新启动前状态报告；已清除隐藏密码，尚未打开设备。\n");
         return 2;
     }
-    return run_bm_bridge(argv[3], body_path, input_id, output_id, endpoint,
-                         std::move(profile), call_template, tx_policy, status_file, control_scope);
+    return run_bm_bridge(argv[3], body_path, input_id, output_id,
+                         expected_wavein_endpoint_id, expected_waveout_endpoint_id, endpoint,
+                         std::move(profile), call_template, tx_policy, manual_ptt, status_file, control_scope);
 }
 
 int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& body_path,
-                  UINT input_id, UINT output_id, wirex::bm::Endpoint master,
+                  UINT input_id, UINT output_id,
+                  const std::wstring& expected_wavein_endpoint_id,
+                  const std::wstring& expected_waveout_endpoint_id,
+                  wirex::bm::Endpoint master,
                   wirex::bm::Profile profile, wirex::dmr_call::CallConfig call_template,
                   wirex::bm_test_profile::TxPolicy tx_policy,
+                  bool manual_ptt,
                   std::ofstream& status_file, wirex::ConsoleHandlerScope& control_scope)
 {
     using Clock = std::chrono::steady_clock;
@@ -4642,8 +4857,16 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
     using Pipeline = wirex::bm_voice::BmVoicePipeline;
     using PipelineEventKind = wirex::bm_voice::EventKind;
     using HriPhase = wirex::hri_session::Phase;
+    using PttAction = wirex::hri_ptt_gate::Action;
+    using PttGate = wirex::hri_ptt_gate::Gate;
+    using PttLevel = wirex::hri_ptt_gate::Level;
+    const bool continuous_run = !manual_ptt;
     ProfileSecretGuard secret_guard{profile};
     BmBridgeCounters counters{};
+    PttGate ptt_gate;
+    std::function<void(PttAction, std::string_view)> handle_ptt_gate_action;
+    std::function<void()> synchronize_ptt_gate;
+    std::function<void(const wirex::hri_session::PttObservation&)> process_ptt_observation;
     std::string failure_reason;
     bool failed = false;
     bool status_report_failed = false;
@@ -4721,7 +4944,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
     WaveInput radio_input;
     WaveOutput radio_output;
     wirex::hri_session::Session hri_session(std::move(y_body),
-        wirex::hri_session::Config{wirex::session_timing::active_window_ms});
+        wirex::hri_session::Config{wirex::session_timing::active_window_ms, continuous_run});
     wirex::hri_session::Snapshot hri_state{};
     std::wstring device_path;
     if (!parse_port(port_name, device_path)) {
@@ -4787,8 +5010,22 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
              << " last_input_result=" << (counters.has_last_input_result
                     ? bm_input_result_name(counters.last_input_result) : "none")
              << " hri=" << hri_phase_name(hri_state.phase)
+             << " ptt=" << ptt_level_name(counters.last_ptt_level)
              << " tx_datagrams=" << counters.tx_datagrams
              << " rx_datagrams=" << counters.rx_datagrams
+             << " rx_filtered=" << counters.rx_filtered_datagrams
+             << " rx_filter_dst/slot/kind/protocol=" << counters.rx_filtered_destination_id << "/"
+             << counters.rx_filtered_slot << "/" << counters.rx_filtered_call_kind << "/"
+             << counters.rx_filtered_protocol
+             << " last_rx=";
+        if (counters.has_last_rx_header) {
+            line << counters.last_rx_source_id << ">" << counters.last_rx_destination_id
+                 << "/TS" << static_cast<unsigned int>(counters.last_rx_slot)
+                 << "/" << counters.last_rx_call_kind;
+        } else {
+            line << "none";
+        }
+        line
              << " tx_input_gain=16x tx_pcm_clipped_samples=" << counters.tx_pcm_clipped_samples
              << " calls=" << counters.calls_started << "/" << counters.calls_ended
              << " radio_state=unknown\n";
@@ -4821,7 +5058,9 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         }
         operator_ready_instructions_shown = true;
         if (wirex::bm_test_profile::permits_transmit(tx_policy)) {
-            if (call_template.kind == wirex::dmr_call::CallKind::private_call &&
+            if (!manual_ptt) {
+                (void)bm_stdout(u8"已连接并就绪：等待电台手咪PTT；收到ready后的有效按下边沿才开始BM上行，松开边沿结束本次上行。键盘T不生效。\n");
+            } else if (call_template.kind == wirex::dmr_call::CallKind::private_call &&
                 (call_template.destination_id == 460997U || call_template.destination_id == 9990U)) {
                 (void)bm_stdout(u8"已就绪：BM 已连接且电台 Y0 状态已确认。先按电脑 T 启动网络上行，再按住手咪 PTT 说话；松开 PTT 后再按 T 结束，并等待回声。\n");
             } else {
@@ -4834,8 +5073,209 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
     auto stop_tx_input = [&]() -> bool {
         if (!radio_input_open) return !radio_input.close_failed();
         const bool closed = radio_input.close();
-        radio_input_open = false;
+        radio_input_open = radio_input.is_open();
         return closed;
+    };
+    auto tx_start_permitted = [&]() {
+        if (!wirex::bm_test_profile::permits_transmit(tx_policy) || shutdown_requested || failed ||
+            !network_ready_seen || bm_session.snapshot().state != wirex::bm::State::ready ||
+            !hri_ready || !hri_state.y_zero_acknowledged || hri_state.phase == HriPhase::stopped ||
+            downlink_blocked || radio_input_open) {
+            return false;
+        }
+        const auto pipeline_state = pipeline->snapshot();
+        const auto stream_state = stream_session->snapshot();
+        return pipeline_state.tx_state == wirex::bm_voice::TxState::idle &&
+            pipeline_state.rx_state == wirex::bm_voice::RxState::idle &&
+            stream_state.phase == StreamPhase::idle;
+    };
+    auto start_tx_call = [&]() {
+        if (!tx_start_permitted()) {
+            ++counters.rejected_calls;
+            status("tx_start_rejected_busy_or_endpoint_not_ready");
+            return false;
+        }
+        auto call = call_template;
+        const auto random_result = BCryptGenRandom(nullptr, call.stream_id.data(),
+            static_cast<ULONG>(call.stream_id.size()), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+        if (random_result < 0) {
+            set_failure("stream_id_random_failed");
+            return false;
+        }
+        const auto begin_result = wirex::bm_test_profile::begin_tx(tx_policy, *pipeline, call,
+            wirex::bm_voice::Readiness{network_ready_seen, hri_ready}, Clock::now());
+        if (begin_result.status != wirex::bm_test_profile::TxStartStatus::started) {
+            ++counters.rejected_calls;
+            status(begin_result.status == wirex::bm_test_profile::TxStartStatus::denied_receive_only
+                ? "tx_start_rejected_receive_only_policy" : "tx_start_rejected_by_pipeline");
+            return false;
+        }
+        if (!radio_input.open(input_id, &expected_wavein_endpoint_id)) {
+            pipeline->cancel_tx();
+            ++counters.rejected_calls;
+            status("radio_wavein_open_failed_tx_cancelled");
+            return false;
+        }
+        active_tx_stream_id = call.stream_id;
+        radio_input_open = true;
+        if (!manual_ptt) ++counters.ptt_tx_starts;
+        status(manual_ptt ? "tx_started_explicitly_by_t_key" : "tx_started_from_radio_ptt_down");
+        return true;
+    };
+    auto consume_tx_wave_buffer = [&](WaveInput::Buffer& buffer, bool requeue) {
+        const DWORD bytes = buffer.header.dwBytesRecorded;
+        bool succeeded = bytes <= buffer.header.dwBufferLength && bytes % sizeof(std::int16_t) == 0U;
+        if (succeeded) {
+            const auto samples = static_cast<std::size_t>(bytes / sizeof(std::int16_t));
+            if (samples != 0U) {
+                const auto gain = wirex::pcm_gain::apply(buffer.samples.data(), samples, 16000U);
+                succeeded = gain.valid;
+                if (succeeded) {
+                    wirex::pcm_gain::accumulate(counters.tx_pcm_input_stats, gain.before);
+                    wirex::pcm_gain::accumulate(counters.tx_pcm_gained_stats, gain.after);
+                    if (gain.clipped_samples >
+                        std::numeric_limits<std::uint64_t>::max() - counters.tx_pcm_clipped_samples) {
+                        counters.tx_pcm_clipped_samples = std::numeric_limits<std::uint64_t>::max();
+                    } else {
+                        counters.tx_pcm_clipped_samples += gain.clipped_samples;
+                    }
+                    const auto pushed = pipeline->push_tx_audio(buffer.samples.data(), samples, Clock::now());
+                    succeeded = static_cast<bool>(pushed);
+                    if (succeeded) counters.tx_audio_samples += samples;
+                }
+            }
+        }
+        buffer.header.dwBytesRecorded = 0U;
+        if (requeue && succeeded) {
+            return radio_input.requeue(buffer) == MMSYSERR_NOERROR;
+        }
+        secure_wipe(buffer.samples.data(), sizeof(buffer.samples));
+        return succeeded;
+    };
+    auto finish_tx_capture = [&]() {
+        if (!radio_input_open) return !radio_input.close_failed();
+        bool succeeded = radio_input.stop_capture();
+        if (succeeded) {
+            const DWORD wait_result = WaitForSingleObject(radio_input.event(), 100U);
+            if (wait_result == WAIT_FAILED) succeeded = false;
+            for (auto& buffer : radio_input.buffers()) {
+                if ((buffer.header.dwFlags & WHDR_DONE) == 0U) continue;
+                if (!consume_tx_wave_buffer(buffer, false)) succeeded = false;
+            }
+        }
+        const bool closed = radio_input.close();
+        radio_input_open = radio_input.is_open();
+        return succeeded && closed;
+    };
+    auto end_tx_call = [&]() {
+        if (!finish_tx_capture()) {
+            pipeline->cancel_tx();
+            set_failure("wavein_tx_release_cleanup_failed");
+            return false;
+        }
+        const auto state = pipeline->snapshot();
+        if (state.tx_state != wirex::bm_voice::TxState::active) {
+            if (state.tx_state != wirex::bm_voice::TxState::idle) pipeline->cancel_tx();
+            set_failure("tx_release_without_active_call");
+            return false;
+        }
+        const auto ended = pipeline->end_tx(Clock::now());
+        if (ended != wirex::bm_voice::Error::none) {
+            pipeline->cancel_tx();
+            set_failure("tx_audio_flush_failed");
+            return false;
+        }
+        status("tx_audio_draining_after_radio_ptt_release");
+        return true;
+    };
+    handle_ptt_gate_action = [&](PttAction action, std::string_view event) {
+        if (action == PttAction::start_tx) {
+            if (!start_tx_call()) {
+                ++counters.ptt_start_rejections;
+                ptt_gate.start_failed();
+            } else if (!manual_ptt && !ptt_gate.start_succeeded(elapsed_ms())) {
+                (void)stop_tx_input();
+                pipeline->cancel_tx();
+                ptt_gate.start_failed();
+                set_failure("ptt_call_timer_start_failed");
+            }
+            return;
+        }
+        if (action == PttAction::end_tx) {
+            if (end_tx_call()) ++counters.ptt_tx_ends;
+            else ptt_gate.disarm_until_release();
+            return;
+        }
+        if (action == PttAction::call_timeout) {
+            const bool capture_closed = finish_tx_capture();
+            if (!capture_closed) set_failure("wavein_ptt_call_timeout_cleanup_failed");
+            const auto state = pipeline->snapshot();
+            if (state.tx_state != wirex::bm_voice::TxState::idle) {
+                if (network_ready_seen && bm_session.snapshot().state == wirex::bm::State::ready) {
+                    if (pipeline->stop_tx(Clock::now()) != wirex::bm_voice::Error::none) {
+                        pipeline->cancel_tx();
+                        set_failure("ptt_call_timeout_terminator_failed");
+                    }
+                } else {
+                    pipeline->cancel_tx();
+                }
+            }
+            ptt_gate.disarm_until_release();
+            ++counters.ptt_tx_timeouts;
+            status("radio_ptt_call_120s_limit_reached_release_required");
+            return;
+        }
+        if (action != PttAction::abort_tx) return;
+        if (!stop_tx_input()) set_failure("wavein_ptt_abort_cleanup_failed");
+        const auto state = pipeline->snapshot();
+        if (state.tx_state != wirex::bm_voice::TxState::idle) {
+            if (bm_session.snapshot().state == wirex::bm::State::ready) {
+                if (pipeline->stop_tx(Clock::now()) != wirex::bm_voice::Error::none) {
+                    pipeline->cancel_tx();
+                    set_failure("ptt_abort_terminator_failed");
+                }
+            } else {
+                pipeline->cancel_tx();
+            }
+        }
+        ptt_gate.disarm_until_release();
+        status(event);
+    };
+    synchronize_ptt_gate = [&]() {
+        if (manual_ptt) return;
+        const bool ready = !shutdown_requested && !failed && !status_report_failed &&
+            wirex::bm_test_profile::permits_transmit(tx_policy) && network_ready_seen &&
+            bm_session.snapshot().state == wirex::bm::State::ready && hri_ready &&
+            hri_state.y_zero_acknowledged && hri_state.phase != HriPhase::stopped;
+        handle_ptt_gate_action(ptt_gate.set_ready(ready), "ptt_aborted_endpoint_not_ready");
+    };
+    process_ptt_observation = [&](const wirex::hri_session::PttObservation& observation) {
+        if (manual_ptt || !observation.y_zero_acknowledged) return;
+        synchronize_ptt_gate();
+        PttLevel level = PttLevel::unknown;
+        switch (observation.level) {
+        case wirex::hri_session::PttLevel::pressed: level = PttLevel::pressed; break;
+        case wirex::hri_session::PttLevel::released: level = PttLevel::released; break;
+        case wirex::hri_session::PttLevel::unknown: level = PttLevel::unknown; break;
+        }
+        ++counters.ptt_observations;
+        counters.last_ptt_level = observation.level;
+        if (observation.level == wirex::hri_session::PttLevel::unknown) {
+            ++counters.ptt_unknown_observations;
+        }
+        const bool can_start = tx_start_permitted();
+        const auto before = ptt_gate.snapshot();
+        const auto action = ptt_gate.observe(level, can_start);
+        if (level == PttLevel::pressed && !before.pressed_latched && !can_start) {
+            ++counters.ptt_start_rejections;
+            ++counters.rejected_calls;
+            status("radio_ptt_down_rejected_busy_release_required");
+        }
+        if (action == PttAction::abort_tx) {
+            handle_ptt_gate_action(action, "tx_aborted_unknown_radio_ptt_state");
+        } else {
+            handle_ptt_gate_action(action, "radio_ptt_action");
+        }
     };
     auto is_shutdown_terminator = [&](const wirex::dmr_call::TxPacket& packet) {
         return shutdown_tx_terminator_pending &&
@@ -4935,6 +5375,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
 
     auto apply_hri_update = [&](wirex::hri_session::Update update) {
         hri_state = update.state;
+        bool command_writes_succeeded = true;
         for (const auto& command : update.commands) {
             DWORD written = 0U;
             const BOOL wrote = WriteFile(port.get(), command.frame.data(),
@@ -4943,6 +5384,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
             hri_state = hri_session.write_completed(command.id, full, elapsed_ms()).state;
             if (!full) {
                 serial_failed = true;
+                command_writes_succeeded = false;
                 set_failure("hri_control_serial_write_failed");
                 break;
             }
@@ -4953,13 +5395,19 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
             set_failure("hri_control_session_stopped");
         }
         if (hri_state.y_zero_acknowledged && !hri_ready && hri_state.phase != HriPhase::stopped) {
-            if (!radio_output.open(output_id)) {
+            if (!radio_output.open(output_id, &expected_waveout_endpoint_id)) {
                 set_failure("radio_waveout_open_failed");
             } else {
                 radio_output_open = true;
                 hri_ready = true;
                 status("hri_y0_observed_radio_speaker_ready");
                 maybe_show_operator_ready_instructions();
+            }
+        }
+        synchronize_ptt_gate();
+        if (command_writes_succeeded) {
+            for (const auto& observation : update.ptt_observations) {
+                process_ptt_observation(observation);
             }
         }
     };
@@ -4990,7 +5438,8 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
             return;
         }
         if (!radio_output_open) {
-            if (!hri_state.y_zero_acknowledged || !radio_output.open(output_id)) {
+            if (!hri_state.y_zero_acknowledged ||
+                !radio_output.open(output_id, &expected_waveout_endpoint_id)) {
                 ++counters.rejected_calls;
                 pending_receive_start = false;
                 pending_receive_ended = false;
@@ -5004,14 +5453,16 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
             status("radio_waveout_reopened_after_network_reconnect");
         }
         const auto now_ms = elapsed_ms();
-        if (now_ms >= bm_bridge_window_ms) {
+        if (!continuous_run && now_ms >= bm_bridge_window_ms) {
             ++counters.rejected_calls;
             pending_receive_start = false;
             pending_receive_ended = false;
             pipeline->cancel_rx();
             return;
         }
-        auto update = stream_session->begin_call(now_ms, bm_bridge_window_ms - now_ms);
+        const auto call_window_ms = continuous_run ? wirex::hri_stream_session::max_call_window_ms
+            : std::min(wirex::hri_stream_session::max_call_window_ms, bm_bridge_window_ms - now_ms);
+        auto update = stream_session->begin_call(now_ms, call_window_ms);
         pending_receive_start = false;
         const bool ended_before_hri_start = pending_receive_ended;
         pending_receive_ended = false;
@@ -5074,6 +5525,8 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
     auto begin_shutdown = [&](std::string_view reason) {
         if (shutdown_requested) return;
         shutdown_requested = true;
+        (void)ptt_gate.set_ready(false);
+        ptt_gate.disarm_until_release();
         shutdown_reason.assign(reason);
         cleanup_deadline = Clock::now() + std::chrono::milliseconds{bm_bridge_cleanup_ms};
         pending_receive_start = false;
@@ -5118,13 +5571,25 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
     status("started");
     if (!status_report_failed) {
         if (wirex::bm_test_profile::permits_transmit(tx_policy)) {
-            (void)bm_stdout(u8"T：显式开始/结束 BM DMRD 语音；如需上行，请由操作者物理按住/松开手咪 PTT。\n"
-                            u8"Q/Ctrl+C：停止并退出。本机运行最多120秒，清理窗口最多3秒。\n"
-                            u8"网络下行只播放到选定的 Radio WaveOut；不发送 RF/PTT 控制命令。\n");
+            if (manual_ptt) {
+                (void)bm_stdout(u8"诊断模式 T：手动开始/结束 BM DMRD 语音；该开关不会操作电台PTT/RF。\n"
+                                u8"Q/Ctrl+C：停止并退出。本机诊断窗口最多120秒，清理窗口最多3秒。\n"
+                                u8"网络下行只播放到选定的 Radio WaveOut。\n");
+            } else {
+                (void)bm_stdout(u8"本机持续待机；有效手咪PTT按下边沿开始BM上行，松开边沿结束；不使用VOX。\n"
+                                u8"Q/Ctrl+C：停止并退出，关闭流程有界。单次通话最多120秒。\n"
+                                u8"网络下行只播放到选定的 Radio WaveOut；程序不控制电台PTT/RF。\n");
+            }
         } else {
-            (void)bm_stdout(u8"仅接收模式：T 始终拒绝，不启动 BM DMRD 上行，也不产生 LC 或 DMRD 数据报。\n"
-                            u8"Q/Ctrl+C：停止并退出。本机运行最多120秒，清理窗口最多3秒。\n"
-                            u8"网络下行只播放到选定的 Radio WaveOut；不发送 RF/PTT 控制命令。\n");
+            if (continuous_run) {
+                (void)bm_stdout(u8"严格仅接收：手咪PTT和键盘T都不启动BM DMRD上行，不产生LC或DMRD数据报。\n"
+                                u8"本机持续前台待机；Q/Ctrl+C停止并退出，关闭流程有界。\n"
+                                u8"网络下行只播放到选定的 Radio WaveOut；不控制电台PTT/RF。\n");
+            } else {
+                (void)bm_stdout(u8"严格仅接收：手咪PTT和键盘T都不启动BM DMRD上行，不产生LC或DMRD数据报。\n"
+                                u8"Q/Ctrl+C停止并退出；诊断窗口最多120秒，清理窗口最多3秒。\n"
+                                u8"网络下行只播放到选定的 Radio WaveOut；不控制电台PTT/RF。\n");
+            }
         }
     } else {
         begin_shutdown("status_report_write_failed");
@@ -5133,6 +5598,8 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
     auto handle_network_loss = [&](std::string_view reason) {
         const bool was_ready = network_ready_seen;
         network_ready_seen = false;
+        (void)ptt_gate.set_ready(false);
+        ptt_gate.disarm_until_release();
         operator_ready_instructions_shown = false;
         if (was_ready) ++counters.reconnects;
         (void)stop_tx_input();
@@ -5202,6 +5669,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
             if (!wirex::bm_test_profile::permits_transmit(tx_policy)) {
                 pipeline->cancel_tx();
                 (void)stop_tx_input();
+                ptt_gate.disarm_until_release();
                 ++counters.rejected_calls;
                 status("tx_datagram_rejected_receive_only_policy");
                 return;
@@ -5212,6 +5680,8 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 }
                 pipeline->cancel_tx();
                 (void)stop_tx_input();
+                (void)ptt_gate.set_ready(false);
+                ptt_gate.disarm_until_release();
                 status("tx_stopped_bm_not_ready");
                 return;
             }
@@ -5222,6 +5692,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 }
                 pipeline->cancel_tx();
                 (void)stop_tx_input();
+                ptt_gate.disarm_until_release();
                 status("tx_datagram_rejected_and_queue_cleared");
                 return;
             }
@@ -5236,56 +5707,14 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         }
         const auto pstate = pipeline->snapshot();
         if (pstate.tx_state == wirex::bm_voice::TxState::active) {
-            if (!stop_tx_input()) {
-                pipeline->cancel_tx();
-                set_failure("wavein_tx_stop_failed");
-                return;
-            }
-            const auto ended = pipeline->end_tx(Clock::now());
-            if (ended != wirex::bm_voice::Error::none) {
-                pipeline->cancel_tx();
-                set_failure("tx_audio_flush_failed");
-            } else {
-                status("tx_audio_draining_to_dmr_terminator");
-            }
+            (void)end_tx_call();
             return;
         }
         if (pstate.tx_state == wirex::bm_voice::TxState::draining) {
             status("tx_busy_draining");
             return;
         }
-        const auto stream_phase = stream_session->snapshot().phase;
-        if (shutdown_requested || !network_ready_seen || !hri_ready || downlink_blocked ||
-            stream_phase != StreamPhase::idle || pstate.rx_state != wirex::bm_voice::RxState::idle) {
-            status("tx_start_rejected_busy_or_endpoint_not_ready");
-            return;
-        }
-        auto call = call_template;
-        const auto random_result = BCryptGenRandom(nullptr, call.stream_id.data(),
-            static_cast<ULONG>(call.stream_id.size()), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
-        if (random_result < 0) {
-            set_failure("stream_id_random_failed");
-            return;
-        }
-        const auto begin_result = wirex::bm_test_profile::begin_tx(tx_policy, *pipeline, call,
-            wirex::bm_voice::Readiness{network_ready_seen, hri_ready}, Clock::now());
-        if (begin_result.status == wirex::bm_test_profile::TxStartStatus::denied_receive_only) {
-            ++counters.rejected_calls;
-            status("tx_start_rejected_receive_only_policy");
-            return;
-        }
-        if (begin_result.status != wirex::bm_test_profile::TxStartStatus::started) {
-            status("tx_start_rejected_by_pipeline");
-            return;
-        }
-        if (!radio_input.open(input_id)) {
-            pipeline->cancel_tx();
-            status("radio_wavein_open_failed_tx_cancelled");
-            return;
-        }
-        active_tx_stream_id = call.stream_id;
-        radio_input_open = true;
-        status("tx_started_explicitly_by_t_key");
+        (void)start_tx_call();
     };
 
     bool exception_while_running = false;
@@ -5310,9 +5739,13 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                  stream_phase_after_failure_check == StreamPhase::faulted)) {
                 break;
             }
+            synchronize_ptt_gate();
             const auto now = Clock::now();
             const auto now_ms = elapsed_ms();
-            if (!shutdown_requested && now_ms >= bm_bridge_window_ms) {
+            if (!manual_ptt) {
+                handle_ptt_gate_action(ptt_gate.tick(now_ms), "ptt_call_timer_event");
+            }
+            if (!shutdown_requested && !continuous_run && now_ms >= bm_bridge_window_ms) {
                 begin_shutdown("120s_run_window_expired");
             }
             if (!shutdown_requested && control_scope.cancel_requested()) {
@@ -5347,7 +5780,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                         wchar_t key = record.Event.KeyEvent.uChar.UnicodeChar;
                         if (key >= L'a' && key <= L'z') key = static_cast<wchar_t>(key - L'a' + L'A');
                         if (record.Event.KeyEvent.bKeyDown) {
-                            if (key == L'T' && !t_key_down) process_t_key();
+                            if (manual_ptt && key == L'T' && !t_key_down) process_t_key();
                             if (key == L'Q' && !q_key_down) begin_shutdown("user_requested_exit");
                             if (key == L'T') t_key_down = true;
                             if (key == L'Q') q_key_down = true;
@@ -5452,6 +5885,19 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                         ++counters.rejected_calls;
                         continue;
                     }
+                    constexpr std::uint8_t dmr_flag_ts2 = 0x80U;
+                    constexpr std::uint8_t dmr_flag_private_call = 0x40U;
+                    const auto& datagram = decoded.datagram;
+                    const auto received_slot = (datagram.flags & dmr_flag_ts2) != 0U
+                        ? wirex::dmr_call::Slot::ts2 : wirex::dmr_call::Slot::ts1;
+                    const auto received_call_kind = (datagram.flags & dmr_flag_private_call) != 0U
+                        ? wirex::dmr_call::CallKind::private_call : wirex::dmr_call::CallKind::group;
+                    counters.has_last_rx_header = true;
+                    counters.last_rx_source_id = datagram.source_id;
+                    counters.last_rx_destination_id = datagram.destination_id;
+                    counters.last_rx_slot = static_cast<std::uint8_t>(received_slot);
+                    counters.last_rx_call_kind = received_call_kind == wirex::dmr_call::CallKind::private_call
+                        ? 'P' : 'G';
                     const auto active_pipeline = pipeline->snapshot();
                     const auto active_hri = stream_session->snapshot();
                     const bool hri_busy = active_hri.phase != StreamPhase::idle;
@@ -5464,6 +5910,24 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                     }
                     ++counters.rx_datagrams;
                     const auto accepted = pipeline->ingest_rx(decoded.datagram, Clock::now());
+                    if (accepted.error == wirex::bm_voice::Error::filtered) {
+                        ++counters.rx_filtered_datagrams;
+                        bool had_header_mismatch = false;
+                        if (receive_filter.destination_id != 0U &&
+                            datagram.destination_id != receive_filter.destination_id) {
+                            ++counters.rx_filtered_destination_id;
+                            had_header_mismatch = true;
+                        }
+                        if (receive_filter.match_slot && received_slot != receive_filter.slot) {
+                            ++counters.rx_filtered_slot;
+                            had_header_mismatch = true;
+                        }
+                        if (receive_filter.match_call_kind && received_call_kind != receive_filter.call_kind) {
+                            ++counters.rx_filtered_call_kind;
+                            had_header_mismatch = true;
+                        }
+                        if (!had_header_mismatch) ++counters.rx_filtered_protocol;
+                    }
                     if (accepted.error != wirex::bm_voice::Error::none &&
                         accepted.error != wirex::bm_voice::Error::filtered &&
                         accepted.error != wirex::bm_voice::Error::half_duplex_collision) {
@@ -5480,6 +5944,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 bm_ever_ready = true;
                 maybe_show_operator_ready_instructions();
             }
+            synchronize_ptt_gate();
 
             const auto before_pipeline_tick = pipeline->snapshot();
             const auto pipeline_tick_error = pipeline->tick(Clock::now());
@@ -5488,6 +5953,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 if (before_pipeline_tick.tx_state != wirex::bm_voice::TxState::idle &&
                     after_pipeline_tick.tx_state == wirex::bm_voice::TxState::idle) {
                     if (!stop_tx_input()) set_failure("wavein_deadline_cleanup_failed");
+                    if (!manual_ptt) ptt_gate.disarm_until_release();
                     ++counters.rejected_calls;
                     status("tx_deadline_missed_call_terminated_with_one_eot");
                 }
@@ -5518,36 +5984,8 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 } else {
                     for (auto& buffer : radio_input.buffers()) {
                         if ((buffer.header.dwFlags & WHDR_DONE) == 0) continue;
-                        const DWORD bytes = buffer.header.dwBytesRecorded;
-                        if (bytes > buffer.header.dwBufferLength || bytes % sizeof(std::int16_t) != 0U) {
-                            set_failure("radio_wavein_pcm_invalid");
-                            break;
-                        }
-                        const auto samples = static_cast<std::size_t>(bytes / sizeof(std::int16_t));
-                        if (samples != 0U) {
-                            const auto gain = wirex::pcm_gain::apply(buffer.samples.data(), samples, 16000U);
-                            if (!gain.valid) {
-                                set_failure("tx_pcm_gain_failed");
-                                break;
-                            }
-                            wirex::pcm_gain::accumulate(counters.tx_pcm_input_stats, gain.before);
-                            wirex::pcm_gain::accumulate(counters.tx_pcm_gained_stats, gain.after);
-                            if (gain.clipped_samples >
-                                std::numeric_limits<std::uint64_t>::max() - counters.tx_pcm_clipped_samples) {
-                                counters.tx_pcm_clipped_samples = std::numeric_limits<std::uint64_t>::max();
-                            } else {
-                                counters.tx_pcm_clipped_samples += gain.clipped_samples;
-                            }
-                            const auto pushed = pipeline->push_tx_audio(buffer.samples.data(), samples, Clock::now());
-                            if (!pushed) {
-                                set_failure("tx_audio_queue_rejected");
-                                break;
-                            }
-                            counters.tx_audio_samples += samples;
-                        }
-                        buffer.header.dwBytesRecorded = 0U;
-                        if (radio_input.requeue(buffer) != MMSYSERR_NOERROR) {
-                            set_failure("radio_wavein_requeue_failed");
+                        if (!consume_tx_wave_buffer(buffer, true)) {
+                            set_failure("radio_wavein_pcm_or_requeue_failed");
                             break;
                         }
                     }
@@ -5632,6 +6070,8 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         set_failure("runtime_exception");
         shutdown_requested = true;
         shutdown_reason = "runtime_exception";
+        (void)ptt_gate.set_ready(false);
+        ptt_gate.disarm_until_release();
         cleanup_deadline = Clock::now() + std::chrono::milliseconds{bm_bridge_cleanup_ms};
         pending_receive_start = false;
         (void)stop_tx_input();
@@ -5726,7 +6166,7 @@ void print_help()
                << L"                               Listens after Y/0, accepts sequential user-requested F/M sends, and returns to listening when safe.\n"
                << L"                               Interactive keys: F fixed WAV, M capture up to 8 s in memory then send, C cancel, Q quit. No automatic downlink.\n"
                << L"  --list-audio                List explicit WaveIn/WaveOut device IDs and names.\n"
-               << L"  --list-audio-json           Emit schema_version 1 device IDs, names, and PCM format-query results only.\n"
+               << L"  --list-audio-json           Emit device IDs, names, endpoint IDs, and PCM format support; open no audio streams.\n"
                << L"  --monitor --input N --seconds N (1..30)\n"
                << L"                               Measure input PCM; no save/playback/default device.\n"
                << L"  --play-wav --file PATH --output N\n"

@@ -11,7 +11,17 @@
 
 核心基线为 `3c943413928e1443a2eaa722f730a1e95fdd15b2`，本地集成提交为 `17f3433ae4cd6820622033ddb1910c030cb260f2`。根会话已审阅源码、离线构建和便携候选；阶段文档按用户授权同步到 `main`，实际远端结果以 `git log` 和 `git ls-remote` 为准。步骤 5 的真实 BM 联调身份已由用户准备，接续时不要重复索取。
 
-## 2026-10-24 BM 网络诊断与当前增量
+## 2026-10-25 当前轮状态
+
+- `2183cef` 旧候选的 clean build 曾通过 25 项离线测试并通过便携包审计。随后 native 日志显示 BM 到达 `ready` 且收到了 291 个 DMRD 数据报，但 `calls_started=0`、`calls_ended=0`；原日志没有 DMRD 头元数据，不能仅凭计数认定收到回声。
+- 两次有界 network-only 私呼测试使用生产 Session、UDP transport、Transmitter 和 RX-only pipeline，均只向 460997 发送一通 1.98 秒合成 PCM。首次从 TS1 发出后，BM 实际回送 TS2 private stream；本机 ID、呼叫类型、LC 与 CC1 匹配，旧 TS1 filter 将 37 个包全部拒绝。三个 DIRECT preset 因此改为 TS2，过滤仍精确匹配本机目的 ID、单一时隙和呼叫类型。
+- 第二次测试从新 `parrot-cn` preset 动态取得呼叫参数，BM 回声被 TS2 filter 接受；Receiver 产生 1 个 start、32 个 voice、1 个 end 事件。RX-only 测试未启用播放，也没有真实 HRI/扬声器路径。
+- 用户确认的三轮 HRI DIRECT 手咪测试在 Y/0 ready 后，每轮按住时从有效 X/100 的 `X[0x0c]` 观察到 `0x32`（ASCII `2`），松开时为 `0x30`（ASCII `0`）。当前候选据此用串口边沿触发上行采集；该映射只在本次 FTX-1 + HRI DIRECT 条件下得到支持，不能说明 RF 已发射。
+- root 对本轮设备选择逻辑作了只读核对，唯一 HRI 候选为 COM5，WaveIn 1 与 WaveOut 3 映射到匹配的音频 endpoint；核对没有打开 COM、音频流或 BM。二轮独立审查已修复此前发现的 P1/P2 并复核关键路径，静态检查未发现新阻断。当前工作树的 26 项离线全测与 clean build 仍待 root 在 source commit 后执行；自动 PTT + BM + 电台扬声器回声仍待用户联合实测。
+
+当前 native 默认由有效手咪 PTT 串口边沿开始/结束 BM 上行，不要求启动输入 `START` 或按键 `T`。程序在可见前台持续待机，由 `Q`、Ctrl+C、关闭窗口或错误触发有界退出；没有全局 120 秒退出，单通话最多 120 秒。`-ManualPtt` 仍是显式诊断入口。分层实测与过滤原因见 [`BM回声无播放诊断.md`](BM回声无播放诊断.md)，手咪状态观察见 [`HRI手咪PTT事件研究.md`](HRI手咪PTT事件研究.md)。
+
+## 2026-10-24 网络诊断历史
 
 旧 profile 的四次有界 network-only 探测都通过 RPTL/RPTK challenge 和认证 ACK，随后在 RPTC 配置阶段收到 Master 的 `MSTNAK`，生产状态机报告 `master_rejected` 并退回 `backoff`。用户在 `aec0471` 旧候选上运行的一次 native 会话也在 26.6 秒内出现五次同类登录拒绝；该会话打开了 COM/HRI，用户观察到 BM 红 X/PTT，HRI/Y0 握手约 1.125 秒，但没有 BM DMRD 语音往返。之后 A/D/E1/E2/E3 纯 network-only 对照中，E3 组合 profile 到达 BM `ready`，诊断工具也成功调用本机 UDP 发送 `RPTCL`。旧 profile 的服务端拒绝原因仍未知；E3 结果不证明某一个字段是旧拒绝原因，也不代表已完成 DMRD Echo 语音或新源码 native 桥接。认证 ACK 不等于 BM 登录成功，也没有证明密码错误。详细字段、阶段记录和实现资料见 [`BM网络登录诊断.md`](BM网络登录诊断.md)。
 
@@ -23,7 +33,7 @@
 
 ## 当前候选与离线证据
 
-已接入 Windows native 控制台入口 `wirex_bridge.exe`。它把 BM 私呼或组呼下行 PCM 播放到所选 FTX-1 DIRECT Radio WaveOut；操作者按 `T` 后才开始 BM DMRD 上行，手咪 PTT 仍由操作者物理操作。上行编码前固定应用 16x 软件 PCM 增益，并用既有 `pcm_gain::SignalStats` 记录增益前后样本数、RMS、峰值及削顶样本数。固定倍率沿用用户确认的旧独立原型人工试听结果；新 BM 链路的声音效果尚未试听验证。程序不发送 RF/PTT 控制命令，`radio_state` 保持 `unknown`。总运行窗口为 120 秒，收尾最多等待 3 秒；BM 断线清空应用媒体，不回灌旧语音。BM EOT 状态只有本地 WinSock `send()` 成功后才记录发送成功；RPTCL 状态也只说明本机 UDP 发送结果，不代表 Master 确认。
+Windows native 控制台入口 `wirex_bridge.exe` 把 BM 下行 PCM 播放到所选 FTX-1 DIRECT Radio WaveOut；当前默认路径读取经校验的 HRI 串口 PTT 状态，按住边沿触发所选 WaveIn 上行采集，松开边沿结束本次 BM DMRD 呼叫。默认路径不依赖键盘 `T`，也不要求先输入 `START`；`-ManualPtt` 保留显式键盘诊断。默认进程在可见前台持续待机，由 `Q` 等停止请求结束；仅单通话限制 120 秒。上行编码前固定应用 16x 软件 PCM 增益，并记录样本统计。程序不发送 RF/PTT 控制命令，`radio_state` 保持 `unknown`；真实自动 PTT + BM + 扬声器回声仍待用户验证。BM EOT 与 RPTCL 的本地状态只说明本机 UDP send 结果，不代表 Master 确认。
 
 启动前状态报告的首次写入或刷新失败时，native 会清除密码并在打开设备前以退出码 2 结束。运行中状态报告写入或刷新失败时，native 标记失败、停止尝试继续写状态报告、执行同一有界收尾并以退出码 2 结束。
 
@@ -55,7 +65,7 @@ build/_work/wirex-bridge-17f3433-20261024-044905/
 
 ## 未完成的现场验收
 
-- 旧 profile 四轮纯 network-only 探测，以及 `aec0471` 一次 native 会话中的五次登录尝试，均在 RPTC 收到 `MSTNAK`；当前 `2183cef` 共享 helper 的 network-only probe 已进入 BM `ready` 并成功本机发送 `RPTCL`。旧拒绝原因未知；新 profile 仍未完成真实 DMRD Echo 语音往返。
-- `2183cef` clean build 的 25 项离线测试、当前便携包和 root package audit 均已通过；这些证据不验证该版本的 HRI/COM/WinMM 音频或电台行为。
-- 用户下一轮需由本人实际启动当前包并进行受控硬件声音测试；在此之前，步骤 5 的完整 BM 桥接语音联调和步骤 6 电台联合端到端测试仍未通过。不把网络控制阶段、离线 fake Master 或包审计写成完整桥接通过。
+- 旧 profile 的 RPTC `MSTNAK` 与其拒绝原因仍是历史诊断；之后两次受控私呼网络测试已确认 BM 对该私呼返回 TS2，第二次 RX-only pipeline 已产生 start/voice/end 事件。这证明 BM Echo 网络回声路径存在，不等于用户实际语音或电台扬声器已通过。
+- `2183cef` clean build 的 25 项离线测试和旧候选包审计均已通过；它们不覆盖当前工作树的新 PTT 自动触发和 TS2 preset 修改。当前 26 项离线全测及 clean build 等 root 执行。
+- 自动串口 PTT + BM 上行和真实电台回声/扬声器播放的端到端验证仍待用户执行。BM network-only、HRI PTT 状态观察、离线 fake Master 和包审计是不同证据，不能互相替代。
 - DIRECT 电台扬声器路径是本候选目标；C4FM RF 节点、自动 PTT、UI 和 RF 节点实测均不在本轮范围内。

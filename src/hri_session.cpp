@@ -26,7 +26,7 @@ Session::Session(std::vector<std::uint8_t> external_y_body, Config config)
     : y_body_(std::move(external_y_body)),
       config_(config),
       parser_(max_frame_bytes - direct_frame::fixed_overhead),
-      config_valid_(config_.window_ms > 0 && config_.window_ms <= max_window_ms),
+      config_valid_(config_.continuous || (config_.window_ms > 0 && config_.window_ms <= max_window_ms)),
       y_template_valid_(y_body_.size() == y_body_size && y_body_[5] == '2')
 {
 }
@@ -49,11 +49,12 @@ Update Session::start(std::uint64_t now_ms)
         update.state = make_snapshot();
         return update;
     }
-    if (!add_time(now_ms, config_.window_ms, deadline_ms_)) {
+    if (!config_.continuous && !add_time(now_ms, config_.window_ms, deadline_ms_)) {
         stop(StopReason::time_overflow);
         update.state = make_snapshot();
         return update;
     }
+    if (config_.continuous) deadline_ms_ = std::numeric_limits<std::uint64_t>::max();
 
     started_ = true;
     started_at_ms_ = now_ms;
@@ -76,7 +77,7 @@ Update Session::tick(std::uint64_t now_ms)
         update.state = make_snapshot();
         return update;
     }
-    if (counters_.y_write_requested >= max_y_write_calls) {
+    if (!config_.continuous && counters_.y_write_requested >= max_y_write_calls) {
         stop(StopReason::y_write_limit);
         update.state = make_snapshot();
         return update;
@@ -100,7 +101,13 @@ Update Session::feed(const std::uint8_t* bytes, std::size_t size, std::uint64_t 
         update.state = make_snapshot();
         return update;
     }
-    if (size > max_receive_bytes - std::min<std::uint64_t>(counters_.receive_bytes, max_receive_bytes)) {
+    if (config_.continuous && size > max_continuous_feed_bytes) {
+        stop(StopReason::receive_limit);
+        update.state = make_snapshot();
+        return update;
+    }
+    if (!config_.continuous && size > max_receive_bytes -
+        std::min<std::uint64_t>(counters_.receive_bytes, max_receive_bytes)) {
         stop(StopReason::receive_limit);
         update.state = make_snapshot();
         return update;
@@ -118,7 +125,13 @@ Update Session::feed(const std::uint8_t* bytes, std::size_t size, std::uint64_t 
         update.state = make_snapshot();
         return update;
     }
-    if (parsed.events.size() > max_valid_records - std::min<std::uint64_t>(counters_.valid_records, max_valid_records)) {
+    if (config_.continuous && parsed.events.size() > max_continuous_records_per_feed) {
+        stop(StopReason::record_limit);
+        update.state = make_snapshot();
+        return update;
+    }
+    if (!config_.continuous && parsed.events.size() >
+        max_valid_records - std::min<std::uint64_t>(counters_.valid_records, max_valid_records)) {
         stop(StopReason::record_limit);
         update.state = make_snapshot();
         return update;
@@ -160,7 +173,7 @@ Update Session::feed(const std::uint8_t* bytes, std::size_t size, std::uint64_t 
         if (record.type == 'X' && record.payload.size() == y_body_size && counters_.y_write_completed != 0) {
             counters_.x100_received++;
             if (record.payload[11] == '1') counters_.unsupported_config_import_records++;
-            if (counters_.x0_write_requested >= max_x_ack_write_calls) {
+            if (!config_.continuous && counters_.x0_write_requested >= max_x_ack_write_calls) {
                 stop(StopReason::x_ack_limit);
                 break;
             }
@@ -169,6 +182,11 @@ Update Session::feed(const std::uint8_t* bytes, std::size_t size, std::uint64_t 
                 counters_.x_copy_branch_count++;
                 if (y_body_[12] != record.payload[12]) counters_.y_byte12_changed_count++;
                 y_body_[12] = record.payload[12];
+                PttLevel ptt_level = PttLevel::unknown;
+                if (record.payload[12] == '2') ptt_level = PttLevel::pressed;
+                else if (record.payload[12] == '0') ptt_level = PttLevel::released;
+                update.ptt_observations.push_back(PttObservation{
+                    ptt_level, counters_.y_zero_ack_received != 0U});
             }
             (void)queue_command(CommandKind::x_ack, direct_frame::Record{'X', {}}, update);
             if (phase_ == Phase::stopped) break;
@@ -178,7 +196,10 @@ Update Session::feed(const std::uint8_t* bytes, std::size_t size, std::uint64_t 
         counters_.other_valid_records++;
     }
 
-    if (phase_ == Phase::stopped) update.commands.clear();
+    if (phase_ == Phase::stopped) {
+        update.commands.clear();
+        update.ptt_observations.clear();
+    }
     update.state = make_snapshot();
     return update;
 }
@@ -286,7 +307,7 @@ bool Session::observe_time(std::uint64_t now_ms)
         return false;
     }
     last_observed_ms_ = now_ms;
-    if (now_ms >= deadline_ms_) {
+    if (!config_.continuous && now_ms >= deadline_ms_) {
         if (parser_.buffered_bytes() != 0) stop(StopReason::incomplete_record);
         else stop(StopReason::deadline);
         return false;
@@ -305,9 +326,13 @@ bool Session::observe_time(std::uint64_t now_ms)
 bool Session::queue_command(CommandKind kind, direct_frame::Record record, Update& update)
 {
     if (phase_ == Phase::stopped) return false;
+    if (pending_writes_.size() >= max_pending_writes) {
+        stop(StopReason::pending_write_limit);
+        return false;
+    }
     const auto encoded = direct_frame::encode(record);
-    if (!encoded || encoded.bytes.size() > max_transmit_bytes -
-        std::min<std::uint64_t>(counters_.transmit_bytes_requested, max_transmit_bytes)) {
+    if (!encoded || (!config_.continuous && encoded.bytes.size() > max_transmit_bytes -
+        std::min<std::uint64_t>(counters_.transmit_bytes_requested, max_transmit_bytes))) {
         stop(StopReason::transmit_limit);
         return false;
     }

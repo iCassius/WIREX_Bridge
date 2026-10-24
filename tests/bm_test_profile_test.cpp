@@ -32,7 +32,7 @@ void check_common_identity(const wirex::bm_test_profile::Preset& preset)
     check(preset.source_id == 4611355U, "preset uses the base Radio ID as Source ID");
     check(preset.master_ipv4 == "43.129.83.124", "preset uses the pinned BrandMeister IPv4 address");
     check(preset.master_port == 62031U, "preset uses BrandMeister UDP port 62031");
-    check(preset.slot == Slot::ts1, "preset uses TS1");
+    check(preset.slot == Slot::ts2, "preset uses the BM echo return timeslot TS2");
     check(preset.color_code == 1U, "preset uses the BM-accepted color code 1");
     check(preset.kind == CallKind::private_call || preset.kind == CallKind::group,
           "preset has a DMR call kind");
@@ -220,6 +220,18 @@ int main()
           "receive-only T does not start the TX pipeline or create LC");
     check(!listen_pipeline.take_outbound().has_value(),
           "receive-only T creates no DMRD packet");
+
+    auto manual_ts1_call = call_for(*china);
+    manual_ts1_call.slot = dmr_call::Slot::ts1;
+    bm_voice::BmVoicePipeline manual_ts1_pipeline;
+    const auto manual_ts1_result = bm_test_profile::begin_tx(
+        bm_test_profile::policy_for(manual_ts1_call), manual_ts1_pipeline, manual_ts1_call,
+        bm_voice::Readiness{true, true}, bm_voice::TimePoint{});
+    const auto manual_ts1_header = manual_ts1_pipeline.take_outbound();
+    check(manual_ts1_result.status == TxStartStatus::started && manual_ts1_header.has_value() &&
+              (manual_ts1_header->datagram.flags & 0x80U) == 0U,
+          "manual configuration may keep TS1 instead of inheriting the preset TS2 slot");
+    manual_ts1_pipeline.cancel_tx();
 
     auto manual_national_group = listen_call;
     check(bm_test_profile::policy_for(manual_national_group) == TxPolicy::receive_only,

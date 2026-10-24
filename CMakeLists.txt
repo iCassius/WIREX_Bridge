@@ -85,6 +85,23 @@ if(MSVC)
     target_compile_options(hri_session_test PRIVATE /W4 /permissive- /utf-8)
 endif()
 
+add_library(wirex_hri_ptt_gate src/hri_ptt_gate.cpp)
+target_include_directories(wirex_hri_ptt_gate PUBLIC include)
+target_compile_features(wirex_hri_ptt_gate PUBLIC cxx_std_17)
+if(MSVC)
+    target_compile_options(wirex_hri_ptt_gate PRIVATE /W4 /permissive- /utf-8)
+else()
+    target_compile_options(wirex_hri_ptt_gate PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_executable(hri_ptt_gate_test tests/hri_ptt_gate_test.cpp)
+target_link_libraries(hri_ptt_gate_test PRIVATE wirex_hri_ptt_gate)
+if(MSVC)
+    target_compile_options(hri_ptt_gate_test PRIVATE /W4 /permissive- /utf-8)
+else()
+    target_compile_options(hri_ptt_gate_test PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 add_library(wirex_hri_downlink_session src/hri_downlink_session.cpp)
 target_include_directories(wirex_hri_downlink_session PUBLIC include)
 target_compile_features(wirex_hri_downlink_session PUBLIC cxx_std_17)
@@ -368,7 +385,7 @@ if(WIN32)
     endif()
     target_link_libraries(wirex_bridge PRIVATE
         wirex_direct_stream wirex_direct_frame wirex_hri_session wirex_hri_downlink_session
-        wirex_hri_radio_protocol wirex_hri_t_payload wirex_wave_file wirex_pcm_gain
+        wirex_hri_radio_protocol wirex_hri_t_payload wirex_hri_ptt_gate wirex_wave_file wirex_pcm_gain
         wirex_console_lifecycle wirex_session_report wirex_bm_session wirex_bm_udp
         wirex_bm_voice_pipeline wirex_bm_test_profile wirex_hri_stream_session winmm bcrypt ws2_32 user32)
 
@@ -386,6 +403,7 @@ add_test(NAME direct_frame_test COMMAND direct_frame_test)
 add_test(NAME hri_t_payload_test COMMAND hri_t_payload_test)
 add_test(NAME direct_stream_test COMMAND direct_stream_test)
 add_test(NAME hri_session_test COMMAND hri_session_test)
+add_test(NAME hri_ptt_gate_test COMMAND hri_ptt_gate_test)
 add_test(NAME hri_downlink_session_test COMMAND hri_downlink_session_test)
 add_test(NAME hri_radio_protocol_test COMMAND hri_radio_protocol_test)
 add_test(NAME operation_audio_cleanup_test COMMAND operation_audio_cleanup_test)

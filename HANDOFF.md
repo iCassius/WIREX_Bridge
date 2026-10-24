@@ -1,12 +1,12 @@
 # WIREX Bridge 交接入口
 
-> **BM + FTX-1 接续入口：** 当前功能源码提交为 `2183cef8c2e7364f4c73ee89f8b674c7a7c28750`，根会话从干净提交完成 25 项离线测试并通过便携包审计。基于该源码的 network-only 诊断 profile 收到 BM 配置 ACK、进入 `ready`，本机成功发送 9 字节 `RPTCL` 后以退出码 0 结束；这只证明 BM 控制配置和本机发送关闭包，不证明 DMRD Echo 语音或完整桥接。旧 profile 的四轮纯 network-only 探测，以及 `aec0471` 旧候选一次 native 会话中的五次登录尝试，都在 RPTC 收到 `MSTNAK`，原因未知。aec0471 会话打开 COM/HRI，用户观察到 BM 红 X/PTT；HRI/Y0 控制握手约 1.125 秒，但 BM 未进入 `ready`、没有 DMRD 语音。本轮新源码的真实 HRI/COM/WinMM 音频和电台联测仍待用户下一轮操作。步骤、路径和分层证据见 [`docs/BM联调推进.md`](docs/BM联调推进.md) 与 [`docs/BM网络登录诊断.md`](docs/BM网络登录诊断.md)。
+> **BM + FTX-1 当前状态（2026-10-25）：** `2183cef` 旧候选的干净构建曾通过 25 项离线测试和便携包审计；该证据不覆盖当前新增改动。本轮 native 日志中 BM 到达 `ready`，收到 291 个 DMRD 数据报，但未开始呼叫。随后两次有界 network-only 私呼回声实测确认：BM 对合成私呼返回 TS2，旧 TS1 filter 拒绝整条回声；三个 DIRECT preset 已改为 TS2。第二次实测使用新 preset，RX-only pipeline 产生呼叫开始、32 个 voice 和呼叫结束事件，没有播放 PCM。HRI 在 Y/0 ready 后的三轮用户手咪测试均观察到 X 正文 `0x0c` 按住为 ASCII `2`、松开为 ASCII `0`；该映射只在当前 FTX-1 + HRI DIRECT 条件下得到支持。native 候选已接入串口 PTT 边沿触发上行采集，默认不需要 `START` 或键盘 `T`，前台持续待机并用 `Q` 退出；单通话上限 120 秒。root 对本机选择逻辑作了只读核对：唯一 HRI 候选为 COM5，WaveIn 1 与 WaveOut 3 映射到匹配的音频 endpoint；没有打开 COM、音频流或 BM。当前工作树的 26 项测试和 clean build 仍待 root 执行；自动 PTT + BM + 电台回声的联合实测仍待用户。详见 [`docs/BM联调推进.md`](docs/BM联调推进.md)、[`docs/BM回声无播放诊断.md`](docs/BM回声无播放诊断.md) 和 [`docs/HRI手咪PTT事件研究.md`](docs/HRI手咪PTT事件研究.md)。
 
 本仓库是 native 程序和 UI 的 Git 根目录。本文和 [`docs/交接与阶段同步.md`](docs/交接与阶段同步.md) 为接续实施或审查的自包含入口；不要依赖仓库外的 research 目录。较早的 `app/docs` 文档仍有指向 `../../research/...` 的链接，只克隆本仓库时这些链接无法解析。
 
 ## 当前 BM + FTX-1 候选
 
-步骤 1–4 native 候选源码提交为 `17f3433ae4cd6820622033ddb1910c030cb260f2`，基线为 `3c943413928e1443a2eaa722f730a1e95fdd15b2`。该提交的 24 项离线测试和后续 `aec0471` 的 25 项测试均为各自版本的历史验证。当前功能源码 `2183cef8c2e7364f4c73ee89f8b674c7a7c28750` 共用被 BM 接受的节点元数据、把三个预设色码改为 CC1，并加入 BM 与 HRI Y0 同时就绪后的中文操作提示。根会话已从该 clean HEAD 正式构建并运行全部 25 项离线测试，全部通过；包审计也通过。真实 BM 语音回声、当前源码对应的 HRI/COM/WinMM 声音及电台联合测试仍未完成。步骤 5 身份已由用户准备，UI 与 RF 节点实测暂缓。
+步骤 1–4 的 `17f3433`、`aec0471` 和 `2183cef` 构建、测试与便携包结果均是各自版本的历史验证；`2183cef` 的干净构建有 25 项测试通过。之后两次 network-only 私呼回声确认 BM 返回 TS2：第一次因旧 TS1 filter 被全部过滤，三个 preset 随后调整为 TS2；第二次由 RX-only pipeline 识别出完整呼叫事件。当前工作树另含串口 PTT 自动上行改动，新的 26 项全测与 clean build 尚待 root 执行。真实自动 PTT + BM + FTX-1 扬声器回声仍待用户联合实测；步骤 5 身份已由用户准备，UI 与 RF 节点实测暂缓。
 
 `aec04710e9d5b32f416b3b78c3812615fedd1988` 是上一个已构建的源码提交。根会话从该 clean HEAD 使用 VS 2019 x64 正式 builder 运行全部 25 项离线测试并通过，产物在 `build/_work/wirex-bridge-aec0471-20261024-104627/`。根会话还审计了 `build/bm-radio-bridge-aec0471/`：13 个实际文件（含 manifest 和 excluded 本机凭据），manifest 中 11 个普通文件的长度与 SHA-256 全部匹配；EXE 与 clean build 相同，包内 `--help` 返回 0 并列出当时的中文预设，`--list-audio-json` 返回 0 且 schema version 为 1。凭据未被读取或哈希，日志目录为空。该提交和便携包是旧 profile 版本的历史验证，不含当前 E3 metadata helper、CC1 预设变更或就绪提示。
 

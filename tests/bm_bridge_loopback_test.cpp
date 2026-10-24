@@ -479,12 +479,19 @@ void test_real_loopback_tx_and_cancel_before_rptcl()
     check(link.close_close_packet(), "RPTCL reaches fake Master after user-cancel terminator");
 }
 
+wirex::bm_voice::ReceiveResult ingest_rx_packet(BmLoopback& link, BmVoicePipeline& pipeline,
+                                                const wirex::dmr_call::TxPacket& packet,
+                                                std::uint64_t now_ms)
+{
+    const auto datagram = link.send_downlink(packet, now_ms);
+    return pipeline.ingest_rx(datagram,
+        TimePoint{} + std::chrono::milliseconds{now_ms});
+}
+
 void send_rx_packet(BmLoopback& link, BmVoicePipeline& pipeline,
                     const wirex::dmr_call::TxPacket& packet, std::uint64_t now_ms)
 {
-    const auto datagram = link.send_downlink(packet, now_ms);
-    const auto result = pipeline.ingest_rx(datagram,
-        TimePoint{} + std::chrono::milliseconds{now_ms});
+    const auto result = ingest_rx_packet(link, pipeline, packet, now_ms);
     check(result.error == Error::none, "pipeline accepts selected DMRD from real loopback session");
 }
 
@@ -633,37 +640,122 @@ void test_short_downlink_eot_waits_for_t3_and_final_audio_ack()
           "real AMBE decoder supplies both full voice bursts and the resampler tail to fake audio sink");
 }
 
-void test_private_echo_filters_on_local_source_id()
+void test_private_echo_ts2_return_and_narrow_filter()
 {
     BmLoopback link;
-    auto pipeline = std::make_unique<BmVoicePipeline>();
-    check(pipeline->set_receive_filter({local_id, true, wirex::dmr_call::Slot::ts1, true,
-                                        wirex::dmr_call::CallKind::private_call}) == Error::none,
-          "private Echo filter targets the local radio ID and private TS1 calls");
-    auto echo = call_config(remote_id, 0x68U);
-    echo.destination_id = local_id;
-    echo.kind = wirex::dmr_call::CallKind::private_call;
+    constexpr std::uint32_t echo_gateway_id = 461135501U;
+    constexpr std::uint32_t echo_radio_id = 4611355U;
+    constexpr std::uint32_t echo_service_id = 460997U;
+    auto make_echo_call = [=](std::uint32_t destination, wirex::dmr_call::CallKind kind,
+                              wirex::dmr_call::Slot slot, std::uint8_t stream_tail) {
+        wirex::dmr_call::CallConfig call{};
+        call.source_id = echo_service_id;
+        call.destination_id = destination;
+        call.gateway_id = echo_gateway_id;
+        call.stream_id = {0U, 0U, 0U, stream_tail};
+        call.slot = slot;
+        call.kind = kind;
+        call.color_code = 1U;
+        return call;
+    };
+
     wirex::dmr_call::Transmitter sender;
+    auto echo = make_echo_call(echo_radio_id, wirex::dmr_call::CallKind::private_call,
+                               wirex::dmr_call::Slot::ts2, 0U);
     const auto header = sender.start(echo);
     check(static_cast<bool>(header), "fake Master private-call source creates a valid LC header");
-    send_rx_packet(link, *pipeline, header.packet, 30000U);
+    auto return_header = header.packet;
+    return_header.datagram.sequence = 1U;
+    check(return_header.datagram.flags == 0xe1U,
+          "synthetic Echo header matches the observed private TS2 flags 0xE1");
     const auto burst = synth_voice_burst();
     const auto first = sender.voice(burst);
     const auto second = sender.voice(burst);
-    send_rx_packet(link, *pipeline, first.packet, 30060U);
-    send_rx_packet(link, *pipeline, second.packet, 30120U);
-    const auto received = pipeline->snapshot().receive_call;
-    check(pipeline->snapshot().rx_state == wirex::bm_voice::RxState::waiting_for_playback &&
-              received.destination_id == local_id &&
+    auto return_first = first.packet;
+    auto return_second = second.packet;
+    ++return_first.datagram.sequence;
+    ++return_second.datagram.sequence;
+    const auto eot = sender.finish();
+    check(static_cast<bool>(eot), "synthetic Echo source creates one DMR terminator");
+    auto return_eot = eot.packet;
+    ++return_eot.datagram.sequence;
+    check(return_eot.datagram.flags == 0xe2U,
+          "synthetic Echo terminator matches the observed private TS2 flags 0xE2");
+    const std::array<wirex::dmr_call::TxPacket, 4U> echo_packets{{
+        return_header, return_first, return_second, return_eot
+    }};
+
+    BmVoicePipeline ts1_pipeline;
+    check(ts1_pipeline.set_receive_filter({echo_radio_id, true, wirex::dmr_call::Slot::ts1, true,
+                                          wirex::dmr_call::CallKind::private_call}) == Error::none,
+          "previous TS1 receive filter remains a single-slot private-call filter");
+    for (std::size_t index = 0U; index < echo_packets.size(); ++index) {
+        const auto result = ingest_rx_packet(link, ts1_pipeline, echo_packets[index],
+                                             30000U + 60U * index);
+        check(result.error == Error::filtered,
+              "observed private TS2 Echo header, voice, and terminator are filtered by the old TS1 policy");
+        check(result.protocol.event_count == 0U,
+              "TS1 filter rejection produces no DMR Receiver call events");
+    }
+    check(ts1_pipeline.snapshot().rx_state == wirex::bm_voice::RxState::idle &&
+              !ts1_pipeline.take_event(),
+          "TS1 filter produces no pipeline call-start or call-end events");
+
+    BmVoicePipeline preset_pipeline;
+    check(preset_pipeline.set_receive_filter({echo_radio_id, true, wirex::dmr_call::Slot::ts2, true,
+                                              wirex::dmr_call::CallKind::private_call}) == Error::none,
+          "TS2 preset filter remains restricted to the local ID and private calls");
+    std::size_t started_events = 0U;
+    std::size_t voice_events = 0U;
+    std::size_t ended_events = 0U;
+    std::size_t pipeline_starts = 0U;
+    std::size_t pipeline_ends = 0U;
+    for (std::size_t index = 0U; index < echo_packets.size(); ++index) {
+        const auto result = ingest_rx_packet(link, preset_pipeline, echo_packets[index],
+                                             31000U + 60U * index);
+        check(result.error == Error::none && result.protocol.accepted(),
+              "TS2 preset filter accepts the observed source, destination, private kind, and CC1 stream");
+        for (std::size_t event_index = 0U; event_index < result.protocol.event_count; ++event_index) {
+            switch (result.protocol.events[event_index].kind) {
+            case wirex::dmr_call::ReceiveEventKind::call_started: ++started_events; break;
+            case wirex::dmr_call::ReceiveEventKind::voice: ++voice_events; break;
+            case wirex::dmr_call::ReceiveEventKind::call_ended: ++ended_events; break;
+            case wirex::dmr_call::ReceiveEventKind::link_control_confirmed: break;
+            }
+        }
+        while (const auto event = preset_pipeline.take_event()) {
+            if (event->kind == wirex::bm_voice::EventKind::receive_started) ++pipeline_starts;
+            if (event->kind == wirex::bm_voice::EventKind::network_ended) ++pipeline_ends;
+        }
+    }
+    const auto received = preset_pipeline.snapshot().receive_call;
+    check(started_events == 1U && voice_events == 2U && ended_events == 1U &&
+              pipeline_starts == 1U && pipeline_ends == 1U,
+          "TS2 preset pipeline emits receive-start, voice, and network-end events");
+    check(received.source_id == echo_service_id && received.destination_id == echo_radio_id &&
               received.kind == wirex::dmr_call::CallKind::private_call &&
-              received.slot == wirex::dmr_call::Slot::ts1,
-          "private Echo downlink addressed to local source ID passes the production receive filter");
-    check(pipeline->playback_ready(TimePoint{} + 30121ms) == Error::none &&
-              pipeline->tick(TimePoint{} + 30121ms) == Error::none,
-          "accepted private Echo stream can start real codec playback after HRI readiness");
-    PlaybackFrame frame{};
-    check(pipeline->take_playback_pcm(frame) && frame.sample_count == wirex::bm_voice::pcm48_samples_per_frame,
-          "private Echo AMBE voice reaches the synthetic HRI audio sink");
+              received.slot == wirex::dmr_call::Slot::ts2 && received.color_code == 1U,
+          "TS2 pipeline state preserves the observed Echo identities and color code");
+    check(preset_pipeline.snapshot().rx_state == wirex::bm_voice::RxState::draining &&
+              preset_pipeline.snapshot().queued_playback_frames == 0U,
+          "protocol regression does not claim HRI readiness or audio playback");
+
+    wirex::dmr_call::Transmitter wrong_destination_sender;
+    const auto wrong_destination = wrong_destination_sender.start(make_echo_call(
+        echo_radio_id + 1U, wirex::dmr_call::CallKind::private_call, wirex::dmr_call::Slot::ts2, 1U));
+    check(static_cast<bool>(wrong_destination), "wrong-destination private fixture has a valid LC header");
+    const auto wrong_destination_result = ingest_rx_packet(link, preset_pipeline,
+        wrong_destination.packet, 31300U);
+    check(wrong_destination_result.error == Error::filtered,
+          "TS2 preset still rejects private calls addressed to a different destination ID");
+
+    wirex::dmr_call::Transmitter wrong_kind_sender;
+    const auto wrong_kind = wrong_kind_sender.start(make_echo_call(
+        echo_radio_id, wirex::dmr_call::CallKind::group, wirex::dmr_call::Slot::ts2, 2U));
+    check(static_cast<bool>(wrong_kind), "wrong-kind group fixture has a valid LC header");
+    const auto wrong_kind_result = ingest_rx_packet(link, preset_pipeline, wrong_kind.packet, 31360U);
+    check(wrong_kind_result.error == Error::filtered,
+          "TS2 preset still rejects group calls to the local ID");
 }
 
 void test_watchdog_and_disconnect_generation_isolation()
@@ -770,7 +862,7 @@ int main()
     try {
         test_real_loopback_tx_and_cancel_before_rptcl();
         test_short_downlink_eot_waits_for_t3_and_final_audio_ack();
-        test_private_echo_filters_on_local_source_id();
+        test_private_echo_ts2_return_and_narrow_filter();
         test_watchdog_and_disconnect_generation_isolation();
         std::cout << "BM Bridge component loopback checks passed (localhost UDP, real codec/DMR/pipeline, synthetic HRI/audio sink).\n";
         return EXIT_SUCCESS;

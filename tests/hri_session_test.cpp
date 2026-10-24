@@ -212,7 +212,8 @@ void test_extended_hri_bounds()
         wirex::hri_session::max_x_ack_write_calls == 256 &&
         wirex::hri_session::max_receive_bytes == 256 * 1024 &&
         wirex::hri_session::max_transmit_bytes == 32 * 1024 &&
-        wirex::hri_session::max_valid_records == 1024,
+        wirex::hri_session::max_valid_records == 1024 &&
+        wirex::hri_session::max_pending_writes == 256,
         "HRI-only duration and protocol budgets should use the approved bounded 120-second envelope");
 
     Session maximum_window(synthetic_y_body(), Config{wirex::hri_session::max_window_ms});
@@ -246,6 +247,156 @@ void test_extended_hri_bounds()
     const auto record_result = over_records.feed(record_batch.data(), record_batch.size(), 20);
     check(record_result.state.stop_reason == StopReason::record_limit && record_result.commands.empty(),
         "more than 1024 valid records in one bounded session should fail closed");
+}
+
+void test_ptt_observations_require_valid_nonconfig_x100_and_record_readiness()
+{
+    using namespace wirex::hri_session;
+    Session session(synthetic_y_body(), Config{max_window_ms, true});
+    begin_with_valid_version(session, 0, 100);
+    auto x_body = synthetic_y_body();
+    x_body[11] = '0';
+    x_body[12] = '2';
+    auto before_y_write = feed_record(session, Record{'X', x_body}, 1050);
+    check(before_y_write.ptt_observations.empty() && before_y_write.state.counters.x100_received == 0U,
+        "an X100 before a completed Y write must not be treated as a validated PTT observation");
+    auto y = session.tick(1100);
+    check(y.commands.size() == 1 && y.commands[0].kind == CommandKind::y_record,
+        "PTT observation test should establish a completed Y write first");
+    if (y.commands.empty()) return;
+    complete_write(session, y.commands.front(), 1100);
+
+    auto before_y0 = feed_record(session, Record{'X', x_body}, 1110);
+    check(before_y0.ptt_observations.size() == 1 &&
+        before_y0.ptt_observations[0].level == PttLevel::pressed &&
+        !before_y0.ptt_observations[0].y_zero_acknowledged,
+        "a validated nonconfig X100 should expose its ordered press observation without inventing readiness");
+    for (const auto& command : before_y0.commands) complete_write(session, command, 1110);
+
+    auto y0 = feed_record(session, Record{'Y', {}}, 1120);
+    check(y0.state.y_zero_acknowledged && y0.ptt_observations.empty(),
+        "a valid Y0 should establish readiness but is not itself a PTT observation");
+
+    x_body[11] = '1';
+    x_body[12] = '2';
+    auto config_record = feed_record(session, Record{'X', x_body}, 1130);
+    check(config_record.ptt_observations.empty(),
+        "X[11]=ASCII 1 configuration records must not produce a PTT observation");
+    for (const auto& command : config_record.commands) complete_write(session, command, 1130);
+
+    x_body[11] = '0';
+    x_body[12] = '0';
+    auto after_y0 = feed_record(session, Record{'X', x_body}, 1140);
+    check(after_y0.ptt_observations.size() == 1 &&
+        after_y0.ptt_observations[0].level == PttLevel::released &&
+        after_y0.ptt_observations[0].y_zero_acknowledged,
+        "a post-Y0 X100 ASCII 0 should expose released state with readiness provenance");
+    for (const auto& command : after_y0.commands) complete_write(session, command, 1140);
+
+    x_body[12] = '1';
+    auto unknown = feed_record(session, Record{'X', x_body}, 1150);
+    check(unknown.ptt_observations.size() == 1 &&
+        unknown.ptt_observations[0].level == PttLevel::unknown &&
+        unknown.ptt_observations[0].y_zero_acknowledged,
+        "ASCII 1 in the observed PTT field must remain unknown, never pressed");
+    for (const auto& command : unknown.commands) complete_write(session, command, 1150);
+
+    x_body[12] = '?';
+    auto other_unknown = feed_record(session, Record{'X', x_body}, 1160);
+    check(other_unknown.ptt_observations.size() == 1 &&
+        other_unknown.ptt_observations[0].level == PttLevel::unknown,
+        "every other PTT byte must remain unknown");
+}
+
+void test_continuous_mode_removes_cumulative_limits_but_keeps_local_bounds()
+{
+    using namespace wirex::hri_session;
+    Session continuous(synthetic_y_body(), Config{max_window_ms, true});
+    begin_with_valid_version(continuous, 0, 100);
+
+    std::uint64_t now = 1100;
+    for (std::uint32_t iteration = 0; iteration < 400 &&
+         continuous.snapshot().counters.transmit_bytes_requested <= max_transmit_bytes; ++iteration) {
+        const auto y = continuous.tick(now);
+        if (y.commands.size() != 1 || y.commands[0].kind != CommandKind::y_record) {
+            check(false, "continuous HRI mode should keep scheduling bounded periodic Y writes");
+            return;
+        }
+        complete_write(continuous, y.commands[0], now);
+        const auto y0 = feed_record(continuous, Record{'Y', {}}, now + 1);
+        if (y0.state.phase == Phase::stopped) {
+            check(false, "continuous HRI mode should accept each timely Y0 response");
+            return;
+        }
+        now += y_period_ms;
+    }
+    const auto after_periodic_y = continuous.snapshot();
+    check(now > max_window_ms && after_periodic_y.phase != Phase::stopped &&
+        after_periodic_y.counters.y_write_completed > max_y_write_calls &&
+        after_periodic_y.counters.transmit_bytes_requested > max_transmit_bytes,
+        "continuous mode should remain active beyond 120 seconds, 120 Y writes and 32 KiB transmitted");
+
+    std::vector<std::uint8_t> x_body(y_body_size, '0');
+    for (std::uint32_t i = 0; i < max_x_ack_write_calls + 8; ++i) {
+        const auto x = feed_record(continuous, Record{'X', x_body}, now);
+        if (x.state.phase == Phase::stopped || x.commands.size() != 1 ||
+            x.commands[0].kind != CommandKind::x_ack) {
+            check(false, "continuous mode should keep acknowledging valid X records after 256 total writes");
+            return;
+        }
+        complete_write(continuous, x.commands[0], now);
+    }
+    check(continuous.snapshot().counters.x0_write_completed > max_x_ack_write_calls,
+        "continuous mode should remove the 256 total X acknowledgement limit");
+
+    const auto q_frame = encode_record(Record{'Q', {}});
+    std::vector<std::uint8_t> q_batch;
+    while (q_frame.size() <= max_continuous_feed_bytes - q_batch.size()) {
+        q_batch.insert(q_batch.end(), q_frame.begin(), q_frame.end());
+    }
+    check(!q_batch.empty() && q_batch.size() <= max_continuous_feed_bytes,
+        "continuous mode input batches should remain within the fixed chunk size");
+    while (continuous.snapshot().counters.receive_bytes <= max_receive_bytes && !q_batch.empty()) {
+        const auto received = continuous.feed(q_batch.data(), q_batch.size(), now);
+        if (received.state.phase == Phase::stopped) {
+            check(false, "continuous mode should process bounded batches beyond the cumulative receive and record limits");
+            return;
+        }
+    }
+    const auto before_cancel = continuous.snapshot();
+    check(before_cancel.phase != Phase::stopped && before_cancel.counters.valid_records > max_valid_records &&
+        before_cancel.counters.receive_bytes > max_receive_bytes,
+        "continuous mode should remain idle-ready after more than 1024 records and 256 KiB received");
+    const auto cancelled = continuous.cancel();
+    check(cancelled.state.phase == Phase::stopped && cancelled.state.stop_reason == StopReason::cancelled,
+        "continuous mode should stop through its explicit bounded cancel path");
+
+    Session over_chunk(synthetic_y_body(), Config{max_window_ms, true});
+    const auto chunk_start = over_chunk.start(0);
+    if (!chunk_start.commands.empty()) complete_write(over_chunk, chunk_start.commands.front(), 0);
+    std::vector<std::uint8_t> oversized_chunk(max_continuous_feed_bytes + 1, 0);
+    const auto chunk_result = over_chunk.feed(oversized_chunk.data(), oversized_chunk.size(), 1);
+    check(chunk_result.state.stop_reason == StopReason::receive_limit,
+        "continuous mode should still reject a single input chunk above its fixed bound");
+
+    Session queued_writes(synthetic_y_body(), Config{max_window_ms, true});
+    begin_with_valid_version(queued_writes, 0, 100);
+    const auto first_y = queued_writes.tick(1100);
+    if (first_y.commands.empty()) {
+        check(false, "pending-write bound case should first produce a Y write");
+        return;
+    }
+    complete_write(queued_writes, first_y.commands.front(), 1100);
+    for (std::size_t i = 0; i < max_pending_writes; ++i) {
+        const auto x = feed_record(queued_writes, Record{'X', x_body}, 1120);
+        if (x.commands.size() != 1) {
+            check(false, "continuous mode should queue up to the fixed pending-write bound");
+            return;
+        }
+    }
+    const auto queue_full = feed_record(queued_writes, Record{'X', x_body}, 1120);
+    check(queue_full.state.stop_reason == StopReason::pending_write_limit && queue_full.commands.empty(),
+        "continuous mode should stop rather than grow an unbounded pending-write queue");
 }
 
 void test_fail_closed_no_exit_frames_and_deadlines()
@@ -396,6 +547,8 @@ int main()
     test_version_gate_and_periodic_y();
     test_y_ack_x_ack_and_conditional_next_y_byte();
     test_extended_hri_bounds();
+    test_continuous_mode_removes_cumulative_limits_but_keeps_local_bounds();
+    test_ptt_observations_require_valid_nonconfig_x100_and_record_readiness();
     test_fail_closed_no_exit_frames_and_deadlines();
     test_limited_exchange_requires_version_y_and_y0();
     if (failures != 0) {
