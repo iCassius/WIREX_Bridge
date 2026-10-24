@@ -6,6 +6,7 @@
 #include "wirex/bm_session.hpp"
 #include "wirex/bm_udp.hpp"
 #include "wirex/bm_voice_pipeline.hpp"
+#include "wirex/bm_test_profile.hpp"
 #include "wirex/direct_frame.hpp"
 #include "wirex/dmr_vocoder.hpp"
 #include "wirex/hri_stream_session.hpp"
@@ -758,6 +759,54 @@ void test_private_echo_ts2_return_and_narrow_filter()
           "TS2 preset still rejects group calls to the local ID");
 }
 
+void test_tg91_ts2_group_receive_filter()
+{
+    BmLoopback link;
+    const auto preset = wirex::bm_test_profile::find("listen-91");
+    check(preset.has_value(), "TG91 loopback filter comes from the listen-91 preset");
+    if (!preset) return;
+    check(preset->destination_id == 91U && preset->slot == wirex::dmr_call::Slot::ts2 &&
+              preset->kind == wirex::dmr_call::CallKind::group,
+          "listen-91 preset remains TG91 group on TS2");
+    auto ingest = [&](std::uint32_t destination, wirex::dmr_call::Slot slot,
+                      wirex::dmr_call::CallKind kind, std::uint8_t stream,
+                      std::uint64_t now_ms) {
+        BmVoicePipeline pipeline;
+        check(pipeline.set_receive_filter({preset->destination_id, true, preset->slot, true,
+                                           preset->kind}) == Error::none,
+              "TG91 receive filter selects only destination 91, TS2, and group calls");
+        wirex::dmr_call::CallConfig call{};
+        call.source_id = 4611355U;
+        call.destination_id = destination;
+        call.gateway_id = 461135501U;
+        call.stream_id = {0x91U, 0x92U, 0x93U, stream};
+        call.slot = slot;
+        call.kind = kind;
+        call.color_code = 1U;
+        wirex::dmr_call::Transmitter sender;
+        const auto header = sender.start(call);
+        check(static_cast<bool>(header), "fake Master creates a valid LC header for TG91 filter check");
+        return ingest_rx_packet(link, pipeline, header.packet, now_ms);
+    };
+
+    const auto accepted = ingest(preset->destination_id, preset->slot,
+                                 preset->kind, 1U, 40000U);
+    check(accepted.error == Error::none && accepted.protocol.accepted(),
+          "TG91 TS2 group call passes the receive-only preset filter");
+    const auto wrong_destination = ingest(preset->destination_id + 1U, preset->slot,
+                                          preset->kind, 2U, 40100U);
+    check(wrong_destination.error == Error::filtered,
+          "TG91 filter rejects a different group destination");
+    const auto wrong_slot = ingest(preset->destination_id, wirex::dmr_call::Slot::ts1,
+                                   preset->kind, 3U, 40200U);
+    check(wrong_slot.error == Error::filtered,
+          "TG91 filter rejects a TS1 group call");
+    const auto wrong_kind = ingest(preset->destination_id, preset->slot,
+                                   wirex::dmr_call::CallKind::private_call, 4U, 40300U);
+    check(wrong_kind.error == Error::filtered,
+          "TG91 filter rejects a private call addressed to ID 91");
+}
+
 void test_watchdog_and_disconnect_generation_isolation()
 {
     auto pipeline = std::make_unique<BmVoicePipeline>();
@@ -863,6 +912,7 @@ int main()
         test_real_loopback_tx_and_cancel_before_rptcl();
         test_short_downlink_eot_waits_for_t3_and_final_audio_ack();
         test_private_echo_ts2_return_and_narrow_filter();
+        test_tg91_ts2_group_receive_filter();
         test_watchdog_and_disconnect_generation_isolation();
         std::cout << "BM Bridge component loopback checks passed (localhost UDP, real codec/DMR/pipeline, synthetic HRI/audio sink).\n";
         return EXIT_SUCCESS;

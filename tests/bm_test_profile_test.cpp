@@ -189,27 +189,35 @@ int main()
     const auto china = bm_test_profile::find("parrot-cn");
     const auto global = bm_test_profile::find("parrot-global");
     const auto listen = bm_test_profile::find("listen-46001");
+    const auto listen_91 = bm_test_profile::find("listen-91");
     check(china.has_value(), "Chinese parrot preset exists");
     check(global.has_value(), "generic parrot preset exists");
     check(listen.has_value(), "receive-only 46001 preset exists");
+    check(listen_91.has_value(), "receive-only TG91 preset exists");
     check(!bm_test_profile::find("unknown").has_value(), "unknown presets are rejected");
-    if (!china || !global || !listen) return EXIT_FAILURE;
+    if (!china || !global || !listen || !listen_91) return EXIT_FAILURE;
 
     check_common_identity(*china);
     check_common_identity(*global);
     check_common_identity(*listen);
+    check_common_identity(*listen_91);
     check(china->destination_id == 460997U && china->kind == CallKind::private_call,
           "China preset targets private-call echo 460997");
     check(global->destination_id == 9990U && global->kind == CallKind::private_call,
           "generic preset targets private-call echo 9990");
     check(listen->destination_id == 46001U && listen->kind == CallKind::group,
           "46001 preset is a group call");
+    check(listen_91->destination_id == 91U && listen_91->kind == CallKind::group,
+          "TG91 preset targets group call 91");
     check(bm_test_profile::policy_for(call_for(*china)) == TxPolicy::enabled &&
           bm_test_profile::policy_for(call_for(*global)) == TxPolicy::enabled,
           "parrot presets allow explicitly requested transmit");
     const auto listen_call = call_for(*listen);
     check(bm_test_profile::policy_for(listen_call) == TxPolicy::receive_only,
           "46001 group preset is receive-only");
+    const auto listen_91_call = call_for(*listen_91);
+    check(bm_test_profile::policy_for(listen_91_call) == TxPolicy::receive_only,
+          "TG91 group preset is receive-only");
 
     bm_voice::BmVoicePipeline listen_pipeline;
     const auto denied = bm_test_profile::begin_tx(bm_test_profile::policy_for(listen_call), listen_pipeline,
@@ -220,6 +228,17 @@ int main()
           "receive-only T does not start the TX pipeline or create LC");
     check(!listen_pipeline.take_outbound().has_value(),
           "receive-only T creates no DMRD packet");
+
+    bm_voice::BmVoicePipeline listen_91_pipeline;
+    const auto listen_91_denied = bm_test_profile::begin_tx(
+        bm_test_profile::policy_for(listen_91_call), listen_91_pipeline, listen_91_call,
+        bm_voice::Readiness{true, true}, bm_voice::TimePoint{});
+    check(!bm_test_profile::permits_transmit(bm_test_profile::policy_for(listen_91_call)) &&
+              listen_91_denied.status == TxStartStatus::denied_receive_only,
+          "physical PTT and keyboard T share a transmit policy that rejects TG91 group calls");
+    check(listen_91_pipeline.snapshot().tx_state == bm_voice::TxState::idle &&
+              !listen_91_pipeline.take_outbound().has_value(),
+          "TG91 receive-only policy creates no TX state, LC, or DMRD packet");
 
     auto manual_ts1_call = call_for(*china);
     manual_ts1_call.slot = dmr_call::Slot::ts1;
@@ -245,6 +264,19 @@ int main()
           !manual_pipeline.take_outbound().has_value(),
           "manual T for group 46001 creates no TX state, LC, or DMRD packet");
 
+    auto manual_tg91_group = listen_91_call;
+    manual_tg91_group.slot = dmr_call::Slot::ts1;
+    check(bm_test_profile::policy_for(manual_tg91_group) == TxPolicy::receive_only,
+          "manual group destination 91 is receive-only on either timeslot");
+    bm_voice::BmVoicePipeline manual_tg91_pipeline;
+    const auto manual_tg91_denied = bm_test_profile::begin_tx(
+        bm_test_profile::policy_for(manual_tg91_group), manual_tg91_pipeline, manual_tg91_group,
+        bm_voice::Readiness{true, true}, bm_voice::TimePoint{});
+    check(manual_tg91_denied.status == TxStartStatus::denied_receive_only &&
+              manual_tg91_pipeline.snapshot().tx_state == bm_voice::TxState::idle &&
+              !manual_tg91_pipeline.take_outbound().has_value(),
+          "manual T for TG91 creates no TX state, LC, or DMRD packet");
+
     auto other_manual_group = listen_call;
     other_manual_group.destination_id = 46002U;
     check(bm_test_profile::policy_for(other_manual_group) == TxPolicy::enabled,
@@ -253,6 +285,10 @@ int main()
     manual_private_46001.kind = CallKind::private_call;
     check(bm_test_profile::policy_for(manual_private_46001) == TxPolicy::enabled,
           "the receive-only rule applies to group 46001, not private ID 46001");
+    auto manual_private_91 = listen_91_call;
+    manual_private_91.kind = CallKind::private_call;
+    check(bm_test_profile::policy_for(manual_private_91) == TxPolicy::enabled,
+          "TG91 receive-only rule applies to group calls, not private ID 91");
 
     for (const auto* preset : {&*china, &*global}) {
         bm_voice::BmVoicePipeline pipeline;

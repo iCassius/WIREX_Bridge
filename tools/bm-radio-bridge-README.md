@@ -52,15 +52,18 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tools\build-bm
 
 启动器将本次 WinMM 枚举得到的 WaveIn/WaveOut endpoint ID 传给 native。native 在启动前和每次打开或重开音频流前核对该 ID 与 PCM 能力。Windows 音频驱动提供的 endpoint ID 查询用于确认 WinMM ID 对应的 Windows 音频端点身份，不需要按设备本地化名称确定身份。[Microsoft：Endpoint ID strings](https://learn.microsoft.com/en-us/windows/win32/coreaudio/endpoint-id-strings)，[Microsoft：waveInMessage](https://learn.microsoft.com/en-us/windows/win32/api/mmeapi/nf-mmeapi-waveinmessage)。
 
-默认预设为中国鹦鹉单呼 460997，不显示预设菜单。也可用 `-Preset parrot-cn`、`-Preset parrot-global`、`-Preset listen-46001` 或 `-Preset manual` 指定；手工入口保留原先逐项输入。固定预设使用下表中的呼号、身份、Master、端口、时隙、色码和目标。预设密码从 `private\bm-device-password.txt` 读取，密码值不进入进程参数，PowerShell 启动器也不读取或显示文件正文。可以用 `-PasswordFile ABS` 指定另一处本机文件。
+默认预设为中国鹦鹉单呼 460997，不显示预设菜单。也可用 `-Preset parrot-cn`、`-Preset parrot-global`、`-Preset listen-46001`、`-Preset listen-91` 或 `-Preset manual` 指定；手工入口保留原先逐项输入。固定预设使用下表中的呼号、身份、Master、端口、时隙、色码和目标。预设密码从 `private\bm-device-password.txt` 读取，密码值不进入进程参数，PowerShell 启动器也不读取或显示文件正文。可以用 `-PasswordFile ABS` 指定另一处本机文件。
+
+TG91 收听入口为 `tools\start-listen-91.cmd`。先在 BrandMeister SelfCare 为 Gateway ID `461135501` 的 TS2 添加 TG91 静态订阅，再双击该命令开始连接和收听。BrandMeister 文档将 TG91 说明为 Worldwide，并按 TS1/TS2 配置静态组呼转发。[BrandMeister USA：Dynamic vs Static](https://help.brandmeister.us/talk-groups/dynamic-vs-static)，[BrandMeister：Static Talk Groups](https://help.brandmeister.network/repeaters/sysop-dashboard/static-talkgroups/)
 
 | 预设 | 目标 | 类型 | 默认上行 |
 | --- | ---: | --- | --- |
 | `parrot-cn`（默认） | 460997 | P 单呼 | ready 后有效手咪 PTT 按下边沿开始，松开边沿结束 |
 | `parrot-global` | 9990 | P 单呼 | ready 后有效手咪 PTT 按下边沿开始，松开边沿结束 |
 | `listen-46001` | 46001 | G 组呼 | 严格仅接收 |
+| `listen-91` | 全球 91 | G 组呼 | TS2 严格仅接收 |
 
-三个预设均固定为 `BI7KGD`、Gateway ID `461135501`（Source ID `4611355` 加 ESSID `01`）、Source ID `4611355`、Master `43.129.83.124`、UDP 端口 `62031`、TS2、CC1。`62031` 是 Master 的 UDP 端口，不是 Source ID。两次受控 Echo 观察的返回头和 LC 均指向 TS2；过滤仍只匹配 preset 指定的时隙、呼叫类型及目标 ID，不监听全部时隙或 TG。服务器列表把 `4602.master.brandmeister.network` 列为 `BM_4602_China`、UDP 62031；本机使用已核实的 IPv4 固定值，不使用本地可能返回的 DNS fake-IP。[Pi-Star 主机列表](https://www.pistar.uk/downloads/DMR_Hosts.txt)，[本次公共 DNS A 记录核查](https://dns.google/resolve?name=4602.master.brandmeister.network&type=A)。中国鹦鹉目标 460997 依据 BM 4602 发布者说明；9990 是 SharkRF Homebrew/MMDVM Connector 手册记录的通用 private echo 目标。[BM 4602 发布者说明](https://forum.hamcq.cn/d/5228)，[SharkRF 手册](https://manuals.sharkrf.com/openspot4/en/homebrew-mmdvm-connector.html)。服务器列表中的通用 `password` 文本不是本机 SelfCare 设备密码，不会被采用。
+四个预设均固定为 `BI7KGD`、Gateway ID `461135501`（Source ID `4611355` 加 ESSID `01`）、Source ID `4611355`、Master `43.129.83.124`、UDP 端口 `62031`、TS2、CC1。`62031` 是 Master 的 UDP 端口，不是 Source ID。两次受控 Echo 观察的返回头和 LC 均指向 TS2；过滤仍只匹配预设指定的时隙、呼叫类型及目标 ID，不监听全部时隙或 TG。服务器列表把 `4602.master.brandmeister.network` 列为 `BM_4602_China`、UDP 62031；本机使用已核实的 IPv4 固定值，不使用本地可能返回的 DNS fake-IP。[Pi-Star 主机列表](https://www.pistar.uk/downloads/DMR_Hosts.txt)，[本次公共 DNS A 记录核查](https://dns.google/resolve?name=4602.master.brandmeister.network&type=A)。中国鹦鹉目标 460997 依据 BM 4602 发布者说明；9990 是 SharkRF Homebrew/MMDVM Connector 手册记录的通用 private echo 目标。[BM 4602 发布者说明](https://forum.hamcq.cn/d/5228)，[SharkRF 手册](https://manuals.sharkrf.com/openspot4/en/homebrew-mmdvm-connector.html)。服务器列表中的通用 `password` 文本不是本机 SelfCare 设备密码，不会被采用。
 
 所有 native 配置和 network-only 探测共用同一组 BM 节点元数据：RX/TX `438800000`、power `0`、latitude `0.000000`、longitude `00.000000`、height `0`、location `DIRECT`、description `FTX-1`、slot flags `'4'`、URL `www.qrz.com`、version `20261024`、软件类型 `MMDVM_WIREX_Bridge`，options 为空。手工入口仍保留用户输入的 CC；三个预设使用经 E3 组合测试的 CC1。`438800000` 只作为 BM RPTC 节点元数据，不会设置 CAT 频率或使电台发射。BM 网页节点详情中的 `Firmware`/类型文字是程序上报的软件节点标识，不是 FTX-1 固件，也不表示连接了实体 MMDVM Hat。
 
@@ -68,13 +71,13 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tools\build-bm
 
 选择手工入口时，native 仍逐项询问呼号、Gateway ID、本机 Source ID、目标 Talkgroup 或单呼 Radio ID、呼叫类型（`G` 组呼 / `P` 单呼）、Timeslot、Color Code、Master 地址和端口。组呼收包按所选 TG 过滤；单呼发送目标是用户输入的远端 ID，接收过滤按本机 Source ID 识别返回单呼。Master 地址可输入 IPv4 或 ASCII 主机名；主机名会通过 Windows 有界解析转换为 IPv4，控制台显示固定地址供核对。当前只支持 IPv4。DIRECT 没有可声明的地理坐标或 RF 频率；RPTC 中使用上述固定格式的空位置坐标和节点元数据，不代表设备所在位置或 CAT/RF 频率。手工 Color Code 仍按用户输入传给 BM。
 
-`listen-46001` 只登录 BM 并被动处理已经转发到本机的 46001 组呼。要收听该 TG，操作者必须先在 BrandMeister SelfCare 为此 Gateway/TS 配置静态订阅；程序不会发送组呼激活包，也不保证登录后自动收到该 TG。预设的 46001 发射策略同样应用于手工入口。
+`listen-46001` 和 `listen-91` 只登录 BM 并被动处理已经转发到本机的指定组呼。要收听 TG91，操作者先在 BrandMeister SelfCare 为 Gateway ID `461135501` 的 TS2 添加 TG91 静态订阅；程序按 TG91、TS2、G 过滤收到的 DMRD。该预设不发送组呼激活 DMRD。TG91 组呼与 TG46001 组呼在预设和手工入口中均拒绝上行，键盘 `T` 与电台手咪 PTT 共用这项策略。
 
 完成必要的设备选择后，启动器直接运行 native，不再要求输入 `START`。手工入口在 native 控制台隐藏输入密码；预设入口从指定私有文件读取密码。文件最多 128 字节，只接受非空可打印 ASCII 内容和至多一个文件行尾；密码值不放入命令行、环境变量、日志、报告或 Git。native 在打开设备前验证文件，并在运行结束时擦除其进程内密码缓冲。手工隐藏输入仍允许空格。
 
 默认连接会在可见前台进程中持续待机，直到 `Q`、Ctrl+C、窗口关闭或错误触发有界收尾；没有全局 120 秒自动退出，也不创建后台服务。单通话最多 120 秒；每次通话结束或 PTT 状态失效后，须重新观察到松开再按下。显式 `-ManualPtt` 才启用键盘 `T` 诊断路径，并保留旧的 120 秒诊断窗口。上行进入 codec 前固定应用 16x 软件 PCM 增益，并将既有 `pcm_gain::SignalStats` 的增益前后样本数、RMS、峰值及削顶数写入状态报告；该固定倍率沿用用户确认的旧独立原型人工试听结果，首轮真实联合测试已通过，用户确认电台回声清晰；长时间运行和断网恢复仍待验证。网络下行只播放到所选 Radio WaveOut。状态报告保留最近一个已解码 DMRD 头的源/目标 ID、时隙、组呼/单呼类型，以及按目标、时隙、呼叫类型和协议头统计的过滤数量；不会记录原始 DMRD 或语音内容。native 每至少 5 秒向 `logs\bm-bridge-*.jsonl` 写入一条运行快照，并在 PTT observation 状态变化时写事件；详细 HRI、Y 模板复制、配置分支、gate 和上行计数只写入该 JSONL。控制台显示连接状态和操作者下一步动作。日志不记录密码、挑战盐、认证散列、原始协议正文或音频。若本次运行从未达到 BM `ready`，最终报告明确标记未确认 BM 连接，native 返回退出码 2；BM 与 HRI 状态分别记录。
 
-当 BM 已进入 `ready` 且 HRI 已确认 Y0 时，控制台显示等待手咪 PTT 的状态。按下边沿开始 BM 上行，松开边沿结束；忙碌期间按下会被拒绝，松开后重新按下才会再启动。`-ManualPtt` 诊断入口改用显式键盘 `T`。46001 仅接收预设始终拒绝上行。
+当 BM 已进入 `ready` 且 HRI 已确认 Y0 时，控制台显示等待手咪 PTT 的状态。按下边沿开始 BM 上行，松开边沿结束；忙碌期间按下会被拒绝，松开后重新按下才会再启动。`-ManualPtt` 诊断入口改用显式键盘 `T`。TG91 与 TG46001 组呼始终拒绝键盘和手咪发射。
 
 若有界收尾期间没有观察到 HRI T0 对应的 `T` 记录，状态报告会保留 `downlink_call_bounded_cleanup_incomplete`，桥接会阻止后续下行并以退出码 2 结束；该本机串口观察仍不能证明电台已恢复或 RF/PTT 状态。
 

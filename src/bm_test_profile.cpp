@@ -5,7 +5,7 @@
 namespace wirex::bm_test_profile {
 namespace {
 
-constexpr std::array<Preset, 3U> presets{{
+constexpr std::array<Preset, 4U> presets{{
     {"parrot-cn", "中国鹦鹉 460997", "BI7KGD", "43.129.83.124",
      461135501U, 4611355U, 460997U, 62031U, dmr_call::Slot::ts2,
      dmr_call::CallKind::private_call, 1U},
@@ -14,6 +14,9 @@ constexpr std::array<Preset, 3U> presets{{
      dmr_call::CallKind::private_call, 1U},
     {"listen-46001", "全国频道 46001（仅接收）", "BI7KGD", "43.129.83.124",
      461135501U, 4611355U, 46001U, 62031U, dmr_call::Slot::ts2,
+     dmr_call::CallKind::group, 1U},
+    {"listen-91", "全球 TG91（仅接收）", "BI7KGD", "43.129.83.124",
+     461135501U, 4611355U, 91U, 62031U, dmr_call::Slot::ts2,
      dmr_call::CallKind::group, 1U},
 }};
 
@@ -29,7 +32,8 @@ std::optional<Preset> find(std::string_view id) noexcept
 
 TxPolicy policy_for(const dmr_call::CallConfig& call) noexcept
 {
-    if (call.destination_id == 46001U && call.kind == dmr_call::CallKind::group) {
+    if ((call.destination_id == 46001U || call.destination_id == 91U) &&
+        call.kind == dmr_call::CallKind::group) {
         return TxPolicy::receive_only;
     }
     return TxPolicy::enabled;

@@ -4426,7 +4426,7 @@ void print_bm_bridge_help()
         L"wirex_bridge - 本地 DIRECT / BrandMeister 声音桥接候选\n"
         L"  --help\n"
         L"  --list-audio-json\n"
-        L"  --run --port COMn --body-file ABS --input N --output N --status-file ABS --expected-wavein-endpoint ID --expected-waveout-endpoint ID [--test-preset parrot-cn|parrot-global|listen-46001 --password-file ABS] [--manual-ptt]\n"
+        L"  --run --port COMn --body-file ABS --input N --output N --status-file ABS --expected-wavein-endpoint ID --expected-waveout-endpoint ID [--test-preset parrot-cn|parrot-global|listen-46001|listen-91 --password-file ABS] [--manual-ptt]\n"
         L"不传测试预设时保留逐项手工配置和隐藏密码输入。预设密码文件为本机私有明文 UTF-8 文本。\n"
         L"WaveIn/WaveOut endpoint ID来自本次 WinMM 枚举；打开和重开音频流前都会核对。\n"
         L"默认在 BM/HRI ready 后用有效 HRI 手咪PTT边沿控制上行；--manual-ptt 显式启用键盘 T 诊断模式。\n"
@@ -4662,6 +4662,7 @@ int bm_bridge_main(int argc, wchar_t* argv[])
         if (selected_id == L"parrot-cn") selected_preset = wirex::bm_test_profile::find("parrot-cn");
         else if (selected_id == L"parrot-global") selected_preset = wirex::bm_test_profile::find("parrot-global");
         else if (selected_id == L"listen-46001") selected_preset = wirex::bm_test_profile::find("listen-46001");
+        else if (selected_id == L"listen-91") selected_preset = wirex::bm_test_profile::find("listen-91");
         if (!selected_preset) {
             (void)bm_stderr(L"测试预设无效；没有打开 COM、WinMM 或 UDP。\n");
             return 2;
@@ -5026,6 +5027,13 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 (void)bm_stdout(u8"已连接并就绪。按 T 开始 BM 上行，按住手咪讲话；松开后按 T 结束本次上行并等待回声。按 Q 退出。\n");
             } else {
                 (void)bm_stdout(u8"已连接并就绪。按 T 开始 BM 上行，按住手咪讲话；松开后按 T 结束本次上行。按 Q 退出。\n");
+            }
+        } else if (call_template.kind == wirex::dmr_call::CallKind::group &&
+                   call_template.destination_id == 91U) {
+            if (call_template.slot == wirex::dmr_call::Slot::ts1) {
+                (void)bm_stdout(u8"已连接并就绪。请在 BM SelfCare 为当前 Gateway 的 TS1 添加 TG91 静态订阅，然后在电台扬声器收听。按 Q 停止并退出。\n");
+            } else {
+                (void)bm_stdout(u8"已连接并就绪。请在 BM SelfCare 为当前 Gateway 的 TS2 添加 TG91 静态订阅，然后在电台扬声器收听。按 Q 停止并退出。\n");
             }
         } else {
             (void)bm_stdout(u8"已连接并就绪。可在所选电台扬声器收听 BM 组呼。按 Q 停止并退出。\n");

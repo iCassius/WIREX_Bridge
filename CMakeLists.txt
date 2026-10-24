@@ -375,7 +375,8 @@ if(WIN32)
     target_link_libraries(hri_stream_session_test PRIVATE wirex_hri_stream_session)
     add_executable(bm_bridge_loopback_test tests/bm_bridge_loopback_test.cpp)
     target_link_libraries(bm_bridge_loopback_test PRIVATE
-        wirex_bm_session wirex_bm_udp wirex_bm_voice_pipeline wirex_hri_stream_session ws2_32)
+        wirex_bm_session wirex_bm_udp wirex_bm_voice_pipeline wirex_bm_test_profile
+        wirex_hri_stream_session ws2_32)
 
     add_executable(wirex_bridge src/probe_main.cpp)
     target_compile_features(wirex_bridge PRIVATE cxx_std_17)

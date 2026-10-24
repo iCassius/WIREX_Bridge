@@ -37,10 +37,10 @@ function Resolve-BridgeExecutable {
 
 function Select-TestPreset {
     param([string]$Requested)
-    $allowed = @('parrot-cn', 'parrot-global', 'listen-46001', 'manual')
+    $allowed = @('parrot-cn', 'parrot-global', 'listen-46001', 'listen-91', 'manual')
     if (-not [string]::IsNullOrWhiteSpace($Requested)) {
         $match = @($allowed | Where-Object { $_ -ieq $Requested.Trim() })
-        if ($match.Count -ne 1) { throw '测试预设无效；请使用 parrot-cn、parrot-global、listen-46001 或 manual。' }
+        if ($match.Count -ne 1) { throw '测试预设无效；请使用 parrot-cn、parrot-global、listen-46001、listen-91 或 manual。' }
         return [string]$match[0]
     }
     return 'parrot-cn'
@@ -330,18 +330,23 @@ try {
         'parrot-cn' { '鹦鹉 460997' }
         'parrot-global' { '全球回声 9990' }
         'listen-46001' { '46001 组呼收听' }
+        'listen-91' { 'TG91 组呼收听' }
         default { '手工 BM 配置' }
     }
     Write-Host ("请确认本次设备：{0} · {1} · {2}" -f $portName, $audioSummary, $presetSummary)
     Write-Host '等待 BM 和电台连接。'
-    if ($selectedPreset -eq 'listen-46001') {
+    if ($selectedPreset -eq 'listen-91') {
+        Write-Host '请在 BM SelfCare 为 Gateway 461135501 的 TS2 添加 TG91 静态订阅。连接后在电台扬声器收听，按 Q 停止并退出。'
+    } elseif ($selectedPreset -eq 'listen-46001') {
         Write-Host '连接后在电台扬声器收听 BM 组呼，按 Q 停止并退出。'
     } else {
         Write-Host '连接后按住手咪讲话；松开后等待 BM 回声。按 Q 停止并退出。'
     }
     Write-Host ("COM: {0} · Radio WaveIn: ID {1} · {2}" -f $portName, $radioInput.id, $radioInput.name)
     Write-Host ("Radio WaveOut: ID {0} · {1}" -f $radioOutput.id, $radioOutput.name)
-    if ($ManualPtt) { Write-Host '诊断模式已启用：按 T 开始或结束 BM 上行。' }
+    if ($ManualPtt -and $selectedPreset -notin @('listen-46001', 'listen-91')) {
+        Write-Host '诊断模式已启用：按 T 开始或结束 BM 上行。'
+    }
     Write-Host ("状态报告：{0}" -f $statusPath)
     Write-Host ''
     $arguments = @('--run', '--port', $portName, '--body-file', $body,
