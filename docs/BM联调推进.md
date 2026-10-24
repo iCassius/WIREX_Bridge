@@ -15,9 +15,11 @@
 
 旧 profile 的四次有界 network-only 探测都通过 RPTL/RPTK challenge 和认证 ACK，随后在 RPTC 配置阶段收到 Master 的 `MSTNAK`，生产状态机报告 `master_rejected` 并退回 `backoff`。用户在 `aec0471` 旧候选上运行的一次 native 会话也在 26.6 秒内出现五次同类登录拒绝；该会话打开了 COM/HRI，用户观察到 BM 红 X/PTT，HRI/Y0 握手约 1.125 秒，但没有 BM DMRD 语音往返。之后 A/D/E1/E2/E3 纯 network-only 对照中，E3 组合 profile 到达 BM `ready`，诊断工具也成功调用本机 UDP 发送 `RPTCL`。旧 profile 的服务端拒绝原因仍未知；E3 结果不证明某一个字段是旧拒绝原因，也不代表已完成 DMRD Echo 语音或新源码 native 桥接。认证 ACK 不等于 BM 登录成功，也没有证明密码错误。详细字段、阶段记录和实现资料见 [`BM网络登录诊断.md`](BM网络登录诊断.md)。
 
-`aec04710e9d5b32f416b3b78c3812615fedd1988` 是上一个完成正式构建的源码提交，其中三项测试预设、本机密码文件读取、46001 组呼发射拒绝和 BM 登录状态诊断经 25 项离线测试通过。当前未提交源码增加共用的 BM RPTC 元数据 helper、预设 CC1、基于 BM 与 HRI Y0 双就绪的中文操作提示，以及使用生产 Session 生成 RPTC 并检查 metadata 的离线断言；这些改动待根会话审查和 clean build。旧提交的 25 项测试结果不覆盖当前增量。探测工具默认不由 builder 或自动化调用；真实网络执行仍需显式 `--run-network-only`。
+功能源码提交 `2183cef8c2e7364f4c73ee89f8b674c7a7c28750` 已由根会话从 clean HEAD 使用 Windows PowerShell 5.1 / VS 2019 x64 正式构建，25 项离线测试全部通过，包括 RPTC 元数据断言、receive-only 策略、combined 和 console child 测试。构建目录为 `build/_work/wirex-bridge-2183cef-20261024-123605/`，日志为 `build/_work/bm-ready-2183cef-build.log`。network-only 探测工具默认不由 builder 或自动化调用；真实网络执行仍需显式 `--run-network-only`。
 
 本轮 E3 组合 profile 使用呼号 `BI7KGD`、Gateway ID `461135501`，RX/TX `438800000`、power `0`、CC `1`、latitude `0.000000`、longitude `00.000000`、height `0`、location `DIRECT`、description `FTX-1`、slot flags `'4'`、URL `www.qrz.com`、version `20261024`、节点类型 `MMDVM_WIREX_Bridge`、options 空。对照实际到达 `ready`，并由诊断工具成功调用本机 UDP 发送 `RPTCL`。native 和 network-only 工具现共用 `apply_network_metadata(Profile&)`，helper 不覆盖呼号、Gateway、密码或调用方 color code；三个预设按 E3 使用 CC1，手工入口继续使用操作者输入的 CC。频率是 BM 节点元数据，不会调整 CAT 或 RF；节点类型表示虚拟 MMDVM 兼容 WIREX 节点，不表示物理 Hat。DroidStar 的参考截图是用户另一个 Gateway ID `461135502`，该身份和配置没有被修改。
+
+根会话随后用 commit `2183cef8c2e7364f4c73ee89f8b674c7a7c28750` 的当前共享 helper 编译 `build/_work/bm-probe-final-e3-20261024/bm_network_probe.exe` 并真实运行一次 network-only probe。118 ms 内 BM 对 RPTC 配置返回 ACK，生产 Session 到达 `ready`；程序实际本机发送 9 字节 `RPTCL` 成功后进入 `stopped`，退出码为 0。原始 stdout、summary 和源 SHA 清单保存在该 ignored build 目录中。此结果确认生产源码生成的 E3 元数据可通过 BM 控制配置阶段，但没有打开 HRI/COM/WinMM，也没有验证 DMRD Echo、音频或电台声音。
 
 ## 当前候选与离线证据
 
@@ -41,18 +43,19 @@ build/_work/wirex-bridge-17f3433-20261024-044905/
 
 `17f3433` 和 `aec0471` 便携目录均为历史候选。`build/bm-radio-bridge-aec0471/` 来源于提交 `aec04710e9d5b32f416b3b78c3812615fedd1988` 的 clean build `build/_work/wirex-bridge-aec0471-20261024-104627/`。根会话确认 builder 退出码为 0，25 项离线测试全部通过；独立包审计确认目录有 13 个实际文件，其中 manifest 记录 11 个非秘密文件，长度和 SHA-256 全部匹配，EXE 与 clean build 产物一致。包内 `--help` 退出码为 0 并显示当时的中文预设，`--list-audio-json` 退出码为 0、schema version 为 1。用户授权的密码文件只保留在本机包的 `private/` 中；它没有进入 manifest 文件列表，也未读取、测量或哈希。`logs/` 为空；候选不是 ZIP，不含 `wirex_probe.exe`。该包使用旧 profile，不包含当前 E3 metadata 和 CC1 改动；包审计和离线测试都不证明真实 BM 桥接或电台行为。
 
+当前便携候选为 `build/bm-radio-bridge-2183cef/`，来源为 clean source commit `2183cef8c2e7364f4c73ee89f8b674c7a7c28750` 及上述 25 项全通过的正式构建。根会话独立审计通过：13 个物理文件（含 manifest 与 excluded 凭据），manifest 记录 11 个非秘密文件且长度/hash 有 0 项不匹配；EXE 与正式构建产物相同。包内 `--help` 退出码 0，显示完整中文帮助；音频 JSON 退出码 0、schema 1、type 为 `audio_devices`，WaveIn ID 1 显示为麦克风（2- USB Audio Device）；launcher parser 有 0 个错误；静态依赖只有 WINMM、bcrypt、WS2_32 和 KERNEL32 系统 DLL。密码文件只核实存在，未读内容、长度或 hash；`logs/` 为空。包审计没有打开音频流，也不是 HRI、Echo 语音或电台验收。
+
 `bm_bridge_loopback_test` 使用生产 BM Session、WinSock UDP、DMR codec/pipeline 和 HRI stream coordinator；fake Master 仅绑定 localhost，HRI T3/T0 与音频播放回执由测试替身提供。它覆盖 TX/EOT、短呼叫先于 T3 结束、private Echo 回包按本机 ID 筛选、丢 EOT watchdog、断线代次隔离和取消后 EOT/RPTCL 顺序。测试没有打开 COM/WinMM，也没有连接真实 Master。
 
 便携包把 `start-bm-radio-bridge.ps1`、`.cmd`、`wirex_bridge.exe`、`private/device-y.bin` 和 `logs/` 放在同一根目录；默认启动只访问这几个包内路径，不搜索包外仓库。源码开发时调用 `tools/start-bm-radio-bridge.ps1` 必须显式指定 `-BridgePath`、`-BodyFile` 与 `-StatusDirectory`；缺少状态目录时，启动器在调用 native 前拒绝运行。构建和启动说明见 [`../tools/bm-radio-bridge-README.md`](../tools/bm-radio-bridge-README.md)。
 
 ## 当前文件范围
 
-本集成切片由根会话统一审查。`probe_main.cpp`、`include/wirex/bm_network_metadata.hpp`、`CMakeLists.txt`、BM 测试预设与测试、`tools/bm_network_probe.cpp` 的 metadata 调用、BM 启动器/README、`hri_stream_session` 模块及测试、本文和 `HANDOFF.md` 属于 native 集成范围。声码器、采样率转换、DMR 通话和 BM pipeline/loopback 的实现文件由对应模块 owner 提供；此前正式 builder 已将它们全部编译并实际链接运行，但新 metadata 改动仍待 clean build。
+本集成切片由根会话统一审查。`probe_main.cpp`、`include/wirex/bm_network_metadata.hpp`、`CMakeLists.txt`、BM 测试预设与测试、`tools/bm_network_probe.cpp` 的 metadata 调用、BM 启动器/README、`hri_stream_session` 模块及测试、本文和 `HANDOFF.md` 属于 native 集成范围。commit `2183cef` 的正式 builder 已将这些组件全部编译并实际运行 25 项离线测试；声码器、重采样、DMR 通话和 BM pipeline/loopback 也已参与该构建与测试。
 
 ## 未完成的现场验收
 
-- 旧 profile 四轮纯 network-only 探测，以及 `aec0471` 一次 native 会话中的五次登录尝试，均在 RPTC 收到 `MSTNAK`；E3 纯 network-only 对照已到达 BM `ready` 并成功本机发送 `RPTCL`。旧 profile 拒绝原因未知；E3 尚未完成真实 DMRD Echo 语音往返，也未证明当前 native 桥接通过。
-- 当前 E3 metadata/CC1 源码改动尚未 clean build；现存 `aec0471` 包只代表旧 profile。根会话审查后还需从 clean HEAD 构建、运行离线测试并生成新便携候选。
-- 尚未打开真实 HRI COM、WinMM WaveIn/WaveOut 或电台；没有验证真实设备上的 T3/T0 时序、播放、串口恢复或声音效果。
-- 步骤 5 的完整 BM 桥接联调和步骤 6 电台联合端到端测试尚未通过。待根会话审查、clean build 和候选包审计后，由操作者按准备情况安排真实 BM 与 FTX-1 端点联合测试；不把离线 fake Master、包内安全探测或 network-only 控制阶段写成完整桥接通过。
+- 旧 profile 四轮纯 network-only 探测，以及 `aec0471` 一次 native 会话中的五次登录尝试，均在 RPTC 收到 `MSTNAK`；当前 `2183cef` 共享 helper 的 network-only probe 已进入 BM `ready` 并成功本机发送 `RPTCL`。旧拒绝原因未知；新 profile 仍未完成真实 DMRD Echo 语音往返。
+- `2183cef` clean build 的 25 项离线测试、当前便携包和 root package audit 均已通过；这些证据不验证该版本的 HRI/COM/WinMM 音频或电台行为。
+- 用户下一轮需由本人实际启动当前包并进行受控硬件声音测试；在此之前，步骤 5 的完整 BM 桥接语音联调和步骤 6 电台联合端到端测试仍未通过。不把网络控制阶段、离线 fake Master 或包审计写成完整桥接通过。
 - DIRECT 电台扬声器路径是本候选目标；C4FM RF 节点、自动 PTT、UI 和 RF 节点实测均不在本轮范围内。

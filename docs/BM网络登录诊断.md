@@ -74,9 +74,11 @@ DMRHost 的网络对象构造函数会把 RX/TX frequency、power、color code�
 
 ## 当前共享元数据 helper 的生产源码复核
 
-这次复核与上面的历史 E3 A/D/E 对照分开记录。根会话从当前共享 `apply_network_metadata(Profile&)` 源码编译 `build/_work/bm-probe-final-e3-20261024/bm_network_probe.exe`，并显式运行 `--run-network-only`。本次结果在 118 ms 内完成：BM 对 RPTC 返回 config ACK，生产 `Session` 进入 `ready`，程序实际调用本机 UDP 发送 9 字节 `RPTCL`（send 成功），随后报告 `stopped` 并以退出码 0 结束。
+这次复核与上面的历史 E3 A/D/E 对照分开记录。根会话从源码提交 `2183cef8c2e7364f4c73ee89f8b674c7a7c28750` 的共享 `apply_network_metadata(Profile&)` 编译 `build/_work/bm-probe-final-e3-20261024/bm_network_probe.exe`，并显式运行 `--run-network-only`。本次结果在 118 ms 内完成：BM 对 RPTC 返回 config ACK，生产 `Session` 进入 `ready`，程序实际调用本机 UDP 发送 9 字节 `RPTCL`（send 成功），随后报告 `stopped` 并以退出码 0 结束。root 已复核 `network.stdout.log`、`run_summary.txt` 和 `source_sha256.txt`，确认最终运行日志及编译源码清单对应这次探测。
 
 本次只运行了 network-only 诊断工具，没有启动 native bridge、HRI、COM、WinMM 音频、PTT 或 RF，也没有残留进程。保存的构建和运行证据位于该 ignored build 目录，包括 `network.stdout.log`、`run_summary.txt`、`source_sha256.txt` 等文件。结果确认当前共享 helper 生成的 RPTC 配置可通过 BM 控制配置阶段；`RPTCL` 成功仍只表示本机 UDP send 成功，不代表 BM 确认关闭，也没有测试 DMRD、Echo 音频或真实电台声音。
+
+当前源码 commit `2183cef` 的 Windows clean build 在 `build/_work/wirex-bridge-2183cef-20261024-123605/` 完成；正式 builder 实际运行的 25 项离线测试全部通过，日志为 `build/_work/bm-ready-2183cef-build.log`。对应便携包 `build/bm-radio-bridge-2183cef/` 的根会话审计也已通过。包和离线测试证据不提升为 BM Echo 语音或 HRI/电台联合验证。
 
 ## BrandMeister 官方配置说明能确认的范围
 
