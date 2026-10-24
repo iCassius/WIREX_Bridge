@@ -1,12 +1,12 @@
 # WIREX Bridge 交接入口
 
-> **BM + FTX-1 接续入口：** 用户已授权继续实现 BM + 电台联合测试候选。步骤进度、当前基线、文件所有权和未启动项见 [`docs/BM联调推进.md`](docs/BM联调推进.md)。当前 BM 状态机仅通过 localhost fake Master；真实 BM、设备/HRI 联测、UI 与 RF 节点实测尚未开始。
+> **BM + FTX-1 接续入口：** 用户已授权继续实现 BM + 电台联合测试候选。步骤进度、当前基线、文件所有权和未启动项见 [`docs/BM联调推进.md`](docs/BM联调推进.md)。截至 2026-10-24，network-only 探测已两次通过 RPTL/RPTK challenge 与认证 ACK，但在 RPTC 收到 `MSTNAK`（`master_rejected`），从未进入 `ready`；详见 [`docs/BM网络登录诊断.md`](docs/BM网络登录诊断.md)。这不是成功登录，也没有证明密码错误。真实 native、设备/HRI 联测、UI 与 RF 节点实测仍未完成。
 
 本仓库是 native 程序和 UI 的 Git 根目录。本文和 [`docs/交接与阶段同步.md`](docs/交接与阶段同步.md) 为接续实施或审查的自包含入口；不要依赖仓库外的 research 目录。较早的 `app/docs` 文档仍有指向 `../../research/...` 的链接，只克隆本仓库时这些链接无法解析。
 
 ## 当前 BM + FTX-1 候选
 
-步骤 1–4 native 候选源码提交为 `17f3433ae4cd6820622033ddb1910c030cb260f2`，基线为 `3c943413928e1443a2eaa722f730a1e95fdd15b2`。Windows PowerShell 5.1 / VS 2019 clean build 已运行 24 项离线测试并通过，产物目录与完整测试名单见 [`docs/BM联调推进.md`](docs/BM联调推进.md) 及本地包 `build/bm-radio-bridge-17f3433/manifest.json`。本地非 ZIP 便携候选目录为 `build/bm-radio-bridge-17f3433`；根会话已复核其 12 个文件、manifest 中 11 项文件长度/SHA-256、EXE 与 clean build 一致、`--help` 和 `--list-audio-json` 结果及静态 DLL 导入。离线 fake Master 只监听 localhost；真实 Master、COM、WinMM 与电台联合测试尚未运行。BM 上行编码前固定应用 16x 软件 PCM 增益，复用 `pcm_gain::SignalStats` 记录增益前后统计和削顶数；该倍率沿用用户确认的旧独立原型人工试听结果，新 BM 链路的声音效果仍待真实联合测试。步骤 5 身份已由用户准备，UI 与 RF 节点实测暂缓。
+步骤 1–4 native 候选源码提交为 `17f3433ae4cd6820622033ddb1910c030cb260f2`，基线为 `3c943413928e1443a2eaa722f730a1e95fdd15b2`。该提交的 Windows PowerShell 5.1 / VS 2019 clean build 运行 24 项离线测试并通过，产物与审阅证据见 [`docs/BM联调推进.md`](docs/BM联调推进.md) 和当时的便携目录。它们是 17f3433 版本的历史证据，不涵盖当前尚待审查和 clean build 的改动。当前源码增加 BM 测试预设、46001 组呼 native 禁发策略和 BM 登录状态诊断；这项便利与禁发改动不会修复已知的 RPTC `MSTNAK`。截至 2026-10-24，真实网络-only 探测通过认证 ACK 后在 RPTC 配置阶段被 Master 拒绝；完整 native + COM/WinMM 以及电台联合测试尚未运行。BM 上行编码前固定应用 16x 软件 PCM 增益，复用 `pcm_gain::SignalStats` 记录增益前后统计和削顶数；新 BM 链路的声音效果仍待真实联合测试。步骤 5 身份已由用户准备，UI 与 RF 节点实测暂缓。
 
 ## 产品目标与当前里程碑
 

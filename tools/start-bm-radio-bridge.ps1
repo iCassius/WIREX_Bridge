@@ -3,7 +3,9 @@ param(
     [string]$BridgePath,
     [string]$BodyFile,
     [string]$Port,
-    [string]$StatusDirectory
+    [string]$StatusDirectory,
+    [string]$Preset,
+    [string]$PasswordFile
 )
 
 $ErrorActionPreference = 'Stop'
@@ -29,6 +31,31 @@ function Resolve-BridgeExecutable {
         throw "当前便携包目录缺少 wirex_bridge.exe：$candidate；开发运行请传入 -BridgePath。"
     }
     return [System.IO.Path]::GetFullPath($candidate)
+}
+
+function Select-TestPreset {
+    param([string]$Requested)
+    $allowed = @('parrot-cn', 'parrot-global', 'listen-46001', 'manual')
+    if (-not [string]::IsNullOrWhiteSpace($Requested)) {
+        $match = @($allowed | Where-Object { $_ -ieq $Requested.Trim() })
+        if ($match.Count -ne 1) { throw '测试预设无效；请使用 parrot-cn、parrot-global、listen-46001 或 manual。' }
+        return [string]$match[0]
+    }
+    Write-Host '选择 BM 测试入口：'
+    Write-Host '  1. 中国鹦鹉 460997（单呼，可由 T 显式发射）'
+    Write-Host '  2. 通用鹦鹉 9990（单呼，可由 T 显式发射）'
+    Write-Host '  3. 全国频道 46001（组呼，仅接收；native 拒绝 T）'
+    Write-Host '  4. 手工输入 BM 参数（保留原入口）'
+    while ($true) {
+        $choice = Read-Host '输入 1–4，直接回车默认选择 1'
+        if ([string]::IsNullOrWhiteSpace([string]$choice) -or $choice.Trim() -eq '1') { return 'parrot-cn' }
+        switch ($choice.Trim()) {
+            '2' { return 'parrot-global' }
+            '3' { return 'listen-46001' }
+            '4' { return 'manual' }
+        }
+        Write-Host '选项无效，请输入 1、2、3 或 4。' -ForegroundColor Yellow
+    }
 }
 
 function Test-ApprovedBody {
@@ -158,6 +185,14 @@ try {
         throw '显式指定 -BridgePath 或 -BodyFile 时也必须显式指定 -StatusDirectory，避免运行报告落到源码目录。'
     }
     $executable = Resolve-BridgeExecutable
+    $selectedPreset = Select-TestPreset -Requested $Preset
+    $passwordPath = ''
+    if ($selectedPreset -ne 'manual') {
+        if ([string]::IsNullOrWhiteSpace($PasswordFile)) {
+            $PasswordFile = Join-Path $script:packageRoot 'private\bm-device-password.txt'
+        }
+        $passwordPath = Resolve-LocalFile -Path $PasswordFile -Label '本机 BM 私有密码文件'
+    }
     if ($BodyFile) { $bodySource = $BodyFile } else { $bodySource = Join-Path $script:packageRoot 'private\device-y.bin' }
     $body = Test-ApprovedBody -Path $bodySource
     $devices = Invoke-AudioEnumeration -Executable $executable
@@ -182,10 +217,21 @@ try {
     Write-Host ''
     Write-Host '启动前已核对：Y 素材长度与 SHA-256、日志目录写权限、COM 枚举、48 kHz 能力和唯一 Radio WaveOut。'
     Write-Host '本机 DIRECT 没有声明射频频率或坐标；BM 配置使用数值 0 表示未配置坐标。'
-    Write-Host 'native 会在可见控制台逐项读取 BM 配置；密码限制为可打印 ASCII（允许空格），并关闭 echo。'
+    if ($selectedPreset -eq 'manual') {
+        Write-Host '手工入口会在可见控制台逐项读取 BM 配置，并隐藏输入密码。'
+    } else {
+        Write-Host "本次预设：$selectedPreset；身份、Master、端口、时隙、色码和目标已固定。"
+        Write-Host 'native 从本机私有明文密码文件读取凭据；文件内容不会传入命令行或日志。'
+    }
     Write-Host 'native 输入 START 前不会打开 COM、WinMM 音频流或 BM UDP socket。运行最多 120 秒。'
-    Write-Host '下行仅送到 Radio WaveOut；T 键显式控制 BM DMRD 上行，手咪 PTT 仍由操作者物理操作。'
-    Write-Host '离线开发构建和 fake Master 测试没有连接真实 Master 或电台。native 会先询问 BM 配置并显示解析地址；只有你输入 START 后才连接该 Master 并打开所选 COM/Radio WaveIn/Radio WaveOut。'
+    if ($selectedPreset -eq 'listen-46001') {
+        Write-Host '46001 严格仅接收；native 拒绝 T，且不会产生 LC 或 DMRD 上行数据报。'
+    } elseif ($selectedPreset -eq 'manual') {
+        Write-Host '仅当手工目标不是组呼 46001 时，T 才按原逻辑显式控制 BM DMRD 上行。'
+    } else {
+        Write-Host 'T 键显式控制 BM DMRD 上行；手咪 PTT 仍由操作者物理操作。'
+    }
+    Write-Host '只有输入 START 后才连接该 Master 并打开所选 COM/Radio WaveIn/Radio WaveOut。'
     Write-Host '本次不连接 PC monitor，也不发送 RF/PTT 控制命令。'
     Write-Host ("COM: {0} · Radio WaveIn: ID {1} · {2}" -f $portName, $radioInput.id, $radioInput.name)
     Write-Host ("Radio WaveOut: ID {0} · {1}" -f $radioMatches[0].id, $radioMatches[0].name)
@@ -194,6 +240,9 @@ try {
     $arguments = @('--run', '--port', $portName, '--body-file', $body,
         '--input', [string]$radioInput.id, '--output', [string]$radioMatches[0].id,
         '--status-file', $statusPath)
+    if ($selectedPreset -ne 'manual') {
+        $arguments += @('--test-preset', $selectedPreset, '--password-file', $passwordPath)
+    }
     $script:nativeInvoked = $true
     & $executable @arguments
     $exitCode = [int]$LASTEXITCODE

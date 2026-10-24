@@ -11,6 +11,12 @@
 
 核心基线为 `3c943413928e1443a2eaa722f730a1e95fdd15b2`，本地集成提交为 `17f3433ae4cd6820622033ddb1910c030cb260f2`。根会话已审阅源码、离线构建和便携候选；阶段文档按用户授权同步到 `main`，实际远端结果以 `git log` 和 `git ls-remote` 为准。步骤 5 的真实 BM 联调身份已由用户准备，接续时不要重复索取。
 
+## 2026-10-24 BM 网络诊断与当前增量
+
+两次有界 network-only 探测都通过 RPTL/RPTK challenge 和认证 ACK，随后在 RPTC 配置阶段收到 Master 的 `MSTNAK`，生产状态机报告 `master_rejected` 并退回 `backoff`，始终没有进入 `ready`。第二次只把坐标字符串改为固定小数格式，拒绝结果相同。当前证据没有指出 Master 拒绝的具体配置字段；认证 ACK 成功也不能说成设备已登录，或说成密码错误。详细帧长度、阶段记录和实现资料见 [`BM网络登录诊断.md`](BM网络登录诊断.md)。
+
+当前待审查源码增量增加三项测试预设、忽略 Git 的本机密码文件读取、46001 组呼发射拒绝以及 BM 状态/控制数据报计数诊断。新预设便于重现后续测试并保护全国组呼，但不会修复 RPTC 拒绝。此前 17f3433 的 24 项 clean-build 结果不覆盖这些改动；当前源码待根会话审查后从干净提交重建和重新运行测试。探测工具默认不应由 builder 或自动化调用；其真实网络执行需要单独显式启动并遵守目标确认与授权要求。
+
 ## 当前候选与离线证据
 
 已接入 Windows native 控制台入口 `wirex_bridge.exe`。它把 BM 私呼或组呼下行 PCM 播放到所选 FTX-1 DIRECT Radio WaveOut；操作者按 `T` 后才开始 BM DMRD 上行，手咪 PTT 仍由操作者物理操作。上行编码前固定应用 16x 软件 PCM 增益，并用既有 `pcm_gain::SignalStats` 记录增益前后样本数、RMS、峰值及削顶样本数。固定倍率沿用用户确认的旧独立原型人工试听结果；新 BM 链路的声音效果尚未试听验证。程序不发送 RF/PTT 控制命令，`radio_state` 保持 `unknown`。总运行窗口为 120 秒，收尾最多等待 3 秒；BM 断线清空应用媒体，不回灌旧语音。BM EOT 状态只有本地 WinSock `send()` 成功后才记录发送成功；RPTCL 状态也只说明本机 UDP 发送结果，不代表 Master 确认。
@@ -19,7 +25,7 @@
 
 HRI T0 写入完成后若在有界等待期内没有观察到对应 `T` 记录，native 会保留 `downlink_call_bounded_cleanup_incomplete` 状态、阻止后续下行，并将会话标记为失败；用户按 `Q` 或运行期限触发收尾时，退出码为 2。
 
-正式 Windows PowerShell 5.1 / VS 2019 builder 从干净提交 `17f3433` 构建 `wirex_bridge.exe`、原有 `wirex_probe.exe` 和所有测试，并运行 24 项离线测试，全部通过。测试包括 DMRD、DIRECT、HRI、音频清理、BM Session/UDP、DMR 通话、声码器、重采样、语音管线、HRI streaming session 和 `bm_bridge_loopback_test`。完整命令输出记录在 `build/_work/bm-final-17f3433-build.log`；本次源码构建目录为：
+正式 Windows PowerShell 5.1 / VS 2019 builder 曾从干净提交 `17f3433` 构建 `wirex_bridge.exe`、原有 `wirex_probe.exe` 和所有测试，并运行 24 项离线测试，全部通过。测试包括 DMRD、DIRECT、HRI、音频清理、BM Session/UDP、DMR 通话、声码器、重采样、语音管线、HRI streaming session 和 `bm_bridge_loopback_test`。这是 17f3433 版本的历史验证，不覆盖本次尚未 clean-build 的源码增量。完整命令输出记录在 `build/_work/bm-final-17f3433-build.log`；本次源码构建目录为：
 
 ```text
 build/_work/wirex-bridge-17f3433-20261024-044905/
@@ -41,7 +47,7 @@ build/_work/wirex-bridge-17f3433-20261024-044905/
 
 ## 未完成的现场验收
 
-- 尚未连接任何真实 BrandMeister Master；登录兼容性和真实网络持续运行未验证。
+- network-only 探测确实连接 BM 4602 并完成 challenge/认证 ACK，但两次均在 RPTC 收到 `MSTNAK`/`master_rejected`，从未进入 `ready`。Master 拒绝原因仍未定位；这不构成已登录或密码错误证据。没有完成 native 桥接会话或真实网络持续运行验证。
 - 尚未打开真实 HRI COM、WinMM WaveIn/WaveOut 或电台；没有验证真实设备上的 T3/T0 时序、播放、串口恢复或声音效果。
-- 步骤 5 真实 BM 联调和步骤 6 电台联合端到端测试尚未开始。根会话已完成源码、clean build 和便携包审阅；接下来由操作者按准备情况安排真实 BM 与 FTX-1 端点联合测试，不把离线 fake Master 结果写成实机通过。
+- 步骤 5 的完整 BM 桥接联调和步骤 6 电台联合端到端测试尚未通过。根会话需要审查当前源码并进行 clean build、离线测试和候选包复核；之后由操作者按准备情况安排真实 BM 与 FTX-1 端点联合测试，不把离线 fake Master 或 network-only 探测写成完整桥接通过。
 - DIRECT 电台扬声器路径是本候选目标；C4FM RF 节点、自动 PTT、UI 和 RF 节点实测均不在本轮范围内。
