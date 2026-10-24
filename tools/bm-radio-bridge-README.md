@@ -2,7 +2,7 @@
 
 此入口把 BrandMeister DMRD 与 FTX-1 DIRECT 音频路径接在一个可见的 native 控制台进程中。两次有界 network-only 私呼测试已从真实 BM Echo 服务收到 TS2 回声：旧 TS1 filter 曾拒绝整条回声；调整三个 DIRECT preset 为 TS2 后，RX-only pipeline 产生了呼叫开始、voice 和结束事件。测试使用合成 PCM，没有打开 HRI 或音频设备，也不证明真实用户语音、扬声器播放或 RF 效果。详见 [BM 回声诊断](../docs/BM回声无播放诊断.md)。
 
-旧 profile 的 `MSTNAK` 和其原因仍是历史诊断；`2183cef` clean build 的 25 项测试及旧便携包审计也只适用于该提交。当前工作树加入 TS2 preset 和串口 PTT 自动触发后，新的 26 项全测及 clean build 尚待 root 执行。真实自动 PTT + BM + 电台扬声器回声仍待用户联合实测；历史网络登录过程见 [BM 4602 网络登录诊断](../docs/BM网络登录诊断.md)。
+旧 profile 的 `MSTNAK` 和其原因仍是历史诊断；`2183cef` clean build 的 25 项测试及旧便携包审计也只适用于该提交。源码提交 1c8c6fd00081ea8b029c756f537168f4efce4994 的正式 clean build 与 26 项离线测试全部通过；构建输出位于 build/_work/wirex-bridge-1c8c6fd-20261024-161127，日志为 build/_work/bm-auto-ptt-1c8c6fd-build.log。便携候选 build/bm-radio-bridge-1c8c6fd 已通过 root 包审计。真实自动 PTT + BM + 电台扬声器回声仍待用户联合实测；历史网络登录过程见 [BM 4602 网络登录诊断](../docs/BM网络登录诊断.md)。
 
 ## 构建
 
@@ -39,7 +39,7 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tools\build-bm
 .\start-bm-radio-bridge.ps1
 ```
 
-启动器会从脚本同目录的 `private\device-y.bin` 校验固定的 100 字节 Y 素材及 SHA-256，检查同目录 `logs` 可写，并只读查询当前 PnP/COM 与音频端点。HRI 串口按 USB VID `26AA`、PID `0030` 或更高、PnP 总线描述中的 `HRI` 以及当前 COM 登记联合识别；只有唯一候选才自动选择，多个或缺失时显示实例 ID、父实例和容器并等待手工选择。它不会打开候选 COM 来扫描。
+启动器会从脚本同目录的 `private\device-y.bin` 校验固定的 100 字节 Y 素材及 SHA-256，检查同目录 `logs` 可写，并只读查询当前 PnP/COM 与音频端点。HRI 串口按 USB VID `26AA`、PID `0030` 或更高、PnP 总线描述中的 `HRI` 以及当前 COM 登记联合识别；只有唯一候选才自动选择，多个或缺失时显示实例 ID、父实例和容器并等待手工选择。它不会打开候选 COM 来扫描。PowerShell 7 和 Windows PowerShell 5.1 的生产 PnP 设备发现函数均已确认唯一 COM5 与 WaveIn 1、WaveOut 3 的端点对应关系。Windows PowerShell 5.1 的 PnP/CIM 查询可能耗时数分钟，请保持前台窗口并等待完成；该查询只读设备信息，不打开 COM、音频流或 BM 网络。
 
 WaveIn/WaveOut 不按本地化名称或第一个 USB 设备猜选。native 用 `DRV_QUERYFUNCTIONINSTANCEIDSIZE` 和 `DRV_QUERYFUNCTIONINSTANCEID` 将当前 WinMM ID 对应到 Windows 音频 endpoint ID；这两个消息只查询标识，不打开音频流。启动器要求只有一个 USB Audio `VID_0D8C&PID_0016` 设备，其最近的非根 USB Hub 与唯一 HRI 串口相同，并且该音频设备的 PnP AudioEndpoint 实例能按 endpoint ID 唯一映射到一个 WaveIn 和一个 WaveOut。只有满足这些条件且两端都支持目标 PCM 时才自动选择。
 
@@ -78,6 +78,6 @@ root 对当前启动选择逻辑作了只读核对，唯一 HRI 候选为 COM5�
 - 源码构建与 fake Master loopback 测试属于离线软件证据。
 - 设备能力查询只读取本机 WinMM 列表和格式支持，不打开音频流。
 - 旧 profile 的 RPTC `MSTNAK` 仍是历史结果，拒绝原因未知。之后两次真实 BM network-only Echo 测试已回送 TS2 private stream；第二次使用 TS2 preset 后 RX-only pipeline 产生了 start/voice/end。这不是“无真实 Echo”，但仍没有验证 native 自动 PTT、HRI/COM/WinMM 播放或电台端到端回声。详见 [网络登录诊断](../docs/BM网络登录诊断.md) 和 [BM 回声诊断](../docs/BM回声无播放诊断.md)。
-- `2183cef` 旧源码 clean build 的 25 项离线测试和包审计已通过；当前包含 26 项测试的工作树尚待 root 在 source commit 后 clean build 并全测。真实自动 PTT + BM + 电台回声仍待用户执行。
+- 源码提交 1c8c6fd00081ea8b029c756f537168f4efce4994 的正式 clean build 与 26 项离线测试全部通过；构建输出位于 build/_work/wirex-bridge-1c8c6fd-20261024-161127，日志为 build/_work/bm-auto-ptt-1c8c6fd-build.log。便携候选 build/bm-radio-bridge-1c8c6fd 已通过 root 包审计；自动 PTT + BM + FTX-1 扬声器回声联合实测仍待用户执行。
 - HRI T3/T0 的 `T` 记录只是阶段观察，不作为严格硬件 ACK；`radio_state` 保持 `unknown`。
 - BM 语音、网络断线、HRI 收尾和资源关闭的候选行为仍需在后续明确授权的联合测试中验证。

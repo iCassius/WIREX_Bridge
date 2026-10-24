@@ -17,7 +17,7 @@
 - 两次有界 network-only 私呼测试使用生产 Session、UDP transport、Transmitter 和 RX-only pipeline，均只向 460997 发送一通 1.98 秒合成 PCM。首次从 TS1 发出后，BM 实际回送 TS2 private stream；本机 ID、呼叫类型、LC 与 CC1 匹配，旧 TS1 filter 将 37 个包全部拒绝。三个 DIRECT preset 因此改为 TS2，过滤仍精确匹配本机目的 ID、单一时隙和呼叫类型。
 - 第二次测试从新 `parrot-cn` preset 动态取得呼叫参数，BM 回声被 TS2 filter 接受；Receiver 产生 1 个 start、32 个 voice、1 个 end 事件。RX-only 测试未启用播放，也没有真实 HRI/扬声器路径。
 - 用户确认的三轮 HRI DIRECT 手咪测试在 Y/0 ready 后，每轮按住时从有效 X/100 的 `X[0x0c]` 观察到 `0x32`（ASCII `2`），松开时为 `0x30`（ASCII `0`）。当前候选据此用串口边沿触发上行采集；该映射只在本次 FTX-1 + HRI DIRECT 条件下得到支持，不能说明 RF 已发射。
-- root 对本轮设备选择逻辑作了只读核对，唯一 HRI 候选为 COM5，WaveIn 1 与 WaveOut 3 映射到匹配的音频 endpoint；核对没有打开 COM、音频流或 BM。二轮独立审查已修复此前发现的 P1/P2 并复核关键路径，静态检查未发现新阻断。当前工作树的 26 项离线全测与 clean build 仍待 root 在 source commit 后执行；自动 PTT + BM + 电台扬声器回声仍待用户联合实测。
+- root 对本轮设备选择逻辑作了只读核对，唯一 HRI 候选为 COM5，WaveIn 1 与 WaveOut 3 映射到匹配的音频 endpoint；核对没有打开 COM、音频流或 BM。二轮独立审查已修复此前发现的 P1/P2 并复核关键路径，静态检查未发现新阻断。源码提交 1c8c6fd00081ea8b029c756f537168f4efce4994 的正式 clean build 与 26 项离线测试全部通过；构建输出位于 build/_work/wirex-bridge-1c8c6fd-20261024-161127，日志为 build/_work/bm-auto-ptt-1c8c6fd-build.log。便携候选 build/bm-radio-bridge-1c8c6fd 已由 root 独立包审计通过：11 个非秘密文件长度/SHA-256 全匹配，EXE 与 clean build 一致，启动脚本解析、native help、音频枚举、空 logs 和本机密码仅存在检查均通过。密码内容、大小和哈希未读取或记录。自动 PTT + BM + FTX-1 扬声器回声联合实测仍待用户执行。
 
 当前 native 默认由有效手咪 PTT 串口边沿开始/结束 BM 上行，不要求启动输入 `START` 或按键 `T`。程序在可见前台持续待机，由 `Q`、Ctrl+C、关闭窗口或错误触发有界退出；没有全局 120 秒退出，单通话最多 120 秒。`-ManualPtt` 仍是显式诊断入口。分层实测与过滤原因见 [`BM回声无播放诊断.md`](BM回声无播放诊断.md)，手咪状态观察见 [`HRI手咪PTT事件研究.md`](HRI手咪PTT事件研究.md)。
 
