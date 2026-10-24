@@ -2,7 +2,7 @@
 
 此入口把 BrandMeister DMRD 与 FTX-1 DIRECT 扬声器路径接在一个可见的 native 控制台进程中。它目前是供离线 fake Master 和后续受控联合测试使用的候选程序；构建、loopback 或状态报告都不证明真实 BM 登录、HRI 声音或 RF 效果。
 
-2026-10-24 的两次真实 BM 4602 network-only 探测都通过 RPTL/RPTK challenge 与 auth ACK，随后在 RPTC 配置阶段收到 `MSTNAK` / `master_rejected`，始终未进入 `ready`。这排除了“已成功登录”以及“密码已证实错误”两种说法，但没有定位服务端拒绝的具体字段；也没有启动 native、COM、WinMM、PTT 或 RF。新预设和仅接收策略便于下一轮受控测试，不修复这项登录配置拒绝。详见 [BM 4602 网络登录诊断](../docs/BM网络登录诊断.md)。
+2026-10-24 的四次真实 BM 4602 network-only 探测都通过 RPTL/RPTK challenge 与 auth ACK，随后在 RPTC 配置阶段收到 `MSTNAK` / `master_rejected`，始终未进入 `ready`。第三次使用 RX/TX 145.1 MHz 元数据，第四次再使用 CC1，仍被拒绝；Master 的具体拒绝原因未知。这不证明设备已登录，也没有证明密码错误；探测没有启动 native、COM、WinMM、PTT 或 RF。两项参数只用于独立诊断，native 测试预设仍使用用户原先确认的 CC0。新预设和仅接收策略便于后续受控测试，不修复这项配置拒绝。详见 [BM 4602 网络登录诊断](../docs/BM网络登录诊断.md)。
 
 ## 构建
 
@@ -69,7 +69,7 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tools\build-bm
 
 - 源码构建与 fake Master loopback 测试属于离线软件证据。
 - 设备能力查询只读取本机 WinMM 列表和格式支持，不打开音频流。
-- 已有两次 network-only BM 4602 探测，均在 RPTC 阶段收到 `MSTNAK`，从未进入 BM `ready`；完整的真实 BM 桥接会话仍未通过。详见 [网络登录诊断](../docs/BM网络登录诊断.md)。操作者输入 `START` 后，预设入口会尝试连接固定 Master 并打开所选设备。
+- 已有四次 network-only BM 4602 探测，均在 RPTC 阶段收到 `MSTNAK`，从未进入 BM `ready`；第四次使用 145.1 MHz 元数据和 CC1 仍被拒绝，Master 拒绝原因未知。完整的真实 BM 桥接会话仍未通过。详见 [网络登录诊断](../docs/BM网络登录诊断.md)。操作者输入 `START` 后，预设入口会尝试连接固定 Master 并打开所选设备。
 - 真实 native + COM/WinMM 联测、声音和 RF 仍未执行；离线构建和真实 BM network-only 探测都不构成这些结果。
 - HRI T3/T0 的 `T` 记录只是阶段观察，不作为严格硬件 ACK；`radio_state` 保持 `unknown`。
 - BM 语音、网络断线、HRI 收尾和资源关闭的候选行为仍需在后续明确授权的联合测试中验证。
