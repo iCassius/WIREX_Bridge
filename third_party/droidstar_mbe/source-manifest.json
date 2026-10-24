@@ -1,0 +1,522 @@
+{
+  "upstream_repo": "nostar/DroidStar",
+  "commit": "becf1dede57c4a70a865e9cb4cac9247e505599a",
+  "commit_url": "https://github.com/nostar/DroidStar/tree/becf1dede57c4a70a865e9cb4cac9247e505599a",
+  "archive_url": "https://codeload.github.com/nostar/DroidStar/tar.gz/becf1dede57c4a70a865e9cb4cac9247e505599a",
+  "file_count": 57,
+  "files": [
+    {
+      "path": "upstream/imbe_vocoder/aux_sub.cc",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/aux_sub.cc",
+      "bytes": 4728,
+      "upstream_sha256": "bca604aae000febe0bdb234d6a80b6c290a659ba4439b469ad4a4100ead06852",
+      "local_sha256": "bca604aae000febe0bdb234d6a80b6c290a659ba4439b469ad4a4100ead06852",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/aux_sub.h",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/aux_sub.h",
+      "bytes": 3830,
+      "upstream_sha256": "aed248d0ead812a9f9396d328a685e4d05363cb12938ae8ee43e8efeca7c8b4a",
+      "local_sha256": "aed248d0ead812a9f9396d328a685e4d05363cb12938ae8ee43e8efeca7c8b4a",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/basic_op.h",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/basic_op.h",
+      "bytes": 4669,
+      "upstream_sha256": "2da864386e95d83b0a158c4a87e3d4f040055ac6024a50caedc433face210072",
+      "local_sha256": "2da864386e95d83b0a158c4a87e3d4f040055ac6024a50caedc433face210072",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/basicop2.cc",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/basicop2.cc",
+      "bytes": 108273,
+      "upstream_sha256": "b81589ab4f4eca94e91470681546937f5048785cf4a8a12f9eb6cea57ab99950",
+      "local_sha256": "b81589ab4f4eca94e91470681546937f5048785cf4a8a12f9eb6cea57ab99950",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/ch_decode.cc",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/ch_decode.cc",
+      "bytes": 5195,
+      "upstream_sha256": "0143264ba30e03c3090c943888f0df59e29b923428b93e6f55062e1100de99f4",
+      "local_sha256": "0143264ba30e03c3090c943888f0df59e29b923428b93e6f55062e1100de99f4",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/ch_decode.h",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/ch_decode.h",
+      "bytes": 1104,
+      "upstream_sha256": "5587399543dccb8d97521999756e758f576a16513f022ac4d3cb26b77e475051",
+      "local_sha256": "5587399543dccb8d97521999756e758f576a16513f022ac4d3cb26b77e475051",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/ch_encode.cc",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/ch_encode.cc",
+      "bytes": 3061,
+      "upstream_sha256": "db1f89de858c1327a6025dfb84583a660f088d7aff9d1cddc23d253c2d79aaaf",
+      "local_sha256": "db1f89de858c1327a6025dfb84583a660f088d7aff9d1cddc23d253c2d79aaaf",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/ch_encode.h",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/ch_encode.h",
+      "bytes": 1050,
+      "upstream_sha256": "9e50ef7e5ee9a7ac1cb2597a68c8470ae01bfc6454e5c5657314cdb526301b3d",
+      "local_sha256": "9e50ef7e5ee9a7ac1cb2597a68c8470ae01bfc6454e5c5657314cdb526301b3d",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/dc_rmv.cc",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/dc_rmv.cc",
+      "bytes": 1856,
+      "upstream_sha256": "c57cb89b7ef9f33e7042e185f516c5a4fa0817a4006a1ec6ccaa5f3a45257296",
+      "local_sha256": "c57cb89b7ef9f33e7042e185f516c5a4fa0817a4006a1ec6ccaa5f3a45257296",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/dc_rmv.h",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/dc_rmv.h",
+      "bytes": 1499,
+      "upstream_sha256": "1e4b512f1957c769e745f6697ab1f5e8ec766dad87dd12102c25c4a1c12ae519",
+      "local_sha256": "1e4b512f1957c769e745f6697ab1f5e8ec766dad87dd12102c25c4a1c12ae519",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/decode.cc",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/decode.cc",
+      "bytes": 3377,
+      "upstream_sha256": "61b8fd9f3a3e58a5b454ca96079012ff5d1c27c840753ab2441438523fe987d3",
+      "local_sha256": "61b8fd9f3a3e58a5b454ca96079012ff5d1c27c840753ab2441438523fe987d3",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/decode.h",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/decode.h",
+      "bytes": 1087,
+      "upstream_sha256": "b70cdc70b2c4632b504ed0287fcdef45c35fd3da3e7fa6dc7d9bbb60eadd2193",
+      "local_sha256": "b70cdc70b2c4632b504ed0287fcdef45c35fd3da3e7fa6dc7d9bbb60eadd2193",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/dsp_sub.cc",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/dsp_sub.cc",
+      "bytes": 7134,
+      "upstream_sha256": "b7bd59180d6acae0135ae0e91b606ccbfba1b03bb9b856637a8776ac38961a94",
+      "local_sha256": "b7bd59180d6acae0135ae0e91b606ccbfba1b03bb9b856637a8776ac38961a94",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/dsp_sub.h",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/dsp_sub.h",
+      "bytes": 2281,
+      "upstream_sha256": "6ff1999bc8b83431b26597a0c2f45b529dcb24968c2a601f206f490ed8298a60",
+      "local_sha256": "6ff1999bc8b83431b26597a0c2f45b529dcb24968c2a601f206f490ed8298a60",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/encode.cc",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/encode.cc",
+      "bytes": 4087,
+      "upstream_sha256": "a89a33ec155dbbbe95c1e6fe569b2df8f0555adab9b0faad9f2ef28036a86229",
+      "local_sha256": "a89a33ec155dbbbe95c1e6fe569b2df8f0555adab9b0faad9f2ef28036a86229",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/encode.h",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/encode.h",
+      "bytes": 1104,
+      "upstream_sha256": "667b47e03a096412829d66de6fb3eef19ec62867e66a554c0980e758795d5c54",
+      "local_sha256": "667b47e03a096412829d66de6fb3eef19ec62867e66a554c0980e758795d5c54",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/globals.h",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/globals.h",
+      "bytes": 1806,
+      "upstream_sha256": "7efea79628e0a0020d0b2af2de547131c89bca085a7d443d14f06d675bb30b6b",
+      "local_sha256": "7efea79628e0a0020d0b2af2de547131c89bca085a7d443d14f06d675bb30b6b",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/imbe_vocoder_api.h",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/imbe_vocoder_api.h",
+      "bytes": 1976,
+      "upstream_sha256": "363003540bc0097e2ac900f5bb693ea758af97250ffe750666a1d5a223da54a9",
+      "local_sha256": "363003540bc0097e2ac900f5bb693ea758af97250ffe750666a1d5a223da54a9",
+      "license": "Attribution present; no license text in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/imbe_vocoder_impl.cc",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/imbe_vocoder_impl.cc",
+      "bytes": 1084,
+      "upstream_sha256": "095ac167e6d0761a08021ea9d3cc863aadb02c34a269ee330b646189dc1b89e6",
+      "local_sha256": "095ac167e6d0761a08021ea9d3cc863aadb02c34a269ee330b646189dc1b89e6",
+      "license": "Attribution present; no license text in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/imbe_vocoder_impl.h",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/imbe_vocoder_impl.h",
+      "bytes": 3070,
+      "upstream_sha256": "b59189a27d5c9819c4b63d993f6c83c09de44c2c1218411c077213f71212e273",
+      "local_sha256": "b59189a27d5c9819c4b63d993f6c83c09de44c2c1218411c077213f71212e273",
+      "license": "Attribution present; no license text in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/imbe_vocoder.cc",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/imbe_vocoder.cc",
+      "bytes": 689,
+      "upstream_sha256": "f39f2503c681eb834a4a13e440629e545745e7fbb79eaa6cd0a29e83287f9bf0",
+      "local_sha256": "f39f2503c681eb834a4a13e440629e545745e7fbb79eaa6cd0a29e83287f9bf0",
+      "license": "No license or copyright text in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/imbe_vocoder.h",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/imbe_vocoder.h",
+      "bytes": 967,
+      "upstream_sha256": "baaf9f29cfcd117aaa4590577782996569aa05f1cae1a0cc7d99b3b4a9104401",
+      "local_sha256": "baaf9f29cfcd117aaa4590577782996569aa05f1cae1a0cc7d99b3b4a9104401",
+      "license": "Attribution present; no license text in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/imbe.h",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/imbe.h",
+      "bytes": 2078,
+      "upstream_sha256": "1b9d2a785a122198fe103c0e0ec443bad268a91565f76e58daa18f1f3daee54f",
+      "local_sha256": "1b9d2a785a122198fe103c0e0ec443bad268a91565f76e58daa18f1f3daee54f",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/math_sub.cc",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/math_sub.cc",
+      "bytes": 10455,
+      "upstream_sha256": "7efa68bd159b66d620b69c4800bb2b72c18a18e94fbb7a74fa596ceea3126155",
+      "local_sha256": "7efa68bd159b66d620b69c4800bb2b72c18a18e94fbb7a74fa596ceea3126155",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/math_sub.h",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/math_sub.h",
+      "bytes": 3785,
+      "upstream_sha256": "28d3e653da83f7a655cd43f677860f16281d1c029532e55a7dbb0774f58a4174",
+      "local_sha256": "28d3e653da83f7a655cd43f677860f16281d1c029532e55a7dbb0774f58a4174",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/pe_lpf.cc",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/pe_lpf.cc",
+      "bytes": 2044,
+      "upstream_sha256": "7fc859cd4310655ed6202780a995e51e5ce3152e8b90354bae9b1aa8f2fe789c",
+      "local_sha256": "7fc859cd4310655ed6202780a995e51e5ce3152e8b90354bae9b1aa8f2fe789c",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/pe_lpf.h",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/pe_lpf.h",
+      "bytes": 1507,
+      "upstream_sha256": "c5ab3abe24c3232672b479a56cfa405de8aaa28bd4ecb0f2edbaf75770277768",
+      "local_sha256": "c5ab3abe24c3232672b479a56cfa405de8aaa28bd4ecb0f2edbaf75770277768",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/pitch_est.cc",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/pitch_est.cc",
+      "bytes": 10340,
+      "upstream_sha256": "e45a7a6b547ca43e960cacfc47189d95418770842dea7f098acecf9da5f6fa3f",
+      "local_sha256": "e45a7a6b547ca43e960cacfc47189d95418770842dea7f098acecf9da5f6fa3f",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/pitch_est.h",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/pitch_est.h",
+      "bytes": 1006,
+      "upstream_sha256": "96ee18b1d0297a9f90e948f0da7a19cdf14911cc31d5153b5c475e3fb7df4003",
+      "local_sha256": "96ee18b1d0297a9f90e948f0da7a19cdf14911cc31d5153b5c475e3fb7df4003",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/pitch_ref.cc",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/pitch_ref.cc",
+      "bytes": 4684,
+      "upstream_sha256": "b5afe091e7bd4bad835fa3b4482de36f7faeeffc3b33645c1f45888fb6df3359",
+      "local_sha256": "b5afe091e7bd4bad835fa3b4482de36f7faeeffc3b33645c1f45888fb6df3359",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/pitch_ref.h",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/pitch_ref.h",
+      "bytes": 968,
+      "upstream_sha256": "4bb9d32b9332575dd6073c5bcb9a16908c2c2d9780c475f9090f003a78cb2063",
+      "local_sha256": "4bb9d32b9332575dd6073c5bcb9a16908c2c2d9780c475f9090f003a78cb2063",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/qnt_sub.cc",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/qnt_sub.cc",
+      "bytes": 3822,
+      "upstream_sha256": "94f9e1ef1b3a1958d6fa3bacdd563045fd17f605a6b180c398ac1a123446e6bc",
+      "local_sha256": "94f9e1ef1b3a1958d6fa3bacdd563045fd17f605a6b180c398ac1a123446e6bc",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/qnt_sub.h",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/qnt_sub.h",
+      "bytes": 2549,
+      "upstream_sha256": "d3365368e44c630f50e367f05679916d214486a4470e7aeed3fd5290d431c971",
+      "local_sha256": "d3365368e44c630f50e367f05679916d214486a4470e7aeed3fd5290d431c971",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/rand_gen.cc",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/rand_gen.cc",
+      "bytes": 1558,
+      "upstream_sha256": "78e08517c180ed2966cf64b5233344ba078215233240a604a09261fa8de445ea",
+      "local_sha256": "78e08517c180ed2966cf64b5233344ba078215233240a604a09261fa8de445ea",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/rand_gen.h",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/rand_gen.h",
+      "bytes": 1303,
+      "upstream_sha256": "7f278ddec2c797ef1d3c647d3cfcb196c7acee63982e21fb49dceaa812bed872",
+      "local_sha256": "7f278ddec2c797ef1d3c647d3cfcb196c7acee63982e21fb49dceaa812bed872",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/sa_decode.cc",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/sa_decode.cc",
+      "bytes": 5896,
+      "upstream_sha256": "a5e0310837138c596836cb51277c49e057eab354e63285babfc55f6e098b6f3d",
+      "local_sha256": "a5e0310837138c596836cb51277c49e057eab354e63285babfc55f6e098b6f3d",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/sa_decode.h",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/sa_decode.h",
+      "bytes": 1786,
+      "upstream_sha256": "36ea5bda7c48499fb38783602b24b3ac99905bc0dbe55b371f36437d26a12c92",
+      "local_sha256": "36ea5bda7c48499fb38783602b24b3ac99905bc0dbe55b371f36437d26a12c92",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/sa_encode.cc",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/sa_encode.cc",
+      "bytes": 8565,
+      "upstream_sha256": "56020621d402957c3069c9cc7d7f6c52296b0d60a62d48bfc15c6596b254e539",
+      "local_sha256": "56020621d402957c3069c9cc7d7f6c52296b0d60a62d48bfc15c6596b254e539",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/sa_encode.h",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/sa_encode.h",
+      "bytes": 988,
+      "upstream_sha256": "d971d321c04f76429bc7adaafff17283e49e7e160ec73a5f824daa3e2ee3ae8b",
+      "local_sha256": "d971d321c04f76429bc7adaafff17283e49e7e160ec73a5f824daa3e2ee3ae8b",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/sa_enh.cc",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/sa_enh.cc",
+      "bytes": 5302,
+      "upstream_sha256": "d0e9a3babfa2869f67c9b52b58902ba99de7905c74abc7e2168a3071089ebddd",
+      "local_sha256": "d0e9a3babfa2869f67c9b52b58902ba99de7905c74abc7e2168a3071089ebddd",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/sa_enh.h",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/sa_enh.h",
+      "bytes": 1526,
+      "upstream_sha256": "efafa3097f2deb7aae8a0ab644b4b595e7d4c865434f549516d00ed257b3d09a",
+      "local_sha256": "efafa3097f2deb7aae8a0ab644b4b595e7d4c865434f549516d00ed257b3d09a",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/tbls.cc",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/tbls.cc",
+      "bytes": 15603,
+      "upstream_sha256": "2b6801812acb3c9f9d5b879385e4733c4105023f157159c80d7212bb4ff9fa81",
+      "local_sha256": "2b6801812acb3c9f9d5b879385e4733c4105023f157159c80d7212bb4ff9fa81",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/tbls.h",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/tbls.h",
+      "bytes": 3483,
+      "upstream_sha256": "ddb6337f710c18a60c3bc8771b7b9fd0126562b9c5b2fc6de677d7ff67f76fd3",
+      "local_sha256": "ddb6337f710c18a60c3bc8771b7b9fd0126562b9c5b2fc6de677d7ff67f76fd3",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/typedef.h",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/typedef.h",
+      "bytes": 2134,
+      "upstream_sha256": "6f283c292261c3de9bd833510be0a117090e079a0c91bfe778f8281c4ee59815",
+      "local_sha256": "6f283c292261c3de9bd833510be0a117090e079a0c91bfe778f8281c4ee59815",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/typedefs.h",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/typedefs.h",
+      "bytes": 5636,
+      "upstream_sha256": "6adf532766656ad7abd4e5f357770f12ce80e8649d2676f0af8fb8915e8600b7",
+      "local_sha256": "6adf532766656ad7abd4e5f357770f12ce80e8649d2676f0af8fb8915e8600b7",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/uv_synt.cc",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/uv_synt.cc",
+      "bytes": 3314,
+      "upstream_sha256": "ad586db44e52725a55cee4fb1e1dcde4d24efbe409dc46496fa71c87389cc0ff",
+      "local_sha256": "ad586db44e52725a55cee4fb1e1dcde4d24efbe409dc46496fa71c87389cc0ff",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/uv_synt.h",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/uv_synt.h",
+      "bytes": 1041,
+      "upstream_sha256": "c8b710245e393b584dedff8abee79b0b1f02bea2a74827074a601a76d3278220",
+      "local_sha256": "c8b710245e393b584dedff8abee79b0b1f02bea2a74827074a601a76d3278220",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/v_synt.cc",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/v_synt.cc",
+      "bytes": 6504,
+      "upstream_sha256": "ba8f71d16da5a967311caf230b4a7a271da0f5fc1ee1d4aee60a84579c829eff",
+      "local_sha256": "ba8f71d16da5a967311caf230b4a7a271da0f5fc1ee1d4aee60a84579c829eff",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/v_synt.h",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/v_synt.h",
+      "bytes": 989,
+      "upstream_sha256": "b5ce971679f11a25fd5d1d31a8de57e5622072a2fd713c6acf5c6a9281f5d6c2",
+      "local_sha256": "b5ce971679f11a25fd5d1d31a8de57e5622072a2fd713c6acf5c6a9281f5d6c2",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/v_uv_det.cc",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/v_uv_det.cc",
+      "bytes": 10240,
+      "upstream_sha256": "ae30d210fbf0d8eb09eeea6e829391e5dc4e04154cd77155edae01cb36b16c28",
+      "local_sha256": "ae30d210fbf0d8eb09eeea6e829391e5dc4e04154cd77155edae01cb36b16c28",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/imbe_vocoder/v_uv_det.h",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/imbe_vocoder/v_uv_det.h",
+      "bytes": 973,
+      "upstream_sha256": "f10e949d37af89220485f405182f7b033d60258adae7148a4dfae4295ae41ea3",
+      "local_sha256": "f10e949d37af89220485f405182f7b033d60258adae7148a4dfae4295ae41ea3",
+      "license": "GPL-3.0-or-later notice in file",
+      "local_change": null
+    },
+    {
+      "path": "upstream/mbe/ambe.cpp",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/mbe/ambe.cpp",
+      "bytes": 34347,
+      "upstream_sha256": "203fac93770c63da7ad9391e44574713b68ec59d8084c11335837a9ac475ca7b",
+      "local_sha256": "8aefc074c6b6b5958efbe4106e9b424b41a99bb24b0da83b7841acab4fbc5c7a",
+      "license": "ISC license text in original file notice",
+      "local_change": "Added explicit stdlib include for portable rand/RAND_MAX declarations."
+    },
+    {
+      "path": "upstream/mbe/ambe3600x2400.cpp",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/mbe/ambe3600x2400.cpp",
+      "bytes": 19836,
+      "upstream_sha256": "7b50860bfb2a948b4d86a513476864cbce0f8f1b37279d87b51bad4a4ddb323c",
+      "local_sha256": "7b50860bfb2a948b4d86a513476864cbce0f8f1b37279d87b51bad4a4ddb323c",
+      "license": "ISC license text in original file notice",
+      "local_change": null
+    },
+    {
+      "path": "upstream/mbe/ambe3600x2450.cpp",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/mbe/ambe3600x2450.cpp",
+      "bytes": 16136,
+      "upstream_sha256": "5ba3cafc1e100f716750ef196adede255260d872c424622aee18f610ce3b990f",
+      "local_sha256": "5ba3cafc1e100f716750ef196adede255260d872c424622aee18f610ce3b990f",
+      "license": "ISC license text in original file notice",
+      "local_change": null
+    },
+    {
+      "path": "upstream/mbe/mbevocoder.cpp",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/mbe/mbevocoder.cpp",
+      "bytes": 10137,
+      "upstream_sha256": "7464a9d9cb27a7ab04eb3bf65b725268ddaefc6d85e4666ef600b568a76b07b1",
+      "local_sha256": "4d6bc0459ecc52d818367ffa96f3fdc71bd59eb20b01580a02446deb9350fbcb",
+      "license": "ISC license text in original file notice",
+      "local_change": "Added decode status API, bounded 160-sample copy and upstream error marker extraction."
+    },
+    {
+      "path": "upstream/mbe/mbevocoder.h",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/mbe/mbevocoder.h",
+      "bytes": 5813,
+      "upstream_sha256": "b82d569988b8fbcbb0e541ec773b2ad4feedb041f9ee8ce8101aeb6f871c1a14",
+      "local_sha256": "7e275541f970154accacbea2c81d3e79248835a2ac0be89384bd904df3df558a",
+      "license": "ISC license text in original file notice",
+      "local_change": "Added stdlib include and decode status API returning FEC count, error marker and output sample count."
+    },
+    {
+      "path": "upstream/mbe/vocoder_tables.h",
+      "upstream_url": "https://github.com/nostar/DroidStar/blob/becf1dede57c4a70a865e9cb4cac9247e505599a/mbe/vocoder_tables.h",
+      "bytes": 130382,
+      "upstream_sha256": "3ef6900a2e0f47c50e1fda1b4912f76a819348467d810223b5858684da0e727a",
+      "local_sha256": "3ef6900a2e0f47c50e1fda1b4912f76a819348467d810223b5858684da0e727a",
+      "license": "ISC license text in original file notice",
+      "local_change": null
+    }
+  ]
+}
