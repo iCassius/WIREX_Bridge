@@ -26,6 +26,11 @@ function Assert-OwnedHandlesClosed($supervisor) {
     }
 }
 
+function Assert-FixtureProcessExited([int]$processId, [string]$message) {
+    if ($processId -le 0) { return }
+    Wait-Until { [SupervisorRaceFixture]::HasExitedProcess($processId) } 5000 $message
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $source = Join-Path $repoRoot 'ui\windows\BridgeSupervisor.cs'
 if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Missing source: $source" }
@@ -41,12 +46,36 @@ public static class SupervisorRaceFixture
     [System.Runtime.InteropServices.DllImport("kernel32.dll")]
     private static extern System.IntPtr GetCurrentProcess();
 
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    private static extern System.IntPtr OpenProcess(uint desiredAccess, bool inheritHandle, uint processId);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool CloseHandle(System.IntPtr handle);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(System.IntPtr handle, uint milliseconds);
+
     public static uint CurrentHandleCount()
     {
         uint count;
         if (!GetProcessHandleCount(GetCurrentProcess(), out count))
             throw new System.InvalidOperationException("GetProcessHandleCount failed.");
         return count;
+    }
+
+    public static bool HasExitedProcess(int processId)
+    {
+        if (processId <= 0) return true;
+        System.IntPtr handle = OpenProcess(0x00100000U, false, unchecked((uint)processId));
+        if (handle == System.IntPtr.Zero)
+        {
+            int error = System.Runtime.InteropServices.Marshal.GetLastWin32Error();
+            if (error == 87) return true;
+            throw new System.InvalidOperationException("OpenProcess failed while checking fixture child exit: " + error.ToString());
+        }
+        try { return WaitForSingleObject(handle, 0U) == 0U; }
+        finally { CloseHandle(handle); }
     }
 
     public static string RaceStartAndDispose(WirexBridge.Ui.BridgeSupervisor supervisor, string executable,
@@ -263,15 +292,19 @@ exit 17
     for ($index = 0; $index -lt 6; $index++) {
         $raced = New-TestSupervisor
         $outcome = [SupervisorRaceFixture]::RaceStartAndDispose($raced, $powershell, $hangArgs, $tempRoot)
+        $racedProcessId = $raced.ProcessId
         Assert-OwnedHandlesClosed $raced
         Assert-True ($outcome -eq 'started' -or $outcome -eq 'disposed-first') 'Start/Dispose race must have one serialized outcome'
+        Assert-FixtureProcessExited $racedProcessId 'Dispose racing Start must terminate a created child'
     }
 
     $statusRace = New-TestSupervisor
     $statusRace.Start($powershell, $hangArgs, $tempRoot)
     Wait-Until { $statusRace.DiagnosticTail.Contains('FIXTURE-READY') } 4000 'status race fixture ready'
+    $statusRaceProcessId = $statusRace.ProcessId
     [SupervisorRaceFixture]::ReadStatusWhileDispose($statusRace)
     Assert-OwnedHandlesClosed $statusRace
+    Assert-FixtureProcessExited $statusRaceProcessId 'Dispose must terminate the status-reader child'
 
     # Multiple independent runs must return owned native handles to the process baseline.
     $warm = New-TestSupervisor
