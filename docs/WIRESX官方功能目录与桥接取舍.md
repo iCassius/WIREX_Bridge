@@ -65,11 +65,11 @@
 
 ## FTX-1 HRI / DIRECT 屏幕问题
 
-FTX-1 WIRES-X 手册的 Node Mode 段落（第 29 页）列出：AP RADIO 是独立接入点；AP PC 是连接电脑并通过 C4FM 空中通信；DIRECT 是通过所连电脑和 FTX-1 通信，手册原句写明 DIRECT 不经空中发送/接收；默认值是 AP RADIO。该原句没有解释独立活动 VFO 是否还能接收普通 FM。
+FTX-1 WIRES-X 手册的 Node Mode 段落（第 29 页）列出：AP RADIO 是独立接入点；AP PC 是连接电脑并通过 C4FM 空中通信；DIRECT 是通过所连电脑和 FTX-1 通信，手册原句写明 DIRECT 不经空中发送/接收；默认值是 AP RADIO。该原句没有解释独立活动 VFO 是否还能接收普通 FM。用户已确认当前 FTX-1 Node Mode 为 DIRECT。
 
-用户报告实机在 HRI 页面下以 145.100 MHz 接收 RF 时，既听到了音频，S 表也有信号。用户提供的屏幕可确认当时显示 145.100 FM、HRI/WIRES-X 页面和左右空列表，以及 `ALL SEARCH / ENTER ID / CATEGORY / DISCONNECT / LOG` 软键。画面没有显示 BM 当前用户信息槽位，也不能单凭画面判断实际 Node Mode 或接收路径。
+用户提供的屏幕画面显示 145.100 FM、HRI/WIRES-X 页面和左右空列表，以及 `ALL SEARCH / ENTER ID / CATEGORY / DISCONNECT / LOG` 软键。用户后续澄清，145.1 MHz RF 音频是在 Bridge 关闭后出现；S 表指示与该音频是否发生在同一时刻尚未确认。当前没有 Bridge 运行期间仍接收 RF 的结果。画面没有显示 BM 当前用户信息槽位，也不能单凭画面判断 RF 接收路径。
 
-因此“DIRECT 下仍接收 145.100 FM”仍待解释。手册的模式描述与该观察需要逐项对照，不应据此直接判断用户设置错误。后续受控验证需要记录实际 `Node Mode`、HRI/PC 模式状态、活动 VFO/接收频率和 HRI 状态字段，并将监听接收与 WIRES-X 空中连接分开观察；本次未执行该验证。
+因此，仍需解释的是 Node Mode 为 DIRECT、Bridge 关闭后出现 145.1 MHz RF 音频这一观察；这不能说明 Bridge 运行期间是否仍可接收 RF。下一步分析官方会话启动和退出时配置的加载、保存与恢复行为，再确认运行期间的接收状态。S 表指示与音频的时间关系仍未确认；本次没有执行运行期间的 RF 验证。
 
 固件研究中已有 `Node Mode EX010706`、`WIRES-X DG-ID EX010704` 两个 CAT 菜单映射候选，但尚未验证实际查询行为和值域。它们只是以后检查菜单/协议时的定位候选，当前不能作为已支持的 CAT 读写命令。
 
@@ -79,7 +79,7 @@ FTX-1 WIRES-X 手册的 Node Mode 段落（第 29 页）列出：AP RADIO 是独
 |---|---|---|---|---|
 | P0 | 电台/HRI 连接、PTT、音频 | HRI/电台 USB、COM 和音频端点 → 官方软件选择设备并建立本地电台连接；本次 CHM 说明接口与设置入口。 | HRI/电台设备必需；WIRES-X 激活服务仅用于官方 WIRES-X 注册。 | 沿用已通过 `005c5e8` 首轮 DIRECT 实际语音闭环的 HRI/PTT/audio 路径。该记录不能代替本轮尚未执行的 native 音频/BM 联测。 |
 | P1 | Node/Room/当前发话者呈现 | HRI 帧/电台状态/远端话者资料 → 需要找到协议字段、EXE/DLL producer/consumer 和 GUI 控件的完整关系。 | 显示设备身份可能取自 HRI；WIRES-X Node/Room 列表依赖 Yaesu 服务。BM 发话者应取自 BM 网络数据。 | 单独追踪 EXE 动态 DLL 调用链并与 HRI parser 对照；在字段与窗口/屏幕绑定前，把 BM talker、Room/Node LCD 映射标成未知。 |
-| P1 | DIRECT/AP PC/AP RADIO 和 RF 路由 | 电台 Node Mode 设置、PC/HRI 状态和活动 VFO → 官方手册定义模式名称和高层行为。 | FTX-1 固件/设置与 HRI 状态有关；CAT 候选值仍未验证。 | 保存实际模式和 VFO 状态后做受控验证；不要从 `DirectComPort` 或 HRI 设置对话框推断电台模式。 |
+| P1 | DIRECT/AP PC/AP RADIO 和 RF 路由 | 用户已确认当前 Node Mode 为 DIRECT；运行期间的接收状态及会话前后配置变化尚待检查。 | FTX-1 固件/设置与 HRI 状态有关；CAT 候选值仍未验证。 | 分析官方会话启动/退出时配置的加载、保存和恢复，再观察 Bridge 运行期间 RF 接收状态；不要从 `DirectComPort` 或 HRI 设置对话框推断电台模式。 |
 | P2 | News、图片、语音公告、Chat、QSL | WIRES-X 远端内容和 Node/Room 状态 → 官方客户端的独立窗口/消息能力。 | 依赖 WIRES-X 连接、服务器和部分 C4FM/Node 能力。 | 当前 BM 语音桥接没有证据需要这些客户端业务；只有提出对应功能需求时再分析协议、格式和权限。 |
 | P2 | WIRES-X 激活、Node/Room 注册、远程管理、YMLAN | DTMF ID/设备身份/远程密码及服务器 → Yaesu 注册和运维功能。 | 强依赖 Yaesu 账号/服务器或 WIRES-X 管理链路。 | 不接入当前 PTT/音频桥接路径；不要复用或保存官方注册身份/远程口令。 |
 

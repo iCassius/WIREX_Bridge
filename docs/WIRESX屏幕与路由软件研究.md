@@ -8,7 +8,7 @@
 - HRI DLL 导出的 `FrameTrxDataToTrcvFrame` 会解析一串按 ASCII 十六进制字段码和长度切分的文本，并把字段写入内部结构；没有确认它的上游调用者或数据来自 UART、网络还是其他模块。因此这不是已恢复的 UART 线上帧规范。
 - HRI 的 `DGKEY_NUM_NDDIRECT` 有两处明确软件行为：值为 0 时，DigiPanel 显示 `Direct:OFF`，Y 正文候选偏移 5 写字符 `'1'`；值非 0 时显示 `Direct:ON`，正文写字符 `'2'`。没有证据证明这个布尔配置等同 FTX-1 的三态 Node Mode（AP RADIO / AP PC / DIRECT），也没有证明它关闭独立 VFO 的普通 RF 接收。
 - 当前 Bridge 把候选 Y[5] 固定为 `'2'`，只与官方 `DGKEY_NUM_NDDIRECT` 非零时的字符编码相同。这个字节相同不能证明语义相同；不能据此声称 Bridge 正在选择电台 DIRECT 模式或关闭 RF。
-- 用户报告在 HRI 显示 145.1 MHz 时实际听到 RF 声音，S 表也有信号。当前实际 Node Mode、活动 VFO/频率状态以及该声音与 `NDDIRECT` 配置的关系仍未查明；本轮没有读取或操作电台。
+- 用户已确认 FTX-1 Node Mode 为 DIRECT。145.1 MHz RF 音频在 Bridge 关闭后出现；S 表指示与该音频是否同一时刻尚未确认。Bridge 运行期间是否仍接收 RF 尚无结果；本轮没有读取或操作电台。
 - BrandMeister 收包事件目前提供远端 DMR Source ID、TG、时隙等字段，没有远端呼号或 TA 文本。显示层应以 Source ID 作可靠回退，并把目录查询结果作为可选补充；本机呼号必须与当前远端发话者分开。
 
 ## 检查对象
@@ -68,7 +68,7 @@ HRI `FUN_1000cc80` 将 `DGKEY_NUM_NDDIRECT` 注册到配置接口，传入参数
 
 `CDigiPanelDlg` 的 Y 正文候选处理函数 `FUN_100095c0` 先将目的区域填为 100 个 ASCII `'0'`，再调用 getter 读取 **`DGKEY_NUM_NDDIRECT`**：零值写到偏移 `0x05` 的字符为 `'1'`，非零值为 `'2'`。这部分由 REA `ev_e7404…791c2c4` 直接确认。HRI 的消息表将 `0x1435` 指向该 handler，消息表属于 `CDigiPanelDlg`；R36 仍未闭合发送侧 HWND 与实际接收窗口实例，也未证明该正文最终进入串口或被电台 LCD 显示。见 [`R34_Y正文生成函数与字段表.md`](../../research/planning/R34_Y正文生成函数与字段表.md) 和 [`R36_Y消息表与发送窗口关联.md`](../../research/planning/R36_Y消息表与发送窗口关联.md)。
 
-这个 key 的 `Direct:OFF/ON` 文本和 Y 字符映射只是在 HRI 软件内部彼此一致。FTX-1 手册第 29 页另列 AP RADIO、AP PC、DIRECT 三种 Node Mode，并描述 DIRECT 为经连接 PC 与 FTX-1 通信、不经空中发送/接收；默认模式为 AP RADIO。二者虽然名称相似，但静态代码没有证明 `DGKEY_NUM_NDDIRECT` 就是该三态 Node Mode 中的 DIRECT，也没有证明这个布尔字段控制普通 VFO 的 RF 接收。用户报告在 HRI 显示 145.1 MHz 时实际听到 RF 声音且 S 表有信号；本轮没有记录实际 Node Mode、活动 VFO 或 RF 声音来自哪条接收路径，因此 `NDDIRECT` 与该现象的关系仍未知。
+这个 key 的 `Direct:OFF/ON` 文本和 Y 字符映射只是在 HRI 软件内部彼此一致。FTX-1 手册第 29 页另列 AP RADIO、AP PC、DIRECT 三种 Node Mode，并描述 DIRECT 为经连接 PC 与 FTX-1 通信、不经空中发送/接收；默认模式为 AP RADIO。用户已确认电台当前 Node Mode 为 DIRECT，但静态代码没有证明 `DGKEY_NUM_NDDIRECT` 就是该三态 Node Mode 中的 DIRECT，也没有证明这个布尔字段控制普通 VFO 的 RF 接收。用户澄清，145.1 MHz RF 音频在 Bridge 关闭后出现；S 表指示与该音频的时间关系尚未确认。Bridge 运行期间是否仍接收 RF 尚无结果。
 
 ## `SetDigiTrcvData` 与语音队列边界
 
@@ -88,4 +88,4 @@ S/T 控制路径另有 HRI 语音活动状态记录；已经看到的 `T3` 启�
 
 EXE 的 `FUN_004fd630` 已确认装载 `HRI-UART.dll`、按名称取得 `FrameTrxDataToTrcvFrame` 和 `SetDigiTrcvData`，并初始化对象 `+0x48` 与 `+0x1c` 两个函数指针槽。下一步追踪这两个槽位的间接调用者、调用输入及返回/输出数据，再确认数据是否进入 UART 写入路径以及是否绑定到 FTX-1 LCD；这些调用关系和 LCD serializer 仍未闭合，因此暂不设计 LCD 更新命令。
 
-为了判断用户听到的 145.1 MHz RF 声音与 WIRES-X 路由的关系，后续记录实际 Node Mode、活动 VFO 和频率，并在已知有接收的场景观察现有会话的配置状态。若要发送新的 RF 模式写入命令，应先恢复该命令的协议和作用路径。本轮只做静态研究，没有进行这些观察或写入。
+下一步分析官方会话启动和退出时配置的加载、保存与恢复行为，并确认 Bridge 运行期间 RF 接收状态。S 表指示与 Bridge 关闭后出现的 RF 音频是否同一时刻，仍需确认。若要发送新的 RF 模式写入命令，应先恢复该命令的协议和作用路径。本轮只做静态研究，没有进行这些观察或写入。
