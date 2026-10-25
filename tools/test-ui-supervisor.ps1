@@ -231,6 +231,21 @@ exit 17
     $forced.Dispose()
     Assert-OwnedHandlesClosed $forced
 
+    # A completed failed attempt may be retried if the process is still running.
+    $retry = New-TestSupervisor
+    $retry.Start($powershell, $hangArgs, $tempRoot)
+    Wait-Until { $retry.DiagnosticTail.Contains('FIXTURE-READY') } 4000 'retry fixture ready'
+    $stopTaskField = $retry.GetType().GetField('stopTask', [Reflection.BindingFlags]'Instance,NonPublic')
+    Assert-True ($null -ne $stopTaskField) 'expected private stop task field'
+    $priorFailedTask = [System.Threading.Tasks.Task[int]]::FromResult(-1)
+    $stopTaskField.SetValue($retry, $priorFailedTask)
+    $retryTask = $retry.StopAsync(100)
+    Assert-True (-not [Object]::ReferenceEquals($priorFailedTask, $retryTask)) 'completed failed stop must permit a new attempt while child remains alive'
+    Assert-True $retryTask.Wait(5000) 'retry stop task must finish within bounded waits'
+    Assert-True $retry.HasExited 'retry stop must leave the child exited'
+    $retry.Dispose()
+    Assert-OwnedHandlesClosed $retry
+
     # Repeated stop calls share one task and stay nonblocking while the first stop waits.
     $concurrent = New-TestSupervisor
     $concurrent.Start($powershell, $hangArgs, $tempRoot)

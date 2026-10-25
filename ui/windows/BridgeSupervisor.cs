@@ -184,7 +184,8 @@ namespace WirexBridge.Ui
             if (graceMilliseconds < 0) throw new ArgumentOutOfRangeException("graceMilliseconds");
             lock (gate)
             {
-                if (stopTask != null) return stopTask;
+                Task<int> existing = GetReusableStopTaskLocked();
+                if (existing != null) return existing;
                 if (disposed) return Task.FromResult(0);
             }
 
@@ -194,12 +195,24 @@ namespace WirexBridge.Ui
             {
                 lock (gate)
                 {
-                    if (stopTask != null) return stopTask;
+                    Task<int> existing = GetReusableStopTaskLocked();
+                    if (existing != null) return existing;
                     if (disposed) return Task.FromResult(0);
                     stopTask = Task.Run(delegate { return StopCore(graceMilliseconds); });
                     return stopTask;
                 }
             }
+        }
+
+        // Share an in-flight stop. If a completed attempt left the process alive,
+        // clear its task so a later user request can try the bounded stop again.
+        private Task<int> GetReusableStopTaskLocked()
+        {
+            if (stopTask == null) return null;
+            if (!stopTask.IsCompleted) return stopTask;
+            if (processHandle == IntPtr.Zero || WaitForSingleObject(processHandle, 0U) == WaitObject0) return stopTask;
+            stopTask = null;
+            return null;
         }
 
         public void CloseControlInput()
