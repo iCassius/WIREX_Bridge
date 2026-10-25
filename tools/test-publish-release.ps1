@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 $ErrorActionPreference = 'Stop'
@@ -87,6 +87,8 @@ try {
     $valid = Assert-PublishPackage -PackageRoot $packageRoot -ExpectedCommit $fakeCommit
     Assert-True ($valid.Assets.Count -eq 17) '16 package files plus standalone manifest are accepted'
     Assert-True (@($valid.Assets | Where-Object { $_.Name -ceq 'manifest.json' }).Count -eq 1) 'manifest is a separate release asset'
+    Assert-True ((Get-PublishAssetName -RelativePath 'docs/连接配置.md') -ceq 'docs__connection-profile.md') 'PowerShell reads the Chinese connection-profile path correctly'
+    Assert-True ((Get-PublishAssetName -RelativePath 'docs/音量调节.md') -ceq 'docs__audio-gain.md') 'PowerShell reads the Chinese audio-settings path correctly'
 
     $manifest.package_status = 'awaiting_root_audit'
     Write-Utf8NoBom -Path $manifestPath -Text ((ConvertTo-Json -InputObject $manifest -Depth 12) + "`n")
