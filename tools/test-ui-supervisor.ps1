@@ -130,9 +130,16 @@ public static class SupervisorRaceFixture
 }
 '@
 Add-Type -TypeDefinition ($supervisorSource + "`r`n" + $raceFixtureSource)
+$script:testSupervisors = New-Object System.Collections.ArrayList
+function New-TestSupervisor {
+    $supervisor = New-Object WirexBridge.Ui.BridgeSupervisor
+    [void]$script:testSupervisors.Add($supervisor)
+    return $supervisor
+}
 
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('wirex-supervisor-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tempRoot | Out-Null
+$script:testPassed = $false
 try {
     $fixturePath = Join-Path $tempRoot 'child-fixture.ps1'
     $fixtureText = @'
@@ -170,7 +177,7 @@ exit 17
     $unicodeArgs = @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $unicodeFixturePath)
 
     # A stop request permanently closes this single-use supervisor to future starts.
-    $stoppedBeforeStart = New-Object WirexBridge.Ui.BridgeSupervisor
+    $stoppedBeforeStart = New-TestSupervisor
     $stoppedBeforeStart.StopAsync(0).GetAwaiter().GetResult() | Out-Null
     $startAfterStopRejected = $false
     try { $stoppedBeforeStart.Start($powershell, $fixtureArgs, $tempRoot) }
@@ -180,7 +187,7 @@ exit 17
     Assert-OwnedHandlesClosed $stoppedBeforeStart
 
     # Graceful Q: child exits with its distinct fixture status and its output reaches the bounded tail.
-    $graceful = New-Object WirexBridge.Ui.BridgeSupervisor
+    $graceful = New-TestSupervisor
     $graceful.Start($powershell, $fixtureArgs, $tempRoot)
     Assert-True $graceful.IsStarted 'Start must publish the owned process handle'
     $gracefulExit = $graceful.StopAsync(4000).GetAwaiter().GetResult()
@@ -192,7 +199,7 @@ exit 17
     $graceful.Dispose()
 
     # EOF: closing stdin is itself a valid orderly shutdown path.
-    $eof = New-Object WirexBridge.Ui.BridgeSupervisor
+    $eof = New-TestSupervisor
     $eof.Start($powershell, $fixtureArgs, $tempRoot)
     $eof.CloseControlInput()
     $eofExit = $eof.StopAsync(4000).GetAwaiter().GetResult()
@@ -202,7 +209,7 @@ exit 17
     Assert-OwnedHandlesClosed $eof
 
     # The output pump must preserve UTF-8 code points split across native pipe reads.
-    $unicode = New-Object WirexBridge.Ui.BridgeSupervisor
+    $unicode = New-TestSupervisor
     $unicode.Start($powershell, $unicodeArgs, $tempRoot)
     $unicodeMarker = 'TAIL-END-' + [string][char]0x4e2d + [char]0x6587
     Wait-Until { $unicode.DiagnosticTail.Contains($unicodeMarker) } 4000 'unicode output tail'
@@ -213,7 +220,7 @@ exit 17
     Assert-OwnedHandlesClosed $unicode
 
     # Force path: the fixture ignores stdin; job close must terminate it within a bounded interval.
-    $forced = New-Object WirexBridge.Ui.BridgeSupervisor
+    $forced = New-TestSupervisor
     $forced.Start($powershell, $hangArgs, $tempRoot)
     Wait-Until { $forced.DiagnosticTail.Contains('FIXTURE-READY') } 4000 'force fixture ready'
     $forceWatch = [Diagnostics.Stopwatch]::StartNew()
@@ -225,7 +232,7 @@ exit 17
     Assert-OwnedHandlesClosed $forced
 
     # Repeated stop calls share one task and stay nonblocking while the first stop waits.
-    $concurrent = New-Object WirexBridge.Ui.BridgeSupervisor
+    $concurrent = New-TestSupervisor
     $concurrent.Start($powershell, $hangArgs, $tempRoot)
     Wait-Until { $concurrent.DiagnosticTail.Contains('FIXTURE-READY') } 4000 'concurrent fixture ready'
     $firstStop = $concurrent.StopAsync(1200)
@@ -239,27 +246,27 @@ exit 17
 
     # Dispose racing Start either wins before process creation or waits and kills the created child.
     for ($index = 0; $index -lt 6; $index++) {
-        $raced = New-Object WirexBridge.Ui.BridgeSupervisor
+        $raced = New-TestSupervisor
         $outcome = [SupervisorRaceFixture]::RaceStartAndDispose($raced, $powershell, $hangArgs, $tempRoot)
         Assert-OwnedHandlesClosed $raced
         Assert-True ($outcome -eq 'started' -or $outcome -eq 'disposed-first') 'Start/Dispose race must have one serialized outcome'
     }
 
-    $statusRace = New-Object WirexBridge.Ui.BridgeSupervisor
+    $statusRace = New-TestSupervisor
     $statusRace.Start($powershell, $hangArgs, $tempRoot)
     Wait-Until { $statusRace.DiagnosticTail.Contains('FIXTURE-READY') } 4000 'status race fixture ready'
     [SupervisorRaceFixture]::ReadStatusWhileDispose($statusRace)
     Assert-OwnedHandlesClosed $statusRace
 
     # Multiple independent runs must return owned native handles to the process baseline.
-    $warm = New-Object WirexBridge.Ui.BridgeSupervisor
+    $warm = New-TestSupervisor
     $warm.Start($powershell, $fixtureArgs, $tempRoot)
     $warm.StopAsync(4000).GetAwaiter().GetResult() | Out-Null
     $warm.Dispose()
     Start-Sleep -Milliseconds 250
     $handleBaseline = [SupervisorRaceFixture]::CurrentHandleCount()
     for ($index = 0; $index -lt 8; $index++) {
-        $cycle = New-Object WirexBridge.Ui.BridgeSupervisor
+        $cycle = New-TestSupervisor
         $cycle.Start($powershell, $fixtureArgs, $tempRoot)
         $cycle.StopAsync(4000).GetAwaiter().GetResult() | Out-Null
         $cycle.Dispose()
@@ -273,7 +280,20 @@ exit 17
 
     Write-Output 'PASS ui supervisor lifecycle: graceful Q, EOF, timeout force, concurrent stop/dispose, start/dispose race, repeated handle count'
     Write-Output ("handle-count baseline={0}, after={1}" -f $handleBaseline, $handleAfterCycles)
+    $script:testPassed = $true
 }
 finally {
-    Remove-Item -LiteralPath $tempRoot -Recurse -Force
+    $cleanupFailures = New-Object System.Collections.ArrayList
+    foreach ($supervisor in $script:testSupervisors) {
+        try { $supervisor.Dispose() }
+        catch { [void]$cleanupFailures.Add($_.Exception.Message) }
+    }
+    if ([System.IO.Directory]::Exists($tempRoot)) {
+        try { [System.IO.Directory]::Delete($tempRoot, $true) }
+        catch { [void]$cleanupFailures.Add($_.Exception.Message) }
+    }
+    if ($cleanupFailures.Count -gt 0) {
+        [Console]::Error.WriteLine(('Fixture cleanup failure: ' + (@($cleanupFailures) -join '; ')))
+        if ($script:testPassed) { throw 'Fixture cleanup failed.' }
+    }
 }
