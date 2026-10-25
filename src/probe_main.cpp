@@ -4458,7 +4458,7 @@ void print_bm_bridge_help()
         L"状态报告按成功提交的 PCM 记录两条音频路径增益前后的统计和削波样本数。\n"
         L"Master 支持 IPv4 字面量或主机名；手工密码在控制台隐藏输入，预设从私有 UTF-8 文件读取。\n"
         L"两种密码入口只接受可打印 ASCII；手工隐藏输入允许空格。\n"
-        L"--ui-pipe 仅供桌面 UI 使用；必须提供完整配置、密码文件与匿名 stdin 管道，只接受 Q 换行或 EOF 停止。\n");
+        L"--ui-pipe 仅供桌面 UI 使用；必须提供完整配置或预设、显式密码文件、状态文件与匿名 stdin 管道，只接受 Q 换行或 EOF 停止。\n");
 }
 
 struct BmBridgeCounters {
@@ -4528,6 +4528,13 @@ std::string make_bridge_run_id()
     return std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64());
 }
 
+std::uint64_t current_utc_epoch_ms() noexcept
+{
+    const auto elapsed = std::chrono::system_clock::now().time_since_epoch();
+    const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+    return milliseconds > 0 ? static_cast<std::uint64_t>(milliseconds) : 0U;
+}
+
 enum class UiPipeInspection {
     waiting,
     shutdown_requested,
@@ -4565,6 +4572,7 @@ bool append_bridge_status(std::ofstream& file, std::string_view event, std::uint
     if (!file || counters.run_id.empty() || counters.status_sequence == std::numeric_limits<std::uint64_t>::max()) return false;
     ++counters.status_sequence;
     file << "{\"run_id\":\"" << counters.run_id << "\",\"seq\":" << counters.status_sequence
+         << ",\"timestamp_utc_ms\":" << current_utc_epoch_ms()
          << ",\"event\":\"" << event << "\",\"elapsed_ms\":" << elapsed_ms
          << ",\"bm_state\":\"" << bm_state_name(bm_snapshot.state)
          << "\",\"bm_failure\":\"" << bm_failure_name(bm_snapshot.last_failure)

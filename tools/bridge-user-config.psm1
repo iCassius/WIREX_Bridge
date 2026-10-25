@@ -203,5 +203,180 @@ function Get-BridgeAudioSettings {
     return $settings
 }
 
+function Assert-BridgeJsonKeysUnique {
+    param([Parameter(Mandatory=$true)][string]$JsonText)
+    $objects = New-Object System.Collections.ArrayList
+    $index = 0
+    while ($index -lt $JsonText.Length) {
+        $character = $JsonText[$index]
+        if ($character -eq '{') {
+            $keys = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+            [void]$objects.Add($keys)
+            $index++
+            continue
+        }
+        if ($character -eq '}') {
+            if ($objects.Count -eq 0) { throw '连接配置 JSON 对象结构无效。' }
+            $objects.RemoveAt($objects.Count - 1)
+            $index++
+            continue
+        }
+        if ($character -ne '"') { $index++; continue }
+        $start = $index + 1
+        $cursor = $start
+        $escaped = $false
+        while ($cursor -lt $JsonText.Length) {
+            $part = $JsonText[$cursor]
+            if ($escaped) { $escaped = $false; $cursor++; continue }
+            if ($part -eq '\') { $escaped = $true; $cursor++; continue }
+            if ($part -eq '"') { break }
+            $cursor++
+        }
+        if ($cursor -ge $JsonText.Length) { throw '连接配置 JSON 字符串没有闭合。' }
+        $rawString = $JsonText.Substring($start, $cursor - $start)
+        $after = $cursor + 1
+        while ($after -lt $JsonText.Length -and [char]::IsWhiteSpace($JsonText[$after])) { $after++ }
+        if ($objects.Count -gt 0 -and $after -lt $JsonText.Length -and $JsonText[$after] -eq ':') {
+            if ($rawString.Contains('\')) { throw '连接配置 JSON 字段名不能使用转义写法。' }
+            $keys = [System.Collections.Generic.HashSet[string]]$objects[$objects.Count - 1]
+            if (-not $keys.Add($rawString)) { throw "连接配置 JSON 字段重复：$rawString" }
+        }
+        $index = $cursor + 1
+    }
+    if ($objects.Count -ne 0) { throw '连接配置 JSON 对象结构无效。' }
+}
+
+function Assert-BridgeExactJsonObject {
+    param([Parameter(Mandatory=$true)][object]$Value, [Parameter(Mandatory=$true)][string[]]$ExpectedNames, [Parameter(Mandatory=$true)][string]$Label)
+    if ($null -eq $Value -or $Value -is [array] -or $Value -is [string] -or $Value -is [bool] -or $Value -is [ValueType]) {
+        throw "$Label 必须是 JSON 对象。"
+    }
+    $properties = @($Value.PSObject.Properties)
+    if ($properties.Count -ne $ExpectedNames.Count) { throw "$Label 字段不完整或包含未知字段。" }
+    foreach ($property in $properties) {
+        if ($ExpectedNames -cnotcontains $property.Name) { throw "$Label 包含未知字段：$($property.Name)" }
+    }
+    foreach ($name in $ExpectedNames) {
+        if (@($properties | Where-Object { $_.Name -ceq $name }).Count -ne 1) { throw "$Label 缺少字段或字段重复：$name" }
+    }
+}
+
+function ConvertTo-BridgeUnsigned {
+    param([Parameter(Mandatory=$true)][object]$Value, [Parameter(Mandatory=$true)][string]$Label,
+        [Parameter(Mandatory=$true)][uint64]$Maximum, [switch]$AllowText)
+    $integerTypes = @([byte], [uint16], [uint32], [uint64], [int16], [int32], [int64])
+    if ($AllowText -and $Value -is [string]) {
+        if ($Value -cnotmatch '^(0|[1-9][0-9]*)$') { throw "$Label 必须是十进制非负整数。" }
+        $parsed = [uint64]0
+        if (-not [uint64]::TryParse([string]$Value, [Globalization.NumberStyles]::None,
+                [Globalization.CultureInfo]::InvariantCulture, [ref]$parsed)) { throw "$Label 超出整数范围。" }
+    } else {
+        if (($integerTypes -notcontains $Value.GetType()) -or ($Value -is [bool])) { throw "$Label 必须是 JSON 整数。" }
+        try { $parsed = [uint64]$Value } catch { throw "$Label 必须是非负整数。" }
+    }
+    if ($parsed -gt $Maximum) { throw "$Label 超出整数范围。" }
+    return $parsed
+}
+
+function Test-BridgeMasterName {
+    param([Parameter(Mandatory=$true)][string]$HostName)
+    if ($HostName.Length -lt 1 -or $HostName.Length -gt 253 -or $HostName -cnotmatch '^[\x21-\x7e]+$') { return $false }
+    if ($HostName -cmatch '^[0-9.]+$' -and $HostName -cnotmatch '^[0-9]+(?:\.[0-9]+){3}$') { return $false }
+    if ($HostName -cmatch '^[0-9]+(?:\.[0-9]+){3}$') {
+        foreach ($part in $HostName.Split('.')) {
+            if ($part.Length -gt 3) { return $false }
+            $octet = [uint64]0
+            if (-not [uint64]::TryParse($part, [Globalization.NumberStyles]::None,
+                    [Globalization.CultureInfo]::InvariantCulture, [ref]$octet) -or $octet -gt 255) { return $false }
+        }
+        return $true
+    }
+    $normalized = if ($HostName.EndsWith('.')) { $HostName.Substring(0, $HostName.Length - 1) } else { $HostName }
+    if ([string]::IsNullOrEmpty($normalized)) { return $false }
+    foreach ($label in $normalized.Split('.')) {
+        if ($label -cnotmatch '^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$') { return $false }
+    }
+    return $true
+}
+
+function ConvertTo-BridgeUserConnectionProfile {
+    param([Parameter(Mandatory=$true)][object]$Connection, [Parameter(Mandatory=$true)][object]$Devices,
+        [switch]$AllowTextNumbers)
+    Assert-BridgeExactJsonObject -Value $Connection -ExpectedNames @('callsign','gateway_id','source_id','master','master_port','destination_id','slot','color_code','call_kind') -Label 'connection'
+    Assert-BridgeExactJsonObject -Value $Devices -ExpectedNames @('serial_port','wave_in_endpoint_id','wave_out_endpoint_id') -Label 'devices'
+    if ($Connection.callsign -isnot [string] -or $Connection.callsign -cnotmatch '^[\x20-\x7e]{1,8}$') { throw 'callsign 必须是 1 到 8 个可打印 ASCII 字符。' }
+    if ($Connection.master -isnot [string] -or -not (Test-BridgeMasterName -HostName $Connection.master)) { throw 'master 必须是有效 IPv4 地址或语法正确的 ASCII 主机名。' }
+    if ($Connection.call_kind -isnot [string] -or @('group','private') -cnotcontains $Connection.call_kind) { throw 'call_kind 只能是 group 或 private。' }
+    $gateway = ConvertTo-BridgeUnsigned $Connection.gateway_id 'gateway_id' 4294967295 -AllowText:$AllowTextNumbers
+    $source = ConvertTo-BridgeUnsigned $Connection.source_id 'source_id' 16777215 -AllowText:$AllowTextNumbers
+    $destination = ConvertTo-BridgeUnsigned $Connection.destination_id 'destination_id' 16777215 -AllowText:$AllowTextNumbers
+    $masterPort = ConvertTo-BridgeUnsigned $Connection.master_port 'master_port' 65535 -AllowText:$AllowTextNumbers
+    $slot = ConvertTo-BridgeUnsigned $Connection.slot 'slot' 2 -AllowText:$AllowTextNumbers
+    $colorCode = ConvertTo-BridgeUnsigned $Connection.color_code 'color_code' 15 -AllowText:$AllowTextNumbers
+    if ($gateway -eq 0 -or $source -eq 0 -or $destination -eq 0 -or $masterPort -eq 0 -or $slot -lt 1) {
+        throw '连接配置中的 ID、端口或时隙超出允许范围。'
+    }
+    if ($Devices.serial_port -isnot [string] -or ($Devices.serial_port -cne 'auto' -and $Devices.serial_port -cnotmatch '^COM[1-9][0-9]{0,2}$')) {
+        throw 'devices.serial_port 必须是 auto 或 COM1 到 COM999。'
+    }
+    foreach ($endpoint in @($Devices.wave_in_endpoint_id, $Devices.wave_out_endpoint_id)) {
+        if ($endpoint -isnot [string] -or [string]::IsNullOrWhiteSpace($endpoint) -or $endpoint.Length -gt 4096) {
+            throw '音频设备选择必须是 auto 或有效 endpoint ID。'
+        }
+    }
+    return [pscustomobject][ordered]@{
+        schema_version = 1
+        connection = [pscustomobject][ordered]@{
+            callsign = $Connection.callsign
+            gateway_id = [uint64]$gateway
+            source_id = [uint64]$source
+            master = $Connection.master
+            master_port = [uint64]$masterPort
+            destination_id = [uint64]$destination
+            slot = [uint64]$slot
+            color_code = [uint64]$colorCode
+            call_kind = $Connection.call_kind
+        }
+        devices = [pscustomobject][ordered]@{
+            serial_port = $Devices.serial_port.ToUpperInvariant() -replace '^AUTO$', 'auto'
+            wave_in_endpoint_id = $Devices.wave_in_endpoint_id
+            wave_out_endpoint_id = $Devices.wave_out_endpoint_id
+        }
+    }
+}
+
+function Read-BridgeUserConnectionProfile {
+    param([Parameter(Mandatory=$true)][string]$Path)
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    if (-not [System.IO.File]::Exists($fullPath)) { return $null }
+    if ((New-Object System.IO.FileInfo($fullPath)).Length -gt 65536) { throw '连接配置文件超过 64 KiB 上限。' }
+    $json = [System.IO.File]::ReadAllText($fullPath, [System.Text.Encoding]::UTF8)
+    Assert-BridgeJsonKeysUnique -JsonText $json
+    try { $document = ConvertFrom-Json -InputObject $json -ErrorAction Stop } catch { throw '连接配置 JSON 无效。' }
+    Assert-BridgeExactJsonObject -Value $document -ExpectedNames @('schema_version','connection','devices') -Label '连接配置'
+    if ((ConvertTo-BridgeUnsigned $document.schema_version 'schema_version' 1) -ne 1) { throw '连接配置 schema_version 只支持 1。' }
+    return ConvertTo-BridgeUserConnectionProfile -Connection $document.connection -Devices $document.devices
+}
+
+function Write-BridgeUserConnectionProfile {
+    param([Parameter(Mandatory=$true)][string]$Path, [Parameter(Mandatory=$true)][object]$Profile)
+    $validated = ConvertTo-BridgeUserConnectionProfile -Connection $Profile.connection -Devices $Profile.devices
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $directory = [System.IO.Path]::GetDirectoryName($fullPath)
+    if (-not [System.IO.Directory]::Exists($directory)) { throw '本机连接配置目录不存在。' }
+    $temporaryPath = $fullPath + '.tmp-' + [guid]::NewGuid().ToString('N')
+    $backupPath = $fullPath + '.bak-' + [guid]::NewGuid().ToString('N')
+    try {
+        $json = (ConvertTo-Json -InputObject $validated -Depth 5) + "`n"
+        [System.IO.File]::WriteAllText($temporaryPath, $json, (New-Object System.Text.UTF8Encoding($false)))
+        if ([System.IO.File]::Exists($fullPath)) { [System.IO.File]::Replace($temporaryPath, $fullPath, $backupPath) }
+        else { [System.IO.File]::Move($temporaryPath, $fullPath) }
+    } finally {
+        if ([System.IO.File]::Exists($temporaryPath)) { [System.IO.File]::Delete($temporaryPath) }
+        if ([System.IO.File]::Exists($backupPath)) { [System.IO.File]::Delete($backupPath) }
+    }
+}
+
 Export-ModuleMember -Function Get-BridgeUserConfigDirectory, Get-BridgeReleaseDirectory, Get-BridgePasswordFile, `
-    ConvertTo-BridgeGainMilli, Format-BridgeGain, Read-BridgeAudioSettings, Write-BridgeAudioSettings, Get-BridgeAudioSettings
+    ConvertTo-BridgeGainMilli, Format-BridgeGain, Read-BridgeAudioSettings, Write-BridgeAudioSettings, Get-BridgeAudioSettings, `
+    Read-BridgeUserConnectionProfile, Write-BridgeUserConnectionProfile, ConvertTo-BridgeUserConnectionProfile

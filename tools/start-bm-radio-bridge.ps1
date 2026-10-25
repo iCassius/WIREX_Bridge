@@ -12,7 +12,11 @@ param(
     [string]$PasswordFile,
     [string]$RadioPlaybackGain,
     [string]$MicTransmitGain,
-    [switch]$ManualPtt
+    [switch]$ManualPtt,
+    [switch]$PrepareOnly,
+    [switch]$NoInteractive,
+    [switch]$RequirePasswordFile,
+    [string]$PreparationOutputPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -629,6 +633,7 @@ function Read-PortSelection {
         [Parameter(Mandatory=$true)][object[]]$HriDevices,
         [string]$Requested,
         [switch]$RequireHri,
+        [switch]$NoInteractive,
         [scriptblock]$ChoiceReader
     )
     if ($Ports.Count -eq 0) { throw '当前没有枚举到 Windows COM 端口。' }
@@ -670,6 +675,9 @@ function Read-PortSelection {
             }
         }
     }
+    if ($NoInteractive) {
+        throw 'HRI COM 端口无法唯一自动确定；请在设置中指定串口或检查 HRI 设备。'
+    }
     $restrictToHri = ($presentHri.Count -gt 1)
     while ($true) {
         $script:serialSelectionWasManual = $true
@@ -692,11 +700,12 @@ function Read-PortSelection {
 }
 
 function Read-WaveInSelection {
-    param([Parameter(Mandatory=$true)][object[]]$Devices)
+    param([Parameter(Mandatory=$true)][object[]]$Devices, [switch]$NoInteractive)
     $available = @($Devices | Where-Object {
         $_.pcm_48000_mono_s16_supported -and -not [string]::IsNullOrWhiteSpace([string]$_.endpoint_id)
     })
     if ($available.Count -eq 0) { throw '没有可用的 48 kHz WaveIn 端点；请检查电台 USB 音频连接后重试。' }
+    if ($NoInteractive -and -not $WaveIn) { throw 'WaveIn endpoint 无法按 USB Audio 关键词唯一确定；请在设置中选择稳定 endpoint ID。' }
     Write-Host '请选择电台音频输入：'
     foreach ($device in $available) {
         Write-Host ("  ID {0}: {1} · 48 kHz PCM 可用" -f $device.id, $device.name)
@@ -717,11 +726,12 @@ function Read-WaveInSelection {
 }
 
 function Read-WaveOutSelection {
-    param([Parameter(Mandatory=$true)][object[]]$Devices)
+    param([Parameter(Mandatory=$true)][object[]]$Devices, [switch]$NoInteractive)
     $available = @($Devices | Where-Object {
         $_.pcm_48000_mono_s16_supported -and -not [string]::IsNullOrWhiteSpace([string]$_.endpoint_id)
     })
     if ($available.Count -eq 0) { throw '没有可用的 48 kHz WaveOut 端点；请检查电台 USB 音频连接后重试。' }
+    if ($NoInteractive -and -not $WaveOut) { throw 'WaveOut endpoint 无法按 USB Audio 关键词唯一确定；请在设置中选择稳定 endpoint ID。' }
     Write-Host '请选择电台音频输出：'
     foreach ($device in $available) {
         Write-Host ("  ID {0}: {1} · 48 kHz PCM 可用" -f $device.id, $device.name)
@@ -823,6 +833,10 @@ try {
     if ($hasDevelopmentOverride -and [string]::IsNullOrWhiteSpace($StatusDirectory)) {
         throw '显式指定 -BridgePath 或 -BodyFile 时也必须显式指定 -StatusDirectory，避免运行报告落到源码目录。'
     }
+    if ($PrepareOnly -and (-not $NoInteractive -or -not $RequirePasswordFile -or
+        [string]::IsNullOrWhiteSpace($PreparationOutputPath) -or [string]::IsNullOrWhiteSpace($StatusDirectory) -or $ManualPtt)) {
+        throw '-PrepareOnly 必须与 -NoInteractive、-RequirePasswordFile、-PreparationOutputPath 和 -StatusDirectory 一起使用，且不能启用键盘诊断输入。'
+    }
     if ([bool]$WaveIn -xor [bool]$WaveOut) { throw '手工指定音频设备时必须同时传入 -WaveIn 和 -WaveOut。' }
     if ($Port -and $Port.Trim() -notmatch '^COM[1-9][0-9]{0,2}$') { throw '-Port 必须是 COM1 到 COM999。' }
     $selectedPreset = Select-TestPreset -Requested $Preset
@@ -831,6 +845,9 @@ try {
     $passwordPath = Resolve-PasswordFileForRun -SelectedPreset $selectedPreset `
         -ExplicitPath $PasswordFile -WasExplicit:($PSBoundParameters.ContainsKey('PasswordFile')) `
         -DefaultPath $defaultPasswordPath
+    if ($RequirePasswordFile -and [string]::IsNullOrWhiteSpace($passwordPath)) {
+        throw 'UI 自动连接需要本机密码文件；请在设置中选择现有密码文件。'
+    }
     if ($BodyFile) { $bodySource = $BodyFile } else { $bodySource = Join-Path $script:packageRoot 'private\device-y.bin' }
     $body = Test-ApprovedBody -Path $bodySource
     $manualProfile = $null
@@ -840,6 +857,7 @@ try {
         $manualProfilePath = Resolve-ConnectionProfilePath -Path $ConnectionProfilePath
         $manualProfile = Read-ProfileForPreset -SelectedPreset $selectedPreset -Path $manualProfilePath
         if ($null -eq $manualProfile) {
+            if ($NoInteractive) { throw '本机连接配置尚未填写；请先打开设置并保存连接参数。' }
             $manualProfile = Read-ManualConnectionProfile
             $manualProfileWasCreated = $true
         }
@@ -861,7 +879,7 @@ try {
         $requestedPort = [string]$manualProfile.devices.serial_port
     }
     $portName = Read-PortSelection -Ports $serialPorts -HriDevices $hriDevices `
-        -Requested $requestedPort -RequireHri:$profileRequiresHri
+        -Requested $requestedPort -RequireHri:$profileRequiresHri -NoInteractive:$NoInteractive
     $radioSerialMatches = @($hriDevices | Where-Object { $_.IsHri -and $_.PortName -ieq $portName })
     $radioSerial = if ($radioSerialMatches.Count -eq 1) { $radioSerialMatches[0] } else { $null }
 
@@ -887,14 +905,14 @@ try {
         } elseif ($audioPair) {
             $radioInput = $audioPair.Input
         } else {
-            $radioInput = Read-WaveInSelection -Devices @($devices.wave_inputs)
+            $radioInput = Read-WaveInSelection -Devices @($devices.wave_inputs) -NoInteractive:$NoInteractive
         }
         if ($outputSelector -cne 'auto') {
             $radioOutput = Find-WaveEndpointById -Devices $devices -Direction output -EndpointId $outputSelector
         } elseif ($audioPair) {
             $radioOutput = $audioPair.Output
         } else {
-            $radioOutput = Read-WaveOutSelection -Devices @($devices.wave_outputs)
+            $radioOutput = Read-WaveOutSelection -Devices @($devices.wave_outputs) -NoInteractive:$NoInteractive
         }
         if ($audioPair -and $inputSelector -ceq 'auto' -and $outputSelector -ceq 'auto') {
             Write-Host '已选择名称含 USB Audio 的唯一 WaveIn 和 WaveOut。'
@@ -975,6 +993,38 @@ try {
         if ($passwordPath) { $arguments += @('--password-file', $passwordPath) }
     }
     if ($ManualPtt) { $arguments += '--manual-ptt' }
+    if ($PrepareOnly) {
+        if ($selectedPreset -ne 'manual') { throw '桌面 UI 只接受完整手工连接配置，不使用固定测试预设。' }
+        $arguments += '--ui-pipe'
+        $preparationPath = [System.IO.Path]::GetFullPath($PreparationOutputPath)
+        $preparationDirectory = [System.IO.Path]::GetDirectoryName($preparationPath)
+        if (-not [System.IO.Directory]::Exists($preparationDirectory)) {
+            throw '启动参数输出目录不存在。'
+        }
+        if ([System.IO.File]::Exists($preparationPath)) {
+            throw '启动参数输出文件已存在；请为每次启动创建独立 run 目录。'
+        }
+        $preparation = [ordered]@{
+            schema_version = 1
+            executable = [System.IO.Path]::GetFullPath($executable)
+            arguments = @($arguments)
+            status_path = $statusPath
+            port = $portName
+            wavein_id = [int]$radioInput.id
+            waveout_id = [int]$radioOutput.id
+            wavein_endpoint_id = $waveinEndpointId
+            waveout_endpoint_id = $waveoutEndpointId
+        }
+        $preparationJson = ConvertTo-Json -InputObject $preparation -Depth 4
+        $temporaryPreparationPath = $preparationPath + '.tmp-' + [guid]::NewGuid().ToString('N')
+        try {
+            [System.IO.File]::WriteAllText($temporaryPreparationPath, $preparationJson, (New-Object System.Text.UTF8Encoding($false)))
+            [System.IO.File]::Move($temporaryPreparationPath, $preparationPath)
+        } finally {
+            if ([System.IO.File]::Exists($temporaryPreparationPath)) { [System.IO.File]::Delete($temporaryPreparationPath) }
+        }
+        return
+    }
     $script:nativeInvoked = $true
     & $executable @arguments
     $exitCode = [int]$LASTEXITCODE
@@ -982,6 +1032,7 @@ try {
     Write-Host "状态报告：$statusPath"
     exit $exitCode
 } catch {
+    if ($PrepareOnly) { throw }
     if ($script:nativeInvoked) {
         Write-Host "运行失败：$($_.Exception.Message)" -ForegroundColor Red
         if ($script:statusPath) { Write-Host "请检查状态报告：$($script:statusPath)" }
