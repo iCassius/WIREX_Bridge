@@ -56,8 +56,9 @@ function Get-StrictUtf8Text {
 
 function Get-PublishNotes {
     param([string]$Path, [string]$RepositoryRoot, [string]$ExpectedCommit)
+    $notesRelativePath = ('docs/releases/' + $script:publishTag + '.md')
     $fullPath = [System.IO.Path]::GetFullPath($Path)
-    $expectedNotes = [System.IO.Path]::GetFullPath((Join-Path $RepositoryRoot ('docs/releases/' + $script:publishTag + '.md')))
+    $expectedNotes = [System.IO.Path]::GetFullPath((Join-Path $RepositoryRoot $notesRelativePath))
     if (-not $fullPath.Equals($expectedNotes, [System.StringComparison]::OrdinalIgnoreCase) -or
         -not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
         throw 'NotesPath must name the fixed release notes file in this repository.'
@@ -66,9 +67,14 @@ function Get-PublishNotes {
     if ([string]::IsNullOrWhiteSpace($notes) -or $notes.Length -gt 100000 -or $notes.IndexOf([char]0) -ge 0) {
         throw 'Release notes are empty or outside the supported size.'
     }
-    $commitBlob = Get-GitText -RepositoryRoot $RepositoryRoot -Arguments @('rev-parse', '--verify', ($ExpectedCommit + ':docs/releases/' + $script:publishTag + '.md'))
-    $workingBlob = Get-GitText -RepositoryRoot $RepositoryRoot -Arguments @('hash-object', '--path=docs/releases/' + $script:publishTag + '.md', $fullPath)
-    if ($commitBlob -cne $workingBlob) { throw 'Release notes do not match the expected source commit.' }
+    $expectedCommitPath = ($ExpectedCommit + ':' + $notesRelativePath)
+    $commitBlob = Get-GitText -RepositoryRoot $RepositoryRoot -Arguments @('rev-parse', '--verify', $expectedCommitPath)
+    $headCommit = Get-GitText -RepositoryRoot $RepositoryRoot -Arguments @('rev-parse', '--verify', 'HEAD')
+    $headCommitPath = ($headCommit + ':' + $notesRelativePath)
+    $headBlob = Get-GitText -RepositoryRoot $RepositoryRoot -Arguments @('rev-parse', '--verify', $headCommitPath)
+    $notesPathOption = ('--path=' + $notesRelativePath)
+    $workingBlob = Get-GitText -RepositoryRoot $RepositoryRoot -Arguments @('hash-object', $notesPathOption, $fullPath)
+    if ($commitBlob -cne $headBlob -or $commitBlob -cne $workingBlob) { throw 'Release notes do not match the expected source commit and current HEAD.' }
     return $notes
 }
 
@@ -174,7 +180,8 @@ function Assert-PublishPackage {
 
 function Export-CommitHelperBlob {
     param([string]$RepositoryRoot, [string]$ExpectedCommit)
-    $blobId = Get-GitText -RepositoryRoot $RepositoryRoot -Arguments @('rev-parse', '--verify', ($ExpectedCommit + ':tools/download-release.ps1'))
+    $helperObjectPath = ($ExpectedCommit + ':tools/download-release.ps1')
+    $blobId = Get-GitText -RepositoryRoot $RepositoryRoot -Arguments @('rev-parse', '--verify', $helperObjectPath)
     if ($blobId -cnotmatch '^[0-9a-f]{40}$') { throw 'The download helper is absent from the expected source commit.' }
     $workRoot = [System.IO.Path]::GetFullPath((Join-Path $RepositoryRoot 'build/_work'))
     if (-not (Test-Path -LiteralPath $workRoot -PathType Container)) { throw 'The repository build/_work directory is unavailable.' }
@@ -208,7 +215,7 @@ function Export-CommitHelperBlob {
                 if (-not $stopped) { throw 'The Git blob process did not stop after timeout; a temporary file may remain under build/_work.' }
                 throw 'Reading the expected helper Git blob timed out.'
             }
-            $copyTask.GetAwaiter().GetResult()
+            [void]$copyTask.GetAwaiter().GetResult()
         } finally { $output.Dispose() }
         $null = $stderrTask.GetAwaiter().GetResult()
         if ($process.ExitCode -ne 0) { throw 'The expected helper Git blob could not be read.' }

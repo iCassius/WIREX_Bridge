@@ -90,6 +90,13 @@ try {
     Assert-True ((Get-PublishAssetName -RelativePath 'docs/连接配置.md') -ceq 'docs__connection-profile.md') 'PowerShell reads the Chinese connection-profile path correctly'
     Assert-True ((Get-PublishAssetName -RelativePath 'docs/音量调节.md') -ceq 'docs__audio-gain.md') 'PowerShell reads the Chinese audio-settings path correctly'
 
+    $realTagObject = 'refs/tags/v0.1.0-alpha.1^{commit}'
+    $realTagCommit = Get-GitText -RepositoryRoot $repositoryRoot -Arguments @('rev-parse', '--verify', $realTagObject)
+    $realNotesPath = Join-Path $repositoryRoot 'docs/releases/v0.1.0-alpha.1.md'
+    $realNotes = Get-PublishNotes -Path $realNotesPath -RepositoryRoot $repositoryRoot -ExpectedCommit $realTagCommit
+    Assert-True (-not [string]::IsNullOrWhiteSpace($realNotes)) 'fixed release notes match both the real tag commit and current HEAD'
+    Assert-Throws { Get-PublishNotes -Path (Join-Path $repositoryRoot 'README.md') -RepositoryRoot $repositoryRoot -ExpectedCommit $realTagCommit } 'non-release notes path is rejected'
+
     $manifest.package_status = 'awaiting_root_audit'
     Write-Utf8NoBom -Path $manifestPath -Text ((ConvertTo-Json -InputObject $manifest -Depth 12) + "`n")
     Assert-Throws { Assert-PublishPackage -PackageRoot $packageRoot -ExpectedCommit $fakeCommit } 'unapproved package status'
@@ -202,6 +209,38 @@ try {
         Assert-True ($modeError -ceq 'Only the fixed private alpha release is supported.') "mode spelling '$badMode' is rejected before local validation or credentials"
     }
     Assert-True ($script:mockCalls.Count -eq 8) 'invalid mode spellings do not issue mocked GitHub requests'
+
+    $script:approvedFixtureSha256 = '82e0085ccaccb769a83362c5b335ce6b9a0e3ae93afdf2ad4f46eb81f908577f'
+    $realPackage = Join-Path $repositoryRoot 'build/releases/v0.1.0-alpha.1'
+    $realManifestPath = Join-Path $realPackage 'manifest.json'
+    if (Test-Path -LiteralPath $realManifestPath -PathType Leaf) {
+        $realManifestHash = (Get-FileHash -LiteralPath $realManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($realManifestHash -cne '21d2e617f7761b6cc28a467432fb4c9d50d7c5ecafe2c1524afb8f9562fab9f5') {
+            throw 'The locally present release package is not the reviewed package for the offline preflight check.'
+        }
+        $realTagCommit = Get-GitText -RepositoryRoot $repositoryRoot -Arguments @('rev-parse', '--verify', 'refs/tags/v0.1.0-alpha.1^{commit}')
+        $helperTempBefore = @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'build/_work') -Filter 'publish-helper-*.bin' -File -ErrorAction SilentlyContinue).Count
+        $script:preflightBoundaryReached = $false
+        $script:credentialAttempted = $false
+        function Initialize-GitHubClient {
+            $script:preflightBoundaryReached = $true
+            throw 'OFFLINE_TEST_STOP_AT_NETWORK_BOUNDARY'
+        }
+        function Get-GitCredentialToken {
+            $script:credentialAttempted = $true
+            throw 'OFFLINE_TEST_CREDENTIAL_ACCESS_BLOCKED'
+        }
+        $boundaryMessage = ''
+        try {
+            Invoke-ReleasePublisher -PackagePath $realPackage -Commit $realTagCommit `
+                -NotesFile (Join-Path $repositoryRoot 'docs/releases/v0.1.0-alpha.1.md') `
+                -PublisherMode 'Draft' -RepositoryRoot $repositoryRoot
+        } catch { $boundaryMessage = $_.Exception.Message }
+        $helperTempAfter = @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'build/_work') -Filter 'publish-helper-*.bin' -File -ErrorAction SilentlyContinue).Count
+        Assert-True ($script:preflightBoundaryReached -and $boundaryMessage -ceq 'OFFLINE_TEST_STOP_AT_NETWORK_BOUNDARY') ('real package, tag helper blob, notes and HEAD preflight reach the mocked network boundary; local result=' + $boundaryMessage)
+        Assert-True (-not $script:credentialAttempted -and $script:mockCalls.Count -eq 8) 'real-package preflight stops before credentials and API requests'
+        Assert-True ($helperTempAfter -eq $helperTempBefore) 'temporary byte-exact helper blob is removed after the offline boundary stop'
+    }
 
     Write-Output ('Publisher offline assertions passed: ' + $script:assertions + '; no network requests or credentials were used.')
 } finally {
