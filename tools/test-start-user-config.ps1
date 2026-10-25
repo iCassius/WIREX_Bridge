@@ -16,6 +16,21 @@ function Assert-Throws {
     if (-not $threw) { throw "预期拒绝但操作成功：$Message" }
 }
 
+$commandPath = Join-Path $PSScriptRoot 'start-user-config.cmd'
+$commandBytes = [System.IO.File]::ReadAllBytes($commandPath)
+Assert-True ($commandBytes.Length -gt 3 -and
+    -not ($commandBytes[0] -eq 0xef -and $commandBytes[1] -eq 0xbb -and $commandBytes[2] -eq 0xbf)) `
+    'CMD 启动器不带 UTF-8 BOM'
+Assert-True (@($commandBytes | Where-Object { $_ -gt 127 }).Count -eq 0) 'CMD 启动器只包含 ASCII 字节'
+for ($index = 0; $index -lt $commandBytes.Length; $index++) {
+    if ($commandBytes[$index] -eq 10) {
+        Assert-True ($index -gt 0 -and $commandBytes[$index - 1] -eq 13) 'CMD 启动器每个换行都使用 CRLF'
+    }
+}
+$commandText = [System.Text.Encoding]::ASCII.GetString($commandBytes)
+Assert-True ($commandText.Contains('exit /b %_wirex_exit%') -and $commandText.Contains('pause')) `
+    'CMD 启动器保留失败退出码并在错误路径暂停'
+
 $temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('wirex-user-config-' + [guid]::NewGuid().ToString('N'))
 $packagePath = Join-Path $temporaryRoot 'release'
 $configPath = Join-Path $temporaryRoot 'private\user-config'

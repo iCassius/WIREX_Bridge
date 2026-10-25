@@ -34,6 +34,7 @@
 #include "wirex/dmrd.hpp"
 #include "wirex/hri_stream_session.hpp"
 #include "wirex/hri_ptt_gate.hpp"
+#include "wirex/ui_control_protocol.hpp"
 #endif
 
 #include <algorithm>
@@ -4456,10 +4457,19 @@ void print_bm_bridge_help()
         L"--radio-playback-gain 和 --mic-transmit-gain 接受 0.25..16.0，最多 3 位小数；默认分别为 1x 和 16x。\n"
         L"状态报告按成功提交的 PCM 记录两条音频路径增益前后的统计和削波样本数。\n"
         L"Master 支持 IPv4 字面量或主机名；手工密码在控制台隐藏输入，预设从私有 UTF-8 文件读取。\n"
-        L"两种密码入口只接受可打印 ASCII；手工隐藏输入允许空格。\n");
+        L"两种密码入口只接受可打印 ASCII；手工隐藏输入允许空格。\n"
+        L"--ui-pipe 仅供桌面 UI 使用；必须提供完整配置、密码文件与匿名 stdin 管道，只接受 Q 换行或 EOF 停止。\n");
 }
 
 struct BmBridgeCounters {
+    std::string run_id;
+    std::uint64_t status_sequence{};
+    bool audio_endpoints_validated{};
+    bool hri_serial_open{};
+    bool hri_ready{};
+    bool hri_y_zero_ready{};
+    bool wavein_open{};
+    bool waveout_open{};
     std::uint64_t tx_datagrams{};
     std::uint64_t rx_datagrams{};
     std::uint64_t control_tx_attempted{};
@@ -4513,17 +4523,59 @@ const char* ptt_level_name(wirex::hri_session::PttLevel level) noexcept
     return "unknown";
 }
 
+std::string make_bridge_run_id()
+{
+    return std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64());
+}
+
+enum class UiPipeInspection {
+    waiting,
+    shutdown_requested,
+    invalid_input,
+    failed
+};
+
+UiPipeInspection inspect_ui_pipe(HANDLE handle) noexcept
+{
+    std::array<char, 4U> peeked{};
+    DWORD bytes_read = 0U;
+    DWORD bytes_available = 0U;
+    if (!PeekNamedPipe(handle, peeked.data(), static_cast<DWORD>(peeked.size()),
+                       &bytes_read, &bytes_available, nullptr)) {
+        const DWORD error = GetLastError();
+        if (error == ERROR_BROKEN_PIPE || error == ERROR_NO_DATA || error == ERROR_HANDLE_EOF) {
+            return UiPipeInspection::shutdown_requested;
+        }
+        return UiPipeInspection::failed;
+    }
+    if (bytes_available == 0U) return UiPipeInspection::waiting;
+    wirex::ui_control::Parser parser;
+    const auto result = parser.feed(std::string_view(peeked.data(), bytes_read));
+    if (result == wirex::ui_control::Result::shutdown) return UiPipeInspection::shutdown_requested;
+    if (result == wirex::ui_control::Result::invalid) return UiPipeInspection::invalid_input;
+    return UiPipeInspection::waiting;
+}
+
 bool append_bridge_status(std::ofstream& file, std::string_view event, std::uint64_t elapsed_ms,
                           const wirex::bm::Snapshot& bm_snapshot,
                           const wirex::hri_session::Snapshot& hri_snapshot,
                           const wirex::hri_ptt_gate::Snapshot& ptt_gate_snapshot,
-                          const BmBridgeCounters& counters)
+                          BmBridgeCounters& counters)
 {
-    if (!file) return false;
-    file << "{\"event\":\"" << event << "\",\"elapsed_ms\":" << elapsed_ms
+    if (!file || counters.run_id.empty() || counters.status_sequence == std::numeric_limits<std::uint64_t>::max()) return false;
+    ++counters.status_sequence;
+    file << "{\"run_id\":\"" << counters.run_id << "\",\"seq\":" << counters.status_sequence
+         << ",\"event\":\"" << event << "\",\"elapsed_ms\":" << elapsed_ms
          << ",\"bm_state\":\"" << bm_state_name(bm_snapshot.state)
          << "\",\"bm_failure\":\"" << bm_failure_name(bm_snapshot.last_failure)
          << "\",\"bm_consecutive_failures\":" << bm_snapshot.consecutive_failures
+         << ",\"radio_state\":\"unknown\""
+         << ",\"audio_endpoints_validated\":" << (counters.audio_endpoints_validated ? "true" : "false")
+         << ",\"hri_serial_open\":" << (counters.hri_serial_open ? "true" : "false")
+         << ",\"hri_ready\":" << (counters.hri_ready ? "true" : "false")
+         << ",\"hri_y_zero_ready\":" << (counters.hri_y_zero_ready ? "true" : "false")
+         << ",\"wavein_state\":\"" << (counters.wavein_open ? "open" : "closed") << "\""
+         << ",\"waveout_state\":\"" << (counters.waveout_open ? "open" : "closed") << "\""
          << ",\"control_tx_attempted\":" << counters.control_tx_attempted
          << ",\"control_tx_succeeded\":" << counters.control_tx_succeeded
          << ",\"control_rx_datagrams\":" << counters.control_rx_datagrams
@@ -4603,8 +4655,10 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                   wirex::bm::Profile profile, wirex::dmr_call::CallConfig call_template,
                   wirex::bm_test_profile::TxPolicy tx_policy,
                   bool manual_ptt,
+                  bool ui_pipe,
                   std::uint32_t radio_playback_gain_milli,
                   std::uint32_t mic_transmit_gain_milli,
+                  BmBridgeCounters counters,
                   std::ofstream& status_file, wirex::ConsoleHandlerScope& control_scope);
 
 int bm_bridge_main(int argc, wchar_t* argv[])
@@ -4633,6 +4687,8 @@ int bm_bridge_main(int argc, wchar_t* argv[])
     std::wstring expected_waveout_endpoint_id;
     bool manual_ptt = false;
     bool manual_ptt_seen = false;
+    bool ui_pipe = false;
+    bool ui_pipe_seen = false;
     bool preset_seen = false;
     bool password_file_seen = false;
     bool wavein_endpoint_seen = false;
@@ -4652,6 +4708,16 @@ int bm_bridge_main(int argc, wchar_t* argv[])
             }
             manual_ptt = true;
             manual_ptt_seen = true;
+            ++index;
+            continue;
+        }
+        if (option == L"--ui-pipe") {
+            if (ui_pipe_seen) {
+                (void)bm_stderr(L"--ui-pipe 不可重复指定。\n");
+                return 2;
+            }
+            ui_pipe = true;
+            ui_pipe_seen = true;
             ++index;
             continue;
         }
@@ -4733,6 +4799,10 @@ int bm_bridge_main(int argc, wchar_t* argv[])
         (void)bm_stderr(L"手工连接配置字段必须九项完整提供。\n");
         return 2;
     }
+    if (ui_pipe && (manual_ptt || !password_file_seen || (!preset_seen && !all_manual_fields))) {
+        (void)bm_stderr(L"--ui-pipe 需要完整预设或九项手工连接配置、显式密码文件，并且不能启用键盘诊断输入。\n");
+        return 2;
+    }
     if (password_file_seen && !password_file_path.is_absolute()) {
         (void)bm_stderr(L"BM 私有密码文件必须使用绝对路径。\n");
         return 2;
@@ -4787,14 +4857,6 @@ int bm_bridge_main(int argc, wchar_t* argv[])
     const auto finish_connection = [&]() -> bool {
         if (!selected_preset && !validate_manual_connection(callsign, gateway_id, source_id, talkgroup_id,
                 slot_number, color_code, host_text, master_port, call_kind_text)) return false;
-        const bool resolved = selected_preset
-            ? parse_ipv4_literal(host_text, endpoint.address)
-            : resolve_master_ipv4(host_text, endpoint.address);
-        if (!resolved) {
-            (void)bm_stderr(L"Master IPv4 地址解析失败或超出 3.5 秒有界等待；没有打开设备。\n");
-            return false;
-        }
-        endpoint.port = static_cast<std::uint16_t>(master_port);
         profile.gateway_id = gateway_id;
         profile.callsign = callsign;
         wirex::bm::apply_network_metadata(profile);
@@ -4807,6 +4869,17 @@ int bm_bridge_main(int argc, wchar_t* argv[])
                                                     : wirex::dmr_call::CallKind::private_call;
         call_template.color_code = static_cast<std::uint8_t>(color_code);
         tx_policy = wirex::bm_test_profile::policy_for(call_template);
+        return true;
+    };
+    const auto resolve_connection_and_read_password = [&]() -> bool {
+        const bool resolved = selected_preset
+            ? parse_ipv4_literal(host_text, endpoint.address)
+            : resolve_master_ipv4(host_text, endpoint.address);
+        if (!resolved) {
+            (void)bm_stderr(L"Master IPv4 地址解析失败或超出 3.5 秒有界等待；没有打开设备。\n");
+            return false;
+        }
+        endpoint.port = static_cast<std::uint16_t>(master_port);
         if (password_file_seen && !read_profile_password_file(password_file_path, profile.password)) {
             (void)bm_stderr(L"本机 BM 私有密码文件缺失或格式无效；要求 1–128 字节的可打印 ASCII，至多一个行尾；尚未打开设备。\n");
             return false;
@@ -4857,10 +4930,27 @@ int bm_bridge_main(int argc, wchar_t* argv[])
     HANDLE stdin_handle = GetStdHandle(STD_INPUT_HANDLE);
     DWORD console_mode = 0U;
     if (stdin_handle == nullptr || stdin_handle == INVALID_HANDLE_VALUE ||
-        !GetConsoleMode(stdin_handle, &console_mode)) {
-        (void)bm_stderr(L"BM 联合测试入口需要可见的本机控制台。\n");
+        (ui_pipe ? GetFileType(stdin_handle) != FILE_TYPE_PIPE : !GetConsoleMode(stdin_handle, &console_mode))) {
+        (void)bm_stderr(ui_pipe
+            ? L"--ui-pipe 需要由 UI 管理器提供匿名输入管道。\n"
+            : L"BM 联合测试入口需要可见的本机控制台。\n");
         return 2;
     }
+
+    if (ui_pipe) {
+        const auto inspection = inspect_ui_pipe(stdin_handle);
+        if (inspection == UiPipeInspection::shutdown_requested) return 0;
+        if (inspection == UiPipeInspection::invalid_input) {
+            (void)bm_stderr(L"UI 控制管道只接受单独的 Q 换行或 EOF；没有启动设备。\n");
+            return 2;
+        }
+        if (inspection == UiPipeInspection::failed) {
+            (void)bm_stderr(L"无法检查 UI 控制管道；没有启动设备。\n");
+            return 2;
+        }
+    }
+
+    if (connection_ready && !resolve_connection_and_read_password()) return 2;
 
     std::ofstream status_file(status_path, std::ios::binary | std::ios::trunc);
     if (!status_file) {
@@ -4910,6 +5000,7 @@ int bm_bridge_main(int argc, wchar_t* argv[])
         }
         connection_ready = finish_connection();
         if (!connection_ready) return 2;
+        if (!resolve_connection_and_read_password()) return 2;
     }
 
     wirex::ConsoleHandlerScope control_scope;
@@ -4917,13 +5008,20 @@ int bm_bridge_main(int argc, wchar_t* argv[])
         (void)bm_stderr(L"无法注册控制台收尾处理器；没有打开设备。\n");
         return 2;
     }
-    if (!selected_preset && profile.password.empty() && !read_hidden_password(profile.password, control_scope)) {
+    if (ui_pipe && !selected_preset && profile.password.empty()) {
+        (void)bm_stderr(L"UI 管道模式必须从显式密码文件读取密码；尚未打开设备。\n");
+        wipe_password(profile.password);
+        return 2;
+    }
+    if (!ui_pipe && !selected_preset && profile.password.empty() && !read_hidden_password(profile.password, control_scope)) {
         (void)bm_stderr(L"隐藏密码输入已取消或无效；没有打开设备。\n");
         wipe_password(profile.password);
         return control_scope.cancel_requested() ? 0 : 2;
     }
 
     BmBridgeCounters counters{};
+    counters.run_id = make_bridge_run_id();
+    counters.audio_endpoints_validated = true;
     counters.rx_output_gain_milli = radio_playback_gain_milli;
     counters.tx_input_gain_milli = mic_transmit_gain_milli;
     const wirex::hri_session::Snapshot hri_preflight_snapshot{};
@@ -4937,7 +5035,8 @@ int bm_bridge_main(int argc, wchar_t* argv[])
     return run_bm_bridge(argv[3], body_path, input_id, output_id,
                          expected_wavein_endpoint_id, expected_waveout_endpoint_id, endpoint,
                          std::move(profile), call_template, tx_policy, manual_ptt,
-                         radio_playback_gain_milli, mic_transmit_gain_milli, status_file, control_scope);
+                         ui_pipe, radio_playback_gain_milli, mic_transmit_gain_milli,
+                         std::move(counters), status_file, control_scope);
 }
 
 int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& body_path,
@@ -4948,8 +5047,10 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                   wirex::bm::Profile profile, wirex::dmr_call::CallConfig call_template,
                   wirex::bm_test_profile::TxPolicy tx_policy,
                   bool manual_ptt,
+                  bool ui_pipe,
                   std::uint32_t radio_playback_gain_milli,
                   std::uint32_t mic_transmit_gain_milli,
+                  BmBridgeCounters counters,
                   std::ofstream& status_file, wirex::ConsoleHandlerScope& control_scope)
 {
     using Clock = std::chrono::steady_clock;
@@ -4966,9 +5067,8 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
     using PttLevel = wirex::hri_ptt_gate::Level;
     const bool continuous_run = !manual_ptt;
     ProfileSecretGuard secret_guard{profile};
-    BmBridgeCounters counters{};
-    counters.rx_output_gain_milli = radio_playback_gain_milli;
-    counters.tx_input_gain_milli = mic_transmit_gain_milli;
+    const HANDLE ui_pipe_handle = ui_pipe ? GetStdHandle(STD_INPUT_HANDLE) : INVALID_HANDLE_VALUE;
+    wirex::ui_control::Parser ui_control_parser;
     PttGate ptt_gate;
     std::function<void(PttAction, std::string_view)> handle_ptt_gate_action;
     std::function<void()> synchronize_ptt_gate;
@@ -5040,6 +5140,19 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         return 2;
     }
 
+    if (ui_pipe) {
+        const auto inspection = inspect_ui_pipe(ui_pipe_handle);
+        if (inspection == UiPipeInspection::shutdown_requested) return 0;
+        if (inspection == UiPipeInspection::invalid_input) {
+            (void)bm_stderr(L"UI 控制管道只接受单独的 Q 换行或 EOF；没有启动设备。\n");
+            return 2;
+        }
+        if (inspection == UiPipeInspection::failed) {
+            (void)bm_stderr(L"无法检查 UI 控制管道；没有启动设备。\n");
+            return 2;
+        }
+    }
+
     wirex::bm::Session bm_session;
     if (!bm_session.start(std::move(profile), master, 0U)) {
         (void)bm_stderr(L"BM profile validation failed; no socket or device was opened.\n");
@@ -5053,6 +5166,20 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         wirex::hri_session::Config{wirex::session_timing::active_window_ms, continuous_run});
     wirex::hri_session::Snapshot hri_state{};
     std::wstring device_path;
+    if (ui_pipe) {
+        const auto inspection = inspect_ui_pipe(ui_pipe_handle);
+        if (inspection == UiPipeInspection::shutdown_requested) {
+            bm_session.stop(0U);
+            return 0;
+        }
+        if (inspection == UiPipeInspection::invalid_input || inspection == UiPipeInspection::failed) {
+            bm_session.stop(0U);
+            (void)bm_stderr(inspection == UiPipeInspection::invalid_input
+                ? L"UI 控制管道只接受单独的 Q 换行或 EOF；没有打开设备。\n"
+                : L"无法检查 UI 控制管道；没有打开设备。\n");
+            return 2;
+        }
+    }
     if (!parse_port(port_name, device_path)) {
         failure_reason = "port_name_invalid";
         failed = true;
@@ -5100,6 +5227,11 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
 
     auto status = [&](std::string_view event) {
         if (status_report_failed) return;
+        counters.hri_serial_open = port.valid();
+        counters.hri_ready = hri_ready;
+        counters.hri_y_zero_ready = hri_state.y_zero_acknowledged;
+        counters.wavein_open = radio_input_open;
+        counters.waveout_open = radio_output_open;
         const auto snapshot = bm_session.snapshot();
         if (!append_bridge_status(status_file, event, elapsed_ms(), snapshot, hri_state,
                                   ptt_gate.snapshot(), counters)) {
@@ -5109,7 +5241,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         }
     };
 
-    std::uint64_t next_runtime_snapshot_ms = 5000U;
+    std::uint64_t next_runtime_snapshot_ms = 1000U;
 
     auto last_logged_bm_snapshot = bm_session.snapshot();
     auto log_bm_transition = [&](std::string_view event) {
@@ -5839,7 +5971,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
             const auto now_ms = elapsed_ms();
             if (now_ms >= next_runtime_snapshot_ms) {
                 status("runtime_snapshot");
-                next_runtime_snapshot_ms = now_ms + 5000U;
+                next_runtime_snapshot_ms = now_ms + 1000U;
             }
             if (!manual_ptt) {
                 handle_ptt_gate_action(ptt_gate.tick(now_ms), "ptt_call_timer_event");
@@ -5856,36 +5988,78 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 break;
             }
 
-            DWORD queued_keys = 0U;
-            HANDLE input_handle = GetStdHandle(STD_INPUT_HANDLE);
-            if (input_handle == nullptr || input_handle == INVALID_HANDLE_VALUE ||
-                !GetNumberOfConsoleInputEvents(input_handle, &queued_keys)) {
-                set_failure("console_key_poll_failed");
-                begin_shutdown("console_key_poll_failed");
-            } else {
-                std::array<INPUT_RECORD, 32U> key_records{};
-                while (queued_keys != 0U) {
-                    DWORD read = 0U;
-                    const DWORD count = std::min<DWORD>(queued_keys, static_cast<DWORD>(key_records.size()));
-                    if (!ReadConsoleInputW(input_handle, key_records.data(), count, &read) || read == 0U || read > count) {
-                        set_failure("console_key_read_failed");
-                        begin_shutdown("console_key_read_failed");
-                        break;
+            if (ui_pipe) {
+                DWORD available = 0U;
+                if (!PeekNamedPipe(ui_pipe_handle, nullptr, 0U, nullptr, &available, nullptr)) {
+                    const DWORD error = GetLastError();
+                    if (error == ERROR_BROKEN_PIPE || error == ERROR_NO_DATA || error == ERROR_HANDLE_EOF ||
+                        error == ERROR_PIPE_NOT_CONNECTED) {
+                        (void)ui_control_parser.eof();
+                        begin_shutdown("ui_control_eof");
+                    } else {
+                        set_failure("ui_control_pipe_poll_failed");
+                        begin_shutdown("ui_control_pipe_poll_failed");
                     }
-                    queued_keys -= read;
-                    for (DWORD index = 0U; index < read; ++index) {
-                        const auto& record = key_records[index];
-                        if (record.EventType != KEY_EVENT) continue;
-                        wchar_t key = record.Event.KeyEvent.uChar.UnicodeChar;
-                        if (key >= L'a' && key <= L'z') key = static_cast<wchar_t>(key - L'a' + L'A');
-                        if (record.Event.KeyEvent.bKeyDown) {
-                            if (manual_ptt && key == L'T' && !t_key_down) process_t_key();
-                            if (key == L'Q' && !q_key_down) begin_shutdown("user_requested_exit");
-                            if (key == L'T') t_key_down = true;
-                            if (key == L'Q') q_key_down = true;
+                } else if (available != 0U) {
+                    std::array<char, 16U> command_bytes{};
+                    DWORD actual = 0U;
+                    const DWORD wanted = std::min<DWORD>(available, static_cast<DWORD>(command_bytes.size()));
+                    const BOOL read_succeeded = ReadFile(ui_pipe_handle, command_bytes.data(), wanted, &actual, nullptr);
+                    if (read_succeeded != FALSE && actual == 0U) {
+                        (void)ui_control_parser.eof();
+                        begin_shutdown("ui_control_eof");
+                    } else if (read_succeeded == FALSE || actual > wanted) {
+                        const DWORD error = GetLastError();
+                        if (error == ERROR_BROKEN_PIPE || error == ERROR_NO_DATA || error == ERROR_HANDLE_EOF ||
+                            error == ERROR_PIPE_NOT_CONNECTED) {
+                            (void)ui_control_parser.eof();
+                            begin_shutdown("ui_control_eof");
                         } else {
-                            if (key == L'T') t_key_down = false;
-                            if (key == L'Q') q_key_down = false;
+                            set_failure("ui_control_pipe_read_failed");
+                            begin_shutdown("ui_control_pipe_read_failed");
+                        }
+                    } else {
+                        const auto result = ui_control_parser.feed(std::string_view(command_bytes.data(), actual));
+                        if (result == wirex::ui_control::Result::shutdown) {
+                            begin_shutdown("ui_q_requested");
+                        } else if (result == wirex::ui_control::Result::invalid) {
+                            set_failure("ui_control_input_invalid");
+                            begin_shutdown("ui_control_input_invalid");
+                        }
+                    }
+                }
+            } else {
+                DWORD queued_keys = 0U;
+                HANDLE input_handle = GetStdHandle(STD_INPUT_HANDLE);
+                if (input_handle == nullptr || input_handle == INVALID_HANDLE_VALUE ||
+                    !GetNumberOfConsoleInputEvents(input_handle, &queued_keys)) {
+                    set_failure("console_key_poll_failed");
+                    begin_shutdown("console_key_poll_failed");
+                } else {
+                    std::array<INPUT_RECORD, 32U> key_records{};
+                    while (queued_keys != 0U) {
+                        DWORD read = 0U;
+                        const DWORD count = std::min<DWORD>(queued_keys, static_cast<DWORD>(key_records.size()));
+                        if (!ReadConsoleInputW(input_handle, key_records.data(), count, &read) || read == 0U || read > count) {
+                            set_failure("console_key_read_failed");
+                            begin_shutdown("console_key_read_failed");
+                            break;
+                        }
+                        queued_keys -= read;
+                        for (DWORD index = 0U; index < read; ++index) {
+                            const auto& record = key_records[index];
+                            if (record.EventType != KEY_EVENT) continue;
+                            wchar_t key = record.Event.KeyEvent.uChar.UnicodeChar;
+                            if (key >= L'a' && key <= L'z') key = static_cast<wchar_t>(key - L'a' + L'A');
+                            if (record.Event.KeyEvent.bKeyDown) {
+                                if (manual_ptt && key == L'T' && !t_key_down) process_t_key();
+                                if (key == L'Q' && !q_key_down) begin_shutdown("user_requested_exit");
+                                if (key == L'T') t_key_down = true;
+                                if (key == L'Q') q_key_down = true;
+                            } else {
+                                if (key == L'T') t_key_down = false;
+                                if (key == L'Q') q_key_down = false;
+                            }
                         }
                     }
                 }

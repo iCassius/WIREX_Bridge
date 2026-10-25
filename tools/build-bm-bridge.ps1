@@ -215,6 +215,7 @@ try {
         @{ Name='wave_file_test'; Source='tests\wave_file_test.cpp' },
         @{ Name='pcm_gain_test'; Source='tests\pcm_gain_test.cpp' },
         @{ Name='bounded_pipe_writer_test'; Source='tests\bounded_pipe_writer_test.cpp' },
+        @{ Name='ui_pipe_test'; Source='tests\ui_pipe_test.cpp' },
         @{ Name='console_lifecycle_test'; Source='tests\console_lifecycle_test.cpp' },
         @{ Name='session_report_test'; Source='tests\session_report_test.cpp' },
         @{ Name='dmr_call_test'; Source='tests\dmr_call_test.cpp' },
