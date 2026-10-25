@@ -4426,12 +4426,13 @@ void print_bm_bridge_help()
         L"wirex_bridge - 本地 DIRECT / BrandMeister 声音桥接候选\n"
         L"  --help\n"
         L"  --list-audio-json\n"
-        L"  --run --port COMn --body-file ABS --input N --output N --status-file ABS --expected-wavein-endpoint ID --expected-waveout-endpoint ID [--test-preset parrot-cn|parrot-global|listen-46001|listen-91 --password-file ABS] [--manual-ptt]\n"
+        L"  --run --port COMn --body-file ABS --input N --output N --status-file ABS --expected-wavein-endpoint ID --expected-waveout-endpoint ID [--test-preset parrot-cn|parrot-global|listen-46001|listen-91 --password-file ABS] [--manual-ptt] [--radio-playback-gain N] [--mic-transmit-gain N]\n"
         L"不传测试预设时保留逐项手工配置和隐藏密码输入。预设密码文件为本机私有明文 UTF-8 文本。\n"
         L"WaveIn/WaveOut endpoint ID来自本次 WinMM 枚举；打开和重开音频流前都会核对。\n"
         L"默认在 BM/HRI ready 后用有效 HRI 手咪PTT边沿控制上行；--manual-ptt 显式启用键盘 T 诊断模式。\n"
         L"Q 停止并退出；电台手咪 PTT 控制 BM 上行。\n"
-        L"BM DMRD 上行使用固定 16x 软件增益；状态报告记录增益前后 PCM 统计与削顶样本数。\n"
+        L"--radio-playback-gain 和 --mic-transmit-gain 接受 0.25..16.0，最多 3 位小数；默认分别为 1x 和 16x。\n"
+        L"状态报告按成功提交的 PCM 记录两条音频路径增益前后的统计和削波样本数。\n"
         L"Master 支持 IPv4 字面量或主机名；手工密码在控制台隐藏输入，预设从私有 UTF-8 文件读取。\n"
         L"两种密码入口只接受可打印 ASCII；手工隐藏输入允许空格。\n");
 }
@@ -4446,9 +4447,15 @@ struct BmBridgeCounters {
     wirex::bm::InputResult last_input_result{wirex::bm::InputResult::accepted};
     bool has_last_input_result{};
     std::uint64_t tx_audio_samples{};
+    std::uint32_t tx_input_gain_milli{16000U};
     wirex::pcm_gain::SignalStats tx_pcm_input_stats{};
     wirex::pcm_gain::SignalStats tx_pcm_gained_stats{};
     std::uint64_t tx_pcm_clipped_samples{};
+    std::uint32_t rx_output_gain_milli{wirex::pcm_gain::unity_milli};
+    std::uint64_t rx_audio_samples{};
+    wirex::pcm_gain::SignalStats rx_pcm_input_stats{};
+    wirex::pcm_gain::SignalStats rx_pcm_gained_stats{};
+    std::uint64_t rx_pcm_clipped_samples{};
     std::uint64_t pcm_playback_frames{};
     std::uint64_t calls_started{};
     std::uint64_t calls_ended{};
@@ -4536,13 +4543,21 @@ bool append_bridge_status(std::ofstream& file, std::string_view event, std::uint
          << ",\"tx_datagrams\":" << counters.tx_datagrams
          << ",\"rx_datagrams\":" << counters.rx_datagrams
          << ",\"tx_audio_samples\":" << counters.tx_audio_samples
-         << ",\"tx_input_gain_milli\":16000"
+         << ",\"tx_input_gain_milli\":" << counters.tx_input_gain_milli
          << ",\"tx_pcm_input_samples\":" << counters.tx_pcm_input_stats.sample_count
          << ",\"tx_pcm_input_rms_dbfs\":" << wirex::pcm_gain::rms_dbfs(counters.tx_pcm_input_stats)
          << ",\"tx_pcm_input_peak\":" << counters.tx_pcm_input_stats.peak
          << ",\"tx_pcm_gained_rms_dbfs\":" << wirex::pcm_gain::rms_dbfs(counters.tx_pcm_gained_stats)
          << ",\"tx_pcm_gained_peak\":" << counters.tx_pcm_gained_stats.peak
          << ",\"tx_pcm_clipped_samples\":" << counters.tx_pcm_clipped_samples
+         << ",\"rx_output_gain_milli\":" << counters.rx_output_gain_milli
+         << ",\"rx_audio_samples\":" << counters.rx_audio_samples
+         << ",\"rx_pcm_input_samples\":" << counters.rx_pcm_input_stats.sample_count
+         << ",\"rx_pcm_input_rms_dbfs\":" << wirex::pcm_gain::rms_dbfs(counters.rx_pcm_input_stats)
+         << ",\"rx_pcm_input_peak\":" << counters.rx_pcm_input_stats.peak
+         << ",\"rx_pcm_gained_rms_dbfs\":" << wirex::pcm_gain::rms_dbfs(counters.rx_pcm_gained_stats)
+         << ",\"rx_pcm_gained_peak\":" << counters.rx_pcm_gained_stats.peak
+         << ",\"rx_pcm_clipped_samples\":" << counters.rx_pcm_clipped_samples
          << ",\"playback_frames\":" << counters.pcm_playback_frames
          << ",\"calls_started\":" << counters.calls_started
          << ",\"calls_ended\":" << counters.calls_ended
@@ -4566,6 +4581,8 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                   wirex::bm::Profile profile, wirex::dmr_call::CallConfig call_template,
                   wirex::bm_test_profile::TxPolicy tx_policy,
                   bool manual_ptt,
+                  std::uint32_t radio_playback_gain_milli,
+                  std::uint32_t mic_transmit_gain_milli,
                   std::ofstream& status_file, wirex::ConsoleHandlerScope& control_scope);
 
 int bm_bridge_main(int argc, wchar_t* argv[])
@@ -4598,6 +4615,10 @@ int bm_bridge_main(int argc, wchar_t* argv[])
     bool password_file_seen = false;
     bool wavein_endpoint_seen = false;
     bool waveout_endpoint_seen = false;
+    bool radio_playback_gain_seen = false;
+    bool mic_transmit_gain_seen = false;
+    std::uint32_t radio_playback_gain_milli = wirex::pcm_gain::unity_milli;
+    std::uint32_t mic_transmit_gain_milli = 16000U;
     for (int index = 12; index < argc;) {
         const std::wstring_view option(argv[index]);
         if (option == L"--manual-ptt") {
@@ -4643,6 +4664,18 @@ int bm_bridge_main(int argc, wchar_t* argv[])
             }
             expected_waveout_endpoint_id.assign(value);
             waveout_endpoint_seen = true;
+        } else if (option == L"--radio-playback-gain") {
+            if (radio_playback_gain_seen || !wirex::pcm_gain::parse_gain(value, radio_playback_gain_milli)) {
+                (void)bm_stderr(L"--radio-playback-gain 必须唯一指定为 0.25..16.0 的十进制数，最多 3 位小数。\n");
+                return 2;
+            }
+            radio_playback_gain_seen = true;
+        } else if (option == L"--mic-transmit-gain") {
+            if (mic_transmit_gain_seen || !wirex::pcm_gain::parse_gain(value, mic_transmit_gain_milli)) {
+                (void)bm_stderr(L"--mic-transmit-gain 必须唯一指定为 0.25..16.0 的十进制数，最多 3 位小数。\n");
+                return 2;
+            }
+            mic_transmit_gain_seen = true;
         } else {
             (void)bm_stderr(L"BM bridge 收到未知可选参数。\n");
             return 2;
@@ -4814,6 +4847,8 @@ int bm_bridge_main(int argc, wchar_t* argv[])
     }
 
     BmBridgeCounters counters{};
+    counters.rx_output_gain_milli = radio_playback_gain_milli;
+    counters.tx_input_gain_milli = mic_transmit_gain_milli;
     const wirex::hri_session::Snapshot hri_preflight_snapshot{};
     const wirex::hri_ptt_gate::Snapshot ptt_preflight_snapshot{};
     if (!append_bridge_status(status_file, "preflight_passed", 0U, wirex::bm::Snapshot{},
@@ -4824,7 +4859,8 @@ int bm_bridge_main(int argc, wchar_t* argv[])
     }
     return run_bm_bridge(argv[3], body_path, input_id, output_id,
                          expected_wavein_endpoint_id, expected_waveout_endpoint_id, endpoint,
-                         std::move(profile), call_template, tx_policy, manual_ptt, status_file, control_scope);
+                         std::move(profile), call_template, tx_policy, manual_ptt,
+                         radio_playback_gain_milli, mic_transmit_gain_milli, status_file, control_scope);
 }
 
 int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& body_path,
@@ -4835,6 +4871,8 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                   wirex::bm::Profile profile, wirex::dmr_call::CallConfig call_template,
                   wirex::bm_test_profile::TxPolicy tx_policy,
                   bool manual_ptt,
+                  std::uint32_t radio_playback_gain_milli,
+                  std::uint32_t mic_transmit_gain_milli,
                   std::ofstream& status_file, wirex::ConsoleHandlerScope& control_scope)
 {
     using Clock = std::chrono::steady_clock;
@@ -4852,6 +4890,8 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
     const bool continuous_run = !manual_ptt;
     ProfileSecretGuard secret_guard{profile};
     BmBridgeCounters counters{};
+    counters.rx_output_gain_milli = radio_playback_gain_milli;
+    counters.tx_input_gain_milli = mic_transmit_gain_milli;
     PttGate ptt_gate;
     std::function<void(PttAction, std::string_view)> handle_ptt_gate_action;
     std::function<void()> synchronize_ptt_gate;
@@ -5098,20 +5138,22 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         if (succeeded) {
             const auto samples = static_cast<std::size_t>(bytes / sizeof(std::int16_t));
             if (samples != 0U) {
-                const auto gain = wirex::pcm_gain::apply(buffer.samples.data(), samples, 16000U);
+                const auto gain = wirex::pcm_gain::apply(buffer.samples.data(), samples, mic_transmit_gain_milli);
                 succeeded = gain.valid;
                 if (succeeded) {
-                    wirex::pcm_gain::accumulate(counters.tx_pcm_input_stats, gain.before);
-                    wirex::pcm_gain::accumulate(counters.tx_pcm_gained_stats, gain.after);
-                    if (gain.clipped_samples >
-                        std::numeric_limits<std::uint64_t>::max() - counters.tx_pcm_clipped_samples) {
-                        counters.tx_pcm_clipped_samples = std::numeric_limits<std::uint64_t>::max();
-                    } else {
-                        counters.tx_pcm_clipped_samples += gain.clipped_samples;
-                    }
                     const auto pushed = pipeline->push_tx_audio(buffer.samples.data(), samples, Clock::now());
                     succeeded = static_cast<bool>(pushed);
-                    if (succeeded) counters.tx_audio_samples += samples;
+                    if (succeeded) {
+                        counters.tx_audio_samples += samples;
+                        wirex::pcm_gain::accumulate(counters.tx_pcm_input_stats, gain.before);
+                        wirex::pcm_gain::accumulate(counters.tx_pcm_gained_stats, gain.after);
+                        if (gain.clipped_samples >
+                            std::numeric_limits<std::uint64_t>::max() - counters.tx_pcm_clipped_samples) {
+                            counters.tx_pcm_clipped_samples = std::numeric_limits<std::uint64_t>::max();
+                        } else {
+                            counters.tx_pcm_clipped_samples += gain.clipped_samples;
+                        }
+                    }
                 }
             }
         }
@@ -5997,16 +6039,36 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 for (std::size_t submitted = 0U; submitted < 3U && radio_output.has_capacity(); ++submitted) {
                     wirex::bm_voice::PlaybackFrame frame{};
                     if (!pipeline->take_playback_pcm(frame)) break;
+                    const auto gain = wirex::pcm_gain::apply(
+                        frame.pcm.data(), frame.sample_count, radio_playback_gain_milli);
                     const auto byte_count = static_cast<DWORD>(frame.sample_count * sizeof(std::int16_t));
-                    const auto result = radio_output.submit_playback_frame(frame.pcm.data(),
-                        byte_count, frame.generation);
-                    if (result != WaveOutput::SubmitResult::queued) {
-                        pipeline->cancel_rx();
-                        if (!radio_output.close()) set_failure("waveout_submit_cleanup_failed");
-                        radio_output_open = false;
-                        set_failure("waveout_playback_submit_failed");
-                        break;
+                    const auto result = gain.valid
+                        ? radio_output.submit_playback_frame(frame.pcm.data(), byte_count, frame.generation)
+                        : WaveOutput::SubmitResult::failed;
+                    if (result == WaveOutput::SubmitResult::queued) {
+                        if (gain.before.sample_count >
+                            std::numeric_limits<std::uint64_t>::max() - counters.rx_audio_samples) {
+                            counters.rx_audio_samples = std::numeric_limits<std::uint64_t>::max();
+                        } else {
+                            counters.rx_audio_samples += gain.before.sample_count;
+                        }
+                        wirex::pcm_gain::accumulate(counters.rx_pcm_input_stats, gain.before);
+                        wirex::pcm_gain::accumulate(counters.rx_pcm_gained_stats, gain.after);
+                        if (gain.clipped_samples >
+                            std::numeric_limits<std::uint64_t>::max() - counters.rx_pcm_clipped_samples) {
+                            counters.rx_pcm_clipped_samples = std::numeric_limits<std::uint64_t>::max();
+                        } else {
+                            counters.rx_pcm_clipped_samples += gain.clipped_samples;
+                        }
+                        secure_wipe(frame.pcm.data(), sizeof(frame.pcm));
+                        continue;
                     }
+                    secure_wipe(frame.pcm.data(), sizeof(frame.pcm));
+                    pipeline->cancel_rx();
+                    if (!radio_output.close()) set_failure("waveout_submit_cleanup_failed");
+                    radio_output_open = false;
+                    set_failure(gain.valid ? "waveout_playback_submit_failed" : "waveout_playback_gain_invalid");
+                    break;
                 }
                 drain_pipeline_events();
                 if (pending_playback_drain && radio_output.all_drained() &&

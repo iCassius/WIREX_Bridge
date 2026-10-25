@@ -17,3 +17,4 @@
 !/.env.example
 /private/
 /logs/
+/tools/audio-settings.json

@@ -59,6 +59,26 @@ void test_amplification_saturates_and_counts_clips()
     check(high_gain.clipped_samples == 2, "16x diagnostic gain should count both clipped peak samples");
 }
 
+void test_radio_playback_gain_is_independent_from_microphone_gain()
+{
+    std::array<std::int16_t, 3> playback_samples{1000, -1000, 22000};
+    const auto playback = wirex::pcm_gain::apply(playback_samples.data(), playback_samples.size(), 1500U);
+    check(playback.valid, "radio playback gain should accept an independently selected value");
+    check(playback_samples == std::array<std::int16_t, 3>{1500, -1500, 32767},
+        "radio playback gain should scale the receive frame once and saturate its high sample");
+    check(playback.clipped_samples == 1U,
+        "radio playback clipping statistics should describe the receive gain result");
+
+    std::array<std::int16_t, 3> microphone_samples{1000, -1000, 2};
+    const auto microphone = wirex::pcm_gain::apply(
+        microphone_samples.data(), microphone_samples.size(), 16000U);
+    check(microphone.valid, "microphone transmit gain should accept its independent default");
+    check(microphone_samples == std::array<std::int16_t, 3>{16000, -16000, 32},
+        "microphone transmit gain should preserve the existing 16x default");
+    check(microphone.clipped_samples == 0U,
+        "microphone clipping statistics should remain separate from playback clipping");
+}
+
 void test_invalid_gain_does_not_modify_samples()
 {
     for (const auto gain : {0U, 249U, 16001U}) {
@@ -114,6 +134,7 @@ int main()
     test_unity_preserves_pcm_and_stats();
     test_attenuation_rounds_to_nearest();
     test_amplification_saturates_and_counts_clips();
+    test_radio_playback_gain_is_independent_from_microphone_gain();
     test_invalid_gain_does_not_modify_samples();
     test_gain_argument_parser();
     test_dbfs_and_accumulation();

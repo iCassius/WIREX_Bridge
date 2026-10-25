@@ -8,6 +8,8 @@ param(
     [string]$StatusDirectory,
     [string]$Preset,
     [string]$PasswordFile,
+    [string]$RadioPlaybackGain,
+    [string]$MicTransmitGain,
     [switch]$ManualPtt
 )
 
@@ -17,6 +19,136 @@ $script:expectedBodyLength = 100
 $script:expectedBodySha256 = '82e0085ccaccb769a83362c5b335ce6b9a0e3ae93afdf2ad4f46eb81f908577f'
 $script:nativeInvoked = $false
 $script:statusPath = ''
+
+function ConvertTo-GainMilli {
+    param([Parameter(Mandatory=$true)][string]$Text, [Parameter(Mandatory=$true)][string]$Label)
+    if ($Text -notmatch '^([0-9]+)(?:\.([0-9]{1,3}))?$') {
+        throw "$Label 必须是使用小数点的十进制数，最多 3 位小数。"
+    }
+    $whole = 0
+    foreach ($character in $Matches[1].ToCharArray()) {
+        $digit = [int]$character - [int][char]'0'
+        if ($whole -gt 16 -or ($whole -eq 16 -and $digit -gt 0)) {
+            throw "$Label 必须在 0.25 到 16.0 之间。"
+        }
+        $whole = ($whole * 10) + $digit
+    }
+    $fractionText = if ($Matches[2]) { $Matches[2].PadRight(3, '0') } else { '000' }
+    $fraction = (([int][char]$fractionText[0] - [int][char]'0') * 100) +
+        (([int][char]$fractionText[1] - [int][char]'0') * 10) +
+        ([int][char]$fractionText[2] - [int][char]'0')
+    $milli = ($whole * 1000) + $fraction
+    if ($milli -lt 250 -or $milli -gt 16000) {
+        throw "$Label 必须在 0.25 到 16.0 之间。"
+    }
+    return [uint32]$milli
+}
+
+function Format-GainDecimal {
+    param([Parameter(Mandatory=$true)][uint32]$GainMilli)
+    $whole = [math]::Floor($GainMilli / 1000)
+    $fraction = $GainMilli % 1000
+    if ($fraction -eq 0) { return $whole.ToString([Globalization.CultureInfo]::InvariantCulture) }
+    $fractionText = $fraction.ToString('D3', [Globalization.CultureInfo]::InvariantCulture).TrimEnd('0')
+    return $whole.ToString([Globalization.CultureInfo]::InvariantCulture) + '.' + $fractionText
+}
+
+function Read-AudioSettings {
+    param([Parameter(Mandatory=$true)][string]$Path)
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) { return $null }
+    try { $json = [System.IO.File]::ReadAllText($fullPath, [System.Text.Encoding]::UTF8) }
+    catch { throw "无法读取本机音量设置文件：$fullPath" }
+    try { $document = ConvertFrom-Json -InputObject $json -ErrorAction Stop }
+    catch { throw "本机音量设置 JSON 无效：$fullPath" }
+    if ($null -eq $document -or $document -is [array] -or $document -is [string] -or $document -is [bool]) {
+        throw '本机音量设置必须是包含三个字段的 JSON 对象。'
+    }
+    $properties = @($document.PSObject.Properties)
+    $expectedNames = @('schema_version', 'radio_playback_gain', 'mic_transmit_gain')
+    if ($properties.Count -ne $expectedNames.Count) { throw '本机音量设置必须且只能包含 schema_version、radio_playback_gain、mic_transmit_gain。' }
+    foreach ($property in $properties) {
+        if ($expectedNames -cnotcontains $property.Name) { throw "本机音量设置包含未知字段：$($property.Name)" }
+    }
+    foreach ($name in $expectedNames) {
+        $property = $document.PSObject.Properties[$name]
+        if (-not $property) { throw "本机音量设置缺少字段：$name" }
+        $value = $property.Value
+        if ($value -isnot [byte] -and $value -isnot [int16] -and $value -isnot [int32] -and
+            $value -isnot [int64] -and $value -isnot [single] -and $value -isnot [double] -and
+            $value -isnot [decimal]) {
+            throw "本机音量设置字段 $name 必须是 JSON 数字。"
+        }
+    }
+
+    $numberPattern = '(?<value>-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)(?=\s*[,}])'
+    $tokens = @{}
+    foreach ($name in $expectedNames) {
+        $pattern = '"' + [regex]::Escape($name) + '"\s*:\s*' + $numberPattern
+        $matches = [regex]::Matches($json, $pattern)
+        if ($matches.Count -ne 1) { throw "本机音量设置字段 $name 必须只出现一次并使用 JSON 数字。" }
+        $tokens[$name] = [string]$matches[0].Groups['value'].Value
+    }
+    if ($tokens['schema_version'] -cne '1') { throw '本机音量设置版本不受支持。' }
+    return [pscustomobject]@{
+        RadioPlaybackGainMilli = ConvertTo-GainMilli -Text $tokens['radio_playback_gain'] -Label 'radio_playback_gain'
+        MicTransmitGainMilli = ConvertTo-GainMilli -Text $tokens['mic_transmit_gain'] -Label 'mic_transmit_gain'
+    }
+}
+
+function Write-AudioSettings {
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [Parameter(Mandatory=$true)][uint32]$RadioPlaybackGainMilli,
+        [Parameter(Mandatory=$true)][uint32]$MicTransmitGainMilli
+    )
+    $directory = [System.IO.Path]::GetDirectoryName([System.IO.Path]::GetFullPath($Path))
+    if (-not [System.IO.Directory]::Exists($directory)) { throw "音量设置目录不存在：$directory" }
+    $fullPath = [System.IO.Path]::Combine($directory, [System.IO.Path]::GetFileName($Path))
+    $temporaryPath = $fullPath + '.tmp-' + [guid]::NewGuid().ToString('N')
+    $backupPath = $fullPath + '.bak-' + [guid]::NewGuid().ToString('N')
+    $content = "{`n  `"schema_version`": 1,`n  `"radio_playback_gain`": $(Format-GainDecimal -GainMilli $RadioPlaybackGainMilli),`n  `"mic_transmit_gain`": $(Format-GainDecimal -GainMilli $MicTransmitGainMilli)`n}`n"
+    try {
+        [System.IO.File]::WriteAllText($temporaryPath, $content, (New-Object System.Text.UTF8Encoding($false)))
+        if ([System.IO.File]::Exists($fullPath)) {
+            [System.IO.File]::Replace($temporaryPath, $fullPath, $backupPath)
+        } else {
+            [System.IO.File]::Move($temporaryPath, $fullPath)
+        }
+    } finally {
+        if ([System.IO.File]::Exists($temporaryPath)) { [System.IO.File]::Delete($temporaryPath) }
+        if ([System.IO.File]::Exists($backupPath)) { [System.IO.File]::Delete($backupPath) }
+    }
+}
+
+function Get-AudioSettings {
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [bool]$RadioPlaybackGainWasBound = $false,
+        [string]$RadioPlaybackGainValue,
+        [bool]$MicTransmitGainWasBound = $false,
+        [string]$MicTransmitGainValue
+    )
+    $settings = Read-AudioSettings -Path $Path
+    $save = $false
+    if ($null -eq $settings) {
+        $settings = [pscustomobject]@{ RadioPlaybackGainMilli = [uint32]1000; MicTransmitGainMilli = [uint32]16000 }
+        $save = $true
+    }
+    if ($RadioPlaybackGainWasBound) {
+        $settings.RadioPlaybackGainMilli = ConvertTo-GainMilli -Text $RadioPlaybackGainValue -Label '-RadioPlaybackGain'
+        $save = $true
+    }
+    if ($MicTransmitGainWasBound) {
+        $settings.MicTransmitGainMilli = ConvertTo-GainMilli -Text $MicTransmitGainValue -Label '-MicTransmitGain'
+        $save = $true
+    }
+    if ($save) {
+        Write-AudioSettings -Path $Path -RadioPlaybackGainMilli $settings.RadioPlaybackGainMilli `
+            -MicTransmitGainMilli $settings.MicTransmitGainMilli
+    }
+    return $settings
+}
 
 function Resolve-LocalFile {
     param([Parameter(Mandatory=$true)][string]$Path, [Parameter(Mandatory=$true)][string]$Label)
@@ -279,6 +411,14 @@ try {
     if ($hasDevelopmentOverride -and [string]::IsNullOrWhiteSpace($StatusDirectory)) {
         throw '显式指定 -BridgePath 或 -BodyFile 时也必须显式指定 -StatusDirectory，避免运行报告落到源码目录。'
     }
+    $audioSettingsPath = Join-Path $script:packageRoot 'audio-settings.json'
+    $radioPlaybackGainWasBound = $PSBoundParameters.ContainsKey('RadioPlaybackGain')
+    $micTransmitGainWasBound = $PSBoundParameters.ContainsKey('MicTransmitGain')
+    $audioSettings = Get-AudioSettings -Path $audioSettingsPath `
+        -RadioPlaybackGainWasBound $radioPlaybackGainWasBound `
+        -RadioPlaybackGainValue $RadioPlaybackGain `
+        -MicTransmitGainWasBound $micTransmitGainWasBound `
+        -MicTransmitGainValue $MicTransmitGain
     $executable = Resolve-BridgeExecutable
     $selectedPreset = Select-TestPreset -Requested $Preset
     $passwordPath = ''
@@ -335,6 +475,9 @@ try {
     }
     Write-Host ("请确认本次设备：{0} · {1} · {2}" -f $portName, $audioSummary, $presetSummary)
     Write-Host '等待 BM 和电台连接。'
+    Write-Host ("电台回放增益：{0}x · 手咪发送增益：{1}x" -f `
+        (Format-GainDecimal -GainMilli $audioSettings.RadioPlaybackGainMilli),
+        (Format-GainDecimal -GainMilli $audioSettings.MicTransmitGainMilli))
     if ($selectedPreset -eq 'listen-91') {
         Write-Host '请在 BM SelfCare 为 Gateway 461135501 的 TS2 添加 TG91 静态订阅。连接后在电台扬声器收听，按 Q 停止并退出。'
     } elseif ($selectedPreset -eq 'listen-46001') {
@@ -353,7 +496,9 @@ try {
         '--input', [string]$radioInput.id, '--output', [string]$radioOutput.id,
         '--status-file', $statusPath,
         '--expected-wavein-endpoint', $waveinEndpointId,
-        '--expected-waveout-endpoint', $waveoutEndpointId)
+        '--expected-waveout-endpoint', $waveoutEndpointId,
+        '--radio-playback-gain', (Format-GainDecimal -GainMilli $audioSettings.RadioPlaybackGainMilli),
+        '--mic-transmit-gain', (Format-GainDecimal -GainMilli $audioSettings.MicTransmitGainMilli))
     if ($selectedPreset -ne 'manual') {
         $arguments += @('--test-preset', $selectedPreset, '--password-file', $passwordPath)
     }
