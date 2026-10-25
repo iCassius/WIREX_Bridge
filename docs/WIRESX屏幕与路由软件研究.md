@@ -1,6 +1,6 @@
 # WIRES-X 2.010 屏幕字段与模式路由静态研究
 
-状态：静态研究，2026-10-25。只检查官方 WIRES-X 2.010 文件、既有 REA 记录和手册；没有启动官方程序，没有打开 COM/CAT/BM/audio，没有操作电台或发射 RF。
+状态：静态研究，更新于 2026-10-26。只检查官方 WIRES-X 2.010 文件、既有 REA 记录和手册；没有启动官方程序，没有打开 COM/CAT/BM/audio，没有操作电台或发射 RF。
 
 ## 结论
 
@@ -72,11 +72,24 @@ HRI `FUN_1000cc80` 将 `DGKEY_NUM_NDDIRECT` 注册到配置接口，传入参数
 
 ## `SetDigiTrcvData` 与语音队列边界
 
-HRI `SetDigiTrcvData` 导出 `0x10001D00` 进入 `FUN_10001d20`，构造内部短记录并交给 `FUN_1000bc80`；随后以消息 `0x1401` 通知 HRI 线程。既有 R60/R61 把该消息接到内部 event 1 状态分派，但没有闭合队列节点到 UART `WriteFile` 或某个帧 serializer 的路径。故不能把该导出名直接解释成“把数据发到电台屏幕”。证据见新增 REA `ev_97979f…3061ad`、`ev_c24e07…1e04b`、`ev_e6b9f6…efc72` 及 [`R60_HRI队列语音路径与串口边界.md`](../../research/planning/R60_HRI队列语音路径与串口边界.md)、[`R61_HRI线程派发与出队交接.md`](../../research/planning/R61_HRI线程派发与出队交接.md)。
+HRI `SetDigiTrcvData` 导出 `0x10001D00` 进入 `FUN_10001d20`，将输入交给对象的 `+0x1d8f8` 队列，再向该对象记录的线程 ID 投递 `0x1401`。R61 已确认 `0x1401` 处理器向状态分派器提交 event 1；它与 event `0x11` 是两个事件。旧 R60/R61 尚未连通队列与 UART；R77 补齐了对象索引和条件发送路径，细节见下节。原导出名本身不能确定电台 LCD 字段含义。
 
 `RigDataIf.dll` 的 `ToHriAmbeAdd` / `ToHriAmbeGet` 是名为 AMBE 的字符串节点队列。HRI 内部 `FUN_10014600` 在 `+0x28f8 == 2` 时取一组 HRI AMBE 队列槽，在其他值时取另一组槽；未证明该字段等于 `DGKEY_NUM_NDDIRECT`，也未证明两路队列对应 AP/DIRECT、RF 接收或电台扬声器。队列布局和调用路径见 [`R62_RigDataIf队列消费与HRI绑定.md`](../../research/planning/R62_RigDataIf队列消费与HRI绑定.md) 及 REA `ev_7e3f0a…062091`、`ev_63dd0e…b7564e`、`ev_75021a…9bcb8a`。
 
 S/T 控制路径另有 HRI 语音活动状态记录；已经看到的 `T3` 启播与 `T0` 收尾不能据此归类为 RF 节点模式切换，也不用于补足上面未闭合的 LCD 路径。
+
+### R77：同一 HRI 对象到条件 UART 写入路径
+
+R77 将 EXE 调用点、HRI 对象表、event 17 回调、HRI outgoing queue 和 EXE `WriteFile` 路径按证据连接。官方样本仍是 HRI-UART.dll SHA-256 `56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed` 与 WIRES_X.EXE SHA-256 `8f05dc26794144438566b880ce775f5178d62eb3c4deb8c053089216342bc671`。
+
+1. **两个 EXE 调用都选择 HRI 对象表槽 0。** R22 的 `FUN_0040cf70` 调 `CreateDigiConnect` 时，第二个形式参数是常数 `0`（Evidence `ev_36c9dd5570469949787faaac6caa3cb0d2e5fe61f4b360b016db1aa1af4b822b`）。R51 的 `FUN_004e5580` 生成 D1–E4 等字段文本，然后调用表项 `+0x1c` 的 `SetDigiTrcvData(0, local_310)`（Evidence `ev_5a1c56f443db2913fbc51c4d24d7b930ea3e428f8a41e82b1f831a64e7118d8c`）。
+2. **HRI 把两个 0 都用作同一全局表索引。** `CreateDigiConnect` 将第二个形式参数放入 ESI；`FUN_10001a40` 用该索引检查/写入 `DAT_10191d38[index]`，在新建对象后以该表项指针调用 `CWinThread::CreateThread`（R76 Evidence `ev_32e3c92a787db9ab6c6b7844f650fd743cbc38368ab93998fd98c3e3410d6f12`）。对象构造函数 `FUN_1000c3d0` 初始化 `this+0x1d8f8` 队列，并以同一 `this` 建状态表（Evidence `ev_247af966646237563f95176751203bca4db4c1a5da7a91873234c061f26603bd`）。`SetDigiTrcvData(int,char*)` 将第一个形式参数放入 ESI；其 helper `FUN_10001d20` 读取 `DAT_10191d38[index]`，向该对象 `+0x1d8f8` 队列添加记录（本轮 Evidence `ev_022b9112c799f2a464e512799a0f1aa59da66756905053fca08d1e1232de2b6b`、`ev_6a527e6e20f196148da00b15cd68f52d5f913453c3efc7aedff82c101e4a36e4`）。因为两个 EXE 调用的索引均为 0，静态代码把 producer 和线程对象连到 `DAT_10191d38[0]` 的同一实例。
+3. **state 6/event `0x11` 是该对象队列的消费者。** 构造器将 event `0x11` 的回调登记为 `FUN_10017ee0`（R61 Evidence `ev_df7a82b059437d563de83ff1834d59c4cdc6846028d1e60851a9940ed8a4d0c2`）；该回调用 `param_1+0x1d8f8` 读取并在分支中摘出队首，随后按状态和记录条件调用 `FUN_1000aa40`。部分调用第三参数为 0，只格式化记录；一个 voice-frame 分支用第三参数 1，`FUN_1000aa40` 随后把内部 `F` 类型记录交给 outgoing queue `FUN_1000a140`（Evidence `ev_41dd62f0ba0e27eee32dc1c33bd25314f9ca62f9a933fd434341a2c6eac45d78`、`ev_3b65fb6614f18fcbf72824b4ab87211134c20722cc1b245cc8e061978083b9c0`、`ev_d2cb94ab9856ade391cafa317db90ee3e41483196e01938c10f962920b9e1785`）。
+4. **outgoing queue 的一条路径把缓冲区和长度交给主程序，再到 `WriteFile`。** `FUN_1000a240` 取 outgoing queue 项目并对主程序窗口发送 `WM 0x618`，参数是记录缓冲区和长度（Evidence `ev_d655b4be6bd24449c7d460909fb95eb74c345ca85c26e342499d88757dac4967`）。EXE 的 `0x618` handler `FUN_00497b50` 调 `FUN_0040d260`，随后由 `FUN_0040f7e0` 将同一指针、长度传给 `WriteFile`（R8 Evidence `ev_b0aafad446c77fafe5688ec5b109f00275059ba97725657cec6ad39d60b3a61e`、`ev_04ee7da9fa2b802698348a29437077dde6f1ee9f1a5c5153e1affbf52d9d1f62`、`ev_6ab289bddeecbdb0bb70ba859d2d9238b403c368bcbe8ab3a51451f573216cca`）。这条 `0x618` 写入路径不会先经过 EXE 的另一条 `0x40c570` XOR 封装路径。
+
+**剩余缺口：** `SetDigiTrcvData` 投递 `0x1401` 后，HRI 将其映射为 event 1；目前没有找到 event `0x11` 的明确产生位置，也没有证明 event 1 的回调会调度 event `0x11`。因此已确认同一对象队列能被 event 17 callback 读取、并可在特定分支到达 `WriteFile`；实际设备运行时进入该分支的条件与时序仍未知。内部 `F` 记录和 EXE 的 D1–E4 输入字段都没有 LCD 业务名称，静态证据没有把这些字节对应到 FTX-1 的呼号、房间/节点列表、软键文字或屏幕刷新动作。当前证据足以描述条件 UART 数据路径，尚不足以实现 LCD 更新协议。
+
+本轮新增 HRI 全量 REA bundle：[`r77_hri_lcd_chain_20261026.evidence.json`](../../research/rea/v2.010/r77_hri_lcd_chain_20261026.evidence.json)（target SHA 和每条 Evidence 记录均在 bundle 中）。它合并加载的 R61/R76 HRI 静态记录和本轮直接函数分析；EXE 侧 R22、R51、R8 证据仍引用各自完整 bundle。
 
 ## 显示 DMR 呼号的安全数据来源
 
@@ -86,6 +99,6 @@ S/T 控制路径另有 HRI 语音活动状态记录；已经看到的 `T3` 启�
 
 ## 下一步最小闭合条件
 
-EXE 的 `FUN_004fd630` 已确认装载 `HRI-UART.dll`、按名称取得 `FrameTrxDataToTrcvFrame` 和 `SetDigiTrcvData`，并初始化对象 `+0x48` 与 `+0x1c` 两个函数指针槽。下一步追踪这两个槽位的间接调用者、调用输入及返回/输出数据，再确认数据是否进入 UART 写入路径以及是否绑定到 FTX-1 LCD；这些调用关系和 LCD serializer 仍未闭合，因此暂不设计 LCD 更新命令。
+下一步从 state 6/event `0x11` 的产生端查起：复核 event 1 到状态变更/定时器回调的路径，再沿 `FUN_100152c0` 的间接状态表调用确认何时会进入 `FUN_10017ee0`。即使 event 路径闭合，仍需恢复 D1–E4 和内部 F 记录的设备端显示语义，才能把其中字段映射到 FTX-1 LCD。当前没有为 LCD 构造或发送任何命令。
 
 下一步分析官方会话启动和退出时配置的加载、保存与恢复行为，并确认 Bridge 运行期间 RF 接收状态。S 表指示与 Bridge 关闭后出现的 RF 音频是否同一时刻，仍需确认。若要发送新的 RF 模式写入命令，应先恢复该命令的协议和作用路径。本轮只做静态研究，没有进行这些观察或写入。
