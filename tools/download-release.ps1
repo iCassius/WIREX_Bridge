@@ -24,8 +24,33 @@ $script:releaseAssetRedirectHosts = @(
     'github-releases.githubusercontent.com'
 )
 
+function Test-ReleaseTag {
+    param([Parameter(Mandatory=$true)][string]$Tag)
+    return ($Tag -ceq 'v0.1.0-alpha.1' -or $Tag -ceq 'v0.1.0-alpha.2')
+}
+
+function Get-ExpectedReleaseTests {
+    param([Parameter(Mandatory=$true)][string]$Tag)
+    $alpha1 = @(
+        'dmrd_test','direct_frame_test','hri_t_payload_test','direct_stream_test','hri_session_test','hri_ptt_gate_test',
+        'hri_downlink_session_test','hri_radio_protocol_test','operation_audio_cleanup_test','audio_input_cleanup_test',
+        'wave_output_open_test','session_timing_test','wave_file_test','pcm_gain_test','bounded_pipe_writer_test',
+        'console_lifecycle_test','session_report_test','dmr_call_test','bm_session_test','bm_udp_test','dmr_vocoder_test',
+        'pcm_resampler_test','bm_voice_pipeline_test','bm_test_profile_test','bm_connection_config_test',
+        'hri_stream_session_test','bm_bridge_loopback_test'
+    )
+    switch -CaseSensitive ($Tag) {
+        'v0.1.0-alpha.1' { return $alpha1 }
+        'v0.1.0-alpha.2' {
+            return @($alpha1[0..14] + 'ui_pipe_test' + $alpha1[15..($alpha1.Count - 1)])
+        }
+        default { throw 'Only v0.1.0-alpha.1 and v0.1.0-alpha.2 release profiles are supported.' }
+    }
+}
+
 function Get-ExpectedReleaseFiles {
-    return @(
+    param([string]$Tag = 'v0.1.0-alpha.1')
+    $alpha1 = @(
         [pscustomobject]@{ Path='wirex_bridge.exe'; AssetName='wirex_bridge.exe'; MaximumBytes=134217728L },
         [pscustomobject]@{ Path='build-provenance.json'; AssetName='build-provenance.json'; MaximumBytes=2097152L },
         [pscustomobject]@{ Path='start-bm-radio-bridge.cmd'; AssetName='start-bm-radio-bridge.cmd'; MaximumBytes=524288L },
@@ -43,6 +68,22 @@ function Get-ExpectedReleaseFiles {
         [pscustomobject]@{ Path='licenses/droidstar_mbe/source-manifest.json'; AssetName='licenses__droidstar-mbe__source-manifest.json'; MaximumBytes=4194304L },
         [pscustomobject]@{ Path='private/device-y.bin'; AssetName='private__device-y.bin'; MaximumBytes=100L }
     )
+    switch -CaseSensitive ($Tag) {
+        'v0.1.0-alpha.1' { return $alpha1 }
+        'v0.1.0-alpha.2' {
+            $alpha2 = @($alpha1)
+            $alpha2 += [pscustomobject]@{ Path='start-user-config.cmd'; AssetName='start-user-config.cmd'; MaximumBytes=524288L }
+            $alpha2 += [pscustomobject]@{ Path='start-user-config.ps1'; AssetName='start-user-config.ps1'; MaximumBytes=524288L }
+            $alpha2 += [pscustomobject]@{ Path='bridge-user-config.psm1'; AssetName='bridge-user-config.psm1'; MaximumBytes=1048576L }
+            $alpha2 += [pscustomobject]@{ Path='start-ui.cmd'; AssetName='start-ui.cmd'; MaximumBytes=524288L }
+            $alpha2 += [pscustomobject]@{ Path='docs/配置与桌面操作.md'; AssetName='docs__desktop-user-config.md'; MaximumBytes=4194304L }
+            $alpha2 += [pscustomobject]@{ Path='ui/windows/bridge-ui.ps1'; AssetName='ui__windows__bridge-ui.ps1'; MaximumBytes=2097152L }
+            $alpha2 += [pscustomobject]@{ Path='ui/windows/BridgeWindow.xaml'; AssetName='ui__windows__BridgeWindow.xaml'; MaximumBytes=4194304L }
+            $alpha2 += [pscustomobject]@{ Path='ui/windows/NativeProcessSupervisor.cs'; AssetName='ui__windows__NativeProcessSupervisor.cs'; MaximumBytes=2097152L }
+            return $alpha2
+        }
+        default { throw 'Only v0.1.0-alpha.1 and v0.1.0-alpha.2 release profiles are supported.' }
+    }
 }
 
 function Assert-JsonObjectKeysUnique {
@@ -168,8 +209,8 @@ function Test-ManifestDocument {
         [string]$Manifest.package_status -cne 'root_audit_passed') {
         throw 'release manifest 版本、包类型或审计状态无效。'
     }
-    if ([string]$Manifest.version -cne $RequestedTag -or [string]$Manifest.tag_candidate -cne $RequestedTag -or
-        $RequestedTag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$') {
+    if (-not (Test-ReleaseTag -Tag $RequestedTag) -or
+        [string]$Manifest.version -cne $RequestedTag -or [string]$Manifest.tag_candidate -cne $RequestedTag) {
         throw 'Release tag 与 manifest 版本不一致。'
     }
     if ($Manifest.tag_created -isnot [bool] -or $Manifest.github_release_published -isnot [bool]) {
@@ -204,12 +245,16 @@ function Test-ManifestDocument {
     }
     if (-not (Test-JsonUnsignedInteger $Manifest.build.passed_test_count 1 1000)) { throw 'manifest 测试数量无效。' }
     $manifestTestNames = @($Manifest.build.passed_tests)
-    if ($manifestTestNames.Count -ne [int]$Manifest.build.passed_test_count) { throw 'manifest 测试数量与测试清单不一致。' }
+    $expectedTestNames = @(Get-ExpectedReleaseTests -Tag $RequestedTag)
+    if ($manifestTestNames.Count -ne [int]$Manifest.build.passed_test_count -or
+        $manifestTestNames.Count -ne $expectedTestNames.Count) { throw 'manifest 测试数量与该版本固定测试清单不一致。' }
     $testNameSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
-    foreach ($testName in $manifestTestNames) {
+    for ($testIndex = 0; $testIndex -lt $manifestTestNames.Count; $testIndex++) {
+        $testName = $manifestTestNames[$testIndex]
         if ($testName -isnot [string] -or $testName -cnotmatch '^[A-Za-z0-9_]+$' -or -not $testNameSet.Add([string]$testName)) {
             throw 'manifest 测试清单含无效或重复名称。'
         }
+        if ([string]$testName -cne $expectedTestNames[$testIndex]) { throw 'manifest 测试名称或顺序与该版本固定测试清单不一致。' }
     }
 
     Assert-ExactJsonObject -Value $Manifest.approved_y_fixture -ExpectedNames @('path', 'length_bytes', 'sha256') -Label 'manifest.approved_y_fixture'
@@ -228,7 +273,7 @@ function Test-ManifestDocument {
     }
 
     $records = @($Manifest.files)
-    $expectedFiles = @(Get-ExpectedReleaseFiles)
+    $expectedFiles = @(Get-ExpectedReleaseFiles -Tag $RequestedTag)
     if ($records.Count -ne $expectedFiles.Count) { throw 'manifest 文件数量与发布清单不一致。' }
     $pathSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
     $assetSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
@@ -293,11 +338,14 @@ function Test-BuildProvenanceDocument {
     }
     $provenanceTests = @($Provenance.tests)
     $manifestTests = @($manifest.build.passed_tests)
-    if ($provenanceTests.Count -ne [int]$manifest.build.passed_test_count -or
+    $expectedTestNames = @(Get-ExpectedReleaseTests -Tag ([string]$manifest.version))
+    if ($provenanceTests.Count -ne $expectedTestNames.Count -or
+        $provenanceTests.Count -ne [int]$manifest.build.passed_test_count -or
         $provenanceTests.Count -ne $manifestTests.Count) { throw 'builder provenance 测试清单数量不一致。' }
     for ($index = 0; $index -lt $provenanceTests.Count; $index++) {
         Assert-ExactJsonObject -Value $provenanceTests[$index] -ExpectedNames @('name', 'result', 'exit_code') -Label 'provenance.tests[]'
         if ([string]$provenanceTests[$index].name -cne [string]$manifestTests[$index] -or
+            [string]$provenanceTests[$index].name -cne [string]$expectedTestNames[$index] -or
             [string]$provenanceTests[$index].result -cne 'passed' -or
             -not (Test-JsonUnsignedInteger $provenanceTests[$index].exit_code 0 0)) {
             throw 'builder provenance 含未通过、重复或与 manifest 不一致的测试。'
@@ -308,6 +356,7 @@ function Test-BuildProvenanceDocument {
 
 function Select-ReleaseCandidate {
     param([object[]]$Releases, [Parameter(Mandatory=$true)][string]$RequestedTag, [switch]$AllowDraft)
+    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0-alpha.1 and v0.1.0-alpha.2 are supported.' }
     $matches = @($Releases | Where-Object { [string]$_.tag_name -ceq $RequestedTag })
     if ($matches.Count -ne 1) { throw 'GitHub Release 列表中没有唯一匹配的 tag。' }
     $release = $matches[0]
@@ -478,7 +527,7 @@ function New-GitHubApiUri {
     )
     switch ($Kind) {
         'tag' {
-            if ($Tag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$') { throw 'Release tag 格式无效。' }
+            if (-not (Test-ReleaseTag -Tag $Tag)) { throw 'Only v0.1.0-alpha.1 and v0.1.0-alpha.2 are supported.' }
             return [Uri]($script:githubApiRoot + '/releases/tags/' + $Tag)
         }
         'list' {
@@ -681,7 +730,7 @@ function Invoke-ReleaseDownload {
     param([Parameter(Mandatory=$true)][string]$RequestedTag,
           [Parameter(Mandatory=$true)][string]$OutputDirectory,
           [switch]$AllowDraft)
-    if ($RequestedTag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$') { throw 'Tag 必须为 vMAJOR.MINOR.PATCH-alpha.N。' }
+    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0-alpha.1 and v0.1.0-alpha.2 are supported.' }
     $context = Get-DownloadDestinationContext -Destination $OutputDirectory
     $token = Get-GitCredentialToken
     $stagingCreated = $false
@@ -725,7 +774,7 @@ function Invoke-ReleaseDownload {
             }
             $asset = $assetMap[[string]$record.asset_name]
             $temporaryFile = Join-Path $context.Staging ('.asset-' + ([long]$asset.id).ToString([Globalization.CultureInfo]::InvariantCulture) + '.part')
-            $expectedFile = @(Get-ExpectedReleaseFiles | Where-Object { $_.Path -ceq $relativePath })
+            $expectedFile = @(Get-ExpectedReleaseFiles -Tag $RequestedTag | Where-Object { $_.Path -ceq $relativePath })
             if ($expectedFile.Count -ne 1) { throw "发布文件路径不在固定清单中：$relativePath" }
             Write-ReleaseAssetToFile -Asset $asset -Token $token -Path $temporaryFile `
                 -ExpectedLength ([long]$record.length_bytes) -MaximumBytes ([long]$expectedFile[0].MaximumBytes)

@@ -9,7 +9,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $script:approvedYFixtureSha256 = '82e0085ccaccb769a83362c5b335ce6b9a0e3ae93afdf2ad4f46eb81f908577f'
-$script:expectedTestNames = @(
+$script:alpha1TestNames = @(
     'dmrd_test',
     'direct_frame_test',
     'hri_t_payload_test',
@@ -38,38 +38,164 @@ $script:expectedTestNames = @(
     'hri_stream_session_test',
     'bm_bridge_loopback_test'
 )
+$script:alpha2TestNames = @(
+    $script:alpha1TestNames[0..14] + 'ui_pipe_test' +
+    $script:alpha1TestNames[15..($script:alpha1TestNames.Count - 1)]
+)
+$script:activeReleaseVersion = 'v0.1.0-alpha.1'
+
+function Get-ReleaseProfile {
+    param([Parameter(Mandatory=$true)][string]$Version)
+    switch -CaseSensitive ($Version) {
+        'v0.1.0-alpha.1' {
+            return [pscustomobject]@{
+                Version = 'v0.1.0-alpha.1'
+                TestNames = $script:alpha1TestNames
+                SourceFiles = @(
+                    @{ Source='tools\start-bm-radio-bridge.cmd'; Destination='start-bm-radio-bridge.cmd' },
+                    @{ Source='tools\start-bm-radio-bridge.ps1'; Destination='start-bm-radio-bridge.ps1' },
+                    @{ Source='tools\start-listen-91.cmd'; Destination='start-listen-91.cmd' },
+                    @{ Source='tools\start-profile.cmd'; Destination='start-profile.cmd' },
+                    @{ Source='docs\releases\v0.1.0-alpha.1-package-README.md'; Destination='README.md' },
+                    @{ Source='docs\连接配置.md'; Destination='docs\连接配置.md' },
+                    @{ Source='docs\音量调节.md'; Destination='docs\音量调节.md' },
+                    @{ Source='third_party\dmr_signal\COPYING.GPL-3.0.txt'; Destination='licenses\dmr_signal\COPYING.GPL-3.0.txt' },
+                    @{ Source='third_party\dmr_signal\NOTICE.md'; Destination='licenses\dmr_signal\NOTICE.md' },
+                    @{ Source='third_party\droidstar_mbe\COPYING.GPL-3.0.txt'; Destination='licenses\droidstar_mbe\COPYING.GPL-3.0.txt' },
+                    @{ Source='third_party\droidstar_mbe\ISC-NOTICE.txt'; Destination='licenses\droidstar_mbe\ISC-NOTICE.txt' },
+                    @{ Source='third_party\droidstar_mbe\source-manifest.json'; Destination='licenses\droidstar_mbe\source-manifest.json' }
+                )
+                PackageFiles = @(
+                    'wirex_bridge.exe', 'build-provenance.json', 'start-bm-radio-bridge.cmd', 'start-bm-radio-bridge.ps1',
+                    'start-listen-91.cmd', 'start-profile.cmd', 'README.md', 'SOURCE.txt', 'manifest.json',
+                    'docs/连接配置.md', 'docs/音量调节.md',
+                    'licenses/dmr_signal/COPYING.GPL-3.0.txt', 'licenses/dmr_signal/NOTICE.md',
+                    'licenses/droidstar_mbe/COPYING.GPL-3.0.txt', 'licenses/droidstar_mbe/ISC-NOTICE.txt',
+                    'licenses/droidstar_mbe/source-manifest.json', 'private/device-y.bin'
+                )
+                Directories = @('docs', 'licenses', 'licenses/dmr_signal', 'licenses/droidstar_mbe', 'logs', 'private')
+                AssetMap = [ordered]@{
+                    'wirex_bridge.exe'='wirex_bridge.exe'
+                    'build-provenance.json'='build-provenance.json'
+                    'start-bm-radio-bridge.cmd'='start-bm-radio-bridge.cmd'
+                    'start-bm-radio-bridge.ps1'='start-bm-radio-bridge.ps1'
+                    'start-listen-91.cmd'='start-listen-91.cmd'
+                    'start-profile.cmd'='start-profile.cmd'
+                    'README.md'='README.md'
+                    'SOURCE.txt'='SOURCE.txt'
+                    'docs/连接配置.md'='docs__connection-profile.md'
+                    'docs/音量调节.md'='docs__audio-gain.md'
+                    'licenses/dmr_signal/COPYING.GPL-3.0.txt'='licenses__dmr-signal__COPYING.GPL-3.0.txt'
+                    'licenses/dmr_signal/NOTICE.md'='licenses__dmr-signal__NOTICE.md'
+                    'licenses/droidstar_mbe/COPYING.GPL-3.0.txt'='licenses__droidstar-mbe__COPYING.GPL-3.0.txt'
+                    'licenses/droidstar_mbe/ISC-NOTICE.txt'='licenses__droidstar-mbe__ISC-NOTICE.txt'
+                    'licenses/droidstar_mbe/source-manifest.json'='licenses__droidstar-mbe__source-manifest.json'
+                    'private/device-y.bin'='private__device-y.bin'
+                }
+                PackageReadme = 'docs\releases\v0.1.0-alpha.1-package-README.md'
+                ReleaseScope = 'FTX-1 DIRECT personal terminal with BrandMeister voice bridging'
+                NotIncluded = @('LCD text/routing integration', 'RF node operation', 'graphical UI')
+            }
+        }
+        'v0.1.0-alpha.2' {
+            $alpha2SourceFiles = @(
+                @{ Source='tools\start-bm-radio-bridge.cmd'; Destination='start-bm-radio-bridge.cmd' },
+                @{ Source='tools\start-bm-radio-bridge.ps1'; Destination='start-bm-radio-bridge.ps1' },
+                @{ Source='tools\start-listen-91.cmd'; Destination='start-listen-91.cmd' },
+                @{ Source='tools\start-profile.cmd'; Destination='start-profile.cmd' },
+                @{ Source='tools\start-user-config.cmd'; Destination='start-user-config.cmd' },
+                @{ Source='tools\start-user-config.ps1'; Destination='start-user-config.ps1' },
+                @{ Source='tools\bridge-user-config.psm1'; Destination='bridge-user-config.psm1' },
+                @{ Source='tools\start-ui.cmd'; Destination='start-ui.cmd' },
+                @{ Source='ui\windows\bridge-ui.ps1'; Destination='ui\windows\bridge-ui.ps1' },
+                @{ Source='ui\windows\BridgeWindow.xaml'; Destination='ui\windows\BridgeWindow.xaml' },
+                @{ Source='ui\windows\NativeProcessSupervisor.cs'; Destination='ui\windows\NativeProcessSupervisor.cs' },
+                @{ Source='docs\releases\v0.1.0-alpha.2-package-README.md'; Destination='README.md' },
+                @{ Source='docs\配置与桌面操作.md'; Destination='docs\配置与桌面操作.md' },
+                @{ Source='docs\连接配置.md'; Destination='docs\连接配置.md' },
+                @{ Source='docs\音量调节.md'; Destination='docs\音量调节.md' },
+                @{ Source='third_party\dmr_signal\COPYING.GPL-3.0.txt'; Destination='licenses\dmr_signal\COPYING.GPL-3.0.txt' },
+                @{ Source='third_party\dmr_signal\NOTICE.md'; Destination='licenses\dmr_signal\NOTICE.md' },
+                @{ Source='third_party\droidstar_mbe\COPYING.GPL-3.0.txt'; Destination='licenses\droidstar_mbe\COPYING.GPL-3.0.txt' },
+                @{ Source='third_party\droidstar_mbe\ISC-NOTICE.txt'; Destination='licenses\droidstar_mbe\ISC-NOTICE.txt' },
+                @{ Source='third_party\droidstar_mbe\source-manifest.json'; Destination='licenses\droidstar_mbe\source-manifest.json' }
+            )
+            $alpha2AssetMap = [ordered]@{
+                'wirex_bridge.exe'='wirex_bridge.exe'
+                'build-provenance.json'='build-provenance.json'
+                'start-bm-radio-bridge.cmd'='start-bm-radio-bridge.cmd'
+                'start-bm-radio-bridge.ps1'='start-bm-radio-bridge.ps1'
+                'start-listen-91.cmd'='start-listen-91.cmd'
+                'start-profile.cmd'='start-profile.cmd'
+                'start-user-config.cmd'='start-user-config.cmd'
+                'start-user-config.ps1'='start-user-config.ps1'
+                'bridge-user-config.psm1'='bridge-user-config.psm1'
+                'start-ui.cmd'='start-ui.cmd'
+                'README.md'='README.md'
+                'SOURCE.txt'='SOURCE.txt'
+                'docs/配置与桌面操作.md'='docs__desktop-user-config.md'
+                'docs/连接配置.md'='docs__connection-profile.md'
+                'docs/音量调节.md'='docs__audio-gain.md'
+                'ui/windows/bridge-ui.ps1'='ui__windows__bridge-ui.ps1'
+                'ui/windows/BridgeWindow.xaml'='ui__windows__BridgeWindow.xaml'
+                'ui/windows/NativeProcessSupervisor.cs'='ui__windows__NativeProcessSupervisor.cs'
+                'licenses/dmr_signal/COPYING.GPL-3.0.txt'='licenses__dmr-signal__COPYING.GPL-3.0.txt'
+                'licenses/dmr_signal/NOTICE.md'='licenses__dmr-signal__NOTICE.md'
+                'licenses/droidstar_mbe/COPYING.GPL-3.0.txt'='licenses__droidstar-mbe__COPYING.GPL-3.0.txt'
+                'licenses/droidstar_mbe/ISC-NOTICE.txt'='licenses__droidstar-mbe__ISC-NOTICE.txt'
+                'licenses/droidstar_mbe/source-manifest.json'='licenses__droidstar-mbe__source-manifest.json'
+                'private/device-y.bin'='private__device-y.bin'
+            }
+            return [pscustomobject]@{
+                Version = 'v0.1.0-alpha.2'
+                TestNames = $script:alpha2TestNames
+                SourceFiles = $alpha2SourceFiles
+                PackageFiles = @(
+                    'wirex_bridge.exe', 'build-provenance.json', 'start-bm-radio-bridge.cmd', 'start-bm-radio-bridge.ps1',
+                    'start-listen-91.cmd', 'start-profile.cmd', 'start-user-config.cmd', 'start-user-config.ps1',
+                    'bridge-user-config.psm1', 'start-ui.cmd', 'README.md', 'SOURCE.txt', 'manifest.json',
+                    'docs/配置与桌面操作.md', 'docs/连接配置.md', 'docs/音量调节.md',
+                    'ui/windows/bridge-ui.ps1', 'ui/windows/BridgeWindow.xaml', 'ui/windows/NativeProcessSupervisor.cs',
+                    'licenses/dmr_signal/COPYING.GPL-3.0.txt', 'licenses/dmr_signal/NOTICE.md',
+                    'licenses/droidstar_mbe/COPYING.GPL-3.0.txt', 'licenses/droidstar_mbe/ISC-NOTICE.txt',
+                    'licenses/droidstar_mbe/source-manifest.json', 'private/device-y.bin'
+                )
+                Directories = @('docs', 'licenses', 'licenses/dmr_signal', 'licenses/droidstar_mbe', 'logs', 'private', 'ui', 'ui/windows')
+                AssetMap = $alpha2AssetMap
+                PackageReadme = 'docs\releases\v0.1.0-alpha.2-package-README.md'
+                ReleaseScope = 'FTX-1 DIRECT personal terminal and BrandMeister voice bridge with Windows desktop UI and user configuration'
+                NotIncluded = @('LCD text/routing integration', 'RF node operation')
+            }
+        }
+        default { throw 'Only v0.1.0-alpha.1 and v0.1.0-alpha.2 release profiles are supported.' }
+    }
+}
+
+function Set-ReleaseVersion {
+    param([Parameter(Mandatory=$true)][string]$Version)
+    $profile = Get-ReleaseProfile -Version $Version
+    $script:activeReleaseVersion = $profile.Version
+    return $profile
+}
 
 function Test-ReleaseVersion {
     param([Parameter(Mandatory=$true)][string]$Value)
-    return $Value -ceq 'v0.1.0-alpha.1'
+    try { [void](Get-ReleaseProfile -Version $Value); return $true } catch { return $false }
 }
 
 function Get-ReleaseAssetName {
     param([Parameter(Mandatory=$true)][string]$RelativePath)
+    $profile = Get-ReleaseProfile -Version $script:activeReleaseVersion
     $normalized = $RelativePath.Replace('\', '/')
     if ([string]::IsNullOrWhiteSpace($normalized) -or $normalized.StartsWith('/') -or
         $normalized -match '(^|/)\.\.?(/|$)' -or $normalized.Contains(':')) {
         throw "发布文件路径无效：$RelativePath"
     }
-    switch -CaseSensitive ($normalized) {
-        'wirex_bridge.exe' { return 'wirex_bridge.exe' }
-        'build-provenance.json' { return 'build-provenance.json' }
-        'start-bm-radio-bridge.cmd' { return 'start-bm-radio-bridge.cmd' }
-        'start-bm-radio-bridge.ps1' { return 'start-bm-radio-bridge.ps1' }
-        'start-listen-91.cmd' { return 'start-listen-91.cmd' }
-        'start-profile.cmd' { return 'start-profile.cmd' }
-        'README.md' { return 'README.md' }
-        'SOURCE.txt' { return 'SOURCE.txt' }
-        'docs/连接配置.md' { return 'docs__connection-profile.md' }
-        'docs/音量调节.md' { return 'docs__audio-gain.md' }
-        'licenses/dmr_signal/COPYING.GPL-3.0.txt' { return 'licenses__dmr-signal__COPYING.GPL-3.0.txt' }
-        'licenses/dmr_signal/NOTICE.md' { return 'licenses__dmr-signal__NOTICE.md' }
-        'licenses/droidstar_mbe/COPYING.GPL-3.0.txt' { return 'licenses__droidstar-mbe__COPYING.GPL-3.0.txt' }
-        'licenses/droidstar_mbe/ISC-NOTICE.txt' { return 'licenses__droidstar-mbe__ISC-NOTICE.txt' }
-        'licenses/droidstar_mbe/source-manifest.json' { return 'licenses__droidstar-mbe__source-manifest.json' }
-        'private/device-y.bin' { return 'private__device-y.bin' }
-        default { throw "发布清单没有为此路径定义 ASCII asset_name：$normalized" }
+    if (@($profile.PackageFiles | Where-Object { [string]$_ -ceq $normalized }).Count -ne 1) {
+        throw "发布清单没有为此路径定义 ASCII asset_name：$normalized"
     }
+    if ($profile.AssetMap.Contains($normalized)) { return [string]$profile.AssetMap[$normalized] }
+    throw "发布清单没有为此路径定义 ASCII asset_name：$normalized"
 }
 
 function Resolve-ReleasePath {
@@ -105,7 +231,7 @@ function Test-ApprovedYFixture {
 }
 
 function Get-ExpectedReleaseTests {
-    return $script:expectedTestNames
+    return (Get-ReleaseProfile -Version $script:activeReleaseVersion).TestNames
 }
 
 function Test-ReleaseBuildEvidence {
@@ -163,15 +289,16 @@ function Test-ReleaseBuildEvidence {
         ([string]$provenance.executable.sha256).ToLowerInvariant() -cne $actualExeHash) {
         throw 'wirex_bridge.exe 与 builder provenance 中的长度或 SHA-256 不一致。'
     }
+    $expectedTestNames = @(Get-ExpectedReleaseTests)
     $provenanceTests = @($provenance.tests)
-    if ($provenanceTests.Count -ne $script:expectedTestNames.Count) {
-        throw "builder provenance 记录的测试数目不符：$($provenanceTests.Count) / $($script:expectedTestNames.Count)"
+    if ($provenanceTests.Count -ne $expectedTestNames.Count) {
+        throw "builder provenance 记录的测试数目不符：$($provenanceTests.Count) / $($expectedTestNames.Count)"
     }
-    for ($index = 0; $index -lt $script:expectedTestNames.Count; $index++) {
-        if ([string]$provenanceTests[$index].name -cne $script:expectedTestNames[$index] -or
+    for ($index = 0; $index -lt $expectedTestNames.Count; $index++) {
+        if ([string]$provenanceTests[$index].name -cne $expectedTestNames[$index] -or
             [string]$provenanceTests[$index].result -cne 'passed' -or
             [int]$provenanceTests[$index].exit_code -ne 0) {
-            throw "builder provenance 未记录测试 $($script:expectedTestNames[$index]) 成功。"
+            throw "builder provenance 未记录测试 $($expectedTestNames[$index]) 成功。"
         }
     }
     $logText = [System.IO.File]::ReadAllText($log, [System.Text.Encoding]::UTF8)
@@ -186,11 +313,11 @@ function Test-ReleaseBuildEvidence {
     }
     $testMatches = [regex]::Matches($logText, '(?m)^运行离线测试：([A-Za-z0-9_]+)\s*$')
     $actualTests = @($testMatches | ForEach-Object { $_.Groups[1].Value })
-    if ($actualTests.Count -ne $script:expectedTestNames.Count) {
-        throw "构建日志中的离线测试数目不符：$($actualTests.Count) / $($script:expectedTestNames.Count)"
+    if ($actualTests.Count -ne $expectedTestNames.Count) {
+        throw "构建日志中的离线测试数目不符：$($actualTests.Count) / $($expectedTestNames.Count)"
     }
-    for ($index = 0; $index -lt $script:expectedTestNames.Count; $index++) {
-        if ($actualTests[$index] -cne $script:expectedTestNames[$index]) {
+    for ($index = 0; $index -lt $expectedTestNames.Count; $index++) {
+        if ($actualTests[$index] -cne $expectedTestNames[$index]) {
             throw "构建日志测试顺序或名称不符：索引 $index。"
         }
     }
@@ -222,31 +349,11 @@ function Test-ReleaseBuildEvidence {
 }
 
 function Get-ReleaseSourceFiles {
-    return @(
-        @{ Source='tools\start-bm-radio-bridge.cmd'; Destination='start-bm-radio-bridge.cmd' },
-        @{ Source='tools\start-bm-radio-bridge.ps1'; Destination='start-bm-radio-bridge.ps1' },
-        @{ Source='tools\start-listen-91.cmd'; Destination='start-listen-91.cmd' },
-        @{ Source='tools\start-profile.cmd'; Destination='start-profile.cmd' },
-        @{ Source='docs\releases\v0.1.0-alpha.1-package-README.md'; Destination='README.md' },
-        @{ Source='docs\连接配置.md'; Destination='docs\连接配置.md' },
-        @{ Source='docs\音量调节.md'; Destination='docs\音量调节.md' },
-        @{ Source='third_party\dmr_signal\COPYING.GPL-3.0.txt'; Destination='licenses\dmr_signal\COPYING.GPL-3.0.txt' },
-        @{ Source='third_party\dmr_signal\NOTICE.md'; Destination='licenses\dmr_signal\NOTICE.md' },
-        @{ Source='third_party\droidstar_mbe\COPYING.GPL-3.0.txt'; Destination='licenses\droidstar_mbe\COPYING.GPL-3.0.txt' },
-        @{ Source='third_party\droidstar_mbe\ISC-NOTICE.txt'; Destination='licenses\droidstar_mbe\ISC-NOTICE.txt' },
-        @{ Source='third_party\droidstar_mbe\source-manifest.json'; Destination='licenses\droidstar_mbe\source-manifest.json' }
-    )
+    return (Get-ReleaseProfile -Version $script:activeReleaseVersion).SourceFiles
 }
 
 function Get-ExpectedReleasePackageFiles {
-    return @(
-        'wirex_bridge.exe', 'build-provenance.json', 'start-bm-radio-bridge.cmd', 'start-bm-radio-bridge.ps1',
-        'start-listen-91.cmd', 'start-profile.cmd', 'README.md', 'SOURCE.txt', 'manifest.json',
-        'docs/连接配置.md', 'docs/音量调节.md',
-        'licenses/dmr_signal/COPYING.GPL-3.0.txt', 'licenses/dmr_signal/NOTICE.md',
-        'licenses/droidstar_mbe/COPYING.GPL-3.0.txt', 'licenses/droidstar_mbe/ISC-NOTICE.txt',
-        'licenses/droidstar_mbe/source-manifest.json', 'private/device-y.bin'
-    )
+    return (Get-ReleaseProfile -Version $script:activeReleaseVersion).PackageFiles
 }
 
 function Get-ReleaseFileRecord {
@@ -269,8 +376,9 @@ function Get-ReleaseFileRecord {
 }
 
 function Assert-ReleasePackageInventory {
-    param([Parameter(Mandatory=$true)][string]$PackageRoot)
-    $expectedFiles = @(Get-ExpectedReleasePackageFiles | Sort-Object)
+    param([Parameter(Mandatory=$true)][string]$PackageRoot, [string]$Version = $script:activeReleaseVersion)
+    $profile = Set-ReleaseVersion -Version $Version
+    $expectedFiles = @($profile.PackageFiles | Sort-Object)
     $actualFiles = @(Get-ChildItem -LiteralPath $PackageRoot -Recurse -File | ForEach-Object {
         $_.FullName.Substring($PackageRoot.Length + 1).Replace('\', '/')
     } | Sort-Object)
@@ -278,7 +386,7 @@ function Assert-ReleasePackageInventory {
     for ($index = 0; $index -lt $expectedFiles.Count; $index++) {
         if ($actualFiles[$index] -cne $expectedFiles[$index]) { throw "发布目录含意外文件或缺失文件：$($actualFiles[$index])" }
     }
-    $expectedDirectories = @('docs', 'licenses', 'licenses/dmr_signal', 'licenses/droidstar_mbe', 'logs', 'private') | Sort-Object
+    $expectedDirectories = @($profile.Directories | Sort-Object)
     $actualDirectories = @(Get-ChildItem -LiteralPath $PackageRoot -Recurse -Directory | ForEach-Object {
         $_.FullName.Substring($PackageRoot.Length + 1).Replace('\', '/')
     } | Sort-Object)
@@ -302,7 +410,8 @@ function Assert-ReleasePackageInventory {
     } catch {
         throw "发布 manifest 无法解析：$($_.Exception.Message)"
     }
-    if ($manifest.schema_version -ne 1 -or
+    if ([string]$manifest.version -cne $profile.Version -or
+        [string]$manifest.tag_candidate -cne $profile.Version -or $manifest.schema_version -ne 1 -or
         [string]$manifest.package_status -notin @('awaiting_root_audit', 'root_audit_passed')) {
         throw 'manifest schema_version 或 package_status 不受支持。'
     }
@@ -324,7 +433,7 @@ function Assert-ReleasePackageInventory {
         $fullPath = Join-Path $PackageRoot ([string]$record.path).Replace('/', [System.IO.Path]::DirectorySeparatorChar)
         $item = Get-Item -LiteralPath $fullPath -ErrorAction Stop
         $actualHash = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        $expectedAssetName = Get-ReleaseAssetName -RelativePath ([string]$record.path)
+        $expectedAssetName = [string]$profile.AssetMap[([string]$record.path).Replace('\', '/')]
         if ([long]$record.length_bytes -ne [long]$item.Length -or
             ([string]$record.sha256).ToLowerInvariant() -cne $actualHash -or
             [string]$record.asset_name -cne $expectedAssetName -or
@@ -349,7 +458,7 @@ function Invoke-ReleasePackaging {
         [Parameter(Mandatory=$true)][string]$YFixturePath,
         [Parameter(Mandatory=$true)][string]$RepositoryRoot
     )
-    if (-not (Test-ReleaseVersion -Value $Version)) { throw '此打包器只接受版本 v0.1.0-alpha.1。' }
+    $profile = Set-ReleaseVersion -Version $Version
     $repo = [System.IO.Path]::GetFullPath($RepositoryRoot)
     $gitRootLines = @(& git -C $repo rev-parse --show-toplevel 2>$null)
     if ($LASTEXITCODE -ne 0 -or $gitRootLines.Count -lt 1 -or
@@ -406,6 +515,7 @@ function Invoke-ReleasePackaging {
         Copy-Item -LiteralPath $fixturePath -Destination (Join-Path $yDestinationDirectory 'device-y.bin') -ErrorAction Stop
         New-Item -ItemType Directory -Path (Join-Path $stagingPath 'logs') -ErrorAction Stop | Out-Null
 
+        $notIncludedText = @($profile.NotIncluded) -join '、'
         $sourceText = @"
 WIREX Bridge $Version alpha 候选
 
@@ -419,8 +529,8 @@ wirex_bridge.exe SHA-256：$($buildEvidence.executable_sha256)
 批准的 Y 素材：100 字节；SHA-256：$fixtureHash
 Release 标签候选：$Version（打包器不创建标签，也不发布 Release）
 
-功能范围：FTX-1 DIRECT 个人终端与 BrandMeister 语音桥接。
-未包含：LCD 文本/路由集成、RF 节点操作和图形界面。
+功能范围：$($profile.ReleaseScope)。
+未包含：$notIncludedText。
 
 此前用户确认的实机结果分别来自旧源码：005c5e8 的 DIRECT 鹦鹉回声清晰；ab3c5fa 的 TG91 收听正常。这些结果不属于当前源码版本。当前版本尚未实机联测，连接配置和音量设置也尚未在当前版本实机验证。
 
@@ -476,8 +586,8 @@ Release 标签候选：$Version（打包器不创建标签，也不发布 Releas
                 compiler_errors = $buildEvidence.compiler_errors
                 executable_sha256 = $buildEvidence.executable_sha256
             }
-            release_scope = 'FTX-1 DIRECT personal terminal with BrandMeister voice bridging'
-            not_included = @('LCD text/routing integration', 'RF node operation', 'graphical UI')
+            release_scope = $profile.ReleaseScope
+            not_included = @($profile.NotIncluded)
             hardware_validation = [ordered]@{
                 current_release_hil = 'not performed; final HIL remains pending'
                 current_profile_and_volume_settings = 'not tested on hardware in this release source'
@@ -498,7 +608,7 @@ Release 标签候选：$Version（打包器不创建标签，也不发布 Releas
         }
         $manifestJson = ConvertTo-Json -InputObject $manifest -Depth 12
         [System.IO.File]::WriteAllText((Join-Path $stagingPath 'manifest.json'), $manifestJson + "`n", (New-Object System.Text.UTF8Encoding($false)))
-        Assert-ReleasePackageInventory -PackageRoot $stagingPath
+        Assert-ReleasePackageInventory -PackageRoot $stagingPath -Version $Version
 
         if (Test-Path -LiteralPath $outputPath) { throw "发布目录已出现，拒绝覆盖：$outputPath" }
         [System.IO.Directory]::Move($stagingPath, $outputPath)

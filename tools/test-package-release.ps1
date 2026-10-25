@@ -50,14 +50,43 @@ Assert-True (@($mappedAssetNames | Sort-Object -Unique).Count -eq $mappedAssetNa
 Assert-True (@($mappedAssetNames | Where-Object { $_ -notmatch '^[A-Za-z0-9._-]+$' }).Count -eq 0) `
     '所有固定文件的 GitHub asset 名称均为 ASCII'
 Assert-True (Test-ReleaseVersion -Value 'v0.1.0-alpha.1') '候选版本格式可用'
+Assert-True (Test-ReleaseVersion -Value 'v0.1.0-alpha.2') 'alpha.2 明确版本允许'
 Assert-True (-not (Test-ReleaseVersion -Value 'v0.1.0')) '正式版本格式不能混入 alpha 标签'
-Assert-True (-not (Test-ReleaseVersion -Value 'v0.2.0-alpha.1')) '版本号与固定包内 README 必须一致'
+Assert-True (-not (Test-ReleaseVersion -Value 'v0.2.0-alpha.1')) '未登记的 alpha 版本必须拒绝'
+Assert-True (-not (Test-ReleaseVersion -Value 'V0.1.0-ALPHA.1')) '版本匹配区分大小写'
 Assert-Throws { Get-ReleaseAssetName -RelativePath 'docs/未知文件.md' } '未列入白名单的文件路径'
 Assert-Throws { Get-ReleaseAssetName -RelativePath '../private/secret.txt' } '越界路径'
 
 $expectedTests = @(Get-ExpectedReleaseTests)
 Assert-Equal $expectedTests.Count 27 '正式 builder 测试清单数'
 Assert-True (@($expectedTests | Select-Object -Unique).Count -eq $expectedTests.Count) 'builder 测试名称不重复'
+$alpha1Files = @(Get-ExpectedReleasePackageFiles)
+Assert-Equal $alpha1Files.Count 17 'alpha.1 固定本地文件数含 manifest'
+Assert-True ($alpha1Files -cnotcontains 'start-ui.cmd') 'alpha.1 清单不接收 alpha.2 UI 文件'
+[void](Set-ReleaseVersion -Version 'v0.1.0-alpha.2')
+$alpha2Files = @(Get-ExpectedReleasePackageFiles)
+$alpha2Tests = @(Get-ExpectedReleaseTests)
+Assert-Equal $alpha2Files.Count 25 'alpha.2 固定本地文件数含 manifest'
+Assert-Equal $alpha2Tests.Count 28 'alpha.2 builder 测试数含 ui_pipe_test'
+Assert-True ($alpha2Tests[14] -ceq 'bounded_pipe_writer_test' -and
+    $alpha2Tests[15] -ceq 'ui_pipe_test' -and $alpha2Tests[16] -ceq 'console_lifecycle_test') `
+    'alpha.2 ui_pipe_test 顺序与 builder 清单一致'
+$builderTestLines = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'build-bm-bridge.ps1') -Encoding UTF8 |
+    Where-Object { $_ -match "^\s*@\{\s*Name='[^']+';\s*Source='tests\\" })
+$builderTestNames = @($builderTestLines | ForEach-Object { [regex]::Match($_, "Name='([^']+)'").Groups[1].Value })
+Assert-Equal $builderTestNames.Count $alpha2Tests.Count 'alpha.2 测试配置数量与 builder 源码一致'
+for ($testIndex = 0; $testIndex -lt $alpha2Tests.Count; $testIndex++) {
+    Assert-True ($builderTestNames[$testIndex] -ceq $alpha2Tests[$testIndex]) `
+        "alpha.2 固定测试清单与 builder 源码顺序一致，索引 $testIndex"
+}
+Assert-True ($alpha2Files -ccontains 'start-ui.cmd' -and $alpha2Files -ccontains 'ui/windows/BridgeWindow.xaml') `
+    'alpha.2 允许清单中的桌面入口和 XAML'
+Assert-True ((Get-ReleaseAssetName -RelativePath 'start-ui.cmd') -ceq 'start-ui.cmd') `
+    '选择 alpha.2 profile 后 UI asset 映射启用'
+[void](Set-ReleaseVersion -Version 'v0.1.0-alpha.1')
+Assert-Throws { Get-ReleaseAssetName -RelativePath 'start-ui.cmd' } 'alpha.1 不接受 alpha.2 UI asset'
+Assert-True ((Get-ReleaseAssetName -RelativePath 'docs/连接配置.md') -ceq 'docs__connection-profile.md') `
+    '切回 alpha.1 后仍保留原 asset 映射'
 
 $testRoot = Join-Path $repositoryRoot ('build\_work\package-release-test-' + [guid]::NewGuid().ToString('N'))
 $buildDirectory = Join-Path $testRoot 'wirex-bridge-0123456-20261025-000000'
@@ -104,7 +133,7 @@ try {
     $syntheticEvidence = Test-ReleaseBuildEvidence -RepositoryRoot $repositoryRoot `
         -SourceCommit '0123456789abcdef0123456789abcdef01234567' `
         -BuildDirectory $buildDirectory -BuildLogPath $buildLogPath
-    Assert-Equal $syntheticEvidence.passed_test_count 27 '合成 provenance 的结构和测试数验证'
+    Assert-Equal $syntheticEvidence.passed_test_count 27 'alpha.1 合成 provenance 的结构和测试数验证'
     Assert-Equal $syntheticEvidence.executable_sha256 $fakeExeHash '合成 EXE 文件 hash 一致性验证'
 
     $provenance.output_directory = 'C:/Users/example/build-output'
@@ -197,6 +226,8 @@ try {
     $packageManifest = [ordered]@{
         schema_version=1
         package_status='awaiting_root_audit'
+        version='v0.1.0-alpha.1'
+        tag_candidate='v0.1.0-alpha.1'
         manifest_asset_name='manifest.json'
         approved_y_fixture=[ordered]@{
             path='private/device-y.bin'
@@ -209,6 +240,37 @@ try {
         -Text ((ConvertTo-Json -InputObject $packageManifest -Depth 8) + "`n")
     Assert-True ((Assert-ReleasePackageInventory -PackageRoot $packageRoot) -eq $null) `
         '合成固定目录清单结构通过；没有创建发布包'
+
+    $alpha2PackageRoot = Join-Path $testRoot 'package-alpha2'
+    Copy-Item -LiteralPath $packageRoot -Destination $alpha2PackageRoot -Recurse
+    [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.2')
+    $alpha2ManifestPath = Join-Path $alpha2PackageRoot 'manifest.json'
+    $alpha2Manifest = [System.IO.File]::ReadAllText($alpha2ManifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    foreach ($relativePath in @(
+        'start-user-config.cmd', 'start-user-config.ps1', 'bridge-user-config.psm1', 'start-ui.cmd',
+        'docs/配置与桌面操作.md', 'ui/windows/bridge-ui.ps1', 'ui/windows/BridgeWindow.xaml',
+        'ui/windows/NativeProcessSupervisor.cs'
+    )) {
+        $fullPath = Join-Path $alpha2PackageRoot $relativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+        $parent = Split-Path -Parent $fullPath
+        if (-not (Test-Path -LiteralPath $parent -PathType Container)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+        Write-Utf8NoBom -Path $fullPath -Text ('synthetic alpha.2 inventory fixture: ' + $relativePath)
+        $item = Get-Item -LiteralPath $fullPath
+        $alpha2Manifest.files += ,([pscustomobject]@{
+            path = $relativePath
+            asset_name = (Get-ReleaseAssetName -RelativePath $relativePath)
+            length_bytes = [long]$item.Length
+            sha256 = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            source = 'synthetic alpha.2 test fixture'
+        })
+    }
+    $alpha2Manifest.version = 'v0.1.0-alpha.2'
+    $alpha2Manifest.tag_candidate = 'v0.1.0-alpha.2'
+    Write-Utf8NoBom -Path $alpha2ManifestPath -Text ((ConvertTo-Json -InputObject $alpha2Manifest -Depth 8) + "`n")
+    Assert-True ((Assert-ReleasePackageInventory -PackageRoot $alpha2PackageRoot -Version 'v0.1.0-alpha.2') -eq $null) `
+        'alpha.2 合成目录和 asset 清单与显式包配置一致'
+    [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.1')
+
     $readmeFixture = Join-Path $packageRoot 'README.md'
     Write-Utf8NoBom -Path $readmeFixture -Text 'tampered content'
     Assert-Throws { Assert-ReleasePackageInventory -PackageRoot $packageRoot } '文件内容与manifest SHA不符'

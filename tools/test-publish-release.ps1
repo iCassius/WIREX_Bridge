@@ -73,6 +73,8 @@ try {
             compile_only = $false
             build_completed = $true
             result = 'passed'
+            passed_test_count = $script:expectedTestNames.Count
+            passed_tests = @($script:expectedTestNames)
         }
         approved_y_fixture = [ordered]@{
             path = 'private/device-y.bin'
@@ -82,13 +84,50 @@ try {
         files = $records
     }
     $manifestPath = Join-Path $packageRoot 'manifest.json'
-    Write-Utf8NoBom -Path $manifestPath -Text ((ConvertTo-Json -InputObject $manifest -Depth 12) + "`n")
+    $validManifestJson = ConvertTo-Json -InputObject $manifest -Depth 12
+    Write-Utf8NoBom -Path $manifestPath -Text ($validManifestJson + "`n")
 
     $valid = Assert-PublishPackage -PackageRoot $packageRoot -ExpectedCommit $fakeCommit
     Assert-True ($valid.Assets.Count -eq 17) '16 package files plus standalone manifest are accepted'
     Assert-True (@($valid.Assets | Where-Object { $_.Name -ceq 'manifest.json' }).Count -eq 1) 'manifest is a separate release asset'
     Assert-True ((Get-PublishAssetName -RelativePath 'docs/连接配置.md') -ceq 'docs__connection-profile.md') 'PowerShell reads the Chinese connection-profile path correctly'
     Assert-True ((Get-PublishAssetName -RelativePath 'docs/音量调节.md') -ceq 'docs__audio-gain.md') 'PowerShell reads the Chinese audio-settings path correctly'
+
+    $alpha2Root = Join-Path $testRoot 'package-alpha2'
+    Copy-Item -LiteralPath $packageRoot -Destination $alpha2Root -Recurse
+    [void](Set-PublishProfile -Tag 'v0.1.0-alpha.2')
+    $alpha2ExtraPaths = @(
+        'start-user-config.cmd', 'start-user-config.ps1', 'bridge-user-config.psm1', 'start-ui.cmd',
+        'docs/配置与桌面操作.md', 'ui/windows/bridge-ui.ps1', 'ui/windows/BridgeWindow.xaml',
+        'ui/windows/NativeProcessSupervisor.cs'
+    )
+    foreach ($relativePath in $alpha2ExtraPaths) {
+        $fullPath = Join-Path $alpha2Root $relativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+        $parent = Split-Path -Parent $fullPath
+        if (-not (Test-Path -LiteralPath $parent -PathType Container)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+        Write-Utf8NoBom -Path $fullPath -Text ('synthetic alpha.2 package content: ' + $relativePath)
+        $item = Get-Item -LiteralPath $fullPath
+        $manifest.files += ,([ordered]@{
+            path = $relativePath
+            asset_name = (Get-PublishAssetName -RelativePath $relativePath)
+            length_bytes = [long]$item.Length
+            sha256 = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            source = 'synthetic test content'
+        })
+    }
+    $manifest.version = 'v0.1.0-alpha.2'
+    $manifest.tag_candidate = 'v0.1.0-alpha.2'
+    $manifest.build.passed_test_count = $script:expectedTestNames.Count
+    $manifest.build.passed_tests = @($script:expectedTestNames)
+    $alpha2ManifestPath = Join-Path $alpha2Root 'manifest.json'
+    $validAlpha2ManifestJson = ConvertTo-Json -InputObject $manifest -Depth 12
+    Write-Utf8NoBom -Path $alpha2ManifestPath -Text ($validAlpha2ManifestJson + "`n")
+    $alpha2Package = Assert-PublishPackage -PackageRoot $alpha2Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.2'
+    Assert-True ($alpha2Package.Assets.Count -eq 25) 'alpha.2 package accepts 24 files plus standalone manifest'
+    Assert-True (@($alpha2Package.Assets | Where-Object { $_.Name -ceq 'ui__windows__BridgeWindow.xaml' }).Count -eq 1) 'alpha.2 UI asset mapping is fixed'
+    Assert-Throws { Assert-PublishPackage -PackageRoot $alpha2Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.1' } 'alpha.2 package cannot pass the alpha.1 profile'
+    [void](Set-PublishProfile -Tag 'v0.1.0-alpha.1')
+    $manifest = [System.IO.File]::ReadAllText($manifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
 
     $realTagObject = 'refs/tags/v0.1.0-alpha.1^{commit}'
     $realTagCommit = Get-GitText -RepositoryRoot $repositoryRoot -Arguments @('rev-parse', '--verify', $realTagObject)
@@ -206,41 +245,77 @@ try {
         try {
             Invoke-ReleasePublisher -PackagePath '' -Commit $fakeCommit -NotesFile '' -PublisherMode $badMode -RepositoryRoot ''
         } catch { $modeError = $_.Exception.Message }
-        Assert-True ($modeError -ceq 'Only the fixed private alpha release is supported.') "mode spelling '$badMode' is rejected before local validation or credentials"
+        Assert-True ($modeError -ceq 'Mode must be exactly Draft or Publish.') "mode spelling '$badMode' is rejected before local validation or credentials"
     }
     Assert-True ($script:mockCalls.Count -eq 8) 'invalid mode spellings do not issue mocked GitHub requests'
 
-    $script:approvedFixtureSha256 = '82e0085ccaccb769a83362c5b335ce6b9a0e3ae93afdf2ad4f46eb81f908577f'
-    $realPackage = Join-Path $repositoryRoot 'build/releases/v0.1.0-alpha.1'
-    $realManifestPath = Join-Path $realPackage 'manifest.json'
-    if (Test-Path -LiteralPath $realManifestPath -PathType Leaf) {
-        $realManifestHash = (Get-FileHash -LiteralPath $realManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($realManifestHash -cne '21d2e617f7761b6cc28a467432fb4c9d50d7c5ecafe2c1524afb8f9562fab9f5') {
-            throw 'The locally present release package is not the reviewed package for the offline preflight check.'
-        }
-        $realTagCommit = Get-GitText -RepositoryRoot $repositoryRoot -Arguments @('rev-parse', '--verify', 'refs/tags/v0.1.0-alpha.1^{commit}')
-        $helperTempBefore = @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'build/_work') -Filter 'publish-helper-*.bin' -File -ErrorAction SilentlyContinue).Count
+    $script:approvedFixtureSha256 = $fixtureHash
+    $preflightRepo = Join-Path $testRoot 'preflight-repo'
+    New-Item -ItemType Directory -Path $preflightRepo -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $preflightRepo 'tools') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $preflightRepo 'docs/releases') -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'download-release.ps1') -Destination (Join-Path $preflightRepo 'tools/download-release.ps1')
+    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2')) {
+        Write-Utf8NoBom -Path (Join-Path $preflightRepo ('docs/releases/' + $tag + '.md')) -Text ('Synthetic offline release notes for ' + $tag + "`n")
+    }
+    $gitInit = @(& git -C $preflightRepo init --quiet 2>&1)
+    if ($LASTEXITCODE -ne 0) { throw 'Could not initialize the temporary offline Git repository.' }
+    foreach ($gitSetting in @(
+        @('config', 'user.name', 'WIREX Offline Test'),
+        @('config', 'user.email', 'wirex-offline-test@example.invalid'),
+        @('remote', 'add', 'origin', $script:repositoryUrl),
+        @('add', '--', 'tools/download-release.ps1', 'docs/releases/v0.1.0-alpha.1.md', 'docs/releases/v0.1.0-alpha.2.md'),
+        @('commit', '--quiet', '-m', 'offline publisher preflight fixture')
+    )) {
+        $previousErrorActionPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $gitOutput = @(& git -C $preflightRepo @gitSetting 2>$null)
+        } finally { $ErrorActionPreference = $previousErrorActionPreference }
+        if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the temporary offline Git repository.' }
+    }
+    $preflightCommit = [string](@(& git -C $preflightRepo rev-parse HEAD 2>$null)[0]).Trim()
+    if ($LASTEXITCODE -ne 0 -or $preflightCommit -cnotmatch '^[0-9a-f]{40}$') { throw 'Could not identify the temporary offline commit.' }
+    New-Item -ItemType Directory -Path (Join-Path $preflightRepo 'build/_work') -Force | Out-Null
+    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2')) {
+        $sourcePackage = if ($tag -ceq 'v0.1.0-alpha.1') { $packageRoot } else { $alpha2Root }
+        $targetPackage = Join-Path $preflightRepo ('build/releases/' + $tag)
+        $targetParent = Split-Path -Parent $targetPackage
+        New-Item -ItemType Directory -Path $targetParent -Force | Out-Null
+        Copy-Item -LiteralPath $sourcePackage -Destination $targetPackage -Recurse
+        $sourceManifestText = if ($tag -ceq 'v0.1.0-alpha.1') { $validManifestJson } else { $validAlpha2ManifestJson }
+        $preflightManifest = $sourceManifestText | ConvertFrom-Json
+        $preflightManifest.source.commit = $preflightCommit
+        $preflightManifest.build.source_commit = $preflightCommit
+        Write-Utf8NoBom -Path (Join-Path $targetPackage 'manifest.json') `
+            -Text ((ConvertTo-Json -InputObject $preflightManifest -Depth 12) + "`n")
+    }
+
+    $helperTempBefore = @(Get-ChildItem -LiteralPath (Join-Path $preflightRepo 'build/_work') -Filter 'publish-helper-*.bin' -File -ErrorAction SilentlyContinue).Count
+    $script:preflightBoundaryReached = $false
+    $script:credentialAttempted = $false
+    function Initialize-GitHubClient {
+        $script:preflightBoundaryReached = $true
+        throw 'OFFLINE_TEST_STOP_AT_NETWORK_BOUNDARY'
+    }
+    function Get-GitCredentialToken {
+        $script:credentialAttempted = $true
+        throw 'OFFLINE_TEST_CREDENTIAL_ACCESS_BLOCKED'
+    }
+    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2')) {
         $script:preflightBoundaryReached = $false
-        $script:credentialAttempted = $false
-        function Initialize-GitHubClient {
-            $script:preflightBoundaryReached = $true
-            throw 'OFFLINE_TEST_STOP_AT_NETWORK_BOUNDARY'
-        }
-        function Get-GitCredentialToken {
-            $script:credentialAttempted = $true
-            throw 'OFFLINE_TEST_CREDENTIAL_ACCESS_BLOCKED'
-        }
         $boundaryMessage = ''
         try {
-            Invoke-ReleasePublisher -PackagePath $realPackage -Commit $realTagCommit `
-                -NotesFile (Join-Path $repositoryRoot 'docs/releases/v0.1.0-alpha.1.md') `
-                -PublisherMode 'Draft' -RepositoryRoot $repositoryRoot
+            Invoke-ReleasePublisher -PackagePath (Join-Path $preflightRepo ('build/releases/' + $tag)) `
+                -Commit $preflightCommit -NotesFile (Join-Path $preflightRepo ('docs/releases/' + $tag + '.md')) `
+                -PublisherMode 'Draft' -RepositoryRoot $preflightRepo -Tag $tag
         } catch { $boundaryMessage = $_.Exception.Message }
-        $helperTempAfter = @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'build/_work') -Filter 'publish-helper-*.bin' -File -ErrorAction SilentlyContinue).Count
-        Assert-True ($script:preflightBoundaryReached -and $boundaryMessage -ceq 'OFFLINE_TEST_STOP_AT_NETWORK_BOUNDARY') ('real package, tag helper blob, notes and HEAD preflight reach the mocked network boundary; local result=' + $boundaryMessage)
-        Assert-True (-not $script:credentialAttempted -and $script:mockCalls.Count -eq 8) 'real-package preflight stops before credentials and API requests'
-        Assert-True ($helperTempAfter -eq $helperTempBefore) 'temporary byte-exact helper blob is removed after the offline boundary stop'
+        Assert-True ($script:preflightBoundaryReached -and $boundaryMessage -ceq 'OFFLINE_TEST_STOP_AT_NETWORK_BOUNDARY') `
+            ($tag + ' clean dry package, tag helper blob and notes preflight reaches the mocked network boundary; local result=' + $boundaryMessage)
     }
+    $helperTempAfter = @(Get-ChildItem -LiteralPath (Join-Path $preflightRepo 'build/_work') -Filter 'publish-helper-*.bin' -File -ErrorAction SilentlyContinue).Count
+    Assert-True (-not $script:credentialAttempted -and $script:mockCalls.Count -eq 8) 'clean dry preflights stop before credentials and API requests'
+    Assert-True ($helperTempAfter -eq $helperTempBefore) 'temporary byte-exact helper blobs are removed after the offline boundary stop'
 
     Write-Output ('Publisher offline assertions passed: ' + $script:assertions + '; no network requests or credentials were used.')
 } finally {

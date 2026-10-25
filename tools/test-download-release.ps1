@@ -26,6 +26,13 @@ $script:releaseAssetRedirectHosts = @(
     'github-releases.githubusercontent.com'
 )
 $script:assertionCount = 0
+$downloadProfiles = @{}
+foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2')) {
+    $downloadProfiles[$tag] = [pscustomobject]@{
+        Files = @(Get-ExpectedReleaseFiles -Tag $tag)
+        Tests = @(Get-ExpectedReleaseTests -Tag $tag)
+    }
+}
 
 function Assert-True {
     param([bool]$Condition, [string]$Message)
@@ -42,9 +49,10 @@ function Assert-Throws {
 }
 
 function New-TestManifest {
+    param([string]$Tag = 'v0.1.0-alpha.1')
     $commit = '0123456789abcdef0123456789abcdef01234567'
     $records = @()
-    foreach ($expected in (Get-ExpectedReleaseFiles)) {
+    foreach ($expected in (Get-ExpectedReleaseFiles -Tag $Tag)) {
         $hash = 'a' * 64
         $length = 7
         if ($expected.Path -ceq 'wirex_bridge.exe') { $hash = 'b' * 64; $length = 10 }
@@ -62,8 +70,8 @@ function New-TestManifest {
         schema_version = 1
         package_kind = 'wirex_bridge_private_alpha_release_green_directory'
         package_status = 'root_audit_passed'
-        version = 'v0.1.0-alpha.1'
-        tag_candidate = 'v0.1.0-alpha.1'
+        version = $Tag
+        tag_candidate = $Tag
         tag_created = $false
         github_release_published = $false
         source = [pscustomobject]@{
@@ -82,8 +90,8 @@ function New-TestManifest {
             provenance_asset = 'build-provenance.json'
             provenance_sha256 = 'c' * 64
             result = 'passed'
-            passed_test_count = 1
-            passed_tests = @('synthetic_test')
+            passed_test_count = (Get-ExpectedReleaseTests -Tag $Tag).Count
+            passed_tests = @(Get-ExpectedReleaseTests -Tag $Tag)
             compiler_warnings = 0
             compiler_errors = 0
             executable_sha256 = 'b' * 64
@@ -144,6 +152,12 @@ $validManifest = New-TestManifest
 $validated = Test-ManifestDocument -Manifest $validManifest -RequestedTag 'v0.1.0-alpha.1'
 Assert-True ($validated.Files.Count -eq (Get-ExpectedReleaseFiles).Count) 'valid manifest includes the fixed package inventory'
 Assert-True ($validated.TotalBytes -gt 0) 'validated size total is accumulated'
+$alpha2Manifest = New-TestManifest -Tag 'v0.1.0-alpha.2'
+$alpha2Validated = Test-ManifestDocument -Manifest $alpha2Manifest -RequestedTag 'v0.1.0-alpha.2'
+Assert-True ($alpha2Validated.Files.Count -eq 24) 'alpha.2 manifest includes the 24-file package inventory'
+Assert-True (@($alpha2Manifest.build.passed_tests).Count -eq 28 -and
+    $alpha2Manifest.build.passed_tests[15] -ceq 'ui_pipe_test') 'alpha.2 manifest records the exact builder test order'
+Assert-Throws { Test-ManifestDocument -Manifest $alpha2Manifest -RequestedTag 'v0.1.0-alpha.1' } 'alpha.2 manifest is rejected for alpha.1 tag'
 
 $invalid = New-TestManifest; $invalid.package_status = 'awaiting_root_audit'
 Assert-Throws { Test-ManifestDocument -Manifest $invalid -RequestedTag 'v0.1.0-alpha.1' } 'unreviewed package status is rejected'
@@ -176,6 +190,9 @@ Assert-True ((Select-ReleaseCandidate -Releases @($draftRelease) -RequestedTag '
 Assert-Throws { Select-ReleaseCandidate -Releases @($publishedRelease, $publishedRelease) -RequestedTag 'v0.1.0-alpha.1' } 'ambiguous tag match is rejected'
 Assert-Throws { Select-ReleaseCandidate -Releases @($publishedRelease) -RequestedTag 'v0.1.0-alpha.2' } 'different tag is rejected'
 Assert-Throws { Select-ReleaseCandidate -Releases @([pscustomobject]@{ tag_name='v0.1.0-alpha.1'; draft=$false; prerelease=$false }) -RequestedTag 'v0.1.0-alpha.1' } 'stable release is rejected'
+$publishedAlpha2 = [pscustomobject]@{ tag_name='v0.1.0-alpha.2'; draft=$false; prerelease=$true }
+Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha2) -RequestedTag 'v0.1.0-alpha.2').tag_name -ceq 'v0.1.0-alpha.2') 'alpha.2 is selected by exact tag'
+Assert-Throws { Select-ReleaseCandidate -Releases @($publishedAlpha2) -RequestedTag 'V0.1.0-alpha.2' } 'release profile tag is case-sensitive'
 
 $goodAssets = New-TestAssetList -Manifest $validManifest
 $release = [pscustomobject]@{ assets=$goodAssets; target_commitish=[string]$validManifest.source.commit }
@@ -183,6 +200,11 @@ $assetMap = Resolve-ReleaseAssetInventory -Release $release -ValidatedManifest $
 Assert-True ($assetMap.Count -eq $goodAssets.Count) 'release asset inventory matches manifest exactly'
 Assert-True ($assetMap.ContainsKey('download-release.ps1')) 'fixed helper is the sole permitted non-manifest release asset'
 Assert-True (Assert-ReleaseTargetCommitish -Release $release -SourceCommit ([string]$validManifest.source.commit)) 'release target commit matches the manifest source commit'
+$alpha2GoodAssets = New-TestAssetList -Manifest $alpha2Manifest
+$alpha2Release = [pscustomobject]@{ assets=$alpha2GoodAssets; target_commitish=[string]$alpha2Manifest.source.commit }
+$alpha2AssetMap = Resolve-ReleaseAssetInventory -Release $alpha2Release -ValidatedManifest $alpha2Validated
+Assert-True ($alpha2AssetMap.Count -eq 26 -and $alpha2AssetMap.ContainsKey('download-release.ps1')) `
+    'alpha.2 remote inventory contains 24 package files, manifest and helper'
 $wrongTarget = [pscustomobject]@{ target_commitish='main' }
 Assert-Throws { Assert-ReleaseTargetCommitish -Release $wrongTarget -SourceCommit ([string]$validManifest.source.commit) } 'branch target is rejected when it differs from the source commit'
 Assert-Throws { Assert-ReleaseTargetCommitish -Release ([pscustomobject]@{ target_commitish=('f' * 40) }) -SourceCommit ([string]$validManifest.source.commit) } 'release target commit mismatch is rejected'
@@ -206,13 +228,22 @@ $provenance = [pscustomobject]@{
     started_utc = '2026-10-25T00:00:00Z'
     completed_utc = '2026-10-25T00:01:00Z'
     executable = [pscustomobject]@{ path='wirex_bridge.exe'; length_bytes=10; sha256=('b' * 64) }
-    tests = @([pscustomobject]@{ name='synthetic_test'; result='passed'; exit_code=0 })
+    tests = @((Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.1') | ForEach-Object {
+        [pscustomobject]@{ name=[string]$_; result='passed'; exit_code=0 }
+    })
 }
 Assert-True (Test-BuildProvenanceDocument -Provenance $provenance -ValidatedManifest $validated) 'matching successful provenance is accepted'
 $badProvenance = $provenance | Select-Object *; $badProvenance.source_commit = 'f' * 40
 Assert-Throws { Test-BuildProvenanceDocument -Provenance $badProvenance -ValidatedManifest $validated } 'provenance source mismatch is rejected'
 $badProvenance = $provenance | Select-Object *; $badProvenance.tests[0].exit_code = 1
 Assert-Throws { Test-BuildProvenanceDocument -Provenance $badProvenance -ValidatedManifest $validated } 'failed provenance test is rejected'
+$alpha2Provenance = $provenance | Select-Object *
+$alpha2Provenance.tests = @((Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.2') | ForEach-Object {
+    [pscustomobject]@{ name=[string]$_; result='passed'; exit_code=0 }
+})
+Assert-True (Test-BuildProvenanceDocument -Provenance $alpha2Provenance -ValidatedManifest $alpha2Validated) 'alpha.2 builder provenance includes the exact new test in builder order'
+$alpha2Provenance.tests = @($alpha2Provenance.tests | Where-Object { $_.name -cne 'ui_pipe_test' })
+Assert-Throws { Test-BuildProvenanceDocument -Provenance $alpha2Provenance -ValidatedManifest $alpha2Validated } 'alpha.2 provenance missing ui_pipe_test is rejected'
 
 $temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('wirex-release-download-offline-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $temporaryRoot -ErrorAction Stop | Out-Null
@@ -235,6 +266,35 @@ try {
         [System.IO.Path]::GetFileName($resolvedTemp).StartsWith('wirex-release-download-offline-', [System.StringComparison]::Ordinal)) {
         Remove-Item -LiteralPath $resolvedTemp -Recurse -Force -ErrorAction Stop
         if (Test-Path -LiteralPath $resolvedTemp) { throw 'Offline test temporary directory remains after cleanup.' }
+    }
+}
+
+. (Join-Path $PSScriptRoot 'package-release.ps1')
+. (Join-Path $PSScriptRoot 'publish-release.ps1')
+foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2')) {
+    $packageProfile = Set-ReleaseVersion -Version $tag
+    $packagePaths = @($packageProfile.PackageFiles | Where-Object { $_ -cne 'manifest.json' })
+    $downloadFiles = @($downloadProfiles[$tag].Files)
+    Assert-True ($downloadFiles.Count -eq $packagePaths.Count) "$tag package and downloader file counts match"
+    foreach ($downloadFile in $downloadFiles) {
+        if ($packagePaths -cnotcontains [string]$downloadFile.Path) { throw "Downloader path is absent from package profile: $($downloadFile.Path)" }
+        Assert-True ((Get-ReleaseAssetName -RelativePath ([string]$downloadFile.Path)) -ceq [string]$downloadFile.AssetName) `
+            "$tag package and downloader asset mapping match: $($downloadFile.Path)"
+    }
+    for ($index = 0; $index -lt $downloadProfiles[$tag].Tests.Count; $index++) {
+        Assert-True ([string]$packageProfile.TestNames[$index] -ceq [string]$downloadProfiles[$tag].Tests[$index]) `
+            "$tag package and downloader test order matches at index $index"
+    }
+
+    $publishProfile = Set-PublishProfile -Tag $tag
+    Assert-True ($publishProfile.AssetPathMap.Count -eq $downloadFiles.Count) "$tag publisher and downloader file counts match"
+    foreach ($downloadFile in $downloadFiles) {
+        Assert-True ([string]$publishProfile.AssetPathMap[[string]$downloadFile.Path] -ceq [string]$downloadFile.AssetName) `
+            "$tag publisher and downloader asset mapping match: $($downloadFile.Path)"
+    }
+    for ($index = 0; $index -lt $downloadProfiles[$tag].Tests.Count; $index++) {
+        Assert-True ([string]$publishProfile.TestNames[$index] -ceq [string]$downloadProfiles[$tag].Tests[$index]) `
+            "$tag publisher and downloader test order matches at index $index"
     }
 }
 

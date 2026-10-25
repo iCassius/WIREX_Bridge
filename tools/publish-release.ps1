@@ -10,29 +10,93 @@ param(
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Net.Http -ErrorAction Stop
 
-$script:publishTag = 'v0.1.0-alpha.1'
 $script:repositoryFullName = 'iCassius/WIREX_Bridge'
 $script:repositoryUrl = 'https://github.com/iCassius/WIREX_Bridge.git'
 $script:approvedFixtureSha256 = '82e0085ccaccb769a83362c5b335ce6b9a0e3ae93afdf2ad4f46eb81f908577f'
-$script:expectedDirectories = @('docs', 'licenses', 'licenses/dmr_signal', 'licenses/droidstar_mbe', 'logs', 'private')
-$script:assetPathMap = [ordered]@{
-    'wirex_bridge.exe' = 'wirex_bridge.exe'
-    'build-provenance.json' = 'build-provenance.json'
-    'start-bm-radio-bridge.cmd' = 'start-bm-radio-bridge.cmd'
-    'start-bm-radio-bridge.ps1' = 'start-bm-radio-bridge.ps1'
-    'start-listen-91.cmd' = 'start-listen-91.cmd'
-    'start-profile.cmd' = 'start-profile.cmd'
-    'README.md' = 'README.md'
-    'SOURCE.txt' = 'SOURCE.txt'
-    'docs/连接配置.md' = 'docs__connection-profile.md'
-    'docs/音量调节.md' = 'docs__audio-gain.md'
-    'licenses/dmr_signal/COPYING.GPL-3.0.txt' = 'licenses__dmr-signal__COPYING.GPL-3.0.txt'
-    'licenses/dmr_signal/NOTICE.md' = 'licenses__dmr-signal__NOTICE.md'
-    'licenses/droidstar_mbe/COPYING.GPL-3.0.txt' = 'licenses__droidstar-mbe__COPYING.GPL-3.0.txt'
-    'licenses/droidstar_mbe/ISC-NOTICE.txt' = 'licenses__droidstar-mbe__ISC-NOTICE.txt'
-    'licenses/droidstar_mbe/source-manifest.json' = 'licenses__droidstar-mbe__source-manifest.json'
-    'private/device-y.bin' = 'private__device-y.bin'
+$script:publishTag = 'v0.1.0-alpha.1'
+$script:alpha1TestNames = @(
+    'dmrd_test','direct_frame_test','hri_t_payload_test','direct_stream_test','hri_session_test','hri_ptt_gate_test',
+    'hri_downlink_session_test','hri_radio_protocol_test','operation_audio_cleanup_test','audio_input_cleanup_test',
+    'wave_output_open_test','session_timing_test','wave_file_test','pcm_gain_test','bounded_pipe_writer_test',
+    'console_lifecycle_test','session_report_test','dmr_call_test','bm_session_test','bm_udp_test','dmr_vocoder_test',
+    'pcm_resampler_test','bm_voice_pipeline_test','bm_test_profile_test','bm_connection_config_test',
+    'hri_stream_session_test','bm_bridge_loopback_test'
+)
+$script:alpha2TestNames = @(
+    $script:alpha1TestNames[0..14] + 'ui_pipe_test' +
+    $script:alpha1TestNames[15..($script:alpha1TestNames.Count - 1)]
+)
+
+function Set-PublishProfile {
+    param([Parameter(Mandatory=$true)][string]$Tag)
+    switch -CaseSensitive ($Tag) {
+        'v0.1.0-alpha.1' {
+            $assetMap = [ordered]@{
+                'wirex_bridge.exe'='wirex_bridge.exe'
+                'build-provenance.json'='build-provenance.json'
+                'start-bm-radio-bridge.cmd'='start-bm-radio-bridge.cmd'
+                'start-bm-radio-bridge.ps1'='start-bm-radio-bridge.ps1'
+                'start-listen-91.cmd'='start-listen-91.cmd'
+                'start-profile.cmd'='start-profile.cmd'
+                'README.md'='README.md'
+                'SOURCE.txt'='SOURCE.txt'
+                'docs/连接配置.md'='docs__connection-profile.md'
+                'docs/音量调节.md'='docs__audio-gain.md'
+                'licenses/dmr_signal/COPYING.GPL-3.0.txt'='licenses__dmr-signal__COPYING.GPL-3.0.txt'
+                'licenses/dmr_signal/NOTICE.md'='licenses__dmr-signal__NOTICE.md'
+                'licenses/droidstar_mbe/COPYING.GPL-3.0.txt'='licenses__droidstar-mbe__COPYING.GPL-3.0.txt'
+                'licenses/droidstar_mbe/ISC-NOTICE.txt'='licenses__droidstar-mbe__ISC-NOTICE.txt'
+                'licenses/droidstar_mbe/source-manifest.json'='licenses__droidstar-mbe__source-manifest.json'
+                'private/device-y.bin'='private__device-y.bin'
+            }
+            $script:publishTag = $Tag
+            $script:assetPathMap = $assetMap
+            $script:expectedDirectories = @('docs', 'licenses', 'licenses/dmr_signal', 'licenses/droidstar_mbe', 'logs', 'private')
+            $script:expectedTestNames = $script:alpha1TestNames
+        }
+        'v0.1.0-alpha.2' {
+            $assetMap = [ordered]@{
+                'wirex_bridge.exe'='wirex_bridge.exe'
+                'build-provenance.json'='build-provenance.json'
+                'start-bm-radio-bridge.cmd'='start-bm-radio-bridge.cmd'
+                'start-bm-radio-bridge.ps1'='start-bm-radio-bridge.ps1'
+                'start-listen-91.cmd'='start-listen-91.cmd'
+                'start-profile.cmd'='start-profile.cmd'
+                'start-user-config.cmd'='start-user-config.cmd'
+                'start-user-config.ps1'='start-user-config.ps1'
+                'bridge-user-config.psm1'='bridge-user-config.psm1'
+                'start-ui.cmd'='start-ui.cmd'
+                'README.md'='README.md'
+                'SOURCE.txt'='SOURCE.txt'
+                'docs/配置与桌面操作.md'='docs__desktop-user-config.md'
+                'docs/连接配置.md'='docs__connection-profile.md'
+                'docs/音量调节.md'='docs__audio-gain.md'
+                'ui/windows/bridge-ui.ps1'='ui__windows__bridge-ui.ps1'
+                'ui/windows/BridgeWindow.xaml'='ui__windows__BridgeWindow.xaml'
+                'ui/windows/NativeProcessSupervisor.cs'='ui__windows__NativeProcessSupervisor.cs'
+                'licenses/dmr_signal/COPYING.GPL-3.0.txt'='licenses__dmr-signal__COPYING.GPL-3.0.txt'
+                'licenses/dmr_signal/NOTICE.md'='licenses__dmr-signal__NOTICE.md'
+                'licenses/droidstar_mbe/COPYING.GPL-3.0.txt'='licenses__droidstar-mbe__COPYING.GPL-3.0.txt'
+                'licenses/droidstar_mbe/ISC-NOTICE.txt'='licenses__droidstar-mbe__ISC-NOTICE.txt'
+                'licenses/droidstar_mbe/source-manifest.json'='licenses__droidstar-mbe__source-manifest.json'
+                'private/device-y.bin'='private__device-y.bin'
+            }
+            $script:publishTag = $Tag
+            $script:assetPathMap = $assetMap
+            $script:expectedDirectories = @('docs', 'licenses', 'licenses/dmr_signal', 'licenses/droidstar_mbe', 'logs', 'private', 'ui', 'ui/windows')
+            $script:expectedTestNames = $script:alpha2TestNames
+        }
+        default { throw 'Only v0.1.0-alpha.1 and v0.1.0-alpha.2 release profiles are supported.' }
+    }
+    return [pscustomobject]@{
+        Tag = $script:publishTag
+        AssetPathMap = $script:assetPathMap
+        Directories = $script:expectedDirectories
+        TestNames = $script:expectedTestNames
+    }
 }
+
+[void](Set-PublishProfile -Tag $script:publishTag)
 
 function Test-PublishPathWithin {
     param([string]$Path, [string]$Directory)
@@ -43,7 +107,9 @@ function Test-PublishPathWithin {
 
 function Get-PublishAssetName {
     param([string]$RelativePath)
-    if (-not $script:assetPathMap.Contains($RelativePath)) { throw 'Package contains a path outside the fixed release allowlist.' }
+    if (@($script:assetPathMap.Keys | Where-Object { [string]$_ -ceq $RelativePath }).Count -ne 1) {
+        throw 'Package contains a path outside the fixed release allowlist.'
+    }
     return [string]$script:assetPathMap[$RelativePath]
 }
 
@@ -105,7 +171,8 @@ function Assert-LocalRepositoryIdentity {
 }
 
 function Assert-PublishPackage {
-    param([string]$PackageRoot, [string]$ExpectedCommit)
+    param([string]$PackageRoot, [string]$ExpectedCommit, [string]$Tag = $script:publishTag)
+    [void](Set-PublishProfile -Tag $Tag)
     $root = [System.IO.Path]::GetFullPath($PackageRoot)
     if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw 'ReleaseDirectory does not exist.' }
     $manifestPath = Join-Path $root 'manifest.json'
@@ -116,8 +183,8 @@ function Assert-PublishPackage {
         [string]$manifest.manifest_asset_name -cne 'manifest.json' -or
         [string]$manifest.package_kind -cne 'wirex_bridge_private_alpha_release_green_directory' -or
         [string]$manifest.package_status -cne 'root_audit_passed' -or
-        [string]$manifest.version -cne $script:publishTag -or
-        [string]$manifest.tag_candidate -cne $script:publishTag -or
+        [string]$manifest.version -cne $Tag -or
+        [string]$manifest.tag_candidate -cne $Tag -or
         [string]$manifest.source.repository -cne $script:repositoryUrl -or
         ([string]$manifest.source.commit).ToLowerInvariant() -cne $ExpectedCommit -or
         $manifest.source.working_tree_clean -ne $true -or
@@ -125,6 +192,16 @@ function Assert-PublishPackage {
         $manifest.build.source_tree_clean -ne $true -or $manifest.build.compile_only -ne $false -or
         $manifest.build.build_completed -ne $true -or [string]$manifest.build.result -cne 'passed') {
         throw 'Package metadata does not attest the audited clean build for the expected commit and tag.'
+    }
+    $manifestTests = @($manifest.build.passed_tests | ForEach-Object { [string]$_ })
+    if ([int]$manifest.build.passed_test_count -ne $script:expectedTestNames.Count -or
+        $manifestTests.Count -ne $script:expectedTestNames.Count) {
+        throw 'Package metadata does not record the exact offline test set for this release tag.'
+    }
+    for ($index = 0; $index -lt $script:expectedTestNames.Count; $index++) {
+        if ($manifestTests[$index] -cne $script:expectedTestNames[$index]) {
+            throw 'Package metadata does not record the exact offline test set for this release tag.'
+        }
     }
     if ([string]$manifest.approved_y_fixture.path -cne 'private/device-y.bin' -or
         [long]$manifest.approved_y_fixture.length_bytes -ne 100 -or
@@ -622,8 +699,10 @@ function Publish-VerifiedRelease {
 }
 
 function Invoke-ReleasePublisher {
-    param([string]$PackagePath, [string]$Commit, [string]$NotesFile, [string]$PublisherMode, [string]$RepositoryRoot)
-    if ($script:publishTag -cne 'v0.1.0-alpha.1' -or $PublisherMode -cnotin @('Draft', 'Publish')) { throw 'Only the fixed private alpha release is supported.' }
+    param([string]$PackagePath, [string]$Commit, [string]$NotesFile, [string]$PublisherMode, [string]$RepositoryRoot,
+        [string]$Tag = 'v0.1.0-alpha.1')
+    [void](Set-PublishProfile -Tag $Tag)
+    if ($PublisherMode -cnotin @('Draft', 'Publish')) { throw 'Mode must be exactly Draft or Publish.' }
     if ($Commit -cnotmatch '^[0-9a-f]{40}$') { throw 'ExpectedCommit must be a full lowercase SHA-1.' }
     $root = [System.IO.Path]::GetFullPath($RepositoryRoot)
     $expectedPackage = [System.IO.Path]::GetFullPath((Join-Path $root ('build/releases/' + $script:publishTag)))
@@ -631,7 +710,7 @@ function Invoke-ReleasePublisher {
         throw 'ReleaseDirectory must be the fixed package directory for this tag.'
     }
     Assert-LocalRepositoryIdentity -RepositoryRoot $root
-    $package = Assert-PublishPackage -PackageRoot $expectedPackage -ExpectedCommit $Commit
+    $package = Assert-PublishPackage -PackageRoot $expectedPackage -ExpectedCommit $Commit -Tag $Tag
     $notes = Get-PublishNotes -Path $NotesFile -RepositoryRoot $root -ExpectedCommit $Commit
     if (@($package.Assets | Where-Object { [string]$_.Name -ceq 'download-release.ps1' }).Count -ne 0) {
         throw 'The fixed helper asset name conflicts with a package asset.'
@@ -643,7 +722,8 @@ function Invoke-ReleasePublisher {
     try {
     $helper = Export-CommitHelperBlob -RepositoryRoot $root -ExpectedCommit $Commit
     $assets = @($package.Assets) + @($helper)
-    if (@($assets | ForEach-Object { [string]$_.Name } | Sort-Object -Unique).Count -ne 18) { throw 'Release asset names are not unique.' }
+    $expectedRemoteAssetCount = $package.Assets.Count + 1
+    if (@($assets | ForEach-Object { [string]$_.Name } | Sort-Object -Unique).Count -ne $expectedRemoteAssetCount) { throw 'Release asset names are not unique.' }
         Initialize-GitHubClient
         Assert-GitHubIdentityAndRepository
         Assert-RemoteTagCommit -ExpectedCommit $Commit
@@ -683,7 +763,6 @@ if ($MyInvocation.InvocationName -ne '.') {
         [string]::IsNullOrWhiteSpace($Tag) -or [string]::IsNullOrWhiteSpace($NotesPath) -or [string]::IsNullOrWhiteSpace($Mode)) {
         throw 'Provide ReleaseDirectory, ExpectedCommit, Tag, NotesPath, and Mode.'
     }
-    if ($Tag -cne $script:publishTag) { throw 'Only the fixed tag v0.1.0-alpha.1 is supported.' }
     Invoke-ReleasePublisher -PackagePath $ReleaseDirectory -Commit $ExpectedCommit -NotesFile $NotesPath `
-        -PublisherMode $Mode -RepositoryRoot $repositoryRoot
+        -PublisherMode $Mode -RepositoryRoot $repositoryRoot -Tag $Tag
 }
