@@ -5,7 +5,7 @@
 - 私有预发布 [v0.1.0-alpha.2](https://github.com/iCassius/WIREX_Bridge/releases/tag/v0.1.0-alpha.2) 已于 2026-10-26 05:26:14（中国标准时间）发布，Release ID `423670400`。源码 tag `v0.1.0-alpha.2` 指向 `a965df0ccd6649a972a0be6242a6ba2a1bd83dff`，annotated tag object 为 `848ee23ceb96adbb352e8106b2925c15eace2652`。
 - 该源码的正式 clean build 通过 28 项 C++ 测试，compiler/linker warning/error 为 0。构建目录 `build/_work/wirex-bridge-a965df0-20261025-170232`，日志 `build/_work/alpha2-a965df0-clean-build.log`，EXE SHA-256 `b9c7541a453345bc1bc18539e8ba7964a927a3fdd7c2581e2952f556fb740205`。
 - 本机目录 `build/releases/v0.1.0-alpha.2` 有 27 个文件：manifest 列 26 项并包含 `manifest.json`；GitHub Release 有 28 个独立 asset。manifest SHA-256 为 `634cc13cd3280deb3d3718ae3cdec0ecf1573a009f721d0aa363018a76b19e48`。草稿与普通 published 下载均通过核对；普通下载重建 27 个文件，字节与本机目录一致，临时目录和下载 helper 进程均已清理。
-- 8 组 PowerShell 检查及 WPF 离线渲染均通过。另以不存在的 COM999 端口运行启动失败路径（loopback 地址，仅查询音频格式，未打开真实串口、UDP 或音频流），检查写入磁盘的 native 状态记录与 UI 状态校验，结果通过；证据目录为 `build/_work/ui-status-integration-a965df0-3dd6a47764524de1a7fd3dc7dd395af8`。alpha.2 的设备实机联测仍待集中执行。
+- 8 组 PowerShell 检查及 WPF 离线渲染均通过。另以不存在的 COM999 端口运行启动失败路径，该路径写入磁盘的 native 状态记录；loopback 测试只查询音频格式，没有打开真实串口、发送 UDP 或启动音频流。UI 状态校验通过；证据目录为 `build/_work/ui-status-integration-a965df0-3dd6a47764524de1a7fd3dc7dd395af8`。alpha.2 的设备实机联测仍待集中执行。
 - 本机 `start-my-bridge.cmd` 已改为启动所选 alpha.2 WPF 界面。本机 `private/user-config` 中的连接配置和音量设置保持在 Git 忽略目录；版本指针已指向 alpha.2。密码仍通过原有本机文件路径提供，本轮没有读取或复制密码正文。
 - alpha.1 的一通 DIRECT 手咪→BM 鹦鹉→FTX-1 扬声器回声及退出确认继续作为 alpha.1 历史验收，详细计数和日志见下文。alpha.2 尚无新的设备 HIL 结果。下一阶段继续集中进行音量、TG91、长时间待机、断网恢复、退出和 RF 路由联测；LCD 当前话者与 C4FM RF 收发尚未实现，R77–R79 仍是软件研究证据。UI 运行日志的有界保留也列入后续工作。阶段细节见[下一阶段推进计划](docs/下一阶段推进计划.md)。
 
