@@ -104,6 +104,12 @@ state 0→FUN_10017ad0; 3→FUN_10017d70; 5→FUN_1001f700; 7→FUN_1001ed00; 8�
 
 本轮完整 REA Evidence bundle：`research/rea/v2.010/r75_hri_setdigi_vs_state6_queue_alias_20261025.evidence.json`。新增查询分别为 `FUN_10001d20` dossier `ev_c24e07e71cdd4390be78a453bdee3895c78c22815242251355fc365a7cc1e04b`、`FUN_10017ee0` dossier `ev_af65c0a3567aabdec6590474012012e05b4aea14672af4f6961dc12c936e19c9`、`DAT_10191d38` xrefs `ev_ae95a5effe29aad622470655ea9c7aff7fabe5e77dbc22eba125d049fa0ff655`。R61 已证 `FUN_10017ee0` 注册在 state 6/event 17，但没有追出谁产生 event 17，也没有确认是否由定时器触发；R61 明确将 worker 完整 `GetMessage` 循环列为未证。因此后续静态检查应在合并两条事件路径前，先确认 event 17 的消息/定时器来源，并确认状态回调 `param_1` 如何与 `DAT_10191d38` 实例槽关联；如果没有可验证的指针赋值/调用链，就保留此别名缺口，不把两种事件路径合并。`0x1401/event 1` 目前不是 event 17 的已证触发源。
 
+### R76：创建线程对象与状态回调 `this` 的别名检查
+
+R14 的 `FUN_10001a40` dossier `ev_32e3c92a787db9ab6c6b7844f650fd743cbc38368ab93998fd98c3e3410d6f12` 显示：创建后把新对象指针写入 `DAT_10191d38[ESI]`，随后从同一槽读回对象指针并调用其 `CWinThread::CreateThread`。同一 HRI-UART.dll 的新增 `CWinThread::CreateThread` 伪代码 dossier 为 `ev_e6ae0c62788452ab0b317d9c695294acbd6005d1ed65ef521c0b20d1b8384e82`；伪代码把 `this` 保存到一个标作 `_AFX_THREAD_STATE` 的栈上结构，然后用 `__beginthreadex` 启动 `LAB_100281b0`，参数指向该结构。由此可以确认实例槽保存的是被请求启动的 MFC 线程对象。
+
+这还没有把 `FUN_10017ee0` 的 `param_1` 与该全局槽直接相等起来：状态机 `FUN_100152c0` 会用自己的 `param_1` 访问实例状态/状态表并调用对应回调，但当前证据没有跟出 `LAB_100281b0` 如何把线程状态中的对象传入 worker 消息派发，也没有确认 event 17 的产生处。因此保留精确缺口为 `LAB_100281b0` / worker 消息循环到 `FUN_100152c0` 的对象参数传递；本轮未继续分析 MFC 线程框架函数。若本机存在与目标版本相符的 MFC 源码，可用它辅助比对线程入口和线程消息派发；框架的一般机制只能提供线索，不能代替 HRI 二进制中该指针传递的直接证据。完整 REA Evidence bundle 为 `research/rea/v2.010/r76_hri_thread_entry_alias_20261025.evidence.json`，目标仍为 HRI-UART.dll SHA-256 `56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed`，Ghidra 12.1.4 x86。
+
 ## FTX-1 HRI / DIRECT 屏幕问题
 
 FTX-1 WIRES-X 手册的 Node Mode 段落（第 29 页）列出：AP RADIO 是独立接入点；AP PC 是连接电脑并通过 C4FM 空中通信；DIRECT 是通过所连电脑和 FTX-1 通信，手册原句写明 DIRECT 不经空中发送/接收；默认值是 AP RADIO。该原句没有解释独立活动 VFO 是否还能接收普通 FM。用户已确认当前 FTX-1 Node Mode 为 DIRECT。
