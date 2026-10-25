@@ -103,6 +103,25 @@ R77 已闭合对象槽 0 和同一队列；R78 找到 state 6/event `0x11` 的�
 
 R78 的新证据并未观察任何实际定时器、线程或电台运行；它闭合的是官方代码中的消息表、计数器与状态分派调用关系。完整新增记录合并在 [`r78_hri_event11_timer_20261026.evidence.json`](../../research/rea/v2.010/r78_hri_event11_timer_20261026.evidence.json)。
 
+### R79：EXE D/E 字段中的本机身份来源
+
+本轮继续检查官方 `WIRES_X.EXE` 2.0.1.0，SHA-256 `8f05dc26794144438566b880ce775f5178d62eb3c4deb8c053089216342bc671`。在 `FUN_004e5580` 中，程序从全局缓冲区复制 `DAT_02f1c7ee` 到 `local_3c`，调用 `FUN_004b38d0` 处理后，再用 `EditLenString` 填入 D/E 字段。结合配置加载函数 `FUN_004bdb50`，可确认其中四个字段与本机资料键的关系：这些是本机 WIRES-X 身份资料，不能用来标记 BrandMeister 当前远端发话者。Bridge 的远端身份仍应取当前接收事件的 DMR Source ID。
+
+| `FUN_004e5580` 字段 | 输入来源 | `FUN_004bdb50` 的配置加载 | 结论范围 |
+| --- | --- | --- | --- |
+| `DB` | `DAT_02f1c7c4` | `USER_INF/ID_No` | 本机资料中的 User ID/编号文本 |
+| `DC` | `DAT_02f1c800` | `USER_INF/CallSign` | 本机呼号文本 |
+| `DE` | `local_3c` | `USER_INF/User_RadioID` → `DAT_02f1c7ee` | 默认来自本机 Radio ID；另一个分支可用 `this+0x1b5c8+0x12f` 的字符串覆盖，具体分支条件见完整函数证据 |
+| `E1` | `local_3c` | `USER_INF/User_RadioID` → `DAT_02f1c7ee` | 本机 Radio ID 经 `FUN_004b38d0` 处理后的文本 |
+
+`FUN_004bdb50` 还读取 `USER_INF/SvNodeID` 和 `CONF_ROOM/Conf_RadioID`（分别存入 `DAT_02f1c7d9`、`DAT_02f1ceaa`），但本轮在 `FUN_004e5580` 中没有找到它们直接进入 `DD`、`DE` 或其他 D/E 字段的证据。不要把这些配置键直接标成 FTX-1 的当前节点或房间显示值。
+
+`FUN_004b38d0` 的可见处理是：输入最多取 7 个字符；若内容全为十进制数字，数值小于 100000 时格式化为 5 位十进制文本；数值在 1000000 到 `1000000+0x834e0` 范围时，减去 1000000 后按 `0123456789ABCD` 字符表拆成 5 位文本；其他输入不会覆盖调用方缓冲区的转换结果。加载路径中的 `FUN_004b3350` 则把允许的 5 位 `0123456789ABCD` 文本转换成 7 位十进制文本；不足 5 位时先左侧补零。6 位输入以 `0` 开头时会先去掉该字符，再按 5 位格式处理；不以 `0` 开头的 6 位输入走十进制校验和解析。这说明程序对 `User_RadioID` 做格式转换；这些函数没有给出 FTX-1 LCD 的字段语义。
+
+其余字段仍有明确来源缺口：`D7` 来自全局 `DAT_007bff04`，本轮没有追到该全局的配置键；`DD` 来自 `this+0x1b5c8+0x11a`，所属对象及字段名未识别；`DE` 可被同一对象的 `+0x12f` 字符串覆盖；`E3` 由表项 `+0x38` 的函数指针填写，`E4` 的 `pcVar11` 来源还未映射。`D1`、`D2`、`D4`–`D6` 是固定短文本，`D3` 根据 `TRANSV1/TrcvKind` 是否为 1 选择字符 `2` 或 `0`，`DA` 传入固定十个星号。没有证据把这些值命名为远端节点名、房间名、呼号列表或 LCD 控件内容。
+
+新增 EXE Evidence：`FUN_004e5580` 为 `ev_5131b0c70d73a5f6b72c69e23fb4ff735ce3e5d673ac8d5c9bd16a32e39d8ef9`；`FUN_004bdb50` 为 `ev_69c0d7a75eeb03b5c49eed4754457f21bde1e9eea5b38a659ed5a88df7b9afa9`；`FUN_004b38d0` 为 `ev_459b683155f93cac683fe76c8ba0738df62dd045d310b7ae8ec8113059e2ca53`；`FUN_004b3350` 为 `ev_199862d7adfbb45f0ef5d253a87f59d9951043c7e67809eaa5fc513920075727`。完整 EXE 会话证据包位于 [`r79_exe_hri_identity_fields_20261026.evidence.json`](../../research/rea/v2.010/r79_exe_hri_identity_fields_20261026.evidence.json)。`FUN_004184f0` 的配置写入侧记录仍见既有 Evidence `ev_682a085bde8acbeda5e36bb8b31c3d2d73bf6bc7a1552b0eb50864813298aba8`。
+
 ## 显示 DMR 呼号的安全数据来源
 
 当前 Bridge 的 `CallConfig` / `ReceiveEvent` 有远端 Source ID、目标 TG、时隙、CC 等，不含远端呼号或 TA 文本。远端呼号不能使用本机 `BI7KGD`、`USER_INF/CallSign` 或静态订阅值代替。
@@ -111,6 +130,6 @@ R78 的新证据并未观察任何实际定时器、线程或电台运行；它�
 
 ## 下一步最小闭合条件
 
-下一步只追 EXE `FUN_004e5580` 构造的 D1–E4 字段源对象和相关配置键，确认其中哪些承载呼号、节点或房间文字；再核对这些值如何经过 HRI 队列变成内部 F 记录。即便字段来源闭合，也需找到设备端 LCD 对字段的显示语义后才能实现 LCD 更新协议。当前没有为 LCD 构造或发送任何命令。
+下一步追查 EXE `FUN_004e5580` 使用的 `this+0x1b5c8` 对象及 `DAT_007bff04`、`E3` 回调、`E4` 输入来源，并确认这些字段在官方软件中对应什么资料。随后需要把具体字段值与 HRI 队列里的内部 F 记录、设备端显示语义连接起来，才可实现 LCD 更新。当前没有为 LCD 构造或发送任何命令。
 
 下一步分析官方会话启动和退出时配置的加载、保存与恢复行为，并确认 Bridge 运行期间 RF 接收状态。S 表指示与 Bridge 关闭后出现的 RF 音频是否同一时刻，仍需确认。若要发送新的 RF 模式写入命令，应先恢复该命令的协议和作用路径。本轮只做静态研究，没有进行这些观察或写入。
