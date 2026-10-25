@@ -4,7 +4,7 @@
 
 - 用户确认，本机连接配置与启动入口现在符合使用需求。连接配置和凭据仍保存在 Git 忽略的本机文件中，仓库文档不记录个人连接字段或密码。
 - 双击启动器报错来自 CMD 文件的换行和编码格式。已将本机 CMD 入口改为纯 ASCII、CRLF、无 BOM；PowerShell 文件保留 UTF-8 BOM。失败时窗口显示退出码并暂停，正常退出不暂停。alpha.1 发布目录、tag 和资产没有修改。
-- 下一阶段目标为 `v0.1.0-alpha.2`：将通用启动入口和用户配置接入源码，统一跨版本音量设置，并制作可连接的 Windows UI。当前音量配置仍按便携目录保存；alpha.1 没有可连接图形 UI。LCD/RF 由并行工作继续研究，尚未完成实现或实机验收；最终硬件联测仍按用户安排留到功能完成后集中执行。阶段细节见[下一阶段推进计划](docs/下一阶段推进计划.md)。
+- 下一阶段目标为 `v0.1.0-alpha.2`：通用启动入口、本机连接配置和跨版本音量设置已进入实现；可连接的 Windows UI 正在接入。LCD 官方软件研究已推进到 R77–R79：HRI 队列经 event 17 到条件串口写出的软件链已恢复，D/E 文本中的若干本机 WIRES-X 身份字段已有来源；FTX-1 LCD 字段语义和电台显示仍未恢复。native UI pipe 的 dirty build 有 28 项测试通过，Supervisor 离线测试通过；状态解析 PS5.1 mock 回归退出码 0。新 native 时间戳字段的集成检查、完整 clean build 和 alpha.2 发布仍待 root 执行。最终硬件联测按用户安排放到本轮功能实现完成后集中执行。阶段细节见[下一阶段推进计划](docs/下一阶段推进计划.md)。
 
 ## v0.1.0-alpha.1 私有预发布状态
 
@@ -13,17 +13,17 @@
 - 本机绿色目录 `build/releases/v0.1.0-alpha.1` 清单列出的 16 个文件，加上 manifest.json，共 17 个文件；远端 Release 有 18 个独立 asset，额外包含单独发布的 `download-release.ps1`。不生成 ZIP，包中没有密码、连接 profile、音量设置或运行日志。manifest SHA-256：`21d2e617f7761b6cc28a467432fb4c9d50d7c5ecafe2c1524afb8f9562fab9f5`。
 - 根会话确认远端 18 个资产均已上传。下载器分别通过草稿验收和普通 published 下载验收；后者重建 17 个文件，长度、SHA-256 与本机绿色目录相同。
 - 发布操作使用的 `main` 提交为 `86e9d105e3095b18b1363b550d9dc6cda8e49552`，相对发布 tag 只新增 `tools/publish-release.ps1` 与其离线测试的发布器修复；后续交接文档提交不改变发布 tag 或资产，二进制和清单仍对应 tag `312e714...`。
-- `005c5e8` DIRECT Echo 与 `ab3c5fa` TG91 收听是前序版本的用户确认；v0.1.0-alpha.1 的 HIL 仍待最终集中联测。LCD 当前话者、运行期间 RF 路由、BM 到 RF 发射与真实图形 UI 不包含在本 Release 中。
+- `005c5e8` DIRECT Echo 与 `ab3c5fa` TG91 收听保留为前序版本证据。用户现已在 `v0.1.0-alpha.1` 上完成一通 DIRECT 手咪→BM 鹦鹉→FTX-1 扬声器回声与退出验收，确认本次功能符合需求；状态日志有 32 条记录、TX 63、RX 222、一次呼叫开始/结束、一次 PTT 开始/结束、削顶样本 0，末状态 `stopped`。日志路径为 `build/releases/v0.1.0-alpha.1/logs/bm-bridge-20261025-145740-974-ef3755d4.jsonl`。这次只确认一通 DIRECT 和本次退出；长时间待机、断网恢复与独立音量调参仍待后续验收。LCD 当前话者、运行期间 RF 路由、BM 到 RF 发射与可连接图形 UI 不包含在 alpha.1 中。
 - 发布说明、包内操作步骤和验收范围见[发布说明](docs/releases/v0.1.0-alpha.1.md)、[包内 README 源](docs/releases/v0.1.0-alpha.1-package-README.md)和[验收清单](docs/首个Release验收.md)。
-> **BM + FTX-1 当前状态（2026-10-25）：** 首个私有预发布 `v0.1.0-alpha.1` 已按源码 tag `312e7142a419566c47a335fb83a33c756aaf69f3` 发布；完整发布和下载核对见上方状态与[首个 Release 验收清单](docs/首个Release验收.md)。本机绿色目录位于 `build/releases/v0.1.0-alpha.1`，远端 18 个 assets 已上传，普通 published 下载已重建并核对 17 个文件。版本级 HIL 仍待集中联测，前序 DIRECT/TG91 确认不代替该版本验收；LCD、RF 路由、RF 发射和 UI 不在本 Release 范围。
+> **BM + FTX-1 当前状态（2026-10-26）：** 私有预发布 `v0.1.0-alpha.1` 已发布且普通 published 下载的 17 个文件已核对。用户已确认该版本上一通 DIRECT 自动 PTT 私呼鹦鹉回声清晰、退出符合需求；32 条运行记录末状态为 `stopped`。这是单通验收，长时运行、断网恢复和独立音量调参仍待最终集中联测。下一版 native pipe/Supervisor 离线切片已有测试结果；LCD 软件路径研究见[WIRES-X 屏幕与路由研究](docs/WIRESX屏幕与路由软件研究.md)。alpha.2 clean build 与发布待 root 执行。LCD 当前话者、运行期间 RF 路由、RF 发射和可连接图形 UI 不属于 alpha.1。
 
 本仓库是 native 程序和 UI 的 Git 根目录。本文和 [`docs/交接与阶段同步.md`](docs/交接与阶段同步.md) 为接续实施或审查的自包含入口；不要依赖仓库外的 research 目录。较早的 `app/docs` 文档仍有指向 `../../research/...` 的链接，只克隆本仓库时这些链接无法解析。
 
 ## 当前 BM + FTX-1 候选
 
-当前交付版本为私有 GitHub 预发布 [`v0.1.0-alpha.1`](https://github.com/iCassius/WIREX_Bridge/releases/tag/v0.1.0-alpha.1)，源码 tag `312e7142a419566c47a335fb83a33c756aaf69f3`，对应 27 项离线测试通过的正式构建和本机绿色目录 `build/releases/v0.1.0-alpha.1`。最终包 HIL 尚未执行；以下版本记录用于保留前序实现和验证背景。
+当前交付版本为私有 GitHub 预发布 [`v0.1.0-alpha.1`](https://github.com/iCassius/WIREX_Bridge/releases/tag/v0.1.0-alpha.1)，源码 tag `312e7142a419566c47a335fb83a33c756aaf69f3`，对应 27 项离线测试通过的正式构建和本机绿色目录 `build/releases/v0.1.0-alpha.1`。用户已确认该版本的一通 DIRECT 自动 PTT 私呼回声清晰，并确认本次退出符合需求；日志路径与计数见上方。长时间运行、断网恢复和独立音量调参尚未执行；以下旧记录保留各自版本的实现与验证背景。
 
-步骤 1–4 的 `17f3433`、`aec0471` 和 `2183cef` 构建、测试与便携包结果均是各自版本的历史验证；`2183cef` 的干净构建有 25 项测试通过。之后两次 network-only 私呼回声确认 BM 返回 TS2：第一次因旧 TS1 filter 被全部过滤，三个 preset 随后调整为 TS2；第二次由 RX-only pipeline 识别出完整呼叫事件。源码提交 `1c8c6fd` 和 `005c5e8` 的正式 clean build 均通过 26 项离线测试；`005c5e8` 便携包审计通过，用户已完成一通 DIRECT 手咪→BM 鹦鹉→电台扬声器闭环并确认回声清晰。用户随后又确认 `ab3c5fa` 的 TG91 实机收听正常。长时间待机、断网恢复、46001 订阅收听、DIRECT RF 路由与 C4FM RF 节点仍待验收；UI 已推迟。步骤 5 身份已由用户准备。
+步骤 1–4 的 `17f3433`、`aec0471` 和 `2183cef` 构建、测试与便携包结果均是各自版本的历史验证；`2183cef` 的干净构建有 25 项测试通过。之后两次 network-only 私呼回声确认 BM 返回 TS2：第一次因旧 TS1 filter 被全部过滤，三个 preset 随后调整为 TS2；第二次由 RX-only pipeline 识别出完整呼叫事件。源码提交 `1c8c6fd` 和 `005c5e8` 的正式 clean build 均通过 26 项离线测试；`005c5e8` 便携包审计通过，用户确认该版本一通 DIRECT 手咪→BM 鹦鹉→电台扬声器回声清晰。用户也确认 `ab3c5fa` 的 TG91 实机收听正常。长时间待机、断网恢复、46001 订阅收听、DIRECT RF 路由与 C4FM RF 节点仍待集中验收。此前计划中将 UI 推迟到后续阶段；alpha.2 正在实现桌面 UI，当前状态见本文件顶部。
 
 `aec04710e9d5b32f416b3b78c3812615fedd1988` 是上一个已构建的源码提交。根会话从该 clean HEAD 使用 VS 2019 x64 正式 builder 运行全部 25 项离线测试并通过，产物在 `build/_work/wirex-bridge-aec0471-20261024-104627/`。根会话还审计了 `build/bm-radio-bridge-aec0471/`：13 个实际文件（含 manifest 和 excluded 本机凭据），manifest 中 11 个普通文件的长度与 SHA-256 全部匹配；EXE 与 clean build 相同，包内 `--help` 返回 0 并列出当时的中文预设，`--list-audio-json` 返回 0 且 schema version 为 1。凭据未被读取或哈希，日志目录为空。该提交和便携包是旧 profile 版本的历史验证，不含当前 E3 metadata helper、CC1 预设变更或就绪提示。
 
