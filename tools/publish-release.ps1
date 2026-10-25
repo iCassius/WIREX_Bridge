@@ -1,0 +1,682 @@
+[CmdletBinding()]
+param(
+    [string]$ReleaseDirectory,
+    [string]$ExpectedCommit,
+    [string]$Tag,
+    [string]$NotesPath,
+    [ValidateSet('Draft', 'Publish')][string]$Mode
+)
+
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Net.Http -ErrorAction Stop
+
+$script:publishTag = 'v0.1.0-alpha.1'
+$script:repositoryFullName = 'iCassius/WIREX_Bridge'
+$script:repositoryUrl = 'https://github.com/iCassius/WIREX_Bridge.git'
+$script:approvedFixtureSha256 = '82e0085ccaccb769a83362c5b335ce6b9a0e3ae93afdf2ad4f46eb81f908577f'
+$script:expectedDirectories = @('docs', 'licenses', 'licenses/dmr_signal', 'licenses/droidstar_mbe', 'logs', 'private')
+$script:assetPathMap = [ordered]@{
+    'wirex_bridge.exe' = 'wirex_bridge.exe'
+    'build-provenance.json' = 'build-provenance.json'
+    'start-bm-radio-bridge.cmd' = 'start-bm-radio-bridge.cmd'
+    'start-bm-radio-bridge.ps1' = 'start-bm-radio-bridge.ps1'
+    'start-listen-91.cmd' = 'start-listen-91.cmd'
+    'start-profile.cmd' = 'start-profile.cmd'
+    'README.md' = 'README.md'
+    'SOURCE.txt' = 'SOURCE.txt'
+    'docs/连接配置.md' = 'docs__connection-profile.md'
+    'docs/音量调节.md' = 'docs__audio-gain.md'
+    'licenses/dmr_signal/COPYING.GPL-3.0.txt' = 'licenses__dmr-signal__COPYING.GPL-3.0.txt'
+    'licenses/dmr_signal/NOTICE.md' = 'licenses__dmr-signal__NOTICE.md'
+    'licenses/droidstar_mbe/COPYING.GPL-3.0.txt' = 'licenses__droidstar-mbe__COPYING.GPL-3.0.txt'
+    'licenses/droidstar_mbe/ISC-NOTICE.txt' = 'licenses__droidstar-mbe__ISC-NOTICE.txt'
+    'licenses/droidstar_mbe/source-manifest.json' = 'licenses__droidstar-mbe__source-manifest.json'
+    'private/device-y.bin' = 'private__device-y.bin'
+}
+
+function Test-PublishPathWithin {
+    param([string]$Path, [string]$Directory)
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $fullDirectory = [System.IO.Path]::GetFullPath($Directory).TrimEnd([System.IO.Path]::DirectorySeparatorChar)
+    return $fullPath.StartsWith(($fullDirectory + [System.IO.Path]::DirectorySeparatorChar), [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-PublishAssetName {
+    param([string]$RelativePath)
+    if (-not $script:assetPathMap.Contains($RelativePath)) { throw 'Package contains a path outside the fixed release allowlist.' }
+    return [string]$script:assetPathMap[$RelativePath]
+}
+
+function Get-StrictUtf8Text {
+    param([string]$Path)
+    $encoding = New-Object System.Text.UTF8Encoding($false, $true)
+    try { return [System.IO.File]::ReadAllText($Path, $encoding) }
+    catch { throw 'A required UTF-8 text file is unreadable.' }
+}
+
+function Get-PublishNotes {
+    param([string]$Path, [string]$RepositoryRoot, [string]$ExpectedCommit)
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $expectedNotes = [System.IO.Path]::GetFullPath((Join-Path $RepositoryRoot ('docs/releases/' + $script:publishTag + '.md')))
+    if (-not $fullPath.Equals($expectedNotes, [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+        throw 'NotesPath must name the fixed release notes file in this repository.'
+    }
+    $notes = Get-StrictUtf8Text -Path $fullPath
+    if ([string]::IsNullOrWhiteSpace($notes) -or $notes.Length -gt 100000 -or $notes.IndexOf([char]0) -ge 0) {
+        throw 'Release notes are empty or outside the supported size.'
+    }
+    $commitBlob = Get-GitText -RepositoryRoot $RepositoryRoot -Arguments @('rev-parse', '--verify', ($ExpectedCommit + ':docs/releases/' + $script:publishTag + '.md'))
+    $workingBlob = Get-GitText -RepositoryRoot $RepositoryRoot -Arguments @('hash-object', '--path=docs/releases/' + $script:publishTag + '.md', $fullPath)
+    if ($commitBlob -cne $workingBlob) { throw 'Release notes do not match the expected source commit.' }
+    return $notes
+}
+
+function Get-GitText {
+    param([string]$RepositoryRoot, [string[]]$Arguments)
+    $gitCommand = Get-Command git -ErrorAction Stop
+    $allArguments = @('-C', $RepositoryRoot) + $Arguments
+    $output = @(& $gitCommand.Source @allArguments 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $output.Count -ne 1) { throw 'A required local Git object could not be verified.' }
+    return ([string]$output[0]).Trim()
+}
+
+function Assert-LocalRepositoryIdentity {
+    param([string]$RepositoryRoot)
+    $gitRoot = [System.IO.Path]::GetFullPath((Get-GitText -RepositoryRoot $RepositoryRoot -Arguments @('rev-parse', '--show-toplevel')))
+    $expectedRoot = [System.IO.Path]::GetFullPath($RepositoryRoot)
+    if (-not $gitRoot.Equals($expectedRoot, [System.StringComparison]::OrdinalIgnoreCase)) { throw 'The current directory is not the expected Git repository root.' }
+    $remote = (Get-GitText -RepositoryRoot $RepositoryRoot -Arguments @('remote', 'get-url', 'origin')).ToLowerInvariant().TrimEnd('/')
+    $allowedRemotes = @(
+        'https://github.com/icassius/wirex_bridge.git',
+        'https://github.com/icassius/wirex_bridge',
+        'ssh://git@github.com/icassius/wirex_bridge.git',
+        'ssh://git@github.com/icassius/wirex_bridge',
+        'git@github.com:icassius/wirex_bridge.git',
+        'git@github.com:icassius/wirex_bridge'
+    )
+    if ($remote -cnotin $allowedRemotes) { throw 'The local origin is not the fixed iCassius/WIREX_Bridge repository.' }
+}
+
+function Assert-PublishPackage {
+    param([string]$PackageRoot, [string]$ExpectedCommit)
+    $root = [System.IO.Path]::GetFullPath($PackageRoot)
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw 'ReleaseDirectory does not exist.' }
+    $manifestPath = Join-Path $root 'manifest.json'
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw 'Package is missing manifest.json.' }
+    try { $manifest = (Get-StrictUtf8Text -Path $manifestPath) | ConvertFrom-Json -ErrorAction Stop }
+    catch { throw 'manifest.json is invalid JSON.' }
+    if ([int]$manifest.schema_version -ne 1 -or
+        [string]$manifest.manifest_asset_name -cne 'manifest.json' -or
+        [string]$manifest.package_kind -cne 'wirex_bridge_private_alpha_release_green_directory' -or
+        [string]$manifest.package_status -cne 'root_audit_passed' -or
+        [string]$manifest.version -cne $script:publishTag -or
+        [string]$manifest.tag_candidate -cne $script:publishTag -or
+        [string]$manifest.source.repository -cne $script:repositoryUrl -or
+        ([string]$manifest.source.commit).ToLowerInvariant() -cne $ExpectedCommit -or
+        $manifest.source.working_tree_clean -ne $true -or
+        ([string]$manifest.build.source_commit).ToLowerInvariant() -cne $ExpectedCommit -or
+        $manifest.build.source_tree_clean -ne $true -or $manifest.build.compile_only -ne $false -or
+        $manifest.build.build_completed -ne $true -or [string]$manifest.build.result -cne 'passed') {
+        throw 'Package metadata does not attest the audited clean build for the expected commit and tag.'
+    }
+    if ([string]$manifest.approved_y_fixture.path -cne 'private/device-y.bin' -or
+        [long]$manifest.approved_y_fixture.length_bytes -ne 100 -or
+        ([string]$manifest.approved_y_fixture.sha256).ToLowerInvariant() -cne $script:approvedFixtureSha256) {
+        throw 'Package metadata does not identify the approved 100-byte Y fixture.'
+    }
+
+    $actualFiles = [System.Collections.Generic.List[string]]::new()
+    $actualDirectories = [System.Collections.Generic.List[string]]::new()
+    foreach ($item in (Get-ChildItem -LiteralPath $root -Force -Recurse -ErrorAction Stop)) {
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Package may not contain reparse points.' }
+        $relative = $item.FullName.Substring($root.TrimEnd([System.IO.Path]::DirectorySeparatorChar).Length + 1).Replace('\', '/')
+        if ($item.PSIsContainer) { $actualDirectories.Add($relative) } else { $actualFiles.Add($relative) }
+    }
+    $expectedFiles = @($script:assetPathMap.Keys) + 'manifest.json'
+    $actualFileText = (@($actualFiles | Sort-Object -CaseSensitive) -join "`n")
+    $expectedFileText = (@($expectedFiles | Sort-Object -CaseSensitive) -join "`n")
+    $actualDirectoryText = (@($actualDirectories | Sort-Object -CaseSensitive) -join "`n")
+    $expectedDirectoryText = (@($script:expectedDirectories | Sort-Object -CaseSensitive) -join "`n")
+    if ($actualFileText -cne $expectedFileText -or $actualDirectoryText -cne $expectedDirectoryText) {
+        throw 'Package contains missing, extra, or misplaced files or directories.'
+    }
+    if (@($manifest.files).Count -ne $script:assetPathMap.Count) { throw 'manifest.files does not match the fixed package inventory.' }
+
+    $seenPaths = @{}
+    $seenAssets = @{}
+    $assetPlan = New-Object System.Collections.ArrayList
+    foreach ($record in @($manifest.files)) {
+        $path = [string]$record.path
+        if (-not $script:assetPathMap.Contains($path) -or $seenPaths.ContainsKey($path)) { throw 'manifest.files contains an unknown or duplicate path.' }
+        $seenPaths[$path] = $true
+        $assetName = [string]$record.asset_name
+        if ($assetName -cne (Get-PublishAssetName -RelativePath $path) -or $assetName -notmatch '^[A-Za-z0-9._-]+$' -or $seenAssets.ContainsKey($assetName)) {
+            throw 'manifest contains an invalid or duplicate asset name.'
+        }
+        $seenAssets[$assetName] = $true
+        $fullPath = Join-Path $root $path.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+        $item = Get-Item -LiteralPath $fullPath -ErrorAction Stop
+        $hash = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ([long]$record.length_bytes -ne [long]$item.Length -or ([string]$record.sha256).ToLowerInvariant() -cne $hash) {
+            throw 'A package file does not match its manifest length and SHA-256.'
+        }
+        if ($path -ceq 'private/device-y.bin' -and ([long]$item.Length -ne 100 -or $hash -cne $script:approvedFixtureSha256)) {
+            throw 'The package Y fixture does not match the approved length and SHA-256.'
+        }
+        [void]$assetPlan.Add([pscustomobject]@{ Name=$assetName; Path=$fullPath; Length=[long]$item.Length; Sha256=$hash })
+    }
+    $manifestItem = Get-Item -LiteralPath $manifestPath
+    $manifestHash = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    [void]$assetPlan.Add([pscustomobject]@{ Name='manifest.json'; Path=$manifestPath; Length=[long]$manifestItem.Length; Sha256=$manifestHash })
+    return ,([pscustomobject]@{ Manifest=$manifest; Assets=@($assetPlan) })
+}
+
+function Export-CommitHelperBlob {
+    param([string]$RepositoryRoot, [string]$ExpectedCommit)
+    $blobId = Get-GitText -RepositoryRoot $RepositoryRoot -Arguments @('rev-parse', '--verify', ($ExpectedCommit + ':tools/download-release.ps1'))
+    if ($blobId -cnotmatch '^[0-9a-f]{40}$') { throw 'The download helper is absent from the expected source commit.' }
+    $workRoot = [System.IO.Path]::GetFullPath((Join-Path $RepositoryRoot 'build/_work'))
+    if (-not (Test-Path -LiteralPath $workRoot -PathType Container)) { throw 'The repository build/_work directory is unavailable.' }
+    $tempPath = Join-Path $workRoot ('publish-helper-' + [guid]::NewGuid().ToString('N') + '.bin')
+    if (-not (Test-PublishPathWithin -Path $tempPath -Directory $workRoot) -or (Test-Path -LiteralPath $tempPath)) {
+        throw 'Could not allocate a safe temporary helper file.'
+    }
+    $process = $null
+    $stderrTask = $null
+    try {
+        $gitCommand = Get-Command git -ErrorAction Stop
+        $start = New-Object System.Diagnostics.ProcessStartInfo
+        $start.FileName = $gitCommand.Source
+        $quotedRoot = '"' + $RepositoryRoot.Replace('"', '\"') + '"'
+        $start.Arguments = '-C ' + $quotedRoot + ' cat-file blob ' + $blobId
+        $start.UseShellExecute = $false
+        $start.CreateNoWindow = $true
+        $start.RedirectStandardOutput = $true
+        $start.RedirectStandardError = $true
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $start
+        if (-not $process.Start()) { throw 'Could not start local Git.' }
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $output = [System.IO.File]::Open($tempPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        try {
+            $copyTask = $process.StandardOutput.BaseStream.CopyToAsync($output)
+            if (-not $process.WaitForExit(15000)) {
+                try { $process.Kill() } catch { }
+                $stopped = $false
+                try { $stopped = $process.WaitForExit(5000) } catch { }
+                if (-not $stopped) { throw 'The Git blob process did not stop after timeout; a temporary file may remain under build/_work.' }
+                throw 'Reading the expected helper Git blob timed out.'
+            }
+            $copyTask.GetAwaiter().GetResult()
+        } finally { $output.Dispose() }
+        $null = $stderrTask.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0) { throw 'The expected helper Git blob could not be read.' }
+        $item = Get-Item -LiteralPath $tempPath
+        if ($item.Length -le 0) { throw 'The expected helper Git blob is empty.' }
+        $hash = (Get-FileHash -LiteralPath $tempPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        return [pscustomobject]@{ Name='download-release.ps1'; Path=$tempPath; Length=[long]$item.Length; Sha256=$hash; Temporary=$true }
+    } catch {
+        if (Test-Path -LiteralPath $tempPath -PathType Leaf) {
+            try { Remove-Item -LiteralPath $tempPath -Force -ErrorAction Stop }
+            catch { throw 'Could not remove the temporary helper file under build/_work.' }
+        }
+        if ($_.Exception.Message -match 'timed out') { throw 'Reading the expected helper Git blob timed out.' }
+        if ($_.Exception.Message -match 'did not stop') { throw 'The Git blob process did not stop after timeout; a temporary file may remain under build/_work.' }
+        throw 'The expected helper Git blob could not be verified.'
+    } finally {
+        if ($null -ne $process) { $process.Dispose() }
+    }
+}
+
+function Get-GitCredentialToken {
+    $gitCommand = Get-Command git -ErrorAction Stop
+    $start = New-Object System.Diagnostics.ProcessStartInfo
+    $start.FileName = $gitCommand.Source
+    $start.Arguments = 'credential fill'
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardInput = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $start.EnvironmentVariables['GIT_TERMINAL_PROMPT'] = '0'
+    $start.EnvironmentVariables['GCM_INTERACTIVE'] = 'Never'
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $start
+    $credentialText = ''
+    $errorTask = $null
+    try {
+        if (-not $process.Start()) { throw 'start' }
+        $outputTask = $process.StandardOutput.ReadToEndAsync()
+        $errorTask = $process.StandardError.ReadToEndAsync()
+        $process.StandardInput.Write("protocol=https`nhost=github.com`n`n")
+        $process.StandardInput.Close()
+        if (-not $process.WaitForExit(20000)) {
+            try { $process.Kill() } catch { }
+            $stopped = $false
+            try { $stopped = $process.WaitForExit(5000) } catch { }
+            if (-not $stopped) { throw 'not-stopped' }
+            throw 'timeout'
+        }
+        $credentialText = $outputTask.GetAwaiter().GetResult()
+        $null = $errorTask.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0) { throw 'missing' }
+        $token = $null
+        foreach ($line in ($credentialText -split "`n")) {
+            $cleanLine = $line.TrimEnd("`r")
+            if ($cleanLine.StartsWith('password=', [System.StringComparison]::Ordinal)) { $token = $cleanLine.Substring(9) }
+        }
+        if ([string]::IsNullOrWhiteSpace($token)) { throw 'missing' }
+        return $token
+    } catch {
+        if ($_.Exception.Message -eq 'not-stopped') { throw 'Git Credential Manager timed out and did not stop.' }
+        if ($_.Exception.Message -eq 'timeout') { throw 'Git Credential Manager did not return within the allowed time.' }
+        throw 'Git Credential Manager did not provide a usable credential.'
+    } finally {
+        $credentialText = ''
+        if ($null -ne $process) { $process.Dispose() }
+    }
+}
+
+function New-PublishHttpClients {
+    $handler = New-Object System.Net.Http.HttpClientHandler
+    $handler.AllowAutoRedirect = $false
+    $anonymousHandler = New-Object System.Net.Http.HttpClientHandler
+    $anonymousHandler.AllowAutoRedirect = $false
+    $authenticated = [System.Net.Http.HttpClient]::new($handler)
+    $anonymous = [System.Net.Http.HttpClient]::new($anonymousHandler)
+    foreach ($client in @($authenticated, $anonymous)) {
+        $client.Timeout = [TimeSpan]::FromSeconds(30)
+        $client.DefaultRequestHeaders.UserAgent.ParseAdd('WIREX-Bridge-ReleasePublisher/1.0')
+    }
+    $authenticated.DefaultRequestHeaders.Accept.ParseAdd('application/vnd.github+json')
+    $authenticated.DefaultRequestHeaders.Add('X-GitHub-Api-Version', '2022-11-28')
+    return [pscustomobject]@{ Authenticated=$authenticated; Anonymous=$anonymous }
+}
+
+function Initialize-GitHubClient {
+    $script:apiBase = 'https://api.github.com'
+    $script:repoBase = $script:apiBase + '/repos/' + $script:repositoryFullName
+    $script:token = Get-GitCredentialToken
+    $clients = New-PublishHttpClients
+    $script:githubClient = $clients.Authenticated
+    $script:anonymousClient = $clients.Anonymous
+    $script:githubClient.DefaultRequestHeaders.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $script:token)
+}
+
+function New-UnknownOutcomeError {
+    $exception = New-Object System.Exception('The GitHub mutation outcome is unknown.')
+    $exception.Data['WirexOutcomeUnknown'] = $true
+    return $exception
+}
+
+function Test-UnknownOutcomeError {
+    param([System.Exception]$Exception)
+    return ($null -ne $Exception.Data['WirexOutcomeUnknown'])
+}
+
+function Send-GitHubRequest {
+    param(
+        [string]$Method,
+        [string]$Uri,
+        [System.Net.Http.HttpContent]$Content=$null,
+        [switch]$AllowNotFound
+    )
+    $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::new($Method), $Uri)
+    if ($null -ne $Content) { $request.Content = $Content }
+    try {
+        try { $response = $script:githubClient.SendAsync($request).GetAwaiter().GetResult() }
+        catch {
+            if ($Method -in @('POST', 'PATCH')) { throw (New-UnknownOutcomeError) }
+            throw 'GitHub API request failed.'
+        }
+        $status = [int]$response.StatusCode
+        if ($AllowNotFound -and $status -eq 404) { return [pscustomobject]@{ Status=404; Data=$null } }
+        if ($status -ge 500 -and $Method -in @('POST', 'PATCH')) { throw (New-UnknownOutcomeError) }
+        if ($status -lt 200 -or $status -ge 300) { throw ('GitHub API returned HTTP ' + $status + '.') }
+        $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        try { $data = $body | ConvertFrom-Json -ErrorAction Stop }
+        catch {
+            if ($Method -in @('POST', 'PATCH')) { throw (New-UnknownOutcomeError) }
+            throw 'GitHub API returned an invalid response.'
+        }
+        return [pscustomobject]@{ Status=$status; Data=$data }
+    } finally {
+        if ($null -ne $response) { $response.Dispose() }
+        $request.Dispose()
+    }
+}
+
+function New-GitHubJsonContent {
+    param([object]$Value)
+    $json = ConvertTo-Json -InputObject $Value -Depth 10 -Compress
+    $content = [System.Net.Http.StringContent]::new($json, [System.Text.UTF8Encoding]::new($false), 'application/json')
+    return $content
+}
+
+function Assert-GitHubIdentityAndRepository {
+    $user = (Send-GitHubRequest -Method 'GET' -Uri ($script:apiBase + '/user')).Data
+    if ([string]$user.login -cne 'iCassius') { throw 'The authenticated GitHub account is not iCassius.' }
+    $repo = (Send-GitHubRequest -Method 'GET' -Uri $script:repoBase).Data
+    if ([string]$repo.full_name -cne $script:repositoryFullName -or $repo.private -ne $true) {
+        throw 'The fixed GitHub repository is missing or is not private.'
+    }
+}
+
+function Assert-RemoteTagCommit {
+    param([string]$ExpectedCommit)
+    $escapedTag = [System.Uri]::EscapeDataString($script:publishTag)
+    $reference = (Send-GitHubRequest -Method 'GET' -Uri ($script:repoBase + '/git/ref/tags/' + $escapedTag)).Data
+    if ([string]$reference.ref -cne ('refs/tags/' + $script:publishTag)) { throw 'The remote tag reference is not exact.' }
+    $objectType = [string]$reference.object.type
+    $objectSha = [string]$reference.object.sha
+    $visited = @{}
+    for ($depth = 0; $depth -lt 8 -and $objectType -ceq 'tag'; $depth++) {
+        if ($objectSha -notmatch '^[0-9a-f]{40}$' -or $visited.ContainsKey($objectSha)) { throw 'The remote annotated tag chain is invalid.' }
+        $visited[$objectSha] = $true
+        $tagObject = (Send-GitHubRequest -Method 'GET' -Uri ($script:repoBase + '/git/tags/' + $objectSha)).Data
+        $objectType = [string]$tagObject.object.type
+        $objectSha = [string]$tagObject.object.sha
+    }
+    if ($objectType -cne 'commit' -or $objectSha.ToLowerInvariant() -cne $ExpectedCommit) {
+        throw 'The remote tag does not resolve to ExpectedCommit.'
+    }
+}
+
+function Get-ReleaseByTag {
+    $escapedTag = [System.Uri]::EscapeDataString($script:publishTag)
+    $result = Send-GitHubRequest -Method 'GET' -Uri ($script:repoBase + '/releases/tags/' + $escapedTag) -AllowNotFound
+    if ($result.Status -ne 404) { return $result.Data }
+    $matches = New-Object System.Collections.ArrayList
+    for ($page = 1; $page -le 10; $page++) {
+        $pageReleases = @((Send-GitHubRequest -Method 'GET' -Uri ($script:repoBase + '/releases?per_page=100&page=' + $page)).Data)
+        foreach ($release in $pageReleases) {
+            if ([string]$release.tag_name -ceq $script:publishTag) { [void]$matches.Add($release) }
+        }
+        if ($pageReleases.Count -lt 100) { break }
+    }
+    if ($matches.Count -gt 1) { throw 'GitHub lists multiple releases with the fixed tag.' }
+    if ($matches.Count -eq 1) { return $matches[0] }
+    return $null
+}
+
+function Assert-ReleaseIdentity {
+    param([object]$Release, [string]$ExpectedCommit, [string]$Notes, [bool]$MustBeDraft)
+    if ($null -eq $Release -or [string]$Release.tag_name -cne $script:publishTag -or
+        [string]$Release.target_commitish -cne $ExpectedCommit -or
+        [string]$Release.body -cne $Notes -or $Release.prerelease -ne $true -or
+        $Release.draft -ne $MustBeDraft) {
+        throw 'The existing GitHub release does not match the expected tag, notes, commit, or prerelease state.'
+    }
+}
+
+function Get-PublishReleaseAction {
+    param([object]$Release, [string]$ExpectedCommit, [string]$Notes)
+    if ($null -eq $Release -or $Release.prerelease -ne $true) { throw 'A matching prerelease record is required.' }
+    if ($Release.draft -eq $true) {
+        Assert-ReleaseIdentity -Release $Release -ExpectedCommit $ExpectedCommit -Notes $Notes -MustBeDraft $true
+        return 'publish'
+    }
+    if ($Release.draft -eq $false) {
+        Assert-ReleaseIdentity -Release $Release -ExpectedCommit $ExpectedCommit -Notes $Notes -MustBeDraft $false
+        return 'already-published'
+    }
+    throw 'The release draft state is invalid.'
+}
+
+function Get-ReleaseAssets {
+    param([long]$ReleaseId)
+    $result = New-Object System.Collections.ArrayList
+    for ($page = 1; $page -le 10; $page++) {
+        $response = (Send-GitHubRequest -Method 'GET' -Uri ($script:repoBase + '/releases/' + $ReleaseId + '/assets?per_page=100&page=' + $page)).Data
+        $pageAssets = @($response)
+        foreach ($asset in $pageAssets) { [void]$result.Add($asset) }
+        if ($pageAssets.Count -lt 100) { return @($result) }
+    }
+    throw 'GitHub returned an unexpectedly large release asset list.'
+}
+
+function Get-StreamSha256 {
+    param([System.IO.Stream]$Stream, [long]$ExpectedLength)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $buffer = New-Object byte[] 65536
+    $total = [long]0
+    try {
+        while (($read = $Stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $total += $read
+            if ($total -gt $ExpectedLength) { throw 'Release asset exceeds the expected size.' }
+            [void]$sha.TransformBlock($buffer, 0, $read, $buffer, 0)
+        }
+        [void]$sha.TransformFinalBlock([byte[]]@(), 0, 0)
+        if ($total -ne $ExpectedLength) { throw 'Release asset size does not match.' }
+        return ([System.BitConverter]::ToString($sha.Hash).Replace('-', '').ToLowerInvariant())
+    } finally { $sha.Dispose() }
+}
+
+function Test-AllowedReleaseAssetHost {
+    param([string]$HostName)
+    $allowedHosts = @(
+        'release-assets.githubusercontent.com',
+        'objects.githubusercontent.com',
+        'github-releases.githubusercontent.com'
+    )
+    return ($allowedHosts -ccontains ([string]$HostName).ToLowerInvariant())
+}
+
+function Get-AssetStreamHash {
+    param([long]$AssetId, [long]$ExpectedLength)
+    $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, ($script:repoBase + '/releases/assets/' + $AssetId))
+    $request.Headers.Accept.Clear()
+    $request.Headers.Accept.ParseAdd('application/octet-stream')
+    $response = $null
+    $downloadResponse = $null
+    try {
+        try { $response = $script:githubClient.SendAsync($request).GetAwaiter().GetResult() }
+        catch { throw 'Could not download a release asset for verification.' }
+        if ([int]$response.StatusCode -eq 302) {
+            $location = $response.Headers.Location
+            if ($null -eq $location -or -not $location.IsAbsoluteUri -or $location.Scheme -cne 'https' -or
+                -not (Test-AllowedReleaseAssetHost -HostName $location.Host)) {
+                throw 'GitHub returned an unsupported release asset download location.'
+            }
+            $anonymousRequest = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $location)
+            try { $downloadResponse = $script:anonymousClient.SendAsync($anonymousRequest).GetAwaiter().GetResult() }
+            catch { throw 'Could not download a release asset for verification.' }
+            finally { $anonymousRequest.Dispose() }
+            $response.Dispose()
+            $response = $downloadResponse
+            $downloadResponse = $null
+        }
+        if ([int]$response.StatusCode -ne 200) { throw 'GitHub did not return the release asset bytes.' }
+        $lengthHeader = $response.Content.Headers.ContentLength
+        if ($null -ne $lengthHeader -and [long]$lengthHeader -ne $ExpectedLength) { throw 'Release asset size does not match.' }
+        $stream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+        try {
+            $downloadHash = Get-StreamSha256 -Stream $stream -ExpectedLength $ExpectedLength
+        } finally { $stream.Dispose() }
+        return $downloadHash
+    } finally {
+        if ($null -ne $response) { $response.Dispose() }
+        if ($null -ne $downloadResponse) { $downloadResponse.Dispose() }
+        $request.Dispose()
+    }
+}
+
+function Test-RemoteAssetMatches {
+    param([object]$RemoteAsset, [object]$LocalAsset)
+    if ([string]$RemoteAsset.name -cne [string]$LocalAsset.Name -or [long]$RemoteAsset.size -ne [long]$LocalAsset.Length) { return $false }
+    $digest = [string]$RemoteAsset.digest
+    if ($digest -match '^sha256:([0-9a-fA-F]{64})$') { return ($Matches[1].ToLowerInvariant() -ceq [string]$LocalAsset.Sha256) }
+    $downloadHash = Get-AssetStreamHash -AssetId ([long]$RemoteAsset.id) -ExpectedLength ([long]$LocalAsset.Length)
+    return ($downloadHash -ceq [string]$LocalAsset.Sha256)
+}
+
+function Assert-ExactRemoteAssetNames {
+    param([object[]]$RemoteAssets, [object[]]$ExpectedAssets)
+    $expectedNames = @($ExpectedAssets | ForEach-Object { [string]$_.Name } | Sort-Object -CaseSensitive)
+    $actualNames = @($RemoteAssets | ForEach-Object { [string]$_.name } | Sort-Object -CaseSensitive)
+    if (($actualNames -join "`n") -cne ($expectedNames -join "`n")) { throw 'Release asset names do not match the fixed allowlist.' }
+    if (@($actualNames | Select-Object -Unique).Count -ne $actualNames.Count) { throw 'GitHub returned duplicate release asset names.' }
+}
+
+function Upload-ReleaseAsset {
+    param([long]$ReleaseId, [object]$LocalAsset)
+    $uri = 'https://uploads.github.com/repos/' + $script:repositoryFullName + '/releases/' + $ReleaseId + '/assets?name=' + [System.Uri]::EscapeDataString([string]$LocalAsset.Name)
+    $stream = [System.IO.File]::OpenRead([string]$LocalAsset.Path)
+    $content = [System.Net.Http.StreamContent]::new($stream)
+    $content.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::new('application/octet-stream')
+    try { return (Send-GitHubRequest -Method 'POST' -Uri $uri -Content $content).Data }
+    finally { $content.Dispose(); $stream.Dispose() }
+}
+
+function New-DraftRelease {
+    param([string]$ExpectedCommit, [string]$Notes)
+    $body = [ordered]@{
+        tag_name = $script:publishTag
+        target_commitish = $ExpectedCommit
+        name = 'WIREX Bridge ' + $script:publishTag
+        body = $Notes
+        draft = $true
+        prerelease = $true
+    }
+    try { return (Send-GitHubRequest -Method 'POST' -Uri ($script:repoBase + '/releases') -Content (New-GitHubJsonContent -Value $body)).Data }
+    catch {
+        if (-not (Test-UnknownOutcomeError -Exception $_.Exception)) { throw }
+        $recovered = Get-ReleaseByTag
+        if ($null -eq $recovered) { throw 'Release creation outcome is unknown; no retry was attempted.' }
+        Assert-ReleaseIdentity -Release $recovered -ExpectedCommit $ExpectedCommit -Notes $Notes -MustBeDraft $true
+        return $recovered
+    }
+}
+
+function Invoke-DraftAssetUpload {
+    param([long]$ReleaseId, [object[]]$ExpectedAssets)
+    $remoteAssets = @(Get-ReleaseAssets -ReleaseId $ReleaseId)
+    $remoteNames = @($remoteAssets | ForEach-Object { [string]$_.name })
+    if (@($remoteNames | Select-Object -Unique).Count -ne $remoteNames.Count) { throw 'GitHub returned duplicate release asset names.' }
+    foreach ($remote in $remoteAssets) {
+        if (@($ExpectedAssets | Where-Object { [string]$_.Name -ceq [string]$remote.name }).Count -eq 0) {
+            throw 'The draft release already contains an asset outside the fixed allowlist.'
+        }
+    }
+    foreach ($local in $ExpectedAssets) {
+        $existing = @($remoteAssets | Where-Object { [string]$_.name -ceq [string]$local.Name })
+        if ($existing.Count -gt 1) { throw 'GitHub returned duplicate assets with the same name.' }
+        if ($existing.Count -eq 1) {
+            if (-not (Test-RemoteAssetMatches -RemoteAsset $existing[0] -LocalAsset $local)) {
+                throw 'An existing same-name release asset has different bytes; it was not overwritten.'
+            }
+            continue
+        }
+        try { $uploaded = Upload-ReleaseAsset -ReleaseId $ReleaseId -LocalAsset $local }
+        catch {
+            if (-not (Test-UnknownOutcomeError -Exception $_.Exception)) { throw }
+            $afterUnknown = @(Get-ReleaseAssets -ReleaseId $ReleaseId | Where-Object { [string]$_.name -ceq [string]$local.Name })
+            if ($afterUnknown.Count -eq 1 -and (Test-RemoteAssetMatches -RemoteAsset $afterUnknown[0] -LocalAsset $local)) { continue }
+            throw 'Asset upload outcome is unknown; it was not retried.'
+        }
+        if (-not (Test-RemoteAssetMatches -RemoteAsset $uploaded -LocalAsset $local)) {
+            throw 'The uploaded release asset does not match the local bytes.'
+        }
+    }
+    $finalAssets = @(Get-ReleaseAssets -ReleaseId $ReleaseId)
+    Assert-ExactRemoteAssetNames -RemoteAssets $finalAssets -ExpectedAssets $ExpectedAssets
+    foreach ($local in $ExpectedAssets) {
+        $remote = @($finalAssets | Where-Object { [string]$_.name -ceq [string]$local.Name })[0]
+        if (-not (Test-RemoteAssetMatches -RemoteAsset $remote -LocalAsset $local)) { throw 'A release asset failed final hash verification.' }
+    }
+    return $finalAssets.Count
+}
+
+function Assert-AllReleaseAssets {
+    param([long]$ReleaseId, [object[]]$ExpectedAssets)
+    $remoteAssets = @(Get-ReleaseAssets -ReleaseId $ReleaseId)
+    Assert-ExactRemoteAssetNames -RemoteAssets $remoteAssets -ExpectedAssets $ExpectedAssets
+    foreach ($local in $ExpectedAssets) {
+        $remote = @($remoteAssets | Where-Object { [string]$_.name -ceq [string]$local.Name })[0]
+        if (-not (Test-RemoteAssetMatches -RemoteAsset $remote -LocalAsset $local)) { throw 'A release asset failed hash verification.' }
+    }
+}
+
+function Publish-VerifiedRelease {
+    param([object]$Release, [string]$ExpectedCommit, [string]$Notes)
+    $body = [ordered]@{ target_commitish=$ExpectedCommit; body=$Notes; draft=$false; prerelease=$true }
+    try {
+        return (Send-GitHubRequest -Method 'PATCH' -Uri ($script:repoBase + '/releases/' + [long]$Release.id) -Content (New-GitHubJsonContent -Value $body)).Data
+    } catch {
+        if (-not (Test-UnknownOutcomeError -Exception $_.Exception)) { throw }
+        $recovered = Get-ReleaseByTag
+        if ($null -eq $recovered -or $recovered.draft -ne $false -or $recovered.prerelease -ne $true -or
+            [string]$recovered.target_commitish -cne $ExpectedCommit -or [string]$recovered.body -cne $Notes) {
+            throw 'Release publication outcome is unknown; no retry was attempted.'
+        }
+        return $recovered
+    }
+}
+
+function Invoke-ReleasePublisher {
+    param([string]$PackagePath, [string]$Commit, [string]$NotesFile, [string]$PublisherMode, [string]$RepositoryRoot)
+    if ($script:publishTag -cne 'v0.1.0-alpha.1' -or $PublisherMode -cnotin @('Draft', 'Publish')) { throw 'Only the fixed private alpha release is supported.' }
+    if ($Commit -cnotmatch '^[0-9a-f]{40}$') { throw 'ExpectedCommit must be a full lowercase SHA-1.' }
+    $root = [System.IO.Path]::GetFullPath($RepositoryRoot)
+    $expectedPackage = [System.IO.Path]::GetFullPath((Join-Path $root ('build/releases/' + $script:publishTag)))
+    if (-not [System.IO.Path]::GetFullPath($PackagePath).Equals($expectedPackage, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw 'ReleaseDirectory must be the fixed package directory for this tag.'
+    }
+    Assert-LocalRepositoryIdentity -RepositoryRoot $root
+    $package = Assert-PublishPackage -PackageRoot $expectedPackage -ExpectedCommit $Commit
+    $notes = Get-PublishNotes -Path $NotesFile -RepositoryRoot $root -ExpectedCommit $Commit
+    if (@($package.Assets | Where-Object { [string]$_.Name -ceq 'download-release.ps1' }).Count -ne 0) {
+        throw 'The fixed helper asset name conflicts with a package asset.'
+    }
+    $helper = $null
+    $script:githubClient = $null
+    $script:anonymousClient = $null
+    $script:token = $null
+    try {
+    $helper = Export-CommitHelperBlob -RepositoryRoot $root -ExpectedCommit $Commit
+    $assets = @($package.Assets) + @($helper)
+    if (@($assets | ForEach-Object { [string]$_.Name } | Sort-Object -Unique).Count -ne 18) { throw 'Release asset names are not unique.' }
+        Initialize-GitHubClient
+        Assert-GitHubIdentityAndRepository
+        Assert-RemoteTagCommit -ExpectedCommit $Commit
+        $release = Get-ReleaseByTag
+        if ($PublisherMode -ceq 'Draft') {
+            if ($null -eq $release) { $release = New-DraftRelease -ExpectedCommit $Commit -Notes $notes }
+            Assert-ReleaseIdentity -Release $release -ExpectedCommit $Commit -Notes $notes -MustBeDraft $true
+            $assetCount = Invoke-DraftAssetUpload -ReleaseId ([long]$release.id) -ExpectedAssets $assets
+            Write-Output ('Verified draft release ' + $script:publishTag + '; assets=' + $assetCount + '.')
+            return
+        }
+        $publishAction = Get-PublishReleaseAction -Release $release -ExpectedCommit $Commit -Notes $notes
+        Assert-AllReleaseAssets -ReleaseId ([long]$release.id) -ExpectedAssets $assets
+        if ($publishAction -ceq 'already-published') {
+            Write-Output ('Verified published prerelease ' + $script:publishTag + '; assets=' + $assets.Count + '.')
+            return
+        }
+        $published = Publish-VerifiedRelease -Release $release -ExpectedCommit $Commit -Notes $notes
+        Assert-ReleaseIdentity -Release $published -ExpectedCommit $Commit -Notes $notes -MustBeDraft $false
+        Write-Output ('Published prerelease ' + $script:publishTag + '; assets=' + $assets.Count + '.')
+    } finally {
+        if ($null -ne $script:githubClient) { $script:githubClient.Dispose(); $script:githubClient=$null }
+        if ($null -ne $script:anonymousClient) { $script:anonymousClient.Dispose(); $script:anonymousClient=$null }
+        $script:token = $null
+        if ($null -ne $helper -and $helper.Temporary -and (Test-Path -LiteralPath $helper.Path -PathType Leaf) -and
+            (Test-PublishPathWithin -Path $helper.Path -Directory (Join-Path $root 'build/_work')) -and
+            [System.IO.Path]::GetFileName($helper.Path) -match '^publish-helper-[0-9a-f]{32}\.bin$') {
+            try { Remove-Item -LiteralPath $helper.Path -Force -ErrorAction Stop }
+            catch { throw 'Could not remove the temporary helper file under build/_work.' }
+        }
+    }
+}
+
+if ($MyInvocation.InvocationName -ne '.') {
+    $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+    if ([string]::IsNullOrWhiteSpace($ReleaseDirectory) -or [string]::IsNullOrWhiteSpace($ExpectedCommit) -or
+        [string]::IsNullOrWhiteSpace($Tag) -or [string]::IsNullOrWhiteSpace($NotesPath) -or [string]::IsNullOrWhiteSpace($Mode)) {
+        throw 'Provide ReleaseDirectory, ExpectedCommit, Tag, NotesPath, and Mode.'
+    }
+    if ($Tag -cne $script:publishTag) { throw 'Only the fixed tag v0.1.0-alpha.1 is supported.' }
+    Invoke-ReleasePublisher -PackagePath $ReleaseDirectory -Commit $ExpectedCommit -NotesFile $NotesPath `
+        -PublisherMode $Mode -RepositoryRoot $repositoryRoot
+}

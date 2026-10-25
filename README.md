@@ -1,6 +1,18 @@
-# WIREX Bridge：协议、本地诊断与 BM 语音桥接候选
+# WIREX Bridge：FTX-1 DIRECT 与 BrandMeister 语音桥接
 
-这是 WIREX Bridge 的 C++17 子项目，提供 DMRD 固定 55 字节数据报和 DIRECT 单记录 envelope 的解析与编码、Windows 本地诊断入口，以及 AMBE+2 声码器、DMR 通话、BrandMeister Homebrew 会话与 native 语音桥接候选。当前 `wirex_bridge.exe` 将 BM 网络音频接到 FTX-1 DIRECT 电台扬声器，并由操作者显式控制 BM DMRD 上行；上行编码前固定应用 16x 软件 PCM 增益，状态报告记录增益前后统计和削顶数。源码提交 `17f3433ae4cd6820622033ddb1910c030cb260f2` 已由干净 Windows PowerShell 5.1 / VS 2019 构建运行 24 项离线测试；本地非 ZIP 便携文件夹位于 `build/bm-radio-bridge-17f3433`。真实 BM、COM/WinMM 音频和电台联合测试尚未运行，新 BM 链路的声音结果仍待验，候选不代表实机或 RF 验收。当前阶段、构建产物及接续步骤见 [BM 联调推进](docs/BM联调推进.md)。
+## v0.1.0-alpha.1 私有预发布
+
+本仓库的首个私有 alpha 版本为 `v0.1.0-alpha.1`。本版源码提交、构建记录及逐文件长度和 SHA-256 以对应 GitHub Release 页面与 `manifest.json` 为准；实机验证范围以发布说明和 manifest 中记录的状态为准。`005c5e8` 的 DIRECT Echo 和 `ab3c5fa` 的 TG91 收听属于两个旧版本的用户确认。
+
+- [v0.1.0-alpha.1 发布说明](docs/releases/v0.1.0-alpha.1.md)
+- [包内操作说明源](docs/releases/v0.1.0-alpha.1-package-README.md)
+- [首个 Release 验收清单](docs/首个Release验收.md)
+
+这是前台控制台程序；正常运行不用 `START` 或键盘 `T`，就绪后使用手咪 PTT，按 `Q` 停止并退出。拿到便携包后，首次使用自己的 BM 身份，请在包目录运行 `start-profile.cmd` 并将 BM 密码与连接 profile 分开保存。FTX-1 LCD 当前话者显示、DIRECT 运行时 RF 路由、BM 到 RF 发射和真实图形 UI 不在本 alpha 范围内。
+
+## 协议与本地开发
+
+这是 WIREX Bridge 的 C++17 子项目，包含 DMRD 固定 55 字节数据报和 DIRECT 单记录 envelope 的解析/编码、Windows 本地诊断入口、AMBE+2 声码器、DMR 通话和 BrandMeister Homebrew 会话。当前实现与构建边界见 [BM 联调推进](docs/BM联调推进.md)。
 
 解析只接受长度恰为 55 字节且首四字节为 `DMRD` 的数据报。24-bit source/destination ID 按大端读写；超出 `0xFFFFFF` 的编码请求返回错误，不截断。flags、四个 stream ID 字节和 33 字节 payload 均按原样保留；stream ID 不转成整数，也不推断其主机序。BER 与 RSSI 是各一个原始字节。
 

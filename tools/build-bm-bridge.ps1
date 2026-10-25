@@ -24,6 +24,8 @@ if ($commitExitCode -ne 0 -or $commit -notmatch '^[0-9a-fA-F]{40}$') {
 }
 $statusLines = @(& git -C $gitRoot status --porcelain --untracked-files=normal)
 if ($LASTEXITCODE -ne 0) { throw '无法读取 Git 工作树状态。' }
+$sourceTreeClean = ($statusLines.Count -eq 0)
+$buildStartedUtc = [DateTime]::UtcNow.ToString('o')
 $dirtySuffix = if ($statusLines.Count -gt 0) { '-dirty' } else { '' }
 $buildName = 'wirex-bridge-{0}{1}-{2}' -f $commit.Substring(0, 7).ToLowerInvariant(),
     $dirtySuffix, [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')
@@ -34,7 +36,10 @@ if (-not $outputDirectory.StartsWith($buildWorkRoot.TrimEnd($separator) + $separ
         [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "构建产物必须位于 build\_work 下：$outputDirectory"
 }
-New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
+if (Test-Path -LiteralPath $outputDirectory) {
+    throw "构建目录已存在，拒绝复用以免混入旧产物：$outputDirectory"
+}
+New-Item -ItemType Directory -Path $outputDirectory -ErrorAction Stop | Out-Null
 $gitRootPrefix = $gitRoot.TrimEnd($separator) + $separator
 function Get-RepoRelativePath {
     param([Parameter(Mandatory=$true)][string]$Path)
@@ -233,6 +238,7 @@ try {
         $testObjects += ,@{ Name=$test.Name; Object=$testObject[0] }
     }
 
+    $testResults = @()
     if (-not $CompileOnly) {
         foreach ($test in $testObjects) {
             $testName = [string]$test.Name
@@ -241,11 +247,43 @@ try {
             Write-Host "运行离线测试：$testName"
             & $testExecutable
             if ($LASTEXITCODE -ne 0) { throw "离线测试失败：$testName（退出码 $LASTEXITCODE）。" }
+            $testResults += ,([ordered]@{
+                name = $testName
+                result = 'passed'
+                exit_code = 0
+            })
         }
     }
 
+    $bridgeExecutable = Join-Path $outputDirectory 'wirex_bridge.exe'
+    if (-not (Test-Path -LiteralPath $bridgeExecutable -PathType Leaf)) {
+        throw '构建完成时缺少 wirex_bridge.exe，不能写入 provenance。'
+    }
+    $buildResult = if ($CompileOnly) { 'compiled_only' } else { 'passed' }
+    $provenance = [ordered]@{
+        schema_version = 1
+        source_commit = $commit.ToLowerInvariant()
+        source_tree_clean = [bool]$sourceTreeClean
+        compile_only = [bool]$CompileOnly
+        build_completed = $true
+        result = $buildResult
+        output_directory = $relativeOutput.Replace('\', '/')
+        started_utc = $buildStartedUtc
+        completed_utc = [DateTime]::UtcNow.ToString('o')
+        executable = [ordered]@{
+            path = 'wirex_bridge.exe'
+            length_bytes = [long](Get-Item -LiteralPath $bridgeExecutable).Length
+            sha256 = (Get-FileHash -LiteralPath $bridgeExecutable -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+        tests = @($testResults)
+    }
+    $provenancePath = Join-Path $outputDirectory 'build-provenance.json'
+    $provenanceJson = ConvertTo-Json -InputObject $provenance -Depth 8
+    [System.IO.File]::WriteAllText($provenancePath, $provenanceJson + "`n", (New-Object System.Text.UTF8Encoding($false)))
+
     Write-Host "构建产物：$outputDirectory"
     Write-Host "可执行文件：$(Join-Path $outputDirectory 'wirex_bridge.exe')"
+    Write-Host "构建来源记录：$provenancePath"
     if ($testObjects.Name -notcontains 'bm_bridge_loopback_test') {
         Write-Warning '本次未运行 fake Master 组合测试，因对应测试源码尚未落盘。'
     }
