@@ -13,6 +13,7 @@
 
 ## 2026-10-25 当前轮状态
 
+- 最新源码提交为 `5e3343372d9b0427b5c25943a731292e65b1f7ca`，新增 BM→电台回放与手咪→BM 上行的独立 PCM 增益设置，默认 `1.0x`/`16x`。正式 clean build 与 26 项离线测试全部通过，compiler warning/error 均为 0；构建目录 `build/_work/wirex-bridge-5e33433-20261025-064748`，日志 `build/_work/bm-audio-5e33433-build.log`，EXE SHA-256 `C04D62F13173AD11676A3339EEA250B27745BF1056DB36CF53273AAE1DA34B06`。便携候选 `build/bm-radio-bridge-5e33433` 已通过 root 审计：13 项非秘密文件的长度和 SHA-256 与实际清单一致，EXE 与 clean build 一致，三份启动器与源码一致，PS5.1 配置 AST 检查、native safe help、空 logs、无旧 settings 和凭据仅存在状态均通过。新音量倍率尚未实机听音验收。参数和本机设置文件见 [`音量调节.md`](音量调节.md)。
 - 最新源码提交 `ab3c5fab358aaf56a697a8e2a79f09f02d8a75ee` 新增全球 TG91 被动收听预设 `listen-91`，固定 BI7KGD、Gateway 461135501、Source 4611355、43.129.83.124:62031、TS2、CC1；过滤只接受 TG91/TS2/G。`policy_for` 继续拒绝 TG91 与 TG46001 组呼的键盘 T 和手咪 PTT 上行，默认仍为 `parrot-cn`。用户为 Gateway 461135501 配置 TS2 TG91 静态订阅后，已确认实机收听正常；这条后续确认没有附通话次数或时长。版本刚交付时的记录尚待收听验收，现已由用户确认完成。
 - `ab3c5fa` clean build 的 26 项离线测试全部通过，compiler warning/error 为 0；构建目录 `build/_work/wirex-bridge-ab3c5fa-20261024-212438`，日志 `build/_work/bm-tg91-ab3c5fa-build.log`，EXE SHA-256 `6FAC95A48D51D2C8033220139B8884CAC0CA83DB15625928C04F2CAC349A1464`。便携包 `build/bm-radio-bridge-ab3c5fa` 已通过 root 审计：12 项非秘密文件记录、EXE/launcher、PS5.1 AST、safe help、audio schema、空 logs 和本机凭据仅存在检查均通过。
 - 按用户调整的研究次序，本轮先推进软件侧路径分析。官方 WIRES-X 帮助文件的 45 页功能目录与桥接取舍见 [`WIRESX官方功能目录与桥接取舍.md`](WIRESX官方功能目录与桥接取舍.md)；HRI DLL 屏幕字段、模式路由与队列路径见 [`WIRESX屏幕与路由软件研究.md`](WIRESX屏幕与路由软件研究.md)。静态代码已确认 `DGKEY_NUM_NDDIRECT` 为 0 时写入 Y 正文候选偏移 5 的 `'1'`，非零时写入 `'2'`，但尚未将该 HRI 布尔值映射到 FTX-1 的三态 Node Mode。HRI 字段到电台 LCD 的 serializer 和写入路径仍未闭合。用户已确认 FTX-1 Node Mode 为 DIRECT，并澄清 145.1 MHz RF 音频是在 Bridge 关闭后出现；S 表指示与该音频是否同一时刻尚未确认。Bridge 运行期间是否仍接收 RF 尚无结果，因此待核实的是运行与退出前后的路由差异，不是重新确认 Node Mode。本轮没有新增 LCD 文本显示消息或 RF 模式写入。
@@ -24,8 +25,9 @@
 - Windows PowerShell 5.1 的只读生产设备发现函数已通过：唯一选择 COM5、WaveIn 1、WaveOut 3，耗时 10398 ms。启动器按名称关键词 `USB Audio` 选择唯一输入和输出，并把 endpoint ID 交给 native 核对。设备枚举没有打开 COM、音频流或 BM。
 - 源码提交 `005c5e8e6d95a3ce2f29cf928d59e90c7551ffb1` 的正式 clean build 与 26 项离线测试已通过。构建目录为 `build/_work/wirex-bridge-005c5e8-20261024-203101/`，日志为 `build/_work/bm-ptt-config-005c5e8-build.log`，EXE SHA-256 为 `981715B37518DE6821F0F3F57F8BF743E53C91C0C85126AC34D40159DE2D1B2C`。builder 的 safe `--help` 和音频列表 schema/endpoint 检查通过；Windows PowerShell 5.1 只读设备发现于 10398 ms 内选出 COM5、WaveIn 1 和 WaveOut 3。新便携候选 `build/bm-radio-bridge-005c5e8` 已由 root 验包通过：11 项非秘密文件长度/SHA-256 与实物一致，实际 inventory 完整，EXE 与 clean build 一致，launcher 与源码一致；PS1 BOM、PS5.1 AST、safe help、audio schema/endpoint、26 测试记录、空 logs 和本机凭据仅存在检查均通过。旧便携候选 `build/bm-radio-bridge-1c8c6fd` 保持冻结。首轮自动 PTT 上行 + BM 鹦鹉回声 + FTX-1 扬声器闭环已通过，用户确认回声清晰；详细事件和计数见 [`DIRECT首轮联测验收.md`](DIRECT首轮联测验收.md)。
 - 用户随后确认本轮首个完整 DIRECT 个人终端闭环通过，回声清晰。包内 JSONL 报告显示 native 会话运行 33,475 ms 后正常 `stopped`：PTT observations 37、start/end 各 1、timeout/reject 为 0，TX/RX 为 54/56，BM 呼叫开始/结束各 1，播放 157 帧，上行音频 149,280 样本，reconnect/rejected call 为 0，`bm_failure=none`，RPTCL 本机 UDP send succeeded。报告位置及 HRI 事件顺序见 [`DIRECT首轮联测验收.md`](DIRECT首轮联测验收.md)。
+- `5e33433` 两路增益配置与 PCM 处理已通过离线验证；包审计通过。此次音量值没有实机听音结果，旧版本清晰回声和 TG91 收听不能代替本次增益听音验收。
 
-源码提交 `005c5e8e6d95a3ce2f29cf928d59e90c7551ffb1` 的 native 候选已将有效 X/100 的 X[12] 状态观察与 Y 模板复制解耦，并通过正式 clean build 和 26 项离线测试。120006 ms idle observer 在配置标记分支记录 119 个 PTT observations；该 idle 对照没有手咪动作。之后一通用户手咪联测成功开始上行、完成 BM 回声接收与 FTX-1 扬声器播放。该证据覆盖一次 33,475 ms 会话和一通呼叫；长时待机及断网恢复仍未验收。候选进程在可见前台持续待机，由 `Q` 等停止请求退出；单通话最多 120 秒。`-ManualPtt` 是显式诊断入口。分层实测与过滤原因见 [`BM回声无播放诊断.md`](BM回声无播放诊断.md)，手咪状态观察见 [`HRI手咪PTT事件研究.md`](HRI手咪PTT事件研究.md)。
+源码提交 `005c5e8e6d95a3ce2f29cf928d59e90c7551ffb1` 的 native 候选已将有效 X/100 的 X[12] 状态观察与 Y 模板复制解耦，并通过正式 clean build 和 26 项离线测试。120006 ms idle observer 在配置标记分支记录 119 个 PTT observations；该 idle 对照没有手咪动作。之后一通用户手咪联测成功开始上行、完成 BM 回声接收与 FTX-1 扬声器播放。该证据覆盖一次 33,475 ms 会话和一通呼叫；长时待机及断网恢复仍未验收。候选进程在可见前台持续待机，由 `Q` 等停止请求退出；单通话最多 120 秒。`-ManualPtt` 是显式诊断入口。当前上行增益默认为 16x、回放增益默认为 1x，可在启动参数中调整并保存到便携设置文件；新倍率实机听音仍待验收。分层实测与过滤原因见 [`BM回声无播放诊断.md`](BM回声无播放诊断.md)，手咪状态观察见 [`HRI手咪PTT事件研究.md`](HRI手咪PTT事件研究.md)。
 
 ## 2026-10-24 网络诊断历史
 
@@ -39,7 +41,7 @@
 
 ## 当前候选与离线证据
 
-Windows native 控制台入口 `wirex_bridge.exe` 把 BM 下行 PCM 播放到所选 FTX-1 DIRECT Radio WaveOut；当前默认路径读取经校验的 HRI 串口 PTT 状态，按住边沿触发所选 WaveIn 上行采集，松开边沿结束本次 BM DMRD 呼叫。默认路径不依赖键盘 `T`，也不要求先输入 `START`；`-ManualPtt` 保留显式键盘诊断。默认进程在可见前台持续待机，由 `Q` 等停止请求结束；仅单通话限制 120 秒。上行编码前固定应用 16x 软件 PCM 增益，并记录样本统计。程序不发送 RF/PTT 控制命令，`radio_state` 保持 `unknown`；首轮真实自动 PTT + BM 回声 + FTX-1 扬声器闭环已通过；该会话持续 33,475 ms 并完成一通呼叫，长时间运行和网络恢复仍待验证。BM EOT 与 RPTCL 的事件只记录本机 UDP 发送调用返回成功；该日志没有 Master 对退出包的确认记录。
+Windows native 控制台入口 `wirex_bridge.exe` 把 BM 下行 PCM 播放到所选 FTX-1 DIRECT Radio WaveOut；当前默认路径读取经校验的 HRI 串口 PTT 状态，按住边沿触发所选 WaveIn 上行采集，松开边沿结束本次 BM DMRD 呼叫。默认路径不依赖键盘 `T`，也不要求先输入 `START`；`-ManualPtt` 保留显式键盘诊断。默认进程在可见前台持续待机，由 `Q` 等停止请求结束；仅单通话限制 120 秒。上行默认应用 16x 软件 PCM 增益并可独立调整，回放默认 1x 并有独立增益；TX 在 BM 语音管线接受 PCM 后累计统计，RX 在 WaveOut 成功排队后累计统计。程序不发送 RF/PTT 控制命令，`radio_state` 保持 `unknown`；首轮真实自动 PTT + BM 回声 + FTX-1 扬声器闭环已通过；该会话持续 33,475 ms 并完成一通呼叫，长时间运行和网络恢复仍待验证。BM EOT 与 RPTCL 的事件只记录本机 UDP 发送调用返回成功；该日志没有 Master 对退出包的确认记录。
 
 启动前状态报告的首次写入或刷新失败时，native 会清除密码并在打开设备前以退出码 2 结束。运行中状态报告写入或刷新失败时，native 标记失败、停止尝试继续写状态报告、执行同一有界收尾并以退出码 2 结束。
 
@@ -75,4 +77,4 @@ build/_work/wirex-bridge-17f3433-20261024-044905/
 - 旧 profile 的 RPTC `MSTNAK` 与其拒绝原因仍是历史诊断；之后两次受控私呼网络测试已确认 BM 对该私呼返回 TS2，第二次 RX-only pipeline 已产生 start/voice/end 事件。这证明 BM Echo 网络回声路径存在，不等于用户实际语音或电台扬声器已通过。
 - `ab3c5fa` 的 clean build、26 项离线测试和便携包审计均已通过；这些结果分别验证软件与文件，不替代现场长稳或网络恢复测试。
 - 一次自动串口 PTT + BM 上行和真实电台回声/扬声器播放的端到端联测已通过，用户确认回声清晰；TG91 实机收听也已由用户确认正常。详细 DIRECT 会话记录见 [`DIRECT首轮联测验收.md`](DIRECT首轮联测验收.md)。
-- 长时间待机、断网恢复、46001 订阅收听、Bridge 运行期间的 DIRECT/RF 路由与 C4FM RF 节点仍待验收；UI 按用户决定推迟。BM network-only、idle observer、clean build 和包审计分别覆盖不同的软件与设备行为。
+- 新增回放/上行音量值的实机听音、长时间待机、断网恢复、46001 订阅收听、Bridge 运行期间的 DIRECT/RF 路由与 C4FM RF 节点仍待验收；UI 按用户决定推迟。BM network-only、idle observer、clean build 和包审计分别覆盖不同的软件与设备行为。
