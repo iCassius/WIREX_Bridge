@@ -66,7 +66,8 @@ Assert-True ($alpha1Files -cnotcontains 'start-ui.cmd') 'alpha.1 清单不接收
 [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.2')
 $alpha2Files = @(Get-ExpectedReleasePackageFiles)
 $alpha2Tests = @(Get-ExpectedReleaseTests)
-Assert-Equal $alpha2Files.Count 25 'alpha.2 固定本地文件数含 manifest'
+$alpha2Profile = Get-ReleaseProfile -Version 'v0.1.0-alpha.2'
+Assert-Equal $alpha2Files.Count 27 'alpha.2 固定本地文件数含 manifest'
 Assert-Equal $alpha2Tests.Count 28 'alpha.2 builder 测试数含 ui_pipe_test'
 Assert-True ($alpha2Tests[14] -ceq 'bounded_pipe_writer_test' -and
     $alpha2Tests[15] -ceq 'ui_pipe_test' -and $alpha2Tests[16] -ceq 'console_lifecycle_test') `
@@ -79,8 +80,18 @@ for ($testIndex = 0; $testIndex -lt $alpha2Tests.Count; $testIndex++) {
     Assert-True ($builderTestNames[$testIndex] -ceq $alpha2Tests[$testIndex]) `
         "alpha.2 固定测试清单与 builder 源码顺序一致，索引 $testIndex"
 }
-Assert-True ($alpha2Files -ccontains 'start-ui.cmd' -and $alpha2Files -ccontains 'ui/windows/BridgeWindow.xaml') `
-    'alpha.2 允许清单中的桌面入口和 XAML'
+Assert-True ($alpha2Files -ccontains 'start-ui.cmd' -and $alpha2Files -ccontains 'start-ui.ps1' -and
+    $alpha2Files -ccontains 'ui/windows/SettingsWindow.xaml') 'alpha.2 允许清单中的桌面入口和设置窗口'
+foreach ($entry in @(
+    @{ Source='tools\start-ui.cmd'; Destination='start-ui.cmd' },
+    @{ Source='tools\start-ui.ps1'; Destination='start-ui.ps1' },
+    @{ Source='tools\bridge-user-config.psm1'; Destination='bridge-user-config.psm1' },
+    @{ Source='tools\start-bm-radio-bridge.ps1'; Destination='start-bm-radio-bridge.ps1' }
+)) {
+    Assert-True (@($alpha2Profile.SourceFiles | Where-Object {
+        [string]$_.Source -ceq $entry.Source -and [string]$_.Destination -ceq $entry.Destination
+    }).Count -eq 1) "alpha.2 package source mapping is fixed: $($entry.Source)"
+}
 Assert-True ((Get-ReleaseAssetName -RelativePath 'start-ui.cmd') -ceq 'start-ui.cmd') `
     '选择 alpha.2 profile 后 UI asset 映射启用'
 [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.1')
@@ -247,9 +258,9 @@ try {
     $alpha2ManifestPath = Join-Path $alpha2PackageRoot 'manifest.json'
     $alpha2Manifest = [System.IO.File]::ReadAllText($alpha2ManifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
     foreach ($relativePath in @(
-        'start-user-config.cmd', 'start-user-config.ps1', 'bridge-user-config.psm1', 'start-ui.cmd',
-        'docs/配置与桌面操作.md', 'ui/windows/bridge-ui.ps1', 'ui/windows/BridgeWindow.xaml',
-        'ui/windows/NativeProcessSupervisor.cs'
+        'start-user-config.cmd', 'start-user-config.ps1', 'bridge-user-config.psm1', 'start-ui.cmd', 'start-ui.ps1',
+        'docs/配置与桌面操作.md', 'ui/windows/bridge-ui.ps1', 'ui/windows/BridgeSupervisor.cs',
+        'ui/windows/MainWindow.xaml', 'ui/windows/SettingsWindow.xaml'
     )) {
         $fullPath = Join-Path $alpha2PackageRoot $relativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
         $parent = Split-Path -Parent $fullPath

@@ -154,7 +154,7 @@ Assert-True ($validated.Files.Count -eq (Get-ExpectedReleaseFiles).Count) 'valid
 Assert-True ($validated.TotalBytes -gt 0) 'validated size total is accumulated'
 $alpha2Manifest = New-TestManifest -Tag 'v0.1.0-alpha.2'
 $alpha2Validated = Test-ManifestDocument -Manifest $alpha2Manifest -RequestedTag 'v0.1.0-alpha.2'
-Assert-True ($alpha2Validated.Files.Count -eq 24) 'alpha.2 manifest includes the 24-file package inventory'
+Assert-True ($alpha2Validated.Files.Count -eq 26) 'alpha.2 manifest includes the 26-file package inventory'
 Assert-True (@($alpha2Manifest.build.passed_tests).Count -eq 28 -and
     $alpha2Manifest.build.passed_tests[15] -ceq 'ui_pipe_test') 'alpha.2 manifest records the exact builder test order'
 Assert-Throws { Test-ManifestDocument -Manifest $alpha2Manifest -RequestedTag 'v0.1.0-alpha.1' } 'alpha.2 manifest is rejected for alpha.1 tag'
@@ -203,8 +203,8 @@ Assert-True (Assert-ReleaseTargetCommitish -Release $release -SourceCommit ([str
 $alpha2GoodAssets = New-TestAssetList -Manifest $alpha2Manifest
 $alpha2Release = [pscustomobject]@{ assets=$alpha2GoodAssets; target_commitish=[string]$alpha2Manifest.source.commit }
 $alpha2AssetMap = Resolve-ReleaseAssetInventory -Release $alpha2Release -ValidatedManifest $alpha2Validated
-Assert-True ($alpha2AssetMap.Count -eq 26 -and $alpha2AssetMap.ContainsKey('download-release.ps1')) `
-    'alpha.2 remote inventory contains 24 package files, manifest and helper'
+Assert-True ($alpha2AssetMap.Count -eq 28 -and $alpha2AssetMap.ContainsKey('download-release.ps1')) `
+    'alpha.2 remote inventory contains 26 package files, manifest and helper'
 $wrongTarget = [pscustomobject]@{ target_commitish='main' }
 Assert-Throws { Assert-ReleaseTargetCommitish -Release $wrongTarget -SourceCommit ([string]$validManifest.source.commit) } 'branch target is rejected when it differs from the source commit'
 Assert-Throws { Assert-ReleaseTargetCommitish -Release ([pscustomobject]@{ target_commitish=('f' * 40) }) -SourceCommit ([string]$validManifest.source.commit) } 'release target commit mismatch is rejected'

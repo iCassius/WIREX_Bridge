@@ -103,13 +103,15 @@ function Get-ReleaseProfile {
                 @{ Source='tools\start-bm-radio-bridge.ps1'; Destination='start-bm-radio-bridge.ps1' },
                 @{ Source='tools\start-listen-91.cmd'; Destination='start-listen-91.cmd' },
                 @{ Source='tools\start-profile.cmd'; Destination='start-profile.cmd' },
+                @{ Source='tools\start-ui.cmd'; Destination='start-ui.cmd' },
+                @{ Source='tools\start-ui.ps1'; Destination='start-ui.ps1' },
                 @{ Source='tools\start-user-config.cmd'; Destination='start-user-config.cmd' },
                 @{ Source='tools\start-user-config.ps1'; Destination='start-user-config.ps1' },
                 @{ Source='tools\bridge-user-config.psm1'; Destination='bridge-user-config.psm1' },
-                @{ Source='tools\start-ui.cmd'; Destination='start-ui.cmd' },
                 @{ Source='ui\windows\bridge-ui.ps1'; Destination='ui\windows\bridge-ui.ps1' },
-                @{ Source='ui\windows\BridgeWindow.xaml'; Destination='ui\windows\BridgeWindow.xaml' },
-                @{ Source='ui\windows\NativeProcessSupervisor.cs'; Destination='ui\windows\NativeProcessSupervisor.cs' },
+                @{ Source='ui\windows\BridgeSupervisor.cs'; Destination='ui\windows\BridgeSupervisor.cs' },
+                @{ Source='ui\windows\MainWindow.xaml'; Destination='ui\windows\MainWindow.xaml' },
+                @{ Source='ui\windows\SettingsWindow.xaml'; Destination='ui\windows\SettingsWindow.xaml' },
                 @{ Source='docs\releases\v0.1.0-alpha.2-package-README.md'; Destination='README.md' },
                 @{ Source='docs\配置与桌面操作.md'; Destination='docs\配置与桌面操作.md' },
                 @{ Source='docs\连接配置.md'; Destination='docs\连接配置.md' },
@@ -127,18 +129,20 @@ function Get-ReleaseProfile {
                 'start-bm-radio-bridge.ps1'='start-bm-radio-bridge.ps1'
                 'start-listen-91.cmd'='start-listen-91.cmd'
                 'start-profile.cmd'='start-profile.cmd'
+                'start-ui.cmd'='start-ui.cmd'
+                'start-ui.ps1'='start-ui.ps1'
                 'start-user-config.cmd'='start-user-config.cmd'
                 'start-user-config.ps1'='start-user-config.ps1'
                 'bridge-user-config.psm1'='bridge-user-config.psm1'
-                'start-ui.cmd'='start-ui.cmd'
                 'README.md'='README.md'
                 'SOURCE.txt'='SOURCE.txt'
                 'docs/配置与桌面操作.md'='docs__desktop-user-config.md'
                 'docs/连接配置.md'='docs__connection-profile.md'
                 'docs/音量调节.md'='docs__audio-gain.md'
                 'ui/windows/bridge-ui.ps1'='ui__windows__bridge-ui.ps1'
-                'ui/windows/BridgeWindow.xaml'='ui__windows__BridgeWindow.xaml'
-                'ui/windows/NativeProcessSupervisor.cs'='ui__windows__NativeProcessSupervisor.cs'
+                'ui/windows/BridgeSupervisor.cs'='ui__windows__BridgeSupervisor.cs'
+                'ui/windows/MainWindow.xaml'='ui__windows__MainWindow.xaml'
+                'ui/windows/SettingsWindow.xaml'='ui__windows__SettingsWindow.xaml'
                 'licenses/dmr_signal/COPYING.GPL-3.0.txt'='licenses__dmr-signal__COPYING.GPL-3.0.txt'
                 'licenses/dmr_signal/NOTICE.md'='licenses__dmr-signal__NOTICE.md'
                 'licenses/droidstar_mbe/COPYING.GPL-3.0.txt'='licenses__droidstar-mbe__COPYING.GPL-3.0.txt'
@@ -152,10 +156,12 @@ function Get-ReleaseProfile {
                 SourceFiles = $alpha2SourceFiles
                 PackageFiles = @(
                     'wirex_bridge.exe', 'build-provenance.json', 'start-bm-radio-bridge.cmd', 'start-bm-radio-bridge.ps1',
-                    'start-listen-91.cmd', 'start-profile.cmd', 'start-user-config.cmd', 'start-user-config.ps1',
-                    'bridge-user-config.psm1', 'start-ui.cmd', 'README.md', 'SOURCE.txt', 'manifest.json',
+                    'start-listen-91.cmd', 'start-profile.cmd', 'start-ui.cmd', 'start-ui.ps1',
+                    'start-user-config.cmd', 'start-user-config.ps1', 'bridge-user-config.psm1',
+                    'README.md', 'SOURCE.txt', 'manifest.json',
                     'docs/配置与桌面操作.md', 'docs/连接配置.md', 'docs/音量调节.md',
-                    'ui/windows/bridge-ui.ps1', 'ui/windows/BridgeWindow.xaml', 'ui/windows/NativeProcessSupervisor.cs',
+                    'ui/windows/bridge-ui.ps1', 'ui/windows/BridgeSupervisor.cs',
+                    'ui/windows/MainWindow.xaml', 'ui/windows/SettingsWindow.xaml',
                     'licenses/dmr_signal/COPYING.GPL-3.0.txt', 'licenses/dmr_signal/NOTICE.md',
                     'licenses/droidstar_mbe/COPYING.GPL-3.0.txt', 'licenses/droidstar_mbe/ISC-NOTICE.txt',
                     'licenses/droidstar_mbe/source-manifest.json', 'private/device-y.bin'

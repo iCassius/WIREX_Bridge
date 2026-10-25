@@ -97,9 +97,9 @@ try {
     Copy-Item -LiteralPath $packageRoot -Destination $alpha2Root -Recurse
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.2')
     $alpha2ExtraPaths = @(
-        'start-user-config.cmd', 'start-user-config.ps1', 'bridge-user-config.psm1', 'start-ui.cmd',
-        'docs/配置与桌面操作.md', 'ui/windows/bridge-ui.ps1', 'ui/windows/BridgeWindow.xaml',
-        'ui/windows/NativeProcessSupervisor.cs'
+        'start-user-config.cmd', 'start-user-config.ps1', 'bridge-user-config.psm1', 'start-ui.cmd', 'start-ui.ps1',
+        'docs/配置与桌面操作.md', 'ui/windows/bridge-ui.ps1', 'ui/windows/BridgeSupervisor.cs',
+        'ui/windows/MainWindow.xaml', 'ui/windows/SettingsWindow.xaml'
     )
     foreach ($relativePath in $alpha2ExtraPaths) {
         $fullPath = Join-Path $alpha2Root $relativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
@@ -123,8 +123,8 @@ try {
     $validAlpha2ManifestJson = ConvertTo-Json -InputObject $manifest -Depth 12
     Write-Utf8NoBom -Path $alpha2ManifestPath -Text ($validAlpha2ManifestJson + "`n")
     $alpha2Package = Assert-PublishPackage -PackageRoot $alpha2Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.2'
-    Assert-True ($alpha2Package.Assets.Count -eq 25) 'alpha.2 package accepts 24 files plus standalone manifest'
-    Assert-True (@($alpha2Package.Assets | Where-Object { $_.Name -ceq 'ui__windows__BridgeWindow.xaml' }).Count -eq 1) 'alpha.2 UI asset mapping is fixed'
+    Assert-True ($alpha2Package.Assets.Count -eq 27) 'alpha.2 package accepts 26 files plus standalone manifest'
+    Assert-True (@($alpha2Package.Assets | Where-Object { $_.Name -ceq 'ui__windows__SettingsWindow.xaml' }).Count -eq 1) 'alpha.2 UI asset mapping is fixed'
     Assert-Throws { Assert-PublishPackage -PackageRoot $alpha2Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.1' } 'alpha.2 package cannot pass the alpha.1 profile'
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.1')
     $manifest = [System.IO.File]::ReadAllText($manifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json

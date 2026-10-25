@@ -76,10 +76,12 @@ function Get-ExpectedReleaseFiles {
             $alpha2 += [pscustomobject]@{ Path='start-user-config.ps1'; AssetName='start-user-config.ps1'; MaximumBytes=524288L }
             $alpha2 += [pscustomobject]@{ Path='bridge-user-config.psm1'; AssetName='bridge-user-config.psm1'; MaximumBytes=1048576L }
             $alpha2 += [pscustomobject]@{ Path='start-ui.cmd'; AssetName='start-ui.cmd'; MaximumBytes=524288L }
+            $alpha2 += [pscustomobject]@{ Path='start-ui.ps1'; AssetName='start-ui.ps1'; MaximumBytes=1048576L }
             $alpha2 += [pscustomobject]@{ Path='docs/配置与桌面操作.md'; AssetName='docs__desktop-user-config.md'; MaximumBytes=4194304L }
             $alpha2 += [pscustomobject]@{ Path='ui/windows/bridge-ui.ps1'; AssetName='ui__windows__bridge-ui.ps1'; MaximumBytes=2097152L }
-            $alpha2 += [pscustomobject]@{ Path='ui/windows/BridgeWindow.xaml'; AssetName='ui__windows__BridgeWindow.xaml'; MaximumBytes=4194304L }
-            $alpha2 += [pscustomobject]@{ Path='ui/windows/NativeProcessSupervisor.cs'; AssetName='ui__windows__NativeProcessSupervisor.cs'; MaximumBytes=2097152L }
+            $alpha2 += [pscustomobject]@{ Path='ui/windows/BridgeSupervisor.cs'; AssetName='ui__windows__BridgeSupervisor.cs'; MaximumBytes=2097152L }
+            $alpha2 += [pscustomobject]@{ Path='ui/windows/MainWindow.xaml'; AssetName='ui__windows__MainWindow.xaml'; MaximumBytes=4194304L }
+            $alpha2 += [pscustomobject]@{ Path='ui/windows/SettingsWindow.xaml'; AssetName='ui__windows__SettingsWindow.xaml'; MaximumBytes=4194304L }
             return $alpha2
         }
         default { throw 'Only v0.1.0-alpha.1 and v0.1.0-alpha.2 release profiles are supported.' }
