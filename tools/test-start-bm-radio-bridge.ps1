@@ -9,6 +9,7 @@ $selectedFunctions = @(
     'Read-AudioSettings',
     'Write-AudioSettings',
     'Get-AudioSettings',
+    'Resolve-AudioSettingsPath',
     'Assert-JsonObjectKeysUnique',
     'Assert-ExactJsonObject',
     'ConvertTo-ProfileUnsigned',
@@ -37,7 +38,7 @@ if ($parseErrors.Count -ne 0) {
     throw "启动器 PowerShell 语法错误：$messages"
 }
 $launcherText = [System.IO.File]::ReadAllText([System.IO.Path]::GetFullPath($LauncherPath))
-foreach ($requiredText in @('--radio-playback-gain', '--mic-transmit-gain', "Join-Path `$script:packageRoot 'audio-settings.json'")) {
+foreach ($requiredText in @('--radio-playback-gain', '--mic-transmit-gain', 'Resolve-AudioSettingsPath -Path $AudioSettingsPath')) {
     if (-not $launcherText.Contains($requiredText)) { throw "启动器缺少音量配置接线：$requiredText" }
 }
 $profileLauncherPath = Join-Path (Split-Path -Parent $LauncherPath) 'start-profile.cmd'
@@ -79,9 +80,17 @@ function Assert-Throws {
 
 $temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('wirex-audio-settings-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $temporaryRoot | Out-Null
+$script:packageRoot = $temporaryRoot
 $settingsPath = Join-Path $temporaryRoot 'audio-settings.json'
 $originalCulture = [System.Threading.Thread]::CurrentThread.CurrentCulture
 try {
+    Assert-True ((Resolve-AudioSettingsPath -Path '') -ceq $settingsPath) '没有覆盖路径时继续使用便携目录音量文件'
+    $sharedDirectory = Join-Path $temporaryRoot 'shared-config'
+    New-Item -ItemType Directory -Path $sharedDirectory | Out-Null
+    $sharedSettingsPath = Join-Path $sharedDirectory 'audio-settings.json'
+    Assert-True ((Resolve-AudioSettingsPath -Path $sharedSettingsPath) -ceq $sharedSettingsPath) '显式音量路径应支持本机跨版本目录'
+    Assert-Throws { Resolve-AudioSettingsPath -Path (Join-Path $temporaryRoot 'missing\audio-settings.json') | Out-Null } `
+        '音量配置父目录缺失时应在枚举设备前拒绝'
     $defaults = Get-AudioSettings -Path $settingsPath
     Assert-True ($defaults.RadioPlaybackGainMilli -eq 1000) '缺少配置时回放默认值应为 1x'
     Assert-True ($defaults.MicTransmitGainMilli -eq 16000) '缺少配置时发送默认值应为 16x'

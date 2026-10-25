@@ -8,6 +8,7 @@ param(
     [string]$StatusDirectory,
     [string]$Preset,
     [string]$ConnectionProfilePath,
+    [string]$AudioSettingsPath,
     [string]$PasswordFile,
     [string]$RadioPlaybackGain,
     [string]$MicTransmitGain,
@@ -152,6 +153,18 @@ function Get-AudioSettings {
             -MicTransmitGainMilli $settings.MicTransmitGainMilli
     }
     return $settings
+}
+
+function Resolve-AudioSettingsPath {
+    param([string]$Path)
+    $candidate = if ([string]::IsNullOrWhiteSpace($Path)) {
+        Join-Path $script:packageRoot 'audio-settings.json'
+    } else { $Path }
+    try { $fullPath = [System.IO.Path]::GetFullPath($candidate) }
+    catch { throw '音量设置文件路径无效。' }
+    $directory = [System.IO.Path]::GetDirectoryName($fullPath)
+    if (-not [System.IO.Directory]::Exists($directory)) { throw "音量设置目录不存在：$directory" }
+    return $fullPath
 }
 
 function Assert-JsonObjectKeysUnique {
@@ -831,7 +844,7 @@ try {
             $manualProfileWasCreated = $true
         }
     }
-    $audioSettingsPath = Join-Path $script:packageRoot 'audio-settings.json'
+    $audioSettingsPath = Resolve-AudioSettingsPath -Path $AudioSettingsPath
     $radioPlaybackGainWasBound = $PSBoundParameters.ContainsKey('RadioPlaybackGain')
     $micTransmitGainWasBound = $PSBoundParameters.ContainsKey('MicTransmitGain')
     $audioSettings = Get-AudioSettings -Path $audioSettingsPath `
