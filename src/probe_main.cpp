@@ -26,6 +26,7 @@
 #include "wirex/wave_file.hpp"
 #ifdef WIREX_ENABLE_BM_BRIDGE
 #include "wirex/bm_session.hpp"
+#include "wirex/bm_connection_config.hpp"
 #include "wirex/bm_network_metadata.hpp"
 #include "wirex/bm_test_profile.hpp"
 #include "wirex/bm_udp.hpp"
@@ -4073,15 +4074,35 @@ bool bm_stdout(std::string_view text) noexcept
 
 bool parse_ascii_uint(std::string_view text, std::uint32_t& value) noexcept
 {
-    if (text.empty()) return false;
-    std::uint64_t parsed = 0U;
-    for (const char ch : text) {
-        if (ch < '0' || ch > '9') return false;
-        parsed = parsed * 10U + static_cast<unsigned>(ch - '0');
-        if (parsed > 0xffffffffU) return false;
+    return wirex::bm_connection_config::parse_decimal_u32(text, value);
+}
+
+bool narrow_ascii_text(std::wstring_view text, std::string& value, std::size_t max_size,
+                       bool allow_empty = false) noexcept
+{
+    if (text.size() > max_size || (!allow_empty && text.empty())) return false;
+    try {
+        value.clear();
+        value.reserve(text.size());
+        for (const wchar_t ch : text) {
+            if (ch < 0x20 || ch > 0x7e) return false;
+            value.push_back(static_cast<char>(ch));
+        }
+        return allow_empty || !value.empty();
+    } catch (...) {
+        value.clear();
+        return false;
     }
-    value = static_cast<std::uint32_t>(parsed);
-    return true;
+}
+
+bool validate_manual_connection(const std::string& callsign, std::uint32_t gateway_id,
+                                std::uint32_t source_id, std::uint32_t destination_id,
+                                std::uint32_t slot_number, std::uint32_t color_code,
+                                const std::string& master, std::uint32_t master_port,
+                                const std::string& call_kind) noexcept
+{
+    return wirex::bm_connection_config::validate({callsign, gateway_id, source_id, master,
+        master_port, destination_id, slot_number, color_code, call_kind});
 }
 
 bool read_ascii_line(const wchar_t* prompt, std::string& value, std::size_t max_size,
@@ -4426,8 +4447,9 @@ void print_bm_bridge_help()
         L"wirex_bridge - 本地 DIRECT / BrandMeister 声音桥接候选\n"
         L"  --help\n"
         L"  --list-audio-json\n"
-        L"  --run --port COMn --body-file ABS --input N --output N --status-file ABS --expected-wavein-endpoint ID --expected-waveout-endpoint ID [--test-preset parrot-cn|parrot-global|listen-46001|listen-91 --password-file ABS] [--manual-ptt] [--radio-playback-gain N] [--mic-transmit-gain N]\n"
-        L"不传测试预设时保留逐项手工配置和隐藏密码输入。预设密码文件为本机私有明文 UTF-8 文本。\n"
+        L"  --run --port COMn --body-file ABS --input N --output N --status-file ABS --expected-wavein-endpoint ID --expected-waveout-endpoint ID [--test-preset parrot-cn|parrot-global|listen-46001|listen-91 --password-file ABS] [完整手工配置字段] [--manual-ptt] [--radio-playback-gain N] [--mic-transmit-gain N]\n"
+        L"手工配置字段：--profile-callsign、--profile-gateway-id、--profile-source-id、--profile-master、--profile-master-port、--profile-destination-id、--profile-slot、--profile-color-code、--profile-call-kind（G 或 P）。九项必须同时提供。\n"
+        L"手工配置字段省略时保留逐项交互输入；密码文件为本机私有明文 UTF-8 文本，启动参数只传文件路径。\n"
         L"WaveIn/WaveOut endpoint ID来自本次 WinMM 枚举；打开和重开音频流前都会核对。\n"
         L"默认在 BM/HRI ready 后用有效 HRI 手咪PTT边沿控制上行；--manual-ptt 显式启用键盘 T 诊断模式。\n"
         L"Q 停止并退出；电台手咪 PTT 控制 BM 上行。\n"
@@ -4617,6 +4639,8 @@ int bm_bridge_main(int argc, wchar_t* argv[])
     bool waveout_endpoint_seen = false;
     bool radio_playback_gain_seen = false;
     bool mic_transmit_gain_seen = false;
+    std::array<std::wstring, 9U> manual_field_values{};
+    std::array<bool, 9U> manual_field_seen{};
     std::uint32_t radio_playback_gain_milli = wirex::pcm_gain::unity_milli;
     std::uint32_t mic_transmit_gain_milli = 16000U;
     for (int index = 12; index < argc;) {
@@ -4664,6 +4688,23 @@ int bm_bridge_main(int argc, wchar_t* argv[])
             }
             expected_waveout_endpoint_id.assign(value);
             waveout_endpoint_seen = true;
+        } else if (option == L"--profile-callsign" || option == L"--profile-gateway-id" ||
+                   option == L"--profile-source-id" || option == L"--profile-master" ||
+                   option == L"--profile-master-port" || option == L"--profile-destination-id" ||
+                   option == L"--profile-slot" || option == L"--profile-color-code" ||
+                   option == L"--profile-call-kind") {
+            const std::array<std::wstring_view, 9U> field_options{{
+                L"--profile-callsign", L"--profile-gateway-id", L"--profile-source-id",
+                L"--profile-master", L"--profile-master-port", L"--profile-destination-id",
+                L"--profile-slot", L"--profile-color-code", L"--profile-call-kind"}};
+            const auto found = std::find(field_options.begin(), field_options.end(), option);
+            const auto field_index = static_cast<std::size_t>(std::distance(field_options.begin(), found));
+            if (field_index >= manual_field_values.size() || manual_field_seen[field_index] || value.empty()) {
+                (void)bm_stderr(L"连接配置字段不可重复或留空。\n");
+                return 2;
+            }
+            manual_field_values[field_index].assign(value);
+            manual_field_seen[field_index] = true;
         } else if (option == L"--radio-playback-gain") {
             if (radio_playback_gain_seen || !wirex::pcm_gain::parse_gain(value, radio_playback_gain_milli)) {
                 (void)bm_stderr(L"--radio-playback-gain 必须唯一指定为 0.25..16.0 的十进制数，最多 3 位小数。\n");
@@ -4682,8 +4723,18 @@ int bm_bridge_main(int argc, wchar_t* argv[])
         }
         index += 2;
     }
-    if (preset_seen != password_file_seen) {
-        (void)bm_stderr(L"固定预设必须同时提供 --test-preset 和 --password-file。\n");
+    const bool any_manual_field = wirex::bm_connection_config::any_field_seen(manual_field_seen);
+    const bool all_manual_fields = wirex::bm_connection_config::all_fields_seen(manual_field_seen);
+    if (preset_seen && (!password_file_seen || any_manual_field)) {
+        (void)bm_stderr(L"固定预设必须单独使用 --test-preset 和 --password-file，不能混入手工配置字段。\n");
+        return 2;
+    }
+    if (any_manual_field && !all_manual_fields) {
+        (void)bm_stderr(L"手工连接配置字段必须九项完整提供。\n");
+        return 2;
+    }
+    if (password_file_seen && !password_file_path.is_absolute()) {
+        (void)bm_stderr(L"BM 私有密码文件必须使用绝对路径。\n");
         return 2;
     }
     if (!wavein_endpoint_seen || !waveout_endpoint_seen) {
@@ -4698,10 +4749,6 @@ int bm_bridge_main(int argc, wchar_t* argv[])
         else if (selected_id == L"listen-91") selected_preset = wirex::bm_test_profile::find("listen-91");
         if (!selected_preset) {
             (void)bm_stderr(L"测试预设无效；没有打开 COM、WinMM 或 UDP。\n");
-            return 2;
-        }
-        if (!password_file_path.is_absolute()) {
-            (void)bm_stderr(L"BM 私有密码文件必须使用绝对路径；没有打开设备。\n");
             return 2;
         }
     }
@@ -4724,10 +4771,83 @@ int bm_bridge_main(int argc, wchar_t* argv[])
 
     wirex::bm::Profile profile{};
     ProfileSecretGuard secret_guard{profile};
-    if (selected_preset && !read_profile_password_file(password_file_path, profile.password)) {
-        (void)bm_stderr(L"本机 BM 私有密码文件缺失或格式无效；要求 1–128 字节的可打印 ASCII，至多一个行尾；尚未打开设备。\n");
-        return 2;
+    std::string callsign;
+    std::string host_text;
+    std::string call_kind_text;
+    std::uint32_t gateway_id = 0U;
+    std::uint32_t source_id = 0U;
+    std::uint32_t talkgroup_id = 0U;
+    std::uint32_t master_port = 0U;
+    std::uint32_t slot_number = 0U;
+    std::uint32_t color_code = 0U;
+    wirex::bm::Endpoint endpoint{};
+    wirex::dmr_call::CallConfig call_template{};
+    auto tx_policy = wirex::bm_test_profile::TxPolicy::enabled;
+    bool connection_ready = false;
+    const auto finish_connection = [&]() -> bool {
+        if (!selected_preset && !validate_manual_connection(callsign, gateway_id, source_id, talkgroup_id,
+                slot_number, color_code, host_text, master_port, call_kind_text)) return false;
+        const bool resolved = selected_preset
+            ? parse_ipv4_literal(host_text, endpoint.address)
+            : resolve_master_ipv4(host_text, endpoint.address);
+        if (!resolved) {
+            (void)bm_stderr(L"Master IPv4 地址解析失败或超出 3.5 秒有界等待；没有打开设备。\n");
+            return false;
+        }
+        endpoint.port = static_cast<std::uint16_t>(master_port);
+        profile.gateway_id = gateway_id;
+        profile.callsign = callsign;
+        wirex::bm::apply_network_metadata(profile);
+        profile.color_code = static_cast<std::uint8_t>(color_code);
+        call_template.source_id = source_id;
+        call_template.destination_id = talkgroup_id;
+        call_template.gateway_id = gateway_id;
+        call_template.slot = slot_number == 1U ? wirex::dmr_call::Slot::ts1 : wirex::dmr_call::Slot::ts2;
+        call_template.kind = call_kind_text == "G" ? wirex::dmr_call::CallKind::group
+                                                    : wirex::dmr_call::CallKind::private_call;
+        call_template.color_code = static_cast<std::uint8_t>(color_code);
+        tx_policy = wirex::bm_test_profile::policy_for(call_template);
+        if (password_file_seen && !read_profile_password_file(password_file_path, profile.password)) {
+            (void)bm_stderr(L"本机 BM 私有密码文件缺失或格式无效；要求 1–128 字节的可打印 ASCII，至多一个行尾；尚未打开设备。\n");
+            return false;
+        }
+        return true;
+    };
+    if (selected_preset) {
+        callsign.assign(selected_preset->callsign);
+        host_text.assign(selected_preset->master_ipv4);
+        call_kind_text = selected_preset->kind == wirex::dmr_call::CallKind::group ? "G" : "P";
+        gateway_id = selected_preset->gateway_id;
+        source_id = selected_preset->source_id;
+        talkgroup_id = selected_preset->destination_id;
+        master_port = selected_preset->master_port;
+        slot_number = static_cast<std::uint32_t>(selected_preset->slot);
+        color_code = selected_preset->color_code;
+        connection_ready = finish_connection();
+        if (!connection_ready) return 2;
+    } else if (all_manual_fields) {
+        std::array<std::string, 9U> fields{};
+        const std::array<std::size_t, 9U> limits{{8U, 10U, 8U, 253U, 5U, 8U, 1U, 2U, 1U}};
+        bool fields_valid = true;
+        for (std::size_t index = 0U; index < fields.size(); ++index) {
+            fields_valid = fields_valid && narrow_ascii_text(manual_field_values[index], fields[index], limits[index]);
+        }
+        fields_valid = fields_valid && parse_ascii_uint(fields[1], gateway_id) &&
+            parse_ascii_uint(fields[2], source_id) && parse_ascii_uint(fields[4], master_port) &&
+            parse_ascii_uint(fields[5], talkgroup_id) && parse_ascii_uint(fields[6], slot_number) &&
+            parse_ascii_uint(fields[7], color_code);
+        callsign = std::move(fields[0]);
+        host_text = std::move(fields[3]);
+        call_kind_text = std::move(fields[8]);
+        if (!fields_valid || !validate_manual_connection(callsign, gateway_id, source_id, talkgroup_id,
+                slot_number, color_code, host_text, master_port, call_kind_text)) {
+            (void)bm_stderr(L"连接配置字段无效；没有打开 COM、WinMM 或 UDP。\n");
+            return 2;
+        }
+        connection_ready = finish_connection();
+        if (!connection_ready) return 2;
     }
+
     std::wstring device_path;
     if (!parse_port(argv[3], device_path)) {
         (void)bm_stderr(L"串口名无效；请输入明确的 COM 端口。\n");
@@ -4773,74 +4893,31 @@ int bm_bridge_main(int argc, wchar_t* argv[])
         return 2;
     }
 
-    std::string callsign;
-    std::string host_text;
-    std::string call_kind_text;
-    std::uint32_t gateway_id = 0U;
-    std::uint32_t source_id = 0U;
-    std::uint32_t talkgroup_id = 0U;
-    std::uint32_t master_port = 0U;
-    std::uint32_t slot_number = 0U;
-    std::uint32_t color_code = 0U;
-    auto tx_policy = wirex::bm_test_profile::TxPolicy::enabled;
-    if (selected_preset) {
-        callsign.assign(selected_preset->callsign);
-        host_text.assign(selected_preset->master_ipv4);
-        call_kind_text = selected_preset->kind == wirex::dmr_call::CallKind::group ? "G" : "P";
-        gateway_id = selected_preset->gateway_id;
-        source_id = selected_preset->source_id;
-        talkgroup_id = selected_preset->destination_id;
-        master_port = selected_preset->master_port;
-        slot_number = static_cast<std::uint32_t>(selected_preset->slot);
-        color_code = selected_preset->color_code;
-    } else {
+    if (!connection_ready) {
         if (!read_ascii_line(L"呼号（最多 8 个 ASCII 字符）：", callsign, 8U) ||
-            !read_uint_line(L"Gateway ID（1..4294967295）：", gateway_id) || gateway_id == 0U ||
+            !read_uint_line(L"Gateway ID（1..4294967295）：", gateway_id) ||
             !read_uint_line(L"本机 DMR Source ID（1..16777215）：", source_id) ||
-            source_id == 0U || source_id > wirex::dmrd::max_id24 ||
             !read_uint_line(L"目标 Talkgroup ID 或单呼 Radio ID（1..16777215）：", talkgroup_id) ||
-            talkgroup_id == 0U || talkgroup_id > wirex::dmrd::max_id24 ||
-            !read_uint_line(L"Timeslot（1 或 2）：", slot_number) || (slot_number != 1U && slot_number != 2U) ||
-            !read_uint_line(L"Color Code（0..15）：", color_code) || color_code > 15U ||
+            !read_uint_line(L"Timeslot（1 或 2）：", slot_number) ||
+            !read_uint_line(L"Color Code（0..15）：", color_code) ||
             !read_ascii_line(L"BM Master IPv4 地址或主机名（例如 master.example.net）：", host_text, 253U) ||
             !read_uint_line(L"BM Master UDP 端口（1..65535）：", master_port) ||
-            master_port == 0U || master_port > 65535U ||
             !read_ascii_line(L"呼叫类型（G=组呼，P=单呼）：", call_kind_text, 1U) ||
-            (call_kind_text != "G" && call_kind_text != "P")) {
-            (void)bm_stderr(L"输入字段无效；没有打开 COM、WinMM 或 UDP。\n");
+            !validate_manual_connection(callsign, gateway_id, source_id, talkgroup_id,
+                slot_number, color_code, host_text, master_port, call_kind_text)) {
+            (void)bm_stderr(L"连接配置字段无效；没有打开 COM、WinMM 或 UDP。\n");
             return 2;
         }
+        connection_ready = finish_connection();
+        if (!connection_ready) return 2;
     }
-    wirex::bm::Endpoint endpoint{};
-    const bool endpoint_resolved = selected_preset
-        ? parse_ipv4_literal(host_text, endpoint.address)
-        : resolve_master_ipv4(host_text, endpoint.address);
-    if (!endpoint_resolved) {
-        (void)bm_stderr(L"Master IPv4 地址解析失败或超出 3.5 秒有界等待；没有打开设备。\n");
-        return 2;
-    }
-    endpoint.port = static_cast<std::uint16_t>(master_port);
-    profile.gateway_id = gateway_id;
-    profile.callsign = callsign;
-    // 这些是 BM RPTC 节点字段，不用于调谐 FTX-1 或发射 RF。
-    wirex::bm::apply_network_metadata(profile);
-    profile.color_code = static_cast<std::uint8_t>(color_code);
-    wirex::dmr_call::CallConfig call_template{};
-    call_template.source_id = source_id;
-    call_template.destination_id = talkgroup_id;
-    call_template.gateway_id = gateway_id;
-    call_template.slot = slot_number == 1U ? wirex::dmr_call::Slot::ts1 : wirex::dmr_call::Slot::ts2;
-    call_template.kind = call_kind_text == "G" ? wirex::dmr_call::CallKind::group
-                                                : wirex::dmr_call::CallKind::private_call;
-    call_template.color_code = static_cast<std::uint8_t>(color_code);
-    tx_policy = wirex::bm_test_profile::policy_for(call_template);
 
     wirex::ConsoleHandlerScope control_scope;
     if (!control_scope.start()) {
         (void)bm_stderr(L"无法注册控制台收尾处理器；没有打开设备。\n");
         return 2;
     }
-    if (!selected_preset && !read_hidden_password(profile.password, control_scope)) {
+    if (!selected_preset && profile.password.empty() && !read_hidden_password(profile.password, control_scope)) {
         (void)bm_stderr(L"隐藏密码输入已取消或无效；没有打开设备。\n");
         wipe_password(profile.password);
         return control_scope.cancel_requested() ? 0 : 2;

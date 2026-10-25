@@ -153,6 +153,7 @@ try {
         'src\pcm_resampler.cpp',
         'src\bm_voice_pipeline.cpp',
         'src\bm_test_profile.cpp',
+        'src\bm_connection_config.cpp',
         'src\bm_session.cpp',
         'src\bm_udp.cpp',
         'src\direct_frame.cpp',
@@ -218,6 +219,7 @@ try {
         @{ Name='pcm_resampler_test'; Source='tests\pcm_resampler_test.cpp' },
         @{ Name='bm_voice_pipeline_test'; Source='tests\bm_voice_pipeline_test.cpp' },
         @{ Name='bm_test_profile_test'; Source='tests\bm_test_profile_test.cpp' },
+        @{ Name='bm_connection_config_test'; Source='tests\bm_connection_config_test.cpp' },
         @{ Name='hri_stream_session_test'; Source='tests\hri_stream_session_test.cpp' },
         @{ Name='bm_bridge_loopback_test'; Source='tests\bm_bridge_loopback_test.cpp' }
     )
