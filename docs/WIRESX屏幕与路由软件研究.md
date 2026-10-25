@@ -87,9 +87,21 @@ R77 将 EXE 调用点、HRI 对象表、event 17 回调、HRI outgoing queue 和
 3. **state 6/event `0x11` 是该对象队列的消费者。** 构造器将 event `0x11` 的回调登记为 `FUN_10017ee0`（R61 Evidence `ev_df7a82b059437d563de83ff1834d59c4cdc6846028d1e60851a9940ed8a4d0c2`）；该回调用 `param_1+0x1d8f8` 读取并在分支中摘出队首，随后按状态和记录条件调用 `FUN_1000aa40`。部分调用第三参数为 0，只格式化记录；一个 voice-frame 分支用第三参数 1，`FUN_1000aa40` 随后把内部 `F` 类型记录交给 outgoing queue `FUN_1000a140`（Evidence `ev_41dd62f0ba0e27eee32dc1c33bd25314f9ca62f9a933fd434341a2c6eac45d78`、`ev_3b65fb6614f18fcbf72824b4ab87211134c20722cc1b245cc8e061978083b9c0`、`ev_d2cb94ab9856ade391cafa317db90ee3e41483196e01938c10f962920b9e1785`）。
 4. **outgoing queue 的一条路径把缓冲区和长度交给主程序，再到 `WriteFile`。** `FUN_1000a240` 取 outgoing queue 项目并对主程序窗口发送 `WM 0x618`，参数是记录缓冲区和长度（Evidence `ev_d655b4be6bd24449c7d460909fb95eb74c345ca85c26e342499d88757dac4967`）。EXE 的 `0x618` handler `FUN_00497b50` 调 `FUN_0040d260`，随后由 `FUN_0040f7e0` 将同一指针、长度传给 `WriteFile`（R8 Evidence `ev_b0aafad446c77fafe5688ec5b109f00275059ba97725657cec6ad39d60b3a61e`、`ev_04ee7da9fa2b802698348a29437077dde6f1ee9f1a5c5153e1affbf52d9d1f62`、`ev_6ab289bddeecbdb0bb70ba859d2d9238b403c368bcbe8ab3a51451f573216cca`）。这条 `0x618` 写入路径不会先经过 EXE 的另一条 `0x40c570` XOR 封装路径。
 
-**剩余缺口：** `SetDigiTrcvData` 投递 `0x1401` 后，HRI 将其映射为 event 1；目前没有找到 event `0x11` 的明确产生位置，也没有证明 event 1 的回调会调度 event `0x11`。因此已确认同一对象队列能被 event 17 callback 读取、并可在特定分支到达 `WriteFile`；实际设备运行时进入该分支的条件与时序仍未知。内部 `F` 记录和 EXE 的 D1–E4 输入字段都没有 LCD 业务名称，静态证据没有把这些字节对应到 FTX-1 的呼号、房间/节点列表、软键文字或屏幕刷新动作。当前证据足以描述条件 UART 数据路径，尚不足以实现 LCD 更新协议。
+**R77 当时的缺口，已由 R78 部分闭合：** event `0x11` 通过 timer 2 / WM_TIMER / message `0x1411` 进入状态分派器的路径已恢复，具体见下一节。内部 `F` 记录和 EXE 的 D1–E4 输入字段仍没有 LCD 业务名称；静态证据没有把这些字节对应到 FTX-1 的呼号、房间/节点列表、软键文字或屏幕刷新动作。已恢复软件条件路径的输入、计时门控和 `WriteFile` 出口，尚未恢复设备端显示协议。
 
 本轮新增 HRI 全量 REA bundle：[`r77_hri_lcd_chain_20261026.evidence.json`](../../research/rea/v2.010/r77_hri_lcd_chain_20261026.evidence.json)（target SHA 和每条 Evidence 记录均在 bundle 中）。它合并加载的 R61/R76 HRI 静态记录和本轮直接函数分析；EXE 侧 R22、R51、R8 证据仍引用各自完整 bundle。
+
+### R78：timer 2 驱动 event `0x11`
+
+R77 已闭合对象槽 0 和同一队列；R78 找到 state 6/event `0x11` 的调度链：
+
+1. 状态分派器 `FUN_100152c0` 在旧状态 `<4`、新状态 `>3` 且新状态不等于 5 的转移分支，对 `this+0x2b8` 窗口设置 timer ID 2、周期 200 ms；该条件覆盖转入 state 6。另一个从更高状态转入 state 6 的分支调用 `FUN_1000ff40`，把 `this+0x1d8dc` 初始化为 2。证据 `ev_959e3cadf730233725fd198f64e03665147c07287cf542369f3ce6789afc74e8`。
+2. HRI `.rdata` 的消息表记录 `0x10166288` 为 `WM_TIMER` (`0x0113`) 项，签名 `0x14`，处理器指针为 `FUN_10006a70` (`0x10006a70`)。该处理器在 timer ID 1 时向工作线程投递 `0x1401`；timer ID 2 时向同一对象记录的线程 ID 投递 `0x1411`。函数证据 `ev_e31bf97a49b8b34eaa68e3d35b7e6e651962c552153096b85c58b76db027f04d`，消息表原始字节证据 `ev_24e914bf2989ec98b281da805c8fe17380bdc1c8aef59c4745520855649cba66`。
+3. HRI `.rdata` 中 `0x10167de8` 和 `0x10168410` 两条消息表记录均列出消息 `0x1411`、签名 `0x1e`、处理器地址 `0x10022d40`。地址 `0x10022d40` 的原始 64 字节证据为 `ev_92a8b5cbd2cdc941557312cd8a589796a36be63e5aabaa8d6318f5837951f3c6`；Ghidra 未把该地址单独登记成 procedure，因此本结论按消息表指针与原始代码字节复核。
+4. `0x10022d40` 读取 `this+0x1d8dc`：计数为正时减 1 并返回；计数为 0 或负时，以 `param_1=0x11,param_2=0,param_3=0` 调用 `FUN_100152c0`。相对调用机器码 `E8 5E 25 FF FF` 位于 `0x10022D5D`，完整字节搜索证据 `ev_ee3b9ee46546a28375514e9d178125168f6ff2caad3d78033583ddecb5733c37`。
+5. `SetDigiTrcvData(0, ...)` 路径将对象 `+0x1d8dc` 清零并投递 `0x1401`。所以在 timer 2 处于运行状态时，下一次 `0x1411` 处理可以通过计数门控进入 event `0x11`；随后 state 6 的 `FUN_10017ee0` 读取同一对象的 `+0x1d8f8` 队列，符合 R77 恢复的同实例数据流。
+
+R78 的新证据并未观察任何实际定时器、线程或电台运行；它闭合的是官方代码中的消息表、计数器与状态分派调用关系。完整新增记录合并在 [`r78_hri_event11_timer_20261026.evidence.json`](../../research/rea/v2.010/r78_hri_event11_timer_20261026.evidence.json)。
 
 ## 显示 DMR 呼号的安全数据来源
 
@@ -99,6 +111,6 @@ R77 将 EXE 调用点、HRI 对象表、event 17 回调、HRI outgoing queue 和
 
 ## 下一步最小闭合条件
 
-下一步从 state 6/event `0x11` 的产生端查起：复核 event 1 到状态变更/定时器回调的路径，再沿 `FUN_100152c0` 的间接状态表调用确认何时会进入 `FUN_10017ee0`。即使 event 路径闭合，仍需恢复 D1–E4 和内部 F 记录的设备端显示语义，才能把其中字段映射到 FTX-1 LCD。当前没有为 LCD 构造或发送任何命令。
+下一步只追 EXE `FUN_004e5580` 构造的 D1–E4 字段源对象和相关配置键，确认其中哪些承载呼号、节点或房间文字；再核对这些值如何经过 HRI 队列变成内部 F 记录。即便字段来源闭合，也需找到设备端 LCD 对字段的显示语义后才能实现 LCD 更新协议。当前没有为 LCD 构造或发送任何命令。
 
 下一步分析官方会话启动和退出时配置的加载、保存与恢复行为，并确认 Bridge 运行期间 RF 接收状态。S 表指示与 Bridge 关闭后出现的 RF 音频是否同一时刻，仍需确认。若要发送新的 RF 模式写入命令，应先恢复该命令的协议和作用路径。本轮只做静态研究，没有进行这些观察或写入。
