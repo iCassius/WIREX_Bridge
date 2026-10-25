@@ -1,5 +1,9 @@
 # BM + FTX-1 联调推进交接
 
+## 首个 Release 当前状态（2026-10-25）
+
+私有预发布 [v0.1.0-alpha.1](https://github.com/iCassius/WIREX_Bridge/releases/tag/v0.1.0-alpha.1) 已发布，源码 tag `312e7142a419566c47a335fb83a33c756aaf69f3` 的 clean build 通过 27 项离线测试且 warning/error 为 0。本机包在 `build/releases/v0.1.0-alpha.1`，共 17 个文件；Release 有 18 个独立 asset。草稿和普通 published 下载均重建并校验了 17 个文件。该版本 HIL 尚待最终集中联测；构建和资产校验详情见[首个 Release 验收](首个Release验收.md)，下面保留此前的软件与实机证据。
+
 ## 目标与当前状态
 
 用户授权完成步骤 1–4，交付一个可以开始真实 BM 与电台联合测试的候选；UI 和 RF 节点实测暂缓。四项工作是：
@@ -11,7 +15,7 @@
 
 核心基线为 `3c943413928e1443a2eaa722f730a1e95fdd15b2`，本地集成提交为 `17f3433ae4cd6820622033ddb1910c030cb260f2`。根会话已审阅源码、离线构建和便携候选；阶段文档按用户授权同步到 `main`，实际远端结果以 `git log` 和 `git ls-remote` 为准。步骤 5 的真实 BM 联调身份已由用户准备，接续时不要重复索取。
 
-## 2026-10-25 当前轮状态
+## 2026-10-25 历史功能与实测记录
 
 - 源码提交 `5e3343372d9b0427b5c25943a731292e65b1f7ca` 新增 BM→电台回放与手咪→BM 上行的独立 PCM 增益设置，默认 `1.0x`/`16x`。该提交的正式 clean build 与 26 项离线测试全部通过，compiler warning/error 均为 0；构建目录 `build/_work/wirex-bridge-5e33433-20261025-064748`，日志 `build/_work/bm-audio-5e33433-build.log`，EXE SHA-256 `C04D62F13173AD11676A3339EEA250B27745BF1056DB36CF53273AAE1DA34B06`。便携候选 `build/bm-radio-bridge-5e33433` 已通过 root 审计：13 项非秘密文件的长度和 SHA-256 与实际清单一致，EXE 与 clean build 一致，三份启动器与源码一致，PS5.1 配置 AST 检查、native safe help、空 logs、无旧 settings 和凭据仅存在状态均通过。新音量倍率尚未实机听音验收。参数和本机设置文件见 [`音量调节.md`](音量调节.md)。
 - 源码提交 `ab3c5fab358aaf56a697a8e2a79f09f02d8a75ee` 新增全球 TG91 被动收听预设 `listen-91`，固定 BI7KGD、Gateway 461135501、Source 4611355、43.129.83.124:62031、TS2、CC1；过滤只接受 TG91/TS2/G。`policy_for` 继续拒绝 TG91 与 TG46001 组呼的键盘 T 和手咪 PTT 上行，默认仍为 `parrot-cn`。用户为 Gateway 461135501 配置 TS2 TG91 静态订阅后，已确认实机收听正常；这条后续确认没有附通话次数或时长。版本刚交付时的记录尚待收听验收，现已由用户确认完成。

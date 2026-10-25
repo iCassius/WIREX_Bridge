@@ -2,27 +2,31 @@
 
 ## 发布目标和当前状态
 
-目标版本为私有 GitHub 预发布 `v0.1.0-alpha.1`。本文件只定义发布核对项；当前没有创建版本 tag、最终便携包或 GitHub Release，也没有执行最终包 HIL。最终源码 commit、逐文件资产清单和 SHA-256 由根会话在打包审计后更新。
+私有 GitHub 预发布 [v0.1.0-alpha.1](https://github.com/iCassius/WIREX_Bridge/releases/tag/v0.1.0-alpha.1) 已发布，Release ID `423365682`，发布时间为 2026-10-25 19:49:48（中国标准时间）。源码 tag 指向 `312e7142a419566c47a335fb83a33c756aaf69f3`。Release 有 18 个已上传 assets。
 
-根会话记录的正式 clean build 基于 `eafc8a1`，使用 Windows PowerShell 5.1 / VS 2019 x64；27 项离线测试全部通过，warning/error 均为 0。构建目录为 `build/_work/wirex-bridge-eafc8a1-20261025-071535`，日志为 `build/_work/bm-profile-eafc8a1-build.log`。其后 `0a84013` 相对 `eafc8a1` 的改动只涉及文档和 `tools/bm-radio-bridge-README.md`，源码、测试和构建脚本没有变化。此 build 记录不等于最终便携包审计或最终包实机验收。
+该 tag 的正式 clean build 通过 27 项离线测试，warning/error 均为 0。构建目录 `build/_work/wirex-bridge-312e714-20261025-113013`，日志 `build/_work/release-312e714-build.log`，EXE SHA-256 `adbec34fde41565f437283fde3a7a46f28f3615dc1575d90086158e08a4fb1aa`。本机绿色目录为 `build/releases/v0.1.0-alpha.1`；manifest 列出 16 个普通文件，加上 manifest.json 共 17 个文件，manifest SHA-256 `21d2e617f7761b6cc28a467432fb4c9d50d7c5ecafe2c1524afb8f9562fab9f5`。该目录不打 ZIP，未包含密码、连接 profile、音量设置或运行日志。
 
-已有实机结果必须按版本分别记录：用户确认 `005c5e8` 的一通 DIRECT 手咪 → BM 鹦鹉 → 电台扬声器闭环清晰；用户另确认 `ab3c5fa` 的 TG91 实机收听正常。这两项结果不代替 `v0.1.0-alpha.1` 最终包的 HIL。最终包 HIL 目前未执行。
+根会话确认远端 18 个 assets 全部上传。下载器在草稿和正式 published 路径均通过验收；正式下载重建 17 个文件，其路径、长度和 SHA-256 与本机绿色目录一致。普通 Release asset 由 manifest 列出；下载脚本是独立的额外 asset。
+
+`005c5e8` DIRECT 手咪回声与 `ab3c5fa` TG91 收听是前序版本的用户确认，不能代替本 Release 的 HIL。本 Release 的硬件/网络 HIL 尚未执行。当前 FTX-1 LCD 话者显示、Bridge 运行期间 RF 路由、BM 到 RF 发射和真实图形 UI 不属于本 Release。
+
+发布操作使用的 `main` 提交为 `86e9d105e3095b18b1363b550d9dc6cda8e49552`，相对 tag 只包含 `tools/publish-release.ps1` 和对应测试的发布器修复；后续交接文档提交不改变发布 tag 或资产。二进制和 manifest 对应准确源码 tag `312e714...`。
 
 ## 构建与资产核对
 
-- [ ] 根会话确认源码树干净，记录最终 commit 和 builder 输入；使用仓库内 `tools/build-bm-bridge.ps1` 从该源码构建，不复用历史 EXE。
-- [ ] 27 项离线测试在最终源码上全部通过；记录构建 warning/error、日志路径和 EXE SHA-256。
-- [ ] 使用同一 clean build 生成便携目录；逐文件核对路径、长度和 SHA-256，确认没有混入旧版二进制或不同提交的启动器。
-- [ ] 运行包内 `--help`、设备列表 schema 和启动器静态检查，确认默认 preset、设备 identity guard、`start-profile.cmd` 和只收 preset 入口对应本次源码。
-- [ ] 包内不含 BM 密码、用户创建的 `connection-profile.json`、`audio-settings.json`、运行期 `logs/`、临时日志或测试语音。用户首次运行后再在本机创建 profile/settings；密码单独由用户放入 private 文件或在控制台隐藏输入。
-- [ ] README、许可证和其他必要文件与程序放在正确相对路径。私有 GitHub Release 使用独立文件资产并提供路径映射 manifest；本项目不生成 ZIP。
-- [ ] 发布资产标明与二进制相符的源码 commit，并随私有 tag 提供完整对应源码和 `tools/build-bm-bridge.ps1`。在资产审计完成后再写入最终 tag、清单和 SHA-256；本轮文档工作不创建 tag 或 Release。
+- [x] 根会话确认发布源码树干净；使用仓库内正式 builder 从 tag 对应源码构建。
+- [x] 27 项离线测试全部通过，warning/error 为 0；日志与 EXE SHA-256 见上方发布记录。
+- [x] 本机绿色目录由同一 clean build 生成，逐文件路径、长度和 SHA-256 已核对。
+- [x] 包内 help、音频 schema、启动器静态检查和 PS5.1 mock 均通过。
+- [x] 包内不含 BM 密码、用户创建的连接 profile、音量设置、运行日志或测试语音；首次运行后由用户在本机生成设置。
+- [x] README、许可证和所需文件的相对路径已审计；Release 使用独立文件 assets 和 manifest，不生成 ZIP。
+- [x] 已发布的 assets 对应源码 tag `312e714...`；tag 提供完整源码、构建脚本、许可和来源材料。
 
 ## 许可材料复核
 
-- [ ] 检查 `third_party/dmr_signal/NOTICE.md` 与 `COPYING.GPL-3.0.txt`，并把对应许可/notice 放入最终资产。
+- [x] 已检查 `third_party/dmr_signal/NOTICE.md` 和 `COPYING.GPL-3.0.txt`，并将许可/notice 放入资产。
 - [x] 根会话已核对固定 DroidStar commit `becf1dede57c4a70a865e9cb4cac9247e505599a`：项目根目录和 `imbe_vocoder` 目录均没有 `COPYING` 或全局 `LICENSE`。57 项 `source-manifest` 保留逐文件来源/许可记录；实际编译的 27 项中，21 项标为 GPL-3.0-or-later、4 项标为原文件内 ISC 文本、`imbe_vocoder_impl.cc` 只记录 attribution、`imbe_vocoder.cc` 没有文件内许可/版权文本。后两种状态应如实随源清单提供，不据单文件 header 缺失自动判为不授权，也不虚构项目级 GPL 覆盖。
-- [ ] 包内继续提供 `third_party/dmr_signal/NOTICE.md`、对应 GPL-3.0 文本、DroidStar `source-manifest`、源码和构建脚本；记录有文件级许可文字与仅有 attribution 的分布。不要据此替项目第一方代码擅自选择新的总许可证，也不要宣称全项目法律审查已经完成。
+- [x] 包内提供 GPL notice、DroidStar source-manifest、对应源码和构建脚本；文件级来源与许可情况随 source-manifest 记录。
 
 ## 最终包硬件/网络验证
 
@@ -45,4 +49,4 @@
 - 图形 UI 没有连接到真实核心或设备，本 Release 通过可见控制台操作。
 - 软件 ready、发送计数、`Q` 正常退出和 PC 资源关闭都不表示电台 RF 状态已验证。
 
-完成 checklist 后，根会话再对齐发布说明中的最终 commit、tag、资产路径映射和逐文件 SHA-256。用户本地 HIL 结果作为最终包证据单独加入记录；未执行项继续标为待验，不得改写成通过。
+构建、资产审计、发布和 published 下载验证已完成。最终包 HIL 结果待用户完成集中联测后补记；未执行项保持待验。

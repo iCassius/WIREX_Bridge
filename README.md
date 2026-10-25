@@ -2,7 +2,9 @@
 
 ## v0.1.0-alpha.1 私有预发布
 
-本仓库的首个私有 alpha 版本为 `v0.1.0-alpha.1`。本版源码提交、构建记录及逐文件长度和 SHA-256 以对应 GitHub Release 页面与 `manifest.json` 为准；实机验证范围以发布说明和 manifest 中记录的状态为准。`005c5e8` 的 DIRECT Echo 和 `ab3c5fa` 的 TG91 收听属于两个旧版本的用户确认。
+私有 GitHub 预发布 [v0.1.0-alpha.1](https://github.com/iCassius/WIREX_Bridge/releases/tag/v0.1.0-alpha.1) 已于 2026-10-25 19:49:48（中国标准时间）发布，Release ID 为 423365682，源码 tag 指向 `312e7142a419566c47a335fb83a33c756aaf69f3`。该 tag 的 clean build 通过 27 项离线测试，warning/error 为 0；逐文件清单和实机验证范围见 Release 中的 `manifest.json` 与[发布说明](docs/releases/v0.1.0-alpha.1.md)。
+
+本机绿色目录为 `build/releases/v0.1.0-alpha.1`，清单列出的 16 个文件，加上 manifest.json，共 17 个文件；GitHub Release 有 18 个独立 asset，另含单独发布的下载脚本。发布不使用 ZIP，包内不含密码、连接 profile、音量设置或运行日志。该版本 HIL 留待最终集中联测；`005c5e8` 的 DIRECT Echo 和 `ab3c5fa` 的 TG91 收听是前序版本的用户确认。
 
 - [v0.1.0-alpha.1 发布说明](docs/releases/v0.1.0-alpha.1.md)
 - [包内操作说明源](docs/releases/v0.1.0-alpha.1-package-README.md)
