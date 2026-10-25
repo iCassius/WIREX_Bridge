@@ -13,6 +13,9 @@
 
 ## 2026-10-25 当前轮状态
 
+- 最新源码提交 `ab3c5fab358aaf56a697a8e2a79f09f02d8a75ee` 新增全球 TG91 被动收听预设 `listen-91`，固定 BI7KGD、Gateway 461135501、Source 4611355、43.129.83.124:62031、TS2、CC1；过滤只接受 TG91/TS2/G。`policy_for` 继续拒绝 TG91 与 TG46001 组呼的键盘 T 和手咪 PTT 上行，默认仍为 `parrot-cn`。用户在 SelfCare 为 Gateway 461135501 配置 TS2 TG91 静态订阅后，可运行 `start-listen-91.cmd` 收听。该源码尚未进行 TG91 设备收听验证。
+- `ab3c5fa` clean build 的 26 项离线测试全部通过，compiler warning/error 为 0；构建目录 `build/_work/wirex-bridge-ab3c5fa-20261024-212438`，日志 `build/_work/bm-tg91-ab3c5fa-build.log`，EXE SHA-256 `6FAC95A48D51D2C8033220139B8884CAC0CA83DB15625928C04F2CAC349A1464`。便携包 `build/bm-radio-bridge-ab3c5fa` 已通过 root 审计：12 项非秘密文件记录、EXE/launcher、PS5.1 AST、safe help、audio schema、空 logs 和本机凭据仅存在检查均通过。
+- 按用户调整的研究次序，本轮先推进软件侧路径分析。官方 WIRES-X 帮助文件的 45 页功能目录与桥接取舍见 [`WIRESX官方功能目录与桥接取舍.md`](WIRESX官方功能目录与桥接取舍.md)；HRI DLL 屏幕字段、模式路由与队列路径见 [`WIRESX屏幕与路由软件研究.md`](WIRESX屏幕与路由软件研究.md)。静态代码已确认 `DGKEY_NUM_NDDIRECT` 为 0 时写入 Y 正文候选偏移 5 的 `'1'`，非零时写入 `'2'`，但尚未将该 HRI 布尔值映射到 FTX-1 的三态 Node Mode。HRI 字段到电台 LCD 的 serializer 和写入路径仍未闭合。用户观察到 HRI 页面下 145.100 MHz FM 接收时有声音且 S 表有指示；实际 Node Mode 与接收路径仍待确认。本轮没有新增 LCD 文本显示消息或 RF 模式写入，也没有进行 RF 实机验证。
 - `2183cef` 旧候选的 clean build 曾通过 25 项离线测试并通过便携包审计。随后 native 日志显示 BM 到达 `ready` 且收到了 291 个 DMRD 数据报，但 `calls_started=0`、`calls_ended=0`；原日志没有 DMRD 头元数据，不能仅凭计数认定收到回声。
 - 两次有界 network-only 私呼测试使用生产 Session、UDP transport、Transmitter 和 RX-only pipeline，均只向 460997 发送一通 1.98 秒合成 PCM。首次从 TS1 发出后，BM 实际回送 TS2 private stream；本机 ID、呼叫类型、LC 与 CC1 匹配，旧 TS1 filter 将 37 个包全部拒绝。三个 DIRECT preset 因此改为 TS2，过滤仍精确匹配本机目的 ID、单一时隙和呼叫类型。
 - 第二次测试从新 `parrot-cn` preset 动态取得呼叫参数，BM 回声被 TS2 filter 接受；Receiver 产生 1 个 start、32 个 voice、1 个 end 事件。RX-only 测试未启用播放，也没有真实 HRI/扬声器路径。
