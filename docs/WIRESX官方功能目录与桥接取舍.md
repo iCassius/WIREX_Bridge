@@ -57,11 +57,25 @@
 | 本机资料提交 `FUN_004184f0` | 提交 HRI/设备身份选择及用户资料，保存 `USER_INF/CallSign`、City、State 等本地配置。 | 没有追到从本机资料到 HRI UART 屏幕文本字段的 serializer 或无线电 LCD 更新调用。 |
 | User ID 更新 `FUN_004834a0` | 校验输入的 Node User ID，处理本机身份更新并调用后续更新函数。帮助文件说明该功能会向 WIRES-X 注册资料。 | 网络请求完整链路和 BM 身份关系没有在本次追踪。 |
 | Direct / Node Mode 搜索 | 在 8,849 个 Ghidra 已定义字符串中查 `Node Mode` 未找到定义字符串；查到 `DirectComPort` 与 `DGKEY_NUM_NDDIRECT` 字符串。 | 这不是对全部指令、数值协议或未定义数据的排除。不能据此说 EXE 不含 Node Mode 数值控制。 |
-| HRI DLL 装载与导出表 `FUN_004fd630` | EXE 用 `LoadLibraryA("HRI-UART.dll")` 装载模块，再用 `GetProcAddress` 按名称取得导出。函数指针 `SETDIGITRCVDATA` 存在对象偏移 `+0x1c`（槽 `this[7]`）；`FRAMETRXDATATOTRCVFRAME` 存在偏移 `+0x48`（槽 `this[0x12]`）。 | 已证实 EXE 的动态装载和两个目标函数指针的初始化；本批未追踪后续调用这些槽位的函数，也未把它们连接到具体 UI 控件或 FTX-1 LCD。 |
+| HRI DLL 装载与导出表 `FUN_004fd630` | EXE 用 `LoadLibraryA("HRI-UART.dll")` 装载模块，再用 `GetProcAddress` 按名称取得导出。函数指针 `SETDIGITRCVDATA` 存在对象偏移 `+0x1c`（槽 `this[7]`）；`FRAMETRXDATATOTRCVFRAME` 存在偏移 `+0x48`（槽 `this[0x12]`）。 | 已证实 EXE 的动态装载和两个目标函数指针的初始化。下方新增一条 `+0x1c` 的静态调用路径；`+0x48` 的调用点以及两个入口与具体 UI 控件/FTX-1 LCD 的关系仍未查明。 |
 
 `DirectComPort` 是 WIRES-X PC 程序连接配置的一项。FTX-1 的 Node Mode 是电台设置。仅因软件字符串都包含 Direct 一词，不能把二者看作同一控制。
 
 跨 DLL 装载证据位于 `research/rea/v2.010/wiresx-exe-hri-export-load-20261025.evidence.json`。目标为 `WIRES_X.EXE` SHA-256 `8f05dc26794144438566b880ce775f5178d62eb3c4deb8c053089216342bc671`，Ghidra 12.1.4 x86；`FUN_004fd630` 的 dossier 为 `ev_63deaba48b89a66cbb6491b07918471eca390ae1e1dd6b6b2b679e3865a48ec8`。`FrameTrxDataToTrcvFrame` 由导出名字符串 `FRAMETRXDATATOTRCVFRAME` 取得；本次没有看到 EXE 按 ordinal 31 解析它。完整函数指针表的其他槽已保存在该 dossier 中。此证据只说明 EXE 装载 DLL 并缓存导出地址，未证明两个函数后续何时被调用或它们会更新无线电 LCD。
+
+### 已定位的一条 HRI 数据调用
+
+已有 EXE dossier `ev_5a1c56f443db2913fbc51c4d24d7b930ea3e428f8a41e82b1f831a64e7118d8c`（`research/rea/v2.010/r51_downlink_evidence_bundle.json`，同一 EXE 哈希）显示 `FUN_004e5580` 在构造状态帧缓冲区后执行 `(**(code **)(DAT_007dfbf0 + 0x1c))(0, local_310)`。缓冲区 `local_310` 长 519 字节，函数用 `EditLenString` 写入 D1–D7、DA–DE、E1、E3、E4 等标签，最后再写 C0 字段；周边日志把这条路径称作 `SendStatusFrame`。这证明 PC 程序把一份状态字段串交给全局对象的 `+0x1c` 函数指针。
+
+`research/rea/v2.010/r59_pointer_ownership_summary.json` 保存了此前 52 次只读样本中的模块/槽位对应：全局 `DAT_007dfbf0` 的 `+0x1c` 指针指向当时已加载的 `HRI-UART.dll` RVA `0x1d00`；相应 `research/rea/v2.010/r59_export_slot_mapping.json` 将该 RVA 对应到 `SETDIGITRCVDATA`（PE ordinal 8，同时有 C++ 装饰导出 ordinal 41）。该运行时记录把调用点的全局槽与上一段静态导出表关联起来，但没有观察这次 `FUN_004e5580` 调用是否实际发生，也没有证明 `local_310` 最终更新 radio LCD。R51/R59 记录本身没有解释 DLL 内部消费者和后续 LCD 输出；R73 检查点见下节。
+
+### R73：0x1401 消息回调检查点
+
+目标为 `research/inputs/v2.010/payload/HRI_UART.dll`，SHA-256 `56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed`，Ghidra 12.1.4 x86。完整证据位于 `research/rea/v2.010/r73_hri_1401_callback_probe_20261025.evidence.json`。本轮没有获得 `0x10022d10` 的成功函数 dossier：`resolve_containing_procedure` 返回 `found=false, reason=not_in_procedure`（`ev_39e41849e9ddd672aca880ea5785a35ef9cfbba28c6f157b006158c80d396691`）。
+
+对 `0x10022d10` 的 `read_bytes` 返回33字节，证据为 `ev_0a73e42d6f009da0e96010fa9e107f55cd1552688dd9d94bc386c32ff5e3c1c5`。按这些 x86 字节手工解读（不是成功反编译）：回调先从 `[ECX+0x2b8]` 取对象，再检查该对象 `+0x2bc`；值为零时跳到 `ret 8`，否则压入 `0, 0, 1`，把 `ECX` 保存到 `ESI`，调用 `0x100152c0`，恢复 `ESI` 后返回。R61 的 MFC 消息表证据 `ev_1672f61c1df93e93bcfc53aa3e7337450c4415588e618a329d04e0b139c0d006` 将 `0x1401` 表项连到此地址；R61 对 `FUN_100152c0` 的既有 dossier `ev_959e3cadf730233725fd198f64e03665147c07287cf542369f3ce6789afc74e8` 显示它按当前状态和 event 值进入状态转换表。R61 已区分 `0x1401/event 1` 与 `state 6/event 17`，没有证据说明该回调直接弹出 `SetDigiTrcvData` 队列项。
+
+因此真实缺口仍是：event 1 在实际状态下选择哪个 transition，transition 是否接到 `SetDigiTrcvData` 入队项，以及该队列项如何进入字段 serializer 或 UART 写入。此检查点没有把 `0x1401` 与队列消费或无线电 LCD 连接起来；本轮未继续分析其他函数，也未运行软件或设备。
 
 ## FTX-1 HRI / DIRECT 屏幕问题
 
