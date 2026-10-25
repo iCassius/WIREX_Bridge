@@ -77,6 +77,33 @@
 
 因此真实缺口仍是：event 1 在实际状态下选择哪个 transition，transition 是否接到 `SetDigiTrcvData` 入队项，以及该队列项如何进入字段 serializer 或 UART 写入。此检查点没有把 `0x1401` 与队列消费或无线电 LCD 连接起来；本轮未继续分析其他函数，也未运行软件或设备。
 
+### R74：event 1 的状态候选与两条代表路径
+
+R61 的 `FUN_100152c0` dossier `ev_959e3cadf730233725fd198f64e03665147c07287cf542369f3ce6789afc74e8` 给出行地址 `this + 0x35b0 + (state * 0x23 + event) * 0x3c`，回调指针在行内 `+4`。`FUN_10015740` 初始化证据 `ev_df7a82b059437d563de83ff1834d59c4cdc6846028d1e60851a9940ed8a4d0c2` 先清零状态表，再为 30 个 event 1 行写入回调指针；由行公式可得这些静态候选：
+
+```text
+state 0→FUN_10017ad0; 3→FUN_10017d70; 5→FUN_1001f700; 7→FUN_1001ed00; 8→FUN_1001e8f0;
+9→FUN_1001e9f0; 11→FUN_1001eb90; 12→FUN_1001ec20; 13→FUN_1001ed90; 14→FUN_10018310;
+15→FUN_1001ee30; 16→FUN_10018cb0; 17→FUN_10018d90; 18→FUN_1001a8b0; 19→FUN_10018510;
+21→FUN_10018390; 22→FUN_10018470; 23→FUN_1001cf50; 24→FUN_100187e0; 25→FUN_1001d030;
+26→FUN_10018870; 27→FUN_100188f0; 28→FUN_1001d160; 30→FUN_10018ea0; 31→FUN_1001d160;
+32→FUN_1001d220; 33→FUN_10018470; 34→FUN_1001f600; 35→FUN_1001a7d0; 36→FUN_1001a8b0
+```
+
+对这两条代表回调的新增 REA dossier 分别为 `FUN_10017ad0`（`ev_0c2eaeb59881bd4953a095ad3854fe385f00a3466669ab24e81005e67860f4bf`）和 `FUN_10017d70`（`ev_118ec39ef5ea3851c2c30f38983a20ecce159bcc706890140ceec4521e6b5687`）。state 0 回调构造 0x14 字节项，调用记录工厂传入 `0x56, 9, 0x56`，随后送入 `FUN_1000a140`；state 3 回调在计数超过 3 时记录 `rSt04_HelthCheckTime Helth check over.` 并返回，否则构造带 `0x42, 10, 0x42` 的项送入同一队列。R61 已分析 `FUN_1000a140` 为 HRI 内部 outgoing ring，之后通过 `SendMessageA(..., 0x618, record, len)` 交给主程序窗口。两条样本都没有弹出 `SetDigiTrcvData` 的入队项，也没有调用 `FrameTrxDataToTrcvFrame`；这些输出项不能当作 HRI UART 字段帧。
+
+事件触发依赖运行时状态：`0x1401` 回调只有在 `this+0x2b8` 子对象的 `+0x2bc` 非零时，才以 event 1 调用状态机；状态机再按当前 `this+0x1d8e8` 选择上表中对应回调，并在状态行回调槽为空或对话框控件 `0x404` 返回非零时提前退出。状态 6 的 event 1 槽没有回调赋值；R61 的 state 6/event 17 队列处理函数不能代替这条 event 1 路径。当前没有运行态证据确定 `SetDigiTrcvData` 投递时的 state，因此以上 30 个回调是条件候选，不是已证实调用。
+
+完整新增/复用证据保存在 `research/rea/v2.010/r74_hri_event1_state_candidates_20261025.evidence.json`。HRI-UART.dll 固定 SHA-256 仍为 `56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed`。下一缺口是确认实际 event 1 状态以及对应转换能否读取 `FUN_1000bc80` 维护的 SetDigi 队列；若要把这些状态候选连到 radio LCD，还需证明队列项进入哪个字段 serializer/串口输出。`FrameTrxDataToTrcvFrame` 的输入来源和 LCD 映射仍未建立。
+
+### R75：SetDigi 与 state 6/event 17 队列结构比较
+
+在同一 HRI-UART.dll（SHA-256 `56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed`，Ghidra 12.1.4 x86）上复用了 R61 snapshot。`FUN_10001d20`（`SetDigiTrcvData` 的 wrapper）通过 `DAT_10191d38[unaff_ESI]` 取得实例指针，把实例 `+0x1d8f8` 传给 `FUN_1000bc80`；R60 dossier 显示该 helper 以队列头/互斥量操作节点，并沿节点 `+0x1124` 链接遍历。state 6/event 17 的 `FUN_10017ee0(param_1)` 也从实例 `+0x1d8f8` 取头，调用 `FUN_1000bee0` 检查项，并在互斥区通过节点 `+0x1124` 更新头指针。两个路径因此使用相同的 HRI 实例成员偏移和节点链接布局，支持它们属于同一种队列结构。
+
+这还不能证明 `DAT_10191d38[unaff_ESI]` 与状态回调的 `param_1` 指向同一个实例；本轮没有追出两者的指针别名，也没有证明 `SetDigiTrcvData` 投递的 `0x1401/event 1` 会进入 state 6/event 17 的消费路径。R62 的 RigDataIf `ToHriAmbeAdd/Get` 路径使用其自身模块的全局队列头 `0x1016830c`；当前证据没有把该头与 HRI-UART `+0x1d8f8` 成员连成别名。因此现有静态结果只能确认队列布局候选，不能确认某个 SetDigi 字段项最终到达 serializer、UART 或 radio LCD。
+
+本轮完整 REA Evidence bundle：`research/rea/v2.010/r75_hri_setdigi_vs_state6_queue_alias_20261025.evidence.json`。新增查询分别为 `FUN_10001d20` dossier `ev_c24e07e71cdd4390be78a453bdee3895c78c22815242251355fc365a7cc1e04b`、`FUN_10017ee0` dossier `ev_af65c0a3567aabdec6590474012012e05b4aea14672af4f6961dc12c936e19c9`、`DAT_10191d38` xrefs `ev_ae95a5effe29aad622470655ea9c7aff7fabe5e77dbc22eba125d049fa0ff655`。R61 已证 `FUN_10017ee0` 注册在 state 6/event 17，但没有追出谁产生 event 17，也没有确认是否由定时器触发；R61 明确将 worker 完整 `GetMessage` 循环列为未证。因此后续静态检查应在合并两条事件路径前，先确认 event 17 的消息/定时器来源，并确认状态回调 `param_1` 如何与 `DAT_10191d38` 实例槽关联；如果没有可验证的指针赋值/调用链，就保留此别名缺口，不把两种事件路径合并。`0x1401/event 1` 目前不是 event 17 的已证触发源。
+
 ## FTX-1 HRI / DIRECT 屏幕问题
 
 FTX-1 WIRES-X 手册的 Node Mode 段落（第 29 页）列出：AP RADIO 是独立接入点；AP PC 是连接电脑并通过 C4FM 空中通信；DIRECT 是通过所连电脑和 FTX-1 通信，手册原句写明 DIRECT 不经空中发送/接收；默认值是 AP RADIO。该原句没有解释独立活动 VFO 是否还能接收普通 FM。用户已确认当前 FTX-1 Node Mode 为 DIRECT。
