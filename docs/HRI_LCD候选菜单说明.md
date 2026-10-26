@@ -6,7 +6,7 @@
 
 ## 启动和选择
 
-1. 检查 FTX-1 已设为 `DIRECT`、HRI 已连接、官方 WIRES-X 程序已关闭，并让手咪 PTT 保持松开。
+1. 电台进入 WIRES-X HRI 界面，Node Mode 设为 `DIRECT`；关闭官方 WIRES-X 和其他 Bridge，松开手咪 PTT。
 2. 双击 `start-hri-lcd-identity-candidate.cmd`。默认端口是 `COM5`；连接端口不同可从命令行传 `-Port COMn`。
 3. 菜单从包外 `private/user-config/connection-profile.json` 读取呼号字段。找不到有效呼号时，菜单会要求本次输入；它不会改写或复制该配置文件。若本机配置放在其他位置，可向 CMD 传入 `-ProfilePath ABS`。
 4. 每轮手动选一个字段：`D` 目的、`S` 来源、`L` 本机、`Q` 退出。确认前置条件后输入 `Y`，程序才为这个字段启动一次 bounded 本地 WAV 流程。native 返回后菜单等待下一次人工选择，不自动发送余下字段。
