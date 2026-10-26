@@ -320,6 +320,19 @@ struct RxSource {
                  "matching RX call did not request HRI start")) {
         return false;
     }
+    const auto started_snapshot = pipeline.snapshot();
+    if (!require(started_snapshot.rx_state == wirex::bm_voice::RxState::waiting_for_playback &&
+                 !started_snapshot.receive_network_ended &&
+                 started_snapshot.receive_call.source_id == pending.call.source_id &&
+                 started_snapshot.receive_call.destination_id == pending.call.destination_id &&
+                 started_snapshot.receive_call.slot == pending.call.slot &&
+                 started_snapshot.receive_call.kind == pending.call.kind &&
+                 started_snapshot.receive_link_control_validated &&
+                 started_snapshot.receive_color_code_known &&
+                 started_snapshot.receive_call.color_code == pending.call.color_code,
+                 "accepted RX snapshot did not expose its current call before EOT")) {
+        return false;
+    }
 
     for (std::size_t index = 0U; index < 50U; ++index) {
         wirex::dmr_call::TxPacket voice{};
@@ -445,6 +458,13 @@ struct RxSource {
                  "RX did not report the DMRD EOT event")) {
         return false;
     }
+    const auto network_ended_snapshot = pipeline.snapshot();
+    if (!require(network_ended_snapshot.rx_state == wirex::bm_voice::RxState::draining &&
+                 network_ended_snapshot.receive_network_ended &&
+                 network_ended_snapshot.receive_call.source_id == source.call.source_id,
+                 "EOT did not separate ended network speech from local playback draining")) {
+        return false;
+    }
     if (!require(pipeline.tick(start + 240ms) == Error::none &&
                  pipeline.snapshot().rx_state == wirex::bm_voice::RxState::draining &&
                  !drain_events(pipeline, EventKind::playback_drained),
@@ -457,6 +477,7 @@ struct RxSource {
                  pipeline.take_playback_pcm(frame) && frame.sample_count == 126U &&
                  pipeline.acknowledge_playback(frame.generation, 1U, start + 242ms) == Error::none &&
                  pipeline.snapshot().rx_state == wirex::bm_voice::RxState::idle &&
+                 !pipeline.snapshot().receive_network_ended &&
                  drain_events(pipeline, EventKind::playback_drained),
                  "RX did not flush its filter tail and report drained after hardware completion")) {
         return false;

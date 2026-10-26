@@ -4573,6 +4573,20 @@ const char* ptt_level_name(wirex::hri_session::PttLevel level) noexcept
     return "unknown";
 }
 
+const char* receive_media_state_name(wirex::bm_voice::RxState state) noexcept
+{
+    using wirex::bm_voice::RxState;
+    switch (state) {
+    case RxState::idle: return "idle";
+    case RxState::filtered: return "filtered";
+    case RxState::waiting_for_playback: return "waiting_for_playback";
+    case RxState::buffering: return "buffering";
+    case RxState::playing: return "playing";
+    case RxState::draining: return "draining";
+    }
+    return "idle";
+}
+
 std::string make_bridge_run_id()
 {
     return std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64());
@@ -4617,10 +4631,25 @@ bool append_bridge_status(std::ofstream& file, std::string_view event, std::uint
                           const wirex::bm::Snapshot& bm_snapshot,
                           const wirex::hri_session::Snapshot& hri_snapshot,
                           const wirex::hri_ptt_gate::Snapshot& ptt_gate_snapshot,
-                          BmBridgeCounters& counters)
+                          BmBridgeCounters& counters,
+                          const wirex::bm_voice::Snapshot& receive_snapshot)
 {
     if (!file || counters.run_id.empty() || counters.status_sequence == std::numeric_limits<std::uint64_t>::max()) return false;
     ++counters.status_sequence;
+    using wirex::bm_voice::RxState;
+    const bool current_call_valid = !receive_snapshot.receive_network_ended &&
+        (receive_snapshot.rx_state == RxState::waiting_for_playback ||
+         receive_snapshot.rx_state == RxState::buffering ||
+         receive_snapshot.rx_state == RxState::playing);
+    const auto& current_call = receive_snapshot.receive_call;
+    const auto current_call_phase = current_call_valid
+        ? receive_media_state_name(receive_snapshot.rx_state) : "none";
+    const auto current_call_kind = !current_call_valid ? "none" :
+        (current_call.kind == wirex::dmr_call::CallKind::private_call ? "P" : "G");
+    const auto current_call_slot = current_call_valid
+        ? static_cast<unsigned int>(current_call.slot) : 0U;
+    const auto current_call_color_code = current_call_valid && receive_snapshot.receive_color_code_known
+        ? static_cast<unsigned int>(current_call.color_code) : 0U;
     file << "{\"run_id\":\"" << counters.run_id << "\",\"seq\":" << counters.status_sequence
          << ",\"timestamp_utc_ms\":" << current_utc_epoch_ms()
          << ",\"event\":\"" << event << "\",\"elapsed_ms\":" << elapsed_ms
@@ -4667,6 +4696,19 @@ bool append_bridge_status(std::ofstream& file, std::string_view event, std::uint
          << ",\"last_rx_destination_id\":" << counters.last_rx_destination_id
          << ",\"last_rx_slot\":" << static_cast<unsigned int>(counters.last_rx_slot)
          << ",\"last_rx_call_kind\":\"" << counters.last_rx_call_kind << "\""
+         << ",\"current_call_valid\":" << (current_call_valid ? "true" : "false")
+         << ",\"current_call_phase\":\"" << current_call_phase << "\""
+         << ",\"current_call_source_id\":" << (current_call_valid ? current_call.source_id : 0U)
+         << ",\"current_call_destination_id\":" << (current_call_valid ? current_call.destination_id : 0U)
+         << ",\"current_call_slot\":" << current_call_slot
+         << ",\"current_call_kind\":\"" << current_call_kind << "\""
+         << ",\"current_call_color_code\":" << current_call_color_code
+         << ",\"current_call_link_control_validated\":"
+         << (current_call_valid && receive_snapshot.receive_link_control_validated ? "true" : "false")
+         << ",\"current_call_color_code_known\":"
+         << (current_call_valid && receive_snapshot.receive_color_code_known ? "true" : "false")
+         << ",\"current_call_generation\":" << (current_call_valid ? receive_snapshot.receive_generation : 0U)
+         << ",\"receive_media_state\":\"" << receive_media_state_name(receive_snapshot.rx_state) << "\""
          << ",\"rx_filtered_datagrams\":" << counters.rx_filtered_datagrams
          << ",\"rx_filtered_destination_id\":" << counters.rx_filtered_destination_id
          << ",\"rx_filtered_slot\":" << counters.rx_filtered_slot
@@ -5084,8 +5126,10 @@ int bm_bridge_main(int argc, wchar_t* argv[])
     counters.tx_input_gain_milli = mic_transmit_gain_milli;
     const wirex::hri_session::Snapshot hri_preflight_snapshot{};
     const wirex::hri_ptt_gate::Snapshot ptt_preflight_snapshot{};
+    const wirex::bm_voice::Snapshot receive_preflight_snapshot{};
     if (!append_bridge_status(status_file, "preflight_passed", 0U, wirex::bm::Snapshot{},
-                              hri_preflight_snapshot, ptt_preflight_snapshot, counters)) {
+                              hri_preflight_snapshot, ptt_preflight_snapshot, counters,
+                              receive_preflight_snapshot)) {
         wipe_password(profile.password);
         (void)bm_stderr(L"无法写入或刷新启动前状态报告；已清除隐藏密码，尚未打开设备。\n");
         return 2;
@@ -5276,8 +5320,9 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         failure_text.append(failure_reason.begin(), failure_reason.end());
         failure_text.append(L".\n");
         (void)bm_stderr(failure_text);
+        const auto receive_snapshot = pipeline->snapshot();
         if (!append_bridge_status(status_file, failure_reason, 0U, bm_session.snapshot(),
-                                  hri_state, ptt_gate.snapshot(), counters)) {
+                                  hri_state, ptt_gate.snapshot(), counters, receive_snapshot)) {
             (void)bm_stderr(L"无法写入或刷新启动失败状态报告。\n");
         }
         return 2;
@@ -5291,8 +5336,9 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         counters.wavein_open = radio_input_open;
         counters.waveout_open = radio_output_open;
         const auto snapshot = bm_session.snapshot();
+        const auto receive_snapshot = pipeline->snapshot();
         if (!append_bridge_status(status_file, event, elapsed_ms(), snapshot, hri_state,
-                                  ptt_gate.snapshot(), counters)) {
+                                  ptt_gate.snapshot(), counters, receive_snapshot)) {
             status_report_failed = true;
             set_failure("status_report_write_failed");
             (void)bm_stderr(L"运行状态报告写入或刷新失败；将执行有界收尾并以退出码 2 结束。\n");
@@ -5784,11 +5830,14 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 } else if (pending_receive_start) {
                     pending_receive_ended = true;
                 }
+                status("bm_receive_ended");
                 break;
             case PipelineEventKind::playback_drained:
                 pending_playback_drain = true;
+                status("bm_receive_playback_drained");
                 break;
             case PipelineEventKind::receive_cancelled:
+                status("bm_receive_cancelled");
                 break;
             case PipelineEventKind::playback_start_timeout:
                 pending_receive_start = false;
@@ -5890,6 +5939,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         (void)stop_tx_input();
         pipeline->cancel_tx();
         pipeline->cancel_rx();
+        status("bm_receive_cancelled");
         pending_receive_start = false;
         pending_receive_ended = false;
         pending_playback_drain = false;

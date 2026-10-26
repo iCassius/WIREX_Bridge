@@ -137,6 +137,8 @@ struct Snapshot {
     bool receive_generation_exhausted{};
     bool receive_link_control_validated{};
     bool receive_color_code_known{};
+    // EOT 后本地播放队列可能仍在排空；UI 的当前网络话者应在此为 true 时清除。
+    bool receive_network_ended{};
 };
 
 // 纯软件双向语音管线；外层负责 HRI、BM session 和真实设备的生命周期。

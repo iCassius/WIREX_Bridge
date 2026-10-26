@@ -244,6 +244,8 @@ function Set-OfflineDisplay {
     Set-MainText -Name 'BmDetail' -Text 'BM 连接状态等待本次运行报告'
     Set-MainText -Name 'RecentCaller' -Text '—'
     Set-MainText -Name 'RecentCallDetail' -Text '当前运行还没有来话记录'
+    Set-MainText -Name 'CurrentCallValue' -Text '状态等待本次运行报告'
+    Set-MainText -Name 'CurrentCallDetail' -Text '当前没有可显示的活动来话。'
     Set-MainText -Name 'TrafficValue' -Text '等待核心状态'
     Set-MainText -Name 'TrafficDetail' -Text '目标选择用于下一次连接。'
     Set-MainText -Name 'RadioStateValue' -Text '电台状态：未知'
@@ -303,8 +305,35 @@ function Test-UiStatusRecord {
         $property = $Record.PSObject.Properties[$name]
         if ($null -eq $property -or $property.Value -isnot [bool]) { return $false }
     }
+    $currentCallNames = @(
+        'current_call_valid', 'current_call_phase', 'current_call_source_id', 'current_call_destination_id',
+        'current_call_slot', 'current_call_kind', 'current_call_color_code',
+        'current_call_link_control_validated', 'current_call_color_code_known', 'current_call_generation',
+        'receive_media_state'
+    )
+    $currentCallPresent = 0
+    foreach ($name in $currentCallNames) {
+        if ($null -ne $Record.PSObject.Properties[$name]) { $currentCallPresent++ }
+    }
+    if ($currentCallPresent -ne 0 -and $currentCallPresent -ne $currentCallNames.Count) { return $false }
+    $hasCurrentCallStatus = $currentCallPresent -eq $currentCallNames.Count
+    if ($hasCurrentCallStatus) {
+        foreach ($name in @('current_call_valid', 'current_call_link_control_validated', 'current_call_color_code_known')) {
+            $property = $Record.PSObject.Properties[$name]
+            if ($null -eq $property -or $property.Value -isnot [bool]) { return $false }
+        }
+        foreach ($name in @('current_call_phase', 'current_call_kind', 'receive_media_state')) {
+            $property = $Record.PSObject.Properties[$name]
+            if ($null -eq $property -or $property.Value -isnot [string]) { return $false }
+        }
+    }
     $numberTypes = @([byte], [sbyte], [int16], [uint16], [int32], [uint32], [int64], [uint64])
-    foreach ($name in @('seq', 'timestamp_utc_ms', 'elapsed_ms', 'last_rx_source_id', 'last_rx_destination_id', 'last_rx_slot')) {
+    $numberNames = @('seq', 'timestamp_utc_ms', 'elapsed_ms', 'last_rx_source_id', 'last_rx_destination_id', 'last_rx_slot')
+    if ($hasCurrentCallStatus) {
+        $numberNames += @('current_call_source_id', 'current_call_destination_id', 'current_call_slot',
+            'current_call_color_code', 'current_call_generation')
+    }
+    foreach ($name in $numberNames) {
         $property = $Record.PSObject.Properties[$name]
         if ($null -eq $property) { return $false }
         $isNumber = $false
@@ -320,6 +349,9 @@ function Test-UiStatusRecord {
         if ($name -eq 'last_rx_source_id' -and $parsed -gt 16777215) { return $false }
         if ($name -eq 'last_rx_destination_id' -and $parsed -gt 16777215) { return $false }
         if ($name -eq 'last_rx_slot' -and $parsed -notin @(1, 2)) { return $false }
+        if ($name -in @('current_call_source_id', 'current_call_destination_id') -and $parsed -gt 16777215) { return $false }
+        if ($name -eq 'current_call_slot' -and $parsed -gt 2) { return $false }
+        if ($name -eq 'current_call_color_code' -and $parsed -gt 15) { return $false }
     }
     if ($Record.bm_state -cnotin @('idle', 'waiting_login_ack', 'waiting_auth_ack', 'waiting_config_ack', 'waiting_options_ack', 'ready', 'backoff', 'stopped')) { return $false }
     if ($Record.bm_failure -cnotin @('none', 'invalid_profile', 'login_timeout', 'auth_timeout', 'config_timeout', 'options_timeout',
@@ -329,6 +361,34 @@ function Test-UiStatusRecord {
     if ($Record.hri_phase -cnotin @('not_started', 'awaiting_version_write', 'awaiting_version', 'waiting_for_y_due', 'exchanging', 'stopped', 'unknown')) { return $false }
     if ($Record.wavein_state -cnotin @('open', 'closed') -or $Record.waveout_state -cnotin @('open', 'closed')) { return $false }
     if ($Record.last_rx_call_kind -cnotin @('G', 'P')) { return $false }
+    if ($hasCurrentCallStatus) {
+        if ($Record.current_call_kind -cnotin @('none', 'G', 'P')) { return $false }
+        if ($Record.current_call_phase -cnotin @('none', 'waiting_for_playback', 'buffering', 'playing')) { return $false }
+        if ($Record.receive_media_state -cnotin @('idle', 'filtered', 'waiting_for_playback', 'buffering', 'playing', 'draining')) { return $false }
+        $activeMedia = $Record.receive_media_state -cin @('waiting_for_playback', 'buffering', 'playing')
+        if ([bool]$Record.current_call_valid -ne $activeMedia) { return $false }
+        if ([bool]$Record.current_call_valid) {
+            if ($Record.current_call_phase -cne $Record.receive_media_state -or
+                [uint64]$Record.current_call_source_id -eq 0 -or
+                [uint64]$Record.current_call_destination_id -eq 0 -or
+                [uint64]$Record.current_call_slot -notin @(1, 2) -or
+                $Record.current_call_kind -cnotin @('G', 'P') -or
+                [uint64]$Record.current_call_generation -eq 0 -or
+                (-not [bool]$Record.current_call_color_code_known -and [uint64]$Record.current_call_color_code -ne 0)) {
+                return $false
+            }
+        } elseif ($Record.current_call_phase -cne 'none' -or
+            [uint64]$Record.current_call_source_id -ne 0 -or
+            [uint64]$Record.current_call_destination_id -ne 0 -or
+            [uint64]$Record.current_call_slot -ne 0 -or
+            $Record.current_call_kind -cne 'none' -or
+            [uint64]$Record.current_call_color_code -ne 0 -or
+            [bool]$Record.current_call_link_control_validated -or
+            [bool]$Record.current_call_color_code_known -or
+            [uint64]$Record.current_call_generation -ne 0) {
+            return $false
+        }
+    }
     if ([string]$Record.event -cnotmatch '^[a-z0-9_]{1,96}$') { return $false }
     return $true
 }
@@ -1351,6 +1411,34 @@ function Apply-StatusRecord {
         $(if ($waveOut -ceq 'open') { '已打开' } else { '未打开' }))
     if ([string]$Record.radio_state -ceq 'unknown') { Set-MainText -Name 'RadioStateValue' -Text '电台状态：未知（核心未读取）' }
 
+    $hasCurrentCallFields = $null -ne $Record.PSObject.Properties['current_call_valid']
+    if (-not $hasCurrentCallFields) {
+        Set-MainText -Name 'CurrentCallValue' -Text '当前核心未提供活动来话状态'
+        Set-MainText -Name 'CurrentCallDetail' -Text '本次运行不含当前 BM 来话字段。'
+    } elseif ([bool]$Record.current_call_valid) {
+        $caller = 'DMR ID ' + [string]$Record.current_call_source_id
+        $kind = if ([string]$Record.current_call_kind -ceq 'P') { '私呼' } else { '组呼' }
+        $colorCode = if ([bool]$Record.current_call_color_code_known) {
+            'CC ' + [string]$Record.current_call_color_code
+        } else { 'CC 未知' }
+        $linkControl = if ([bool]$Record.current_call_link_control_validated) { 'LC 已验证' } else { 'LC 未验证' }
+        $phase = switch -CaseSensitive ([string]$Record.current_call_phase) {
+            'waiting_for_playback' { '等待回放许可' }
+            'buffering' { '缓冲中' }
+            'playing' { '接收中' }
+            default { '状态未知' }
+        }
+        Set-MainText -Name 'CurrentCallValue' -Text $caller
+        Set-MainText -Name 'CurrentCallDetail' -Text ('{0} · 目标 {1} · TS{2} · {3} · {4} · {5}' -f `
+            $kind, $Record.current_call_destination_id, $Record.current_call_slot, $colorCode, $linkControl, $phase)
+    } elseif ([string]$Record.receive_media_state -ceq 'draining') {
+        Set-MainText -Name 'CurrentCallValue' -Text '当前没有活动 BM 话者'
+        Set-MainText -Name 'CurrentCallDetail' -Text 'BM 来话已结束，本机回放尾音正在排空。'
+    } else {
+        Set-MainText -Name 'CurrentCallValue' -Text '当前没有已接受的 BM 来话'
+        Set-MainText -Name 'CurrentCallDetail' -Text '等待通过目标、时隙和呼叫类型过滤的来话。'
+    }
+
     if ([bool]$Record.last_rx_header_valid) {
         $caller = 'DMR ID ' + [string]$Record.last_rx_source_id
         Set-MainText -Name 'RecentCaller' -Text $caller
@@ -1413,6 +1501,8 @@ function Set-StaleDisplay {
     Set-MainText -Name 'BmDetail' -Text '等待新的 BM 状态报告'
     Set-MainText -Name 'TrafficDetail' -Text '最近状态报告已过期；正在等待新状态。'
     Set-MainText -Name 'RadioStateValue' -Text '电台状态：未知'
+    Set-MainText -Name 'CurrentCallValue' -Text '活动来话状态已过期'
+    Set-MainText -Name 'CurrentCallDetail' -Text '已清除上次状态中的当前 BM 话者；等待新状态报告。'
     Set-MainText -Name 'FreshnessValue' -Text '状态报告过期'
 }
 
@@ -1586,6 +1676,8 @@ function On-UiTimerTick {
             Set-MainText -Name 'BmValue' -Text '未知'
             Set-MainText -Name 'BmDetail' -Text '核心已退出'
             Set-MainText -Name 'RadioStateValue' -Text '电台状态：未知'
+            Set-MainText -Name 'CurrentCallValue' -Text '核心已退出'
+            Set-MainText -Name 'CurrentCallDetail' -Text '活动 BM 来话状态已清除。'
             Set-MainText -Name 'RunValue' -Text '已停止'
             Set-MainText -Name 'FreshnessValue' -Text '本次运行已结束'
             if (-not $script:stopTask) {

@@ -430,6 +430,7 @@ Snapshot BmVoicePipeline::snapshot() const noexcept
     result.receive_generation_exhausted = rx_generation_exhausted_;
     result.receive_link_control_validated = rx_have_link_control_;
     result.receive_color_code_known = rx_color_code_known_;
+    result.receive_network_ended = rx_network_ended_;
     return result;
 }
 
