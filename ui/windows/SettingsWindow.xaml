@@ -48,6 +48,11 @@
         <Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="#355A42"/></Trigger>
       </Style.Triggers>
     </Style>
+    <Style TargetType="Slider">
+      <Setter Property="Foreground" Value="#77B18D"/><Setter Property="Margin" Value="0,7,10,9"/>
+      <Setter Property="IsSnapToTickEnabled" Value="False"/><Setter Property="TickFrequency" Value="0.01"/>
+      <Setter Property="SmallChange" Value="0.05"/><Setter Property="LargeChange" Value="0.5"/>
+    </Style>
     <Style TargetType="Button">
       <Setter Property="Background" Value="#30383E"/><Setter Property="Foreground" Value="#EDF1F2"/>
       <Setter Property="BorderBrush" Value="#536169"/><Setter Property="Padding" Value="12,7"/>
@@ -108,20 +113,28 @@
         <Border Background="#20252A" BorderBrush="#3A4248" BorderThickness="1" Padding="14" Margin="0,0,0,10">
           <StackPanel>
             <TextBlock Text="设备选择" FontSize="14" FontWeight="Bold" Margin="0,0,0,5"/>
-            <TextBlock Text="串口与音频设备按保存的标识选择；填 auto 时，只在设备唯一确认后自动选择。" Foreground="#9DA8AD" TextWrapping="Wrap" Margin="0,0,0,8"/>
+            <TextBlock Text="列表显示设备名称、COM 端口和稳定音频端点标识；已保存的固定设备缺失时会保留缺失提示。" Foreground="#9DA8AD" TextWrapping="Wrap" Margin="0,0,0,5"/>
+            <TextBlock x:Name="DeviceDiscoveryText" Text="设备列表尚未读取。" Foreground="#9DA8AD" TextWrapping="Wrap" Margin="0,0,0,5"/>
+            <Button x:Name="RefreshDevicesButton" Content="刷新设备" HorizontalAlignment="Left" MinWidth="120" Margin="0,0,0,7"/>
             <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-              <StackPanel><TextBlock Text="HRI 串口" Foreground="#AAB5BA"/><TextBox x:Name="SerialBox"/></StackPanel>
-              <StackPanel Grid.Column="1"><TextBlock Text="WaveIn endpoint ID" Foreground="#AAB5BA"/><TextBox x:Name="WaveInEndpointBox"/></StackPanel>
+              <StackPanel><TextBlock Text="HRI 串口" Foreground="#AAB5BA"/><ComboBox x:Name="SerialBox" DisplayMemberPath="Label" SelectedValuePath="Value"/></StackPanel>
+              <StackPanel Grid.Column="1"><TextBlock Text="电台音频输入" Foreground="#AAB5BA"/><ComboBox x:Name="WaveInEndpointBox" DisplayMemberPath="Label" SelectedValuePath="Value"/></StackPanel>
             </Grid>
-            <StackPanel><TextBlock Text="WaveOut endpoint ID" Foreground="#AAB5BA"/><TextBox x:Name="WaveOutEndpointBox"/></StackPanel>
+            <StackPanel><TextBlock Text="电台音频输出" Foreground="#AAB5BA"/><ComboBox x:Name="WaveOutEndpointBox" DisplayMemberPath="Label" SelectedValuePath="Value"/></StackPanel>
           </StackPanel>
         </Border>
         <Border Background="#20252A" BorderBrush="#3A4248" BorderThickness="1" Padding="14" Margin="0,0,0,10">
           <StackPanel>
             <TextBlock Text="音量" FontSize="14" FontWeight="Bold" Margin="0,0,0,8"/>
             <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-              <StackPanel><TextBlock Text="BM 到电台播放增益（0.25–16x）" Foreground="#AAB5BA"/><TextBox x:Name="PlaybackGainBox"/></StackPanel>
-              <StackPanel Grid.Column="1"><TextBlock Text="手咪到 BM 发送增益（0.25–16x）" Foreground="#AAB5BA"/><TextBox x:Name="TransmitGainBox"/></StackPanel>
+              <StackPanel>
+                <DockPanel><TextBlock Text="BM 到电台播放增益" Foreground="#AAB5BA"/><TextBlock x:Name="PlaybackGainValueText" DockPanel.Dock="Right" Foreground="#8CC9A1" FontWeight="Bold" Margin="0,0,10,0"/></DockPanel>
+                <Slider x:Name="PlaybackGainSlider" Minimum="0.25" Maximum="16" Value="1"/>
+              </StackPanel>
+              <StackPanel Grid.Column="1">
+                <DockPanel><TextBlock Text="手咪到 BM 发送增益" Foreground="#AAB5BA"/><TextBlock x:Name="TransmitGainValueText" DockPanel.Dock="Right" Foreground="#8CC9A1" FontWeight="Bold" Margin="0,0,10,0"/></DockPanel>
+                <Slider x:Name="TransmitGainSlider" Minimum="0.25" Maximum="16" Value="16"/>
+              </StackPanel>
             </Grid>
             <TextBlock Text="保存后，下次连接时使用新设置。默认值：播放 1x，发送 16x。" Foreground="#9DA8AD"/>
           </StackPanel>

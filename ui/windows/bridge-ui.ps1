@@ -72,6 +72,21 @@ $script:prepareAsync = $null
 $script:prepareStopAsync = $null
 $script:prepareStopStartedUtc = [DateTime]::MinValue
 $script:abandonPreparationAtShutdown = $false
+$script:deviceDiscoveryPowerShell = $null
+$script:deviceDiscoveryAsync = $null
+$script:deviceDiscoveryStopAsync = $null
+$script:deviceDiscoveryStartedUtc = [DateTime]::MinValue
+$script:deviceDiscoveryState = 'not_started'
+$script:deviceDiscoveryError = ''
+$script:deviceCatalog = $null
+$script:deviceAudioQuery = $null
+$script:deviceDiscoveryGeneration = [uint64]0
+$script:deviceDiscoveryActiveGeneration = [uint64]0
+$script:deviceDiscoveryOwnerWindow = $null
+$script:deviceDiscoveryRestartPending = $false
+$script:deviceDiscoveryStopReason = ''
+$script:deviceDiscoveryStopStartedUtc = [DateTime]::MinValue
+$script:closingAfterDeviceDiscovery = $false
 $script:statusStream = $null
 $script:statusPath = ''
 $script:preparedRunDirectory = ''
@@ -321,9 +336,552 @@ function Test-UiRunRecordAcceptance {
     return (Test-UiStatusFreshness -TimestampUtcMs ([uint64]$Record.timestamp_utc_ms) -NowUtcMs $NowUtcMs)
 }
 
+function Test-UiPreparationRecord {
+    param(
+        [Parameter(Mandatory=$true)][object]$Record,
+        [Parameter(Mandatory=$true)][string]$RunDirectory,
+        [Parameter(Mandatory=$true)][string]$RunRoot,
+        [Parameter(Mandatory=$true)][string]$ExpectedExecutable
+    )
+    if ($Record -isnot [System.Management.Automation.PSCustomObject] -or
+        $Record.schema_version -is [bool] -or
+        -not ($Record.schema_version -is [int] -or $Record.schema_version -is [long]) -or
+        $Record.schema_version -ne 1 -or
+        $Record.executable -isnot [string] -or
+        $Record.status_path -isnot [string] -or
+        $Record.arguments -isnot [System.Array]) {
+        throw '设备预检返回的启动参数结构无效。'
+    }
+
+    $runPath = [System.IO.Path]::GetFullPath($RunDirectory)
+    $runParent = [System.IO.Path]::GetFullPath($RunRoot)
+    $runGuid = [guid]::Empty
+    if (-not [guid]::TryParseExact([System.IO.Path]::GetFileName($runPath), 'N', [ref]$runGuid) -or
+        -not [string]::Equals([System.IO.Path]::GetDirectoryName($runPath).TrimEnd('\'),
+            $runParent.TrimEnd('\'), [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw '本次启动目录不属于 UI 创建的 GUID 运行目录。'
+    }
+
+    $expectedExe = [System.IO.Path]::GetFullPath($ExpectedExecutable)
+    $recordExe = [System.IO.Path]::GetFullPath($Record.executable)
+    if (-not [System.IO.File]::Exists($expectedExe) -or
+        -not [string]::Equals($recordExe, $expectedExe, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw '设备预检返回的 native 核心与当前所选便携目录不符。'
+    }
+
+    $statusPath = [System.IO.Path]::GetFullPath($Record.status_path)
+    $statusDirectory = [System.IO.Path]::GetDirectoryName($statusPath)
+    $statusName = [System.IO.Path]::GetFileName($statusPath)
+    if (-not [string]::Equals($statusDirectory.TrimEnd('\'), $runPath.TrimEnd('\'),
+            [System.StringComparison]::OrdinalIgnoreCase) -or
+        [string]::IsNullOrWhiteSpace($statusName) -or
+        -not [string]::Equals([System.IO.Path]::GetExtension($statusName), '.jsonl', [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw '设备预检返回的状态文件不属于本次启动目录。'
+    }
+
+    $arguments = @($Record.arguments)
+    if ($arguments.Count -lt 20 -or @($arguments | Where-Object { $_ -isnot [string] }).Count -ne 0) {
+        throw '设备预检返回的启动参数不完整。'
+    }
+    $pipeCount = 0
+    $statusValue = ''
+    $statusCount = 0
+    for ($index = 0; $index -lt $arguments.Count; $index++) {
+        if ($arguments[$index] -ceq '--ui-pipe') { $pipeCount++ }
+        if ($arguments[$index] -ceq '--status-file') {
+            $statusCount++
+            if ($index + 1 -ge $arguments.Count) { throw '设备预检返回的状态参数缺少路径。' }
+            $statusValue = [string]$arguments[$index + 1]
+        }
+    }
+    if ($pipeCount -ne 1 -or $statusCount -ne 1 -or
+        -not [string]::Equals([System.IO.Path]::GetFullPath($statusValue), $statusPath,
+            [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw '设备预检返回的启动参数与状态文件路径不一致。'
+    }
+    return [pscustomobject]@{
+        Executable = $expectedExe
+        Arguments = [string[]]$arguments
+        StatusPath = $statusPath
+    }
+}
+
+function Start-UiAudioQuery {
+    param([Parameter(Mandatory=$true)][string]$Executable, [string]$Arguments = '--list-audio-json', [int]$TimeoutMilliseconds = 10000)
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $Executable
+    $startInfo.Arguments = $Arguments
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    $startInfo.StandardOutputEncoding = $utf8
+    $startInfo.StandardErrorEncoding = $utf8
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) { throw '未能启动音频设备查询进程。' }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        return [pscustomobject]@{
+            Process = $process
+            StdoutTask = $stdoutTask
+            StderrTask = $stderrTask
+            StartedUtc = [DateTime]::UtcNow
+            TimeoutMilliseconds = $TimeoutMilliseconds
+        }
+    } catch {
+        $process.Dispose()
+        throw
+    }
+}
+
+function Request-StopUiAudioQuery {
+    param([Parameter(Mandatory=$true)][object]$Query)
+    if (-not $Query.Process.HasExited) {
+        try { $Query.Process.Kill() }
+        catch {
+            if (-not $Query.Process.HasExited) { throw '无法停止音频设备查询进程。' }
+        }
+    }
+}
+
+function Test-UiAudioQueryExpired {
+    param([Parameter(Mandatory=$true)][object]$Query, [DateTime]$NowUtc = [DateTime]::UtcNow)
+    return (($NowUtc - $Query.StartedUtc).TotalMilliseconds -ge $Query.TimeoutMilliseconds)
+}
+
+function Read-UiAudioQueryResult {
+    param([Parameter(Mandatory=$true)][object]$Query)
+    if (-not $Query.Process.HasExited -or -not $Query.StdoutTask.IsCompleted -or -not $Query.StderrTask.IsCompleted) {
+        return [pscustomobject]@{ Completed = $false; Audio = $null }
+    }
+    if ($Query.Process.ExitCode -ne 0) { throw 'native 音频设备查询失败。' }
+    $json = $Query.StdoutTask.GetAwaiter().GetResult().Trim().TrimStart([char]0xFEFF)
+    if ([string]::IsNullOrWhiteSpace($json) -or $json.Contains("`n") -or $json.Contains("`r")) {
+        throw 'native 音频设备查询必须只输出一行 JSON。'
+    }
+    $audio = ConvertFrom-Json -InputObject $json -ErrorAction Stop
+    if ($null -eq $audio -or $audio.schema_version -ne 1 -or $audio.type -cne 'audio_devices' -or
+        -not $audio.PSObject.Properties['wave_inputs'] -or -not $audio.PSObject.Properties['wave_outputs']) {
+        throw 'native 音频设备列表格式无效。'
+    }
+    foreach ($direction in @('wave_inputs', 'wave_outputs')) {
+        $seenIds = @{}
+        $seenEndpoints = @{}
+        foreach ($device in @($audio.$direction)) {
+            if ($null -eq $device -or $device.name -isnot [string] -or
+                $device.pcm_48000_mono_s16_supported -isnot [bool] -or
+                ($null -ne $device.endpoint_id -and $device.endpoint_id -isnot [string]) -or
+                $device.id -is [bool] -or -not ($device.id -is [int] -or $device.id -is [long]) -or $device.id -lt 0) {
+                throw 'native 音频设备列表包含无效项目。'
+            }
+            if ($seenIds.ContainsKey([string]$device.id)) { throw 'native 音频设备列表包含重复 WinMM ID。' }
+            $seenIds[[string]$device.id] = $true
+            if ($device.endpoint_id -is [string] -and -not [string]::IsNullOrWhiteSpace([string]$device.endpoint_id)) {
+                $key = ([string]$device.endpoint_id).ToUpperInvariant()
+                if ($seenEndpoints.ContainsKey($key)) { throw 'native 音频设备列表包含重复稳定端点标识。' }
+                $seenEndpoints[$key] = $true
+            }
+        }
+    }
+    return [pscustomobject]@{ Completed = $true; Audio = $audio }
+}
+
+function Test-UiDiscoveryResultOwner {
+    param([uint64]$ResultGeneration, [uint64]$CurrentGeneration, [object]$ResultWindow, [object]$CurrentWindow)
+    return ($ResultGeneration -eq $CurrentGeneration -and
+        [object]::ReferenceEquals($ResultWindow, $CurrentWindow) -and $null -ne $CurrentWindow)
+}
+
+function Start-UiDeviceDiscovery {
+    if ($OfflinePreview -or $RenderOnly) {
+        $script:deviceDiscoveryState = 'offline'
+        Set-SettingsDeviceControls
+        return
+    }
+    if ($script:deviceDiscoveryPowerShell -or $script:deviceAudioQuery) {
+        if ($script:settingsWindow -and -not [object]::ReferenceEquals($script:settingsWindow, $script:deviceDiscoveryOwnerWindow)) {
+            $script:deviceDiscoveryRestartPending = $true
+            (Get-SettingsControl 'DeviceDiscoveryText').Text = '正在结束上次查询，随后重新读取设备列表。'
+            (Get-SettingsControl 'RefreshDevicesButton').IsEnabled = $false
+        }
+        return
+    }
+
+    $script:deviceDiscoveryGeneration++
+    $script:deviceDiscoveryActiveGeneration = $script:deviceDiscoveryGeneration
+    $script:deviceDiscoveryOwnerWindow = $script:settingsWindow
+    $script:deviceDiscoveryStopReason = ''
+    $script:deviceDiscoveryError = ''
+    $script:deviceDiscoveryState = 'loading'
+    if ($script:settingsWindow) {
+        (Get-SettingsControl 'DeviceDiscoveryText').Text = '正在读取串口与音频设备列表。'
+        (Get-SettingsControl 'RefreshDevicesButton').IsEnabled = $false
+        Set-SettingsDeviceControls
+    }
+    try {
+        $script:deviceAudioQuery = Start-UiAudioQuery -Executable $script:nativeExecutable
+    } catch {
+        $script:deviceDiscoveryState = 'failed'
+        $script:deviceDiscoveryError = $_.Exception.Message
+        Set-SettingsDeviceControls
+        if ($script:settingsWindow) { (Get-SettingsControl 'RefreshDevicesButton').IsEnabled = $true }
+        return
+    }
+    $catalogScript = {
+        $ErrorActionPreference = 'Stop'
+        $serialNames = @{}
+        $serialKey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('HARDWARE\DEVICEMAP\SERIALCOMM', $false)
+        if ($serialKey) {
+            try {
+                foreach ($valueName in $serialKey.GetValueNames()) {
+                    $port = [string]$serialKey.GetValue($valueName)
+                    if ($port -match '^COM[1-9][0-9]{0,2}$') { $serialNames[$port.ToUpperInvariant()] = [pscustomobject]@{ PortName = $port.ToUpperInvariant(); FriendlyName = ''; InstanceId = ''; IsHri = $false } }
+                }
+            } finally { $serialKey.Dispose() }
+        }
+        $hriPorts = @{}
+        if (Get-Command Get-PnpDevice -ErrorAction SilentlyContinue) {
+            foreach ($device in @(Get-PnpDevice -PresentOnly -Class Ports -ErrorAction SilentlyContinue)) {
+                $instanceId = [string]$device.InstanceId
+                $identity = [regex]::Match($instanceId, '^USB\\VID_26AA&PID_([0-9A-F]{4})\\', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+                if (-not $identity.Success -or [Convert]::ToInt32($identity.Groups[1].Value, 16) -lt 0x0030) { continue }
+                $busDescription = ''
+                if (Get-Command Get-PnpDeviceProperty -ErrorAction SilentlyContinue) {
+                    $property = Get-PnpDeviceProperty -InstanceId $instanceId -KeyName 'DEVPKEY_Device_BusReportedDeviceDesc' -ErrorAction SilentlyContinue
+                    if ($property) { $busDescription = [string]$property.Data }
+                }
+                $friendlyName = [string]$device.FriendlyName
+                $portMatch = [regex]::Match($friendlyName, '\((COM[1-9][0-9]*)\)$', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+                if (-not $portMatch.Success) { continue }
+                $portName = $portMatch.Groups[1].Value.ToUpperInvariant()
+                $hriPorts[$portName] = [pscustomobject]@{
+                    PortName = $portName
+                    FriendlyName = $friendlyName
+                    InstanceId = $instanceId
+                    IsHri = ($busDescription -match '(?i)\bHRI\b')
+                }
+            }
+        }
+        foreach ($portName in @($hriPorts.Keys)) { $serialNames[$portName] = $hriPorts[$portName] }
+        return [pscustomobject]@{
+            serial_ports = @($serialNames.Values | Sort-Object PortName)
+            hri_ports = @($hriPorts.Values | Where-Object { $_.IsHri } | Sort-Object PortName)
+        }
+    }
+    try {
+        $script:deviceDiscoveryPowerShell = [System.Management.Automation.PowerShell]::Create()
+        [void]$script:deviceDiscoveryPowerShell.AddScript($catalogScript.ToString())
+        $script:deviceDiscoveryStartedUtc = [DateTime]::UtcNow
+        $script:deviceDiscoveryAsync = $script:deviceDiscoveryPowerShell.BeginInvoke()
+    } catch {
+        if ($script:deviceDiscoveryPowerShell) {
+            try { $script:deviceDiscoveryPowerShell.Dispose() } catch { }
+            $script:deviceDiscoveryPowerShell = $null
+        }
+        $script:deviceDiscoveryAsync = $null
+        $script:deviceDiscoveryState = 'stopping'
+        $script:deviceDiscoveryStopReason = 'serial_start_error'
+        $script:deviceDiscoveryStopStartedUtc = [DateTime]::UtcNow
+        $script:deviceDiscoveryError = $_.Exception.Message
+        if ($script:deviceAudioQuery) {
+            try { Request-StopUiAudioQuery -Query $script:deviceAudioQuery }
+            catch { $script:deviceDiscoveryError = $_.Exception.Message }
+        }
+    }
+}
+
+function New-UiDeviceOption {
+    param([string]$Label, [string]$Value, [bool]$IsAvailable, [string]$Kind)
+    return [pscustomobject]@{ Label = $Label; Value = $Value; IsAvailable = $IsAvailable; Kind = $Kind }
+}
+
+function Get-UiEndpointOptions {
+    param([object[]]$Devices, [string]$SavedEndpoint, [ValidateSet('input', 'output')][string]$Direction, [switch]$DiscoveryPending)
+    $usable = @($Devices | Where-Object {
+        $_.pcm_48000_mono_s16_supported -eq $true -and $_.endpoint_id -is [string] -and
+            -not [string]::IsNullOrWhiteSpace([string]$_.endpoint_id)
+    })
+    $options = New-Object 'System.Collections.Generic.List[object]'
+    [void]$options.Add((New-UiDeviceOption -Label '自动：唯一 USB Audio 端点' -Value 'auto' -IsAvailable $true -Kind 'auto'))
+    foreach ($device in @($usable | Sort-Object name, endpoint_id)) {
+        $label = ('{0} · {1} · ID {2}' -f [string]$device.name, [string]$device.endpoint_id, [string]$device.id)
+        [void]$options.Add((New-UiDeviceOption -Label $label -Value ([string]$device.endpoint_id) -IsAvailable $true -Kind $Direction))
+    }
+    $selected = 'auto'
+    if ($SavedEndpoint -and $SavedEndpoint -cne 'auto') {
+        $matches = @($usable | Where-Object { [string]::Equals([string]$_.endpoint_id, $SavedEndpoint, [System.StringComparison]::OrdinalIgnoreCase) })
+        if ($matches.Count -eq 1) {
+            $selected = [string]$matches[0].endpoint_id
+        } else {
+            $missingLabel = if ($DiscoveryPending) { '正在检查已保存端点 · ' + $SavedEndpoint } else { '已保存端点当前未发现 · ' + $SavedEndpoint }
+            $missingKind = if ($DiscoveryPending) { 'pending' } else { 'missing' }
+            [void]$options.Add((New-UiDeviceOption -Label $missingLabel -Value $SavedEndpoint -IsAvailable ([bool]$DiscoveryPending) -Kind $missingKind))
+            $selected = $SavedEndpoint
+        }
+    } else {
+        $usbMatches = @($usable | Where-Object { [string]$_.name -match '(?i)USB Audio' })
+        if ($usbMatches.Count -eq 1) { $selected = [string]$usbMatches[0].endpoint_id }
+    }
+    return [pscustomobject]@{ Items = $options.ToArray(); SelectedValue = $selected; UsableCount = $usable.Count }
+}
+
+function Get-UiSerialOptions {
+    param([object[]]$AllPorts, [object[]]$HriPorts, [string]$SavedPort = 'auto', [switch]$DiscoveryPending)
+    $options = New-Object 'System.Collections.Generic.List[object]'
+    [void]$options.Add((New-UiDeviceOption -Label '自动：唯一 HRI 设备' -Value 'auto' -IsAvailable $true -Kind 'auto'))
+    foreach ($port in @($AllPorts | Sort-Object @{Expression={ if ($_.IsHri -and $_.PortName -ceq 'COM5') { 0 } elseif ($_.IsHri) { 1 } else { 2 } }}, PortName)) {
+        $identity = if ($port.IsHri) { 'HRI' } elseif ($port.FriendlyName) { '未确认 HRI' } else { '设备信息未确认' }
+        $friendly = if ($port.FriendlyName) { [string]$port.FriendlyName } else { [string]$port.PortName }
+        [void]$options.Add((New-UiDeviceOption -Label ('{0} · {1} · {2}' -f $friendly, $port.PortName, $identity) `
+            -Value ([string]$port.PortName) -IsAvailable ([bool]$port.IsHri) -Kind 'serial'))
+    }
+    $selected = 'auto'
+    if ($SavedPort -and $SavedPort -cne 'auto') {
+        $matches = @($HriPorts | Where-Object { $_.PortName -ieq $SavedPort })
+        if ($matches.Count -eq 1) { $selected = [string]$matches[0].PortName }
+        else {
+            $missingLabel = if ($DiscoveryPending) { '正在检查已保存 HRI 串口 · ' + $SavedPort } else { '已保存串口当前未发现为 HRI · ' + $SavedPort }
+            $missingKind = if ($DiscoveryPending) { 'pending' } else { 'missing' }
+            [void]$options.Add((New-UiDeviceOption -Label $missingLabel -Value $SavedPort -IsAvailable ([bool]$DiscoveryPending) -Kind $missingKind))
+            $selected = $SavedPort
+        }
+    } else {
+        $com5 = @($HriPorts | Where-Object { $_.PortName -ceq 'COM5' })
+        if ($com5.Count -eq 1) { $selected = 'COM5' }
+        elseif ($HriPorts.Count -eq 1) { $selected = [string]$HriPorts[0].PortName }
+    }
+    return [pscustomobject]@{ Items = $options.ToArray(); SelectedValue = $selected; HriCount = $HriPorts.Count }
+}
+
+function Set-SettingsDeviceControls {
+    if (-not $script:settingsWindow) { return }
+    $serialControl = Get-SettingsControl 'SerialBox'
+    $inputControl = Get-SettingsControl 'WaveInEndpointBox'
+    $outputControl = Get-SettingsControl 'WaveOutEndpointBox'
+    $savedSerial = if ($script:storedProfile) { [string]$script:storedProfile.devices.serial_port } else { 'auto' }
+    $savedInput = if ($script:storedProfile) { [string]$script:storedProfile.devices.wave_in_endpoint_id } else { 'auto' }
+    $savedOutput = if ($script:storedProfile) { [string]$script:storedProfile.devices.wave_out_endpoint_id } else { 'auto' }
+    $catalog = $script:deviceCatalog
+    $allPorts = if ($catalog) { @($catalog.serial_ports) } else { @() }
+    $hriPorts = if ($catalog) { @($catalog.hri_ports) } else { @() }
+    $discoveryPending = ($script:deviceDiscoveryState -in @('not_started', 'loading', 'stopping'))
+    $serialSetup = Get-UiSerialOptions -AllPorts $allPorts -HriPorts $hriPorts -SavedPort $savedSerial -DiscoveryPending:$discoveryPending
+    $serialControl.Items.Clear()
+    foreach ($item in $serialSetup.Items) { [void]$serialControl.Items.Add($item) }
+    $serialControl.SelectedValue = $serialSetup.SelectedValue
+
+    $inputCatalog = if ($catalog) { @($catalog.wave_inputs) } else { @() }
+    $outputCatalog = if ($catalog) { @($catalog.wave_outputs) } else { @() }
+    $inputOptions = Get-UiEndpointOptions -Devices $inputCatalog -SavedEndpoint $savedInput -Direction input -DiscoveryPending:$discoveryPending
+    $outputOptions = Get-UiEndpointOptions -Devices $outputCatalog -SavedEndpoint $savedOutput -Direction output -DiscoveryPending:$discoveryPending
+    $inputControl.Items.Clear(); foreach ($item in $inputOptions.Items) { [void]$inputControl.Items.Add($item) }
+    $outputControl.Items.Clear(); foreach ($item in $outputOptions.Items) { [void]$outputControl.Items.Add($item) }
+    $inputControl.SelectedValue = $inputOptions.SelectedValue
+    $outputControl.SelectedValue = $outputOptions.SelectedValue
+
+    if ($script:deviceDiscoveryState -eq 'ready') {
+        (Get-SettingsControl 'DeviceDiscoveryText').Text = '设备列表已更新；自动选择优先使用 COM5/HRI 和 USB Audio。'
+    } elseif ($script:deviceDiscoveryState -eq 'failed') {
+        $detail = if ($script:deviceDiscoveryError) { ' · ' + $script:deviceDiscoveryError } else { '' }
+        (Get-SettingsControl 'DeviceDiscoveryText').Text = ('设备查询失败，可保留 auto；连接前会再次核验设备。' + $detail)
+    } elseif ($script:deviceDiscoveryState -eq 'offline') {
+        (Get-SettingsControl 'DeviceDiscoveryText').Text = '离线预览不读取本机设备。'
+    }
+}
+
+function Complete-UiDeviceDiscovery {
+    if (-not $script:deviceDiscoveryPowerShell -and -not $script:deviceAudioQuery) { return }
+    if (-not $script:deviceDiscoveryStopAsync -and $script:deviceDiscoveryState -eq 'loading') {
+        if ($script:deviceAudioQuery -and (Test-UiAudioQueryExpired -Query $script:deviceAudioQuery)) {
+            $script:deviceDiscoveryState = 'stopping'
+            $script:deviceDiscoveryStopReason = 'audio_timeout'
+            $script:deviceDiscoveryError = '音频设备查询超过 10 秒，已请求停止。'
+        } elseif (([DateTime]::UtcNow - $script:deviceDiscoveryStartedUtc).TotalSeconds -gt 25) {
+            $script:deviceDiscoveryState = 'stopping'
+            $script:deviceDiscoveryStopReason = 'timeout'
+            $script:deviceDiscoveryError = '本机设备查询超过 25 秒，已请求停止。'
+        }
+        if ($script:deviceDiscoveryStopReason) {
+            $script:deviceDiscoveryStopStartedUtc = [DateTime]::UtcNow
+            if ($script:deviceAudioQuery) {
+                try { Request-StopUiAudioQuery -Query $script:deviceAudioQuery }
+                catch { $script:deviceDiscoveryError = $_.Exception.Message }
+            }
+            if ($script:deviceDiscoveryPowerShell -and $script:deviceDiscoveryAsync -and -not $script:deviceDiscoveryAsync.IsCompleted) {
+                try { $script:deviceDiscoveryStopAsync = $script:deviceDiscoveryPowerShell.BeginStop($null, $null) }
+                catch { if (-not $script:deviceDiscoveryAsync.IsCompleted) { $script:deviceDiscoveryError = '串口设备查询未能及时停止。' } }
+            }
+            if ($script:settingsWindow -and [object]::ReferenceEquals($script:settingsWindow, $script:deviceDiscoveryOwnerWindow)) {
+                (Get-SettingsControl 'DeviceDiscoveryText').Text = '正在停止设备查询。'
+            }
+        }
+    }
+
+    $generation = $script:deviceDiscoveryActiveGeneration
+    $ownerWindow = $script:deviceDiscoveryOwnerWindow
+    $resultBelongsToWindow = Test-UiDiscoveryResultOwner -ResultGeneration $generation `
+        -CurrentGeneration $script:deviceDiscoveryGeneration -ResultWindow $ownerWindow -CurrentWindow $script:settingsWindow
+    $acceptResult = $resultBelongsToWindow
+    $audioDone = ($null -eq $script:deviceAudioQuery)
+    $audio = $null
+    if ($script:deviceAudioQuery) {
+        if ($script:deviceDiscoveryStopReason) {
+            $query = $script:deviceAudioQuery
+            if ($query.Process.HasExited -and $query.StdoutTask.IsCompleted -and $query.StderrTask.IsCompleted) {
+                $query.Process.Dispose()
+                $script:deviceAudioQuery = $null
+                $audioDone = $true
+            }
+        } else {
+            try {
+                $audioResult = Read-UiAudioQueryResult -Query $script:deviceAudioQuery
+                if ($audioResult.Completed) {
+                    $audio = $audioResult.Audio
+                    $script:deviceAudioQuery.Process.Dispose()
+                    $script:deviceAudioQuery = $null
+                    $audioDone = $true
+                }
+            } catch {
+                $script:deviceDiscoveryError = $_.Exception.Message
+                $query = $script:deviceAudioQuery
+                if ($query.Process.HasExited -and $query.StdoutTask.IsCompleted -and $query.StderrTask.IsCompleted) {
+                    try { $query.Process.Dispose() } catch { }
+                    $script:deviceAudioQuery = $null
+                    $audioDone = $true
+                }
+                if (-not $script:deviceDiscoveryStopReason) {
+                    $script:deviceDiscoveryState = 'stopping'
+                    $script:deviceDiscoveryStopReason = 'audio_error'
+                    $script:deviceDiscoveryStopStartedUtc = [DateTime]::UtcNow
+                    if ($script:deviceDiscoveryPowerShell -and $script:deviceDiscoveryAsync -and -not $script:deviceDiscoveryAsync.IsCompleted) {
+                        try { $script:deviceDiscoveryStopAsync = $script:deviceDiscoveryPowerShell.BeginStop($null, $null) } catch { }
+                    }
+                }
+            }
+        }
+    }
+
+    $serialDone = ($null -eq $script:deviceDiscoveryPowerShell)
+    $serialRecords = $null
+    if ($script:deviceDiscoveryPowerShell -and $script:deviceDiscoveryAsync) {
+        if ($script:deviceDiscoveryStopAsync) {
+            $serialDone = $script:deviceDiscoveryStopAsync.IsCompleted
+        } elseif ($script:deviceDiscoveryAsync.IsCompleted) {
+            $serialDone = $true
+            try {
+                $serialRecords = $script:deviceDiscoveryPowerShell.EndInvoke($script:deviceDiscoveryAsync)
+                if ($script:deviceDiscoveryPowerShell.HadErrors -or $serialRecords.Count -ne 1) {
+                    throw '串口设备查询没有返回有效列表。'
+                }
+            } catch {
+                $script:deviceDiscoveryError = $_.Exception.Message
+                $script:deviceDiscoveryState = 'failed'
+                $script:deviceDiscoveryStopReason = 'serial_error'
+            }
+        }
+    }
+
+    if (-not $audioDone -or -not $serialDone) {
+        if ($script:closingAfterDeviceDiscovery -and $script:deviceDiscoveryStopStartedUtc -ne [DateTime]::MinValue -and
+            ([DateTime]::UtcNow - $script:deviceDiscoveryStopStartedUtc).TotalSeconds -gt 5) {
+            [System.Environment]::Exit(2)
+        }
+        return
+    }
+
+    try {
+        if ($script:deviceDiscoveryStopAsync) {
+            try { $script:deviceDiscoveryPowerShell.EndStop($script:deviceDiscoveryStopAsync) } catch { }
+            $acceptResult = $false
+        } elseif ($script:deviceDiscoveryStopReason) {
+            $acceptResult = $false
+        } elseif ($serialRecords -and $audio) {
+            $serialCatalog = $serialRecords[0]
+            if ($serialCatalog.serial_ports -isnot [array] -or $serialCatalog.hri_ports -isnot [array]) {
+                throw '串口设备列表结构无效。'
+            }
+            $catalog = [pscustomobject]@{
+                serial_ports = @($serialCatalog.serial_ports)
+                hri_ports = @($serialCatalog.hri_ports)
+                wave_inputs = @($audio.wave_inputs)
+                wave_outputs = @($audio.wave_outputs)
+            }
+            if ($acceptResult) { $script:deviceCatalog = $catalog; $script:deviceDiscoveryState = 'ready' }
+        } elseif ($script:deviceDiscoveryState -ne 'failed') {
+            throw '设备查询没有返回完整的串口与音频列表。'
+        }
+    } catch {
+        if ($acceptResult) {
+            $script:deviceCatalog = $null
+            $script:deviceDiscoveryState = 'failed'
+            $script:deviceDiscoveryError = $_.Exception.Message
+        }
+    } finally {
+        $finalStopReason = [string]$script:deviceDiscoveryStopReason
+        if ($resultBelongsToWindow -and $finalStopReason -and $finalStopReason -cne 'window_closed') {
+            $script:deviceCatalog = $null
+            $script:deviceDiscoveryState = 'failed'
+        }
+        if ($script:deviceDiscoveryPowerShell) { $script:deviceDiscoveryPowerShell.Dispose() }
+        $script:deviceDiscoveryPowerShell = $null
+        $script:deviceDiscoveryAsync = $null
+        $script:deviceDiscoveryStopAsync = $null
+        $script:deviceDiscoveryOwnerWindow = $null
+        $script:deviceDiscoveryStopReason = ''
+    }
+    if ($resultBelongsToWindow) { Set-SettingsDeviceControls }
+    if ($resultBelongsToWindow -and $script:settingsWindow) { (Get-SettingsControl 'RefreshDevicesButton').IsEnabled = $true }
+    if ($script:closingAfterDeviceDiscovery) {
+        $script:closingAfterDeviceDiscovery = $false
+        $script:allowWindowClose = $true
+        $script:mainWindow.Close()
+        return
+    }
+    if ($script:deviceDiscoveryRestartPending -and $script:settingsWindow) {
+        $script:deviceDiscoveryRestartPending = $false
+        Start-UiDeviceDiscovery
+    }
+}
+
+function Invalidate-UiDeviceDiscoveryForWindow {
+    param([Parameter(Mandatory=$true)][object]$Window)
+    if (-not [object]::ReferenceEquals($Window, $script:deviceDiscoveryOwnerWindow)) { return }
+    $script:deviceDiscoveryGeneration++
+    $script:deviceDiscoveryRestartPending = $false
+    $script:deviceDiscoveryStopReason = 'window_closed'
+    $script:deviceDiscoveryStopStartedUtc = [DateTime]::UtcNow
+    if ($script:deviceAudioQuery) {
+        try { Request-StopUiAudioQuery -Query $script:deviceAudioQuery }
+        catch { $script:deviceDiscoveryError = $_.Exception.Message }
+    }
+    if ($script:deviceDiscoveryPowerShell -and $script:deviceDiscoveryAsync -and
+        -not $script:deviceDiscoveryAsync.IsCompleted -and -not $script:deviceDiscoveryStopAsync) {
+        try { $script:deviceDiscoveryStopAsync = $script:deviceDiscoveryPowerShell.BeginStop($null, $null) }
+        catch { $script:deviceDiscoveryError = '串口设备查询未能及时停止。' }
+    }
+}
+
 function Read-CurrentPasswordPath {
     try { return Get-BridgePasswordFile -UserConfigDirectory $script:configDirectory }
     catch { return '' }
+}
+
+function Set-GainValueLabel {
+    param([string]$SliderName, [string]$LabelName)
+    $value = [double](Get-SettingsControl $SliderName).Value
+    $milli = Convert-UiGainSliderToMilli -Value $value
+    (Get-SettingsControl $LabelName).Text = ((Format-BridgeGain -GainMilli $milli) + 'x')
+}
+
+function Convert-UiGainSliderToMilli {
+    param([double]$Value)
+    if ([double]::IsNaN($Value) -or [double]::IsInfinity($Value) -or $Value -lt 0.25 -or $Value -gt 16.0) {
+        throw '音量增益必须在 0.25x 到 16x 之间。'
+    }
+    return [uint32][Math]::Round($Value * 1000.0, [MidpointRounding]::AwayFromZero)
 }
 
 function Set-SettingsWindowFields {
@@ -342,14 +900,14 @@ function Set-SettingsWindowFields {
         MasterPortBox = if ($script:storedProfile) { $script:storedProfile.connection.master_port } else { '' }
         DestinationBox = if ($script:storedProfile) { $script:storedProfile.connection.destination_id } else { '' }
         ColorCodeBox = if ($script:storedProfile) { $script:storedProfile.connection.color_code } else { '' }
-        SerialBox = if ($script:storedProfile) { $script:storedProfile.devices.serial_port } else { 'auto' }
-        WaveInEndpointBox = if ($script:storedProfile) { $script:storedProfile.devices.wave_in_endpoint_id } else { 'auto' }
-        WaveOutEndpointBox = if ($script:storedProfile) { $script:storedProfile.devices.wave_out_endpoint_id } else { 'auto' }
-        PlaybackGainBox = Format-BridgeGain -GainMilli ([uint32]$audio.RadioPlaybackGainMilli)
-        TransmitGainBox = Format-BridgeGain -GainMilli ([uint32]$audio.MicTransmitGainMilli)
         PasswordPathBox = Read-CurrentPasswordPath
     }
     foreach ($name in $fields.Keys) { (Get-SettingsControl $name).Text = [string]$fields[$name] }
+    (Get-SettingsControl 'PlaybackGainSlider').Value = [double]$audio.RadioPlaybackGainMilli / 1000.0
+    (Get-SettingsControl 'TransmitGainSlider').Value = [double]$audio.MicTransmitGainMilli / 1000.0
+    Set-GainValueLabel -SliderName 'PlaybackGainSlider' -LabelName 'PlaybackGainValueText'
+    Set-GainValueLabel -SliderName 'TransmitGainSlider' -LabelName 'TransmitGainValueText'
+    Set-SettingsDeviceControls
     $slotBox = Get-SettingsControl 'SlotBox'
     $slotValue = if ($script:storedProfile) { [string]$script:storedProfile.connection.slot } else { '2' }
     $slotBox.SelectedItem = @($slotBox.Items | Where-Object { [string]$_.Tag -ceq $slotValue })[0]
@@ -369,10 +927,16 @@ function Set-SettingsWindowFields {
 
 function Initialize-SettingsWindow {
     $script:settingsWindow = Import-WpfWindow -Path $script:settingsXamlPath
+    $script:deviceCatalog = $null
+    $script:deviceDiscoveryState = if ($script:deviceDiscoveryPowerShell -or $script:deviceAudioQuery) { 'stopping' } else { 'not_started' }
     Fit-WpfWindowToWorkArea -Window $script:settingsWindow
     $script:settingsWindow.Owner = $script:mainWindow
     $script:settingsWindow.ShowInTaskbar = $false
-    $script:settingsWindow.Add_Closed({ $script:settingsWindow = $null })
+    $script:settingsWindow.Add_Closed({
+        $closedSettingsWindow = $script:settingsWindow
+        $script:settingsWindow = $null
+        if ($closedSettingsWindow) { Invalidate-UiDeviceDiscoveryForWindow -Window $closedSettingsWindow }
+    })
     (Get-SettingsControl 'CancelSettingsButton').Add_Click({ $script:settingsWindow.Close() })
     (Get-SettingsControl 'BrowsePasswordButton').Add_Click({
         $dialog = New-Object Microsoft.Win32.OpenFileDialog
@@ -383,8 +947,16 @@ function Initialize-SettingsWindow {
             (Get-SettingsControl 'PasswordPathBox').Text = $dialog.FileName
         }
     })
+    (Get-SettingsControl 'PlaybackGainSlider').Add_ValueChanged({ Set-GainValueLabel -SliderName 'PlaybackGainSlider' -LabelName 'PlaybackGainValueText' })
+    (Get-SettingsControl 'TransmitGainSlider').Add_ValueChanged({ Set-GainValueLabel -SliderName 'TransmitGainSlider' -LabelName 'TransmitGainValueText' })
+    (Get-SettingsControl 'RefreshDevicesButton').Add_Click({
+        if ($script:deviceDiscoveryPowerShell -or $script:deviceAudioQuery) { return }
+        $script:deviceCatalog = $null
+        Start-UiDeviceDiscovery
+    })
     (Get-SettingsControl 'SaveSettingsButton').Add_Click({ Save-SettingsFromWindow })
     Set-SettingsWindowFields
+    Start-UiDeviceDiscovery
 }
 
 function Show-SettingsWindow {
@@ -392,10 +964,44 @@ function Show-SettingsWindow {
     [void]$script:settingsWindow.ShowDialog()
 }
 
+function Test-UiAutoEndpointResolvable {
+    param([object[]]$Devices)
+    $usable = @($Devices | Where-Object {
+        $_.pcm_48000_mono_s16_supported -eq $true -and $_.endpoint_id -is [string] -and
+            -not [string]::IsNullOrWhiteSpace([string]$_.endpoint_id)
+    })
+    $usb = @($usable | Where-Object { [string]$_.name -match '(?i)USB Audio' })
+    return ($usb.Count -eq 1)
+}
+
 function Save-SettingsFromWindow {
     try {
         $slotItem = (Get-SettingsControl 'SlotBox').SelectedItem
         $kindItem = (Get-SettingsControl 'CallKindBox').SelectedItem
+        $serialItem = (Get-SettingsControl 'SerialBox').SelectedItem
+        $waveInItem = (Get-SettingsControl 'WaveInEndpointBox').SelectedItem
+        $waveOutItem = (Get-SettingsControl 'WaveOutEndpointBox').SelectedItem
+        if ($null -eq $serialItem -or $null -eq $waveInItem -or $null -eq $waveOutItem) {
+            throw '请从设备列表中明确选择串口、音频输入和音频输出。'
+        }
+        if (-not $serialItem.IsAvailable -or -not $waveInItem.IsAvailable -or -not $waveOutItem.IsAvailable) {
+            throw '所选设备当前不可用；请从列表中选择已发现的设备。'
+        }
+        if ($script:deviceDiscoveryState -eq 'ready') {
+            if ([string]$serialItem.Value -ceq 'auto') {
+                $hri = @($script:deviceCatalog.hri_ports)
+                $knownCom5 = @($hri | Where-Object { $_.PortName -ceq 'COM5' })
+                if ($hri.Count -eq 0 -or ($knownCom5.Count -ne 1 -and $hri.Count -ne 1)) {
+                    throw '当前有多个或没有已确认的 HRI 串口；请从下拉列表中选择 HRI 设备。'
+                }
+            }
+            if ([string]$waveInItem.Value -ceq 'auto' -and -not (Test-UiAutoEndpointResolvable -Devices @($script:deviceCatalog.wave_inputs))) {
+                throw '电台音频输入有多个候选设备；请从下拉列表中选择稳定端点。'
+            }
+            if ([string]$waveOutItem.Value -ceq 'auto' -and -not (Test-UiAutoEndpointResolvable -Devices @($script:deviceCatalog.wave_outputs))) {
+                throw '电台音频输出有多个候选设备；请从下拉列表中选择稳定端点。'
+            }
+        }
         $connection = [pscustomobject]@{
             callsign = (Get-SettingsControl 'CallsignBox').Text
             gateway_id = (Get-SettingsControl 'GatewayBox').Text
@@ -408,13 +1014,15 @@ function Save-SettingsFromWindow {
             call_kind = [string]$kindItem.Tag
         }
         $devices = [pscustomobject]@{
-            serial_port = (Get-SettingsControl 'SerialBox').Text.Trim()
-            wave_in_endpoint_id = (Get-SettingsControl 'WaveInEndpointBox').Text.Trim()
-            wave_out_endpoint_id = (Get-SettingsControl 'WaveOutEndpointBox').Text.Trim()
+            serial_port = [string]$serialItem.Value
+            wave_in_endpoint_id = [string]$waveInItem.Value
+            wave_out_endpoint_id = [string]$waveOutItem.Value
         }
         $profile = ConvertTo-BridgeUserConnectionProfile -Connection $connection -Devices $devices -AllowTextNumbers
-        $playbackMilli = ConvertTo-BridgeGainMilli -Value (Get-SettingsControl 'PlaybackGainBox').Text -Label '电台播放增益'
-        $transmitMilli = ConvertTo-BridgeGainMilli -Value (Get-SettingsControl 'TransmitGainBox').Text -Label '手咪发送增益'
+        $playbackValue = [double](Get-SettingsControl 'PlaybackGainSlider').Value
+        $transmitValue = [double](Get-SettingsControl 'TransmitGainSlider').Value
+        $playbackMilli = Convert-UiGainSliderToMilli -Value $playbackValue
+        $transmitMilli = Convert-UiGainSliderToMilli -Value $transmitValue
         $passwordCandidate = (Get-SettingsControl 'PasswordPathBox').Text.Trim()
         if ($passwordCandidate) {
             $passwordCandidate = [System.IO.Path]::GetFullPath($passwordCandidate)
@@ -521,7 +1129,7 @@ function Start-BridgeRun {
         $temporaryProfilePath = Join-Path $script:preparedRunDirectory 'connection-profile.json'
         Write-BridgeUserConnectionProfile -Path $temporaryProfilePath -Profile $script:effectiveProfile
         $preparationPath = Join-Path $script:preparedRunDirectory 'preparation.json'
-        $script:statusPath = Join-Path $script:preparedRunDirectory 'status.jsonl'
+        $script:statusPath = ''
         $arguments = @{
             Preset = 'manual'
             ConnectionProfilePath = $temporaryProfilePath
@@ -571,13 +1179,13 @@ function Complete-BridgePreparation {
         if (-not [System.IO.File]::Exists($preparationPath)) { throw '设备预检没有生成启动参数。' }
         $preparationText = [System.IO.File]::ReadAllText($preparationPath, [System.Text.Encoding]::UTF8)
         $preparation = ConvertFrom-Json -InputObject $preparationText -ErrorAction Stop
-        if ($preparation.schema_version -ne 1 -or -not [System.IO.File]::Exists([string]$preparation.executable) -or
-            [string]$preparation.status_path -cne $script:statusPath -or @($preparation.arguments).Count -lt 20 -or
-            @($preparation.arguments | Where-Object { $_ -ceq '--ui-pipe' }).Count -ne 1) {
-            throw '设备预检返回的启动参数不完整。'
-        }
+        $validatedPreparation = Test-UiPreparationRecord -Record $preparation `
+            -RunDirectory $script:preparedRunDirectory `
+            -RunRoot (Join-Path $script:configDirectory 'ui-runs') `
+            -ExpectedExecutable $script:nativeExecutable
+        $script:statusPath = $validatedPreparation.StatusPath
         $script:supervisor = New-Object WirexBridge.Ui.BridgeSupervisor
-        $script:supervisor.Start([string]$preparation.executable, [string[]]$preparation.arguments, $script:releaseDirectory)
+        $script:supervisor.Start($validatedPreparation.Executable, $validatedPreparation.Arguments, $script:releaseDirectory)
         $script:activeTargetTag = $script:preparedTargetTag
         $script:activeTargetLabel = $script:preparedTargetLabel
         $script:targetLabel = $script:activeTargetLabel
@@ -919,6 +1527,7 @@ function Complete-BridgeStop {
 
 function On-UiTimerTick {
     if ($script:prepareStopAsync) { Complete-PreparationStop; return }
+    Complete-UiDeviceDiscovery
     Complete-BridgePreparation
     if (Complete-BridgeStop) { return }
     if ($script:supervisor) {
@@ -991,10 +1600,32 @@ $script:mainWindow.FindName('OfflineBanner').Visibility = [Windows.Visibility]::
 })
 $script:mainWindow.Add_Closing({
     param($sender, $eventArgs)
-    if ($script:allowWindowClose) { return }
+    if ($script:allowWindowClose -and -not $script:deviceDiscoveryPowerShell -and -not $script:deviceAudioQuery) { return }
     if (($script:supervisor -and -not $script:supervisor.HasExited) -or $script:preparationStarted) {
         $eventArgs.Cancel = $true
         Request-StopAndExit
+        return
+    }
+    if ($script:deviceDiscoveryPowerShell -or $script:deviceAudioQuery) {
+        $eventArgs.Cancel = $true
+        $script:closingAfterDeviceDiscovery = $true
+        $script:deviceDiscoveryGeneration++
+        $script:deviceDiscoveryRestartPending = $false
+        $script:deviceDiscoveryStopReason = 'shutdown'
+        $script:deviceDiscoveryStopStartedUtc = [DateTime]::UtcNow
+        if ($script:deviceAudioQuery) {
+            try { Request-StopUiAudioQuery -Query $script:deviceAudioQuery }
+            catch { $script:deviceDiscoveryError = $_.Exception.Message }
+        }
+        if ($script:deviceDiscoveryAsync -and -not $script:deviceDiscoveryAsync.IsCompleted -and -not $script:deviceDiscoveryStopAsync) {
+            try { $script:deviceDiscoveryStopAsync = $script:deviceDiscoveryPowerShell.BeginStop($null, $null) }
+            catch {
+                if ($script:deviceDiscoveryAsync.IsCompleted) { Complete-UiDeviceDiscovery }
+                else { [System.Environment]::Exit(2) }
+            }
+        } else {
+            Complete-UiDeviceDiscovery
+        }
     }
 })
 $script:mainWindow.Add_Loaded({
@@ -1050,7 +1681,7 @@ if ($RenderOnly) {
         max_window_width = $script:maxWindowWidth
         max_window_height = $script:maxWindowHeight
         main = Get-WpfWindowLayoutInfo -Window $script:mainWindow -ControlNames @('ConnectButton', 'SettingsButton', 'StopButton', 'FooterText')
-        settings = Get-WpfWindowLayoutInfo -Window $script:settingsWindow -ControlNames @('CancelSettingsButton', 'SaveSettingsButton', 'SettingsErrorText', 'PasswordPathBox', 'BrowsePasswordButton')
+        settings = Get-WpfWindowLayoutInfo -Window $script:settingsWindow -ControlNames @('CancelSettingsButton', 'SaveSettingsButton', 'SettingsErrorText', 'PasswordPathBox', 'BrowsePasswordButton', 'DeviceDiscoveryText', 'RefreshDevicesButton', 'SerialBox', 'WaveInEndpointBox', 'WaveOutEndpointBox', 'PlaybackGainSlider', 'PlaybackGainValueText', 'TransmitGainSlider', 'TransmitGainValueText')
     }
     [System.IO.File]::WriteAllText((Join-Path $renderDirectory 'layout-info.json'), (ConvertTo-Json -InputObject $layoutInfo -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
     $script:settingsWindow.Close()
