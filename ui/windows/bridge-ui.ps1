@@ -11,11 +11,29 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $script:uiRoot = [System.IO.Path]::GetFullPath($PSScriptRoot)
+$script:packageDirectoryWasExplicit = $PSBoundParameters.ContainsKey('PackageDirectory') -and
+    -not [string]::IsNullOrWhiteSpace($PackageDirectory)
 $script:packageRoot = if ([string]::IsNullOrWhiteSpace($PackageDirectory)) {
     [System.IO.Path]::GetFullPath((Join-Path $script:uiRoot '..\..'))
 } else {
     [System.IO.Path]::GetFullPath($PackageDirectory)
 }
+
+function Resolve-UiRuntimeDirectory {
+    param(
+        [Parameter(Mandatory=$true)][string]$PackageRoot,
+        [Parameter(Mandatory=$true)][string]$UserConfigDirectory,
+        [Parameter(Mandatory=$true)][bool]$PackageDirectoryWasExplicit
+    )
+    $resolvedPackageRoot = [System.IO.Path]::GetFullPath($PackageRoot)
+    if ($PackageDirectoryWasExplicit) { return $resolvedPackageRoot }
+    $releasePointerPath = Join-Path $UserConfigDirectory 'bridge-directory.txt'
+    if ([System.IO.File]::Exists($releasePointerPath)) {
+        return Get-BridgeReleaseDirectory -UserConfigDirectory $UserConfigDirectory
+    }
+    return $resolvedPackageRoot
+}
+
 $script:modulePath = Join-Path $script:packageRoot 'bridge-user-config.psm1'
 if (-not [System.IO.File]::Exists($script:modulePath)) {
     $script:modulePath = Join-Path $script:packageRoot 'tools\bridge-user-config.psm1'
@@ -50,11 +68,9 @@ $script:configDirectory = Get-BridgeUserConfigDirectory -UserConfigDirectory $Us
 $script:profilePath = Join-Path $script:configDirectory 'connection-profile.json'
 $script:audioSettingsPath = Join-Path $script:configDirectory 'audio-settings.json'
 $script:passwordPointerPath = Join-Path $script:configDirectory 'password-file-path.txt'
-$script:releaseDirectory = $script:packageRoot
 $script:releasePointerPath = Join-Path $script:configDirectory 'bridge-directory.txt'
-if ([System.IO.File]::Exists($script:releasePointerPath)) {
-    $script:releaseDirectory = Get-BridgeReleaseDirectory -UserConfigDirectory $script:configDirectory
-}
+$script:releaseDirectory = Resolve-UiRuntimeDirectory -PackageRoot $script:packageRoot `
+    -UserConfigDirectory $script:configDirectory -PackageDirectoryWasExplicit $script:packageDirectoryWasExplicit
 $script:releaseLauncher = Join-Path $script:releaseDirectory 'start-bm-radio-bridge.ps1'
 $script:nativeExecutable = Join-Path $script:releaseDirectory 'wirex_bridge.exe'
 if (-not [System.IO.File]::Exists($script:releaseLauncher) -or -not [System.IO.File]::Exists($script:nativeExecutable)) {

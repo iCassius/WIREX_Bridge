@@ -54,6 +54,7 @@ if ([string]::IsNullOrWhiteSpace($RenderOutputDirectory)) {
 }
 $renderDirectory = [System.IO.Path]::GetFullPath($RenderOutputDirectory)
 [System.IO.Directory]::CreateDirectory($testRoot) | Out-Null
+[System.IO.Directory]::CreateDirectory($configDirectory) | Out-Null
 [System.IO.Directory]::CreateDirectory((Join-Path $stagedPackage 'ui\windows')) | Out-Null
 [System.IO.File]::Copy((Join-Path $packageRoot 'wirex_bridge.exe'), (Join-Path $stagedPackage 'wirex_bridge.exe'), $false)
 [System.IO.File]::Copy((Join-Path $packageRoot 'start-bm-radio-bridge.ps1'), (Join-Path $stagedPackage 'start-bm-radio-bridge.ps1'), $false)
@@ -62,6 +63,11 @@ foreach ($name in @('bridge-ui.ps1', 'BridgeSupervisor.cs', 'MainWindow.xaml', '
     [System.IO.File]::Copy((Join-Path (Join-Path $repoRoot 'ui\windows') $name), (Join-Path (Join-Path $stagedPackage 'ui\windows') $name), $false)
 }
 [System.IO.Directory]::CreateDirectory($renderDirectory) | Out-Null
+
+# The explicit package selected for this UI run must take precedence over a
+# stale or unavailable cross-version pointer in the shared user configuration.
+$stalePointerPath = Join-Path $configDirectory 'bridge-directory.txt'
+[System.IO.File]::WriteAllText($stalePointerPath, (Join-Path $testRoot 'missing-release'), (New-Object System.Text.UTF8Encoding($true)))
 
 try {
     $cmdBytes = [System.IO.File]::ReadAllBytes($uiCmd)
