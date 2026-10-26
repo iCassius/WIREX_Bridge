@@ -6545,17 +6545,17 @@ int wmain(int argc, wchar_t* argv[])
                 const auto field = parse_lcd_identity_field(argv[11]);
                 std::string callsign;
                 if (!field || !parse_lcd_identity_callsign(argv[13], callsign)) {
-                    std::wcerr << L"--field 必须为 destination/source/local；--callsign 接受 1..8 个无空格可见 ASCII 字符且至少含一个英文字母。\n";
+                    std::cerr << "Invalid LCD candidate arguments: --field must be destination/source/local; --callsign must be 1..8 visible ASCII characters, with no spaces and at least one letter.\n";
                     return 2;
                 }
                 return hri_downlink_candidate(argv[3], std::filesystem::path(argv[5]),
                     std::filesystem::path(argv[7]), std::filesystem::path(argv[9]),
                     LcdIdentityCandidateSelection{*field, std::move(callsign)});
             }
-            std::wcerr << L"用法：--hri-lcd-identity-candidate --port COMn --body-file ABS --file WAV --report-file ABS --field destination|source|local --callsign ASCII。\n";
+            std::cerr << "Usage: --hri-lcd-identity-candidate --port COMn --body-file ABS --file WAV --report-file ABS --field destination|source|local --callsign ASCII.\n";
             return 2;
         } catch (...) {
-            std::wcerr << L"HRI LCD候选在受控启动期间失败；未记录密码或语音内容。\n";
+            std::cerr << "HRI LCD candidate failed during controlled startup; no password or audio content was recorded.\n";
             return 2;
         }
     }
