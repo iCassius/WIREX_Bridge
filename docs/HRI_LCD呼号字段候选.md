@@ -30,4 +30,14 @@ wirex_bridge.exe --hri-lcd-identity-candidate --port COMn --body-file <绝对Y�
 
 ## 后续单次现场对照条件
 
-进行现场对照时使用 FTX-1 DIRECT、已接 HRI、官方 WIRES-X 程序关闭且手咪 PTT 松开。使用本机实际配置的呼号，每次选择一个 `destination`、`source` 或 `local` 字段；这里仅检查字段位置，不描述 BM 来话身份。按既有命令使用单个不超过 8 秒的本地固定 WAV，观察起始 T 是否只改选定的十字节字段、PCM 是否沿既有路径播放、T0 是否照常收尾。单独记录 LCD 实际显示和清除时机；软件报告里的 `unknown` 不变成成功结论。此文档本身没有执行现场测试。
+现场对照前将电台置于 WIRES-X HRI 界面并把 Node Mode 设为 DIRECT；关闭官方 WIRES-X 和其他 Bridge，松开手咪 PTT。使用本机实际配置的呼号，每次选择一个 `destination`、`source` 或 `local` 字段；这里仅检查字段位置，不描述 BM 来话身份。按既有命令使用单个不超过 8 秒的本地固定 WAV，观察起始 T 是否只改选定的十字节字段、PCM 是否沿既有路径播放、T0 是否照常收尾。单独记录 LCD 实际显示和清除时机；软件报告里的 `unknown` 不变成成功结论。此文档本身没有执行现场测试。
+
+## 集成与诊断候选交接
+
+LCD 呼号字段候选由 commit `ad77d75` 加入。该版本把严格参数解析放在 `WIREX_ENABLE_BM_BRIDGE` 分支内部；release builder 生成的 `wirex_bridge.exe` 会先进入 `bm_bridge_main`，所以新命令未被调用。commit `9c47b1b` 将这个命令的严格分派移到该预处理分支之前，并保留原 BM 入口的异常保护。第一次实际检查又发现 `std::wcerr` 重定向后只写出 `--field ` 前缀；commit `7775ccf` 将候选参数、用法和异常诊断改为 ASCII `std::cerr`。
+
+固定的 native 候选来自 clean source commit `7775ccfeeddd8aaeffa7d36503ec5ea0c8113f99`：31 项离线测试全部通过，EXE 为 782336 字节，SHA-256 `2e1bb14402166fbc101108b2e3bece6448997b90cf807817e40e3daaffa4ce5d`。四项 CLI smoke 分别检查帮助可见、无效字段拒绝、纯数字 DMR ID 拒绝，以及有效参数配缺失 Y 模板时在串口与 WaveOut 打开前退出。后者报告 `y_template_invalid`、`serial_handle=not_opened`、`audio_output=not_started`。这些结果不包括电台/LCD验证。
+
+忽略目录 `build/candidates/lcd-identity-7775ccf/` 保存本地诊断候选。其 manifest 有 13 项文件哈希记录，加 manifest 共 14 个文件；最终 manifest SHA-256 为 `8552439fe006a31f8888734b7a365273ba15e8b732d642ba4617267e3b98c3ac`。manifest 分开记录 native source `7775ccf` 与菜单/README source `7e1b1750ec0ab6b9ea7f49cb0d7e0d31a7f2734b`。菜单还通过 Windows PowerShell 5.1 AST/六项呼号校验和合成输入后选 Q 退出检查。目录内 `reports/` 为空，未放入本机连接配置或密码；这个候选仍记录 `lcd_display=unknown`。
+
+没有用这套候选连接 COM、音频、BM 或 RF，尚未观察 LCD 是否显示或清除字段。后续更高 commit 的 P 状态纯模块不属于 native `7775ccf` 候选；不要把它替换进本目录或将其测试结果合并到这 31 项构建记录。
