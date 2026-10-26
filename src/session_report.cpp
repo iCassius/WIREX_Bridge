@@ -299,8 +299,15 @@ bool Writer::write(const hri_session::Snapshot& hri, const RuntimeFields& runtim
         else json << "null";
         json << ",\"pcm_submitted_bytes\":" << downlink.pcm_submitted_bytes
              << ",\"pcm_drained\":" << (downlink.pcm_drained ? "true" : "false")
-             << ",\"operation_audio_cleanup\":" << json_string(downlink.operation_audio_cleanup)
-             << ",\"radio_state\":\"unknown\",\"radio_state_unknown\":true}";
+             << ",\"operation_audio_cleanup\":" << json_string(downlink.operation_audio_cleanup);
+        if (!downlink.lcd_identity_candidate_field.empty()) {
+            json << ",\"lcd_identity_candidate\":{\"field\":"
+                 << json_string(downlink.lcd_identity_candidate_field)
+                 << ",\"start_body_prepared\":"
+                 << (downlink.lcd_identity_candidate_body_prepared ? "true" : "false")
+                 << ",\"lcd_display\":\"unknown\"}";
+        }
+        json << ",\"radio_state\":\"unknown\",\"radio_state_unknown\":true}";
     }
     if (runtime.radio_session.enabled) {
         const auto& session = runtime.radio_session;

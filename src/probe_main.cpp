@@ -15,6 +15,7 @@
 #include "wirex/hri_radio_protocol.hpp"
 #include "wirex/hri_session.hpp"
 #include "wirex/hri_t_payload.hpp"
+#include "wirex/hri_lcd_identity_candidate.hpp"
 #include "wirex/operation_audio_cleanup.hpp"
 #include "wirex/console_lifecycle.hpp"
 #include "wirex/audio_input_cleanup.hpp"
@@ -58,6 +59,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -1780,10 +1782,38 @@ bool resolve_candidate_output(UINT& output_id, std::wstring_view expected_endpoi
     return true;
 }
 
+struct LcdIdentityCandidateSelection {
+    wirex::hri_lcd_identity_candidate::CallsignField field;
+    std::string callsign;
+};
+
+std::optional<wirex::hri_lcd_identity_candidate::CallsignField> parse_lcd_identity_field(
+    std::wstring_view value) noexcept
+{
+    using wirex::hri_lcd_identity_candidate::CallsignField;
+    if (value == L"destination") return CallsignField::destination;
+    if (value == L"source") return CallsignField::source;
+    if (value == L"local") return CallsignField::local;
+    return std::nullopt;
+}
+
+bool parse_lcd_identity_callsign(std::wstring_view value, std::string& callsign)
+{
+    if (value.empty() || value.size() > 8U) return false;
+    callsign.clear();
+    callsign.reserve(value.size());
+    for (const wchar_t character : value) {
+        if (character < 0x21 || character > 0x7e) return false;
+        callsign.push_back(static_cast<char>(character));
+    }
+    return wirex::hri_lcd_identity_candidate::is_valid_callsign_input(callsign);
+}
+
 int hri_downlink_candidate(const std::wstring& port_name,
                            const std::filesystem::path& body_path,
                            const std::filesystem::path& wav_path,
-                           const std::filesystem::path& report_path)
+                           const std::filesystem::path& report_path,
+                           const std::optional<LcdIdentityCandidateSelection>& identity_selection = std::nullopt)
 {
     using Clock = std::chrono::steady_clock;
     using DownlinkSession = wirex::hri_downlink_session::Session;
@@ -1813,10 +1843,16 @@ int hri_downlink_candidate(const std::wstring& port_name,
     bool report_created = false;
     wirex::session_report::Writer report_writer;
     wirex::session_report::RuntimeFields report_runtime{};
+    const std::string report_phase = identity_selection.has_value() ?
+        "hri_lcd_identity_candidate" : "hri_downlink_candidate";
     report_runtime.audio_input_cleanup = "not_used";
     report_runtime.audio_output_cleanup = "not_started";
     report_runtime.serial_cleanup = "not_opened";
     report_runtime.downlink.enabled = true;
+    if (identity_selection.has_value()) {
+        report_runtime.downlink.lcd_identity_candidate_field = std::string(
+            wirex::hri_lcd_identity_candidate::field_name(identity_selection->field));
+    }
     wirex::hri_session::Snapshot hri_state{};
     wirex::hri_downlink_session::Snapshot downlink_state{};
     bool native_start_write_attempted = false;
@@ -1834,7 +1870,7 @@ int hri_downlink_candidate(const std::wstring& port_name,
         return 2;
     }
     report_created = true;
-    report_runtime.phase = "hri_downlink_candidate";
+    report_runtime.phase = report_phase;
     report_runtime.downlink.phase = "waiting_for_first_y0";
     if (!report_writer.write(hri_state, report_runtime, report_error)) {
         std::cerr << "无法写入候选测试初始报告：" << report_error << ".\n";
@@ -1911,6 +1947,24 @@ int hri_downlink_candidate(const std::wstring& port_name,
         std::wcerr << L"下行候选只接受长度不超过 8 秒的 48 kHz 单声道 16 位 PCM WAV。\n";
         return finish_preflight("preflight_failed", "wav_format_or_duration_invalid");
     }
+
+    auto start_body = wirex::hri_t_payload::build_empty_header_empty_ambe_candidate_body(1, 1, 9U);
+    if (identity_selection.has_value()) {
+        const auto identity_body = wirex::hri_lcd_identity_candidate::overlay_single_callsign(
+            start_body, identity_selection->field, identity_selection->callsign);
+        if (!identity_body) {
+            return finish_preflight("preflight_failed", "lcd_identity_candidate_invalid");
+        }
+        start_body = identity_body.body;
+        report_runtime.downlink.lcd_identity_candidate_body_prepared = true;
+    }
+    const auto stop_body = wirex::hri_t_payload::build_empty_header_empty_ambe_candidate_body(0, 1, 9U);
+    const auto start_frame = wirex::direct_frame::encode({static_cast<std::uint8_t>('T'),
+        std::vector<std::uint8_t>(start_body.begin(), start_body.end())});
+    const auto stop_frame = wirex::direct_frame::encode({static_cast<std::uint8_t>('T'),
+        std::vector<std::uint8_t>(stop_body.begin(), stop_body.end())});
+    if (!start_frame || !stop_frame) return finish_preflight("preflight_failed", "fixed_candidate_frame_build_failed");
+
     UINT output_id = 0;
     if (!resolve_candidate_output(output_id)) return finish_preflight("preflight_failed", "unique_usb_waveout_not_found");
 
@@ -1941,13 +1995,6 @@ int hri_downlink_candidate(const std::wstring& port_name,
     if (control_scope.cancel_requested()) return finish_preflight("cancelled_before_session", "cancelled_before_session");
 
     using namespace wirex::hri_downlink_session;
-    const auto start_body = wirex::hri_t_payload::build_empty_header_empty_ambe_candidate_body(1, 1, 9);
-    const auto stop_body = wirex::hri_t_payload::build_empty_header_empty_ambe_candidate_body(0, 1, 9);
-    const auto start_frame = wirex::direct_frame::encode({static_cast<std::uint8_t>('T'),
-        std::vector<std::uint8_t>(start_body.begin(), start_body.end())});
-    const auto stop_frame = wirex::direct_frame::encode({static_cast<std::uint8_t>('T'),
-        std::vector<std::uint8_t>(stop_body.begin(), stop_body.end())});
-    if (!start_frame || !stop_frame) return finish_preflight("preflight_failed", "fixed_candidate_frame_build_failed");
 
     const auto pcm_duration_ms = (static_cast<std::uint64_t>(wav.info.data_size) * 1000U + 95999U) / 96000U;
     const auto pcm_window_ms = pcm_duration_ms + 1000U;
@@ -2287,7 +2334,7 @@ int hri_downlink_candidate(const std::wstring& port_name,
         const auto current_phase = std::string(downlink_started ? downlink_phase_name(downlink_state.phase) : "waiting_for_first_y0") + "/" +
             hri_phase_name(hri_state.phase);
         if (!report_write_failed && (current_phase != last_report_phase || elapsed_ms() >= next_report_ms)) {
-            refresh_report(false, "running", "", "hri_downlink_candidate", false, false);
+            refresh_report(false, "running", "", report_phase, false, false);
             if (!report_writer.write(hri_state, report_runtime, report_error)) {
                 report_write_failed = true;
                 note_control_failure("metadata_write_failure");
@@ -6462,6 +6509,9 @@ void print_help()
                << L"  --hri-downlink-candidate --port COM5 --body-file ABS --file WAV --report-file ABS\n"
                << L"                               Fixed local start/stop T candidates and one bounded WAV; software observations only.\n"
                << L"                               Requires one exact USB WaveOut match; radio state remains unknown.\n"
+               << L"  --hri-lcd-identity-candidate --port COM5 --body-file ABS --file WAV --report-file ABS --field destination|source|local --callsign ASCII\n"
+               << L"                               Run the same bounded WAV candidate with one selected 10-byte header field.\n"
+               << L"                               Callsign: 1..8 visible ASCII characters, no spaces, at least one letter.\n"
                << L"  --hri-radio-session --port COMn --body-file ABS --fixed-wav ABS --radio-input N --pc-output N --mic-input N --report-file ABS [--interactive]\n"
                << L"                               One 120 s runtime window plus a fixed, bounded local cleanup period; no automatic restart.\n"
                << L"                               Listens after Y/0, accepts sequential user-requested F/M sends, and returns to listening when safe.\n"
@@ -6503,6 +6553,24 @@ int wmain(int argc, wchar_t* argv[])
     }
     if (argc == 4 && std::wstring_view(argv[1]) == L"--version" && std::wstring_view(argv[2]) == L"--port") {
         return query_version(argv[3]);
+    }
+    if (argc == 14 && std::wstring_view(argv[1]) == L"--hri-lcd-identity-candidate" &&
+        std::wstring_view(argv[2]) == L"--port" && std::wstring_view(argv[4]) == L"--body-file" &&
+        std::wstring_view(argv[6]) == L"--file" && std::wstring_view(argv[8]) == L"--report-file" &&
+        std::wstring_view(argv[10]) == L"--field" && std::wstring_view(argv[12]) == L"--callsign") {
+        const auto field = parse_lcd_identity_field(argv[11]);
+        std::string callsign;
+        if (!field || !parse_lcd_identity_callsign(argv[13], callsign)) {
+            std::wcerr << L"--field 必须为 destination/source/local；--callsign 接受 1..8 个无空格可见 ASCII 字符且至少含一个英文字母。\n";
+            return 2;
+        }
+        return hri_downlink_candidate(argv[3], std::filesystem::path(argv[5]),
+            std::filesystem::path(argv[7]), std::filesystem::path(argv[9]),
+            LcdIdentityCandidateSelection{*field, std::move(callsign)});
+    }
+    if (argc > 1 && std::wstring_view(argv[1]) == L"--hri-lcd-identity-candidate") {
+        std::wcerr << L"用法：--hri-lcd-identity-candidate --port COMn --body-file ABS --file WAV --report-file ABS --field destination|source|local --callsign ASCII。\n";
+        return 2;
     }
     if (argc == 10 && std::wstring_view(argv[1]) == L"--hri-downlink-candidate" &&
         std::wstring_view(argv[2]) == L"--port" && std::wstring_view(argv[4]) == L"--body-file" &&

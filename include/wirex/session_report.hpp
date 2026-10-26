@@ -27,6 +27,8 @@ struct DownlinkFields {
     std::uint64_t pcm_submitted_bytes{};
     bool pcm_drained{false};
     std::string operation_audio_cleanup{"not_started"};
+    std::string lcd_identity_candidate_field{};
+    bool lcd_identity_candidate_body_prepared{false};
 };
 
 struct RadioSessionFields {

@@ -113,6 +113,8 @@ int main()
     runtime.downlink.pcm_submitted_bytes = 9600;
     runtime.downlink.pcm_drained = false;
     runtime.downlink.operation_audio_cleanup = "succeeded";
+    runtime.downlink.lcd_identity_candidate_field = "source";
+    runtime.downlink.lcd_identity_candidate_body_prepared = true;
     runtime.radio_session.enabled = true;
     runtime.radio_session.seq = 17;
     runtime.radio_session.phase = "listening";
@@ -137,11 +139,14 @@ int main()
         text.find("\"pcm_drained\":false") != std::string::npos,
         "candidate reports should record T observations and PCM progress separately");
     check(text.find("\"operation_audio_cleanup\":\"succeeded\"") != std::string::npos &&
+        text.find("\"lcd_identity_candidate\":{\"field\":\"source\",\"start_body_prepared\":true,\"lcd_display\":\"unknown\"}") != std::string::npos &&
         text.find("\"radio_session\":{\"seq\":17") != std::string::npos &&
         text.find("\"last_request_id\":\"request_9\"") != std::string::npos &&
         text.find("\"operation_count\":2") != std::string::npos &&
         text.find("\"serial_handle\":\"succeeded\"") != std::string::npos,
         "session report should separate last operation cleanup from final shared serial cleanup");
+    check(text.find("N0CALL/P") == std::string::npos,
+        "the LCD identity candidate report records the selected field without the supplied callsign");
     check(text.find("\"radio_state\":\"unknown\"") != std::string::npos, "final snapshot must not infer radio state");
     check(!std::filesystem::exists(report_path.wstring() + L".tmp." + std::wstring(writer.run_id().begin(), writer.run_id().end())),
         "atomic replacement should remove its temporary file");
