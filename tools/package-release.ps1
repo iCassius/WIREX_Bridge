@@ -42,6 +42,17 @@ $script:alpha2TestNames = @(
     $script:alpha1TestNames[0..14] + 'ui_pipe_test' +
     $script:alpha1TestNames[15..($script:alpha1TestNames.Count - 1)]
 )
+$script:alpha3TestNames = @(
+    'dmrd_test', 'direct_frame_test', 'hri_t_payload_test', 'hri_call_header_test', 'hri_t_record_test',
+    'hri_lcd_identity_candidate_test', 'direct_stream_test', 'hri_session_test', 'hri_ptt_gate_test',
+    'hri_p_status_test', 'hri_downlink_session_test', 'hri_radio_protocol_test',
+    'operation_audio_cleanup_test', 'audio_input_cleanup_test', 'wave_output_open_test', 'session_timing_test',
+    'wave_file_test', 'pcm_gain_test', 'bounded_pipe_writer_test', 'ui_pipe_test', 'console_lifecycle_test',
+    'session_report_test', 'dmr_call_test', 'bm_session_test', 'bm_udp_test', 'dmr_vocoder_test',
+    'ambe_dmr72_test', 'ysf_vd2_vch_test', 'voice_transcode_buffer_test', 'pcm_resampler_test',
+    'bm_voice_pipeline_test', 'bm_test_profile_test', 'bm_connection_config_test', 'hri_stream_session_test',
+    'bm_bridge_loopback_test'
+)
 $script:activeReleaseVersion = 'v0.1.0-alpha.1'
 
 function Get-ReleaseProfile {
@@ -173,7 +184,28 @@ function Get-ReleaseProfile {
                 NotIncluded = @('LCD text/routing integration', 'RF node operation')
             }
         }
-        default { throw 'Only v0.1.0-alpha.1 and v0.1.0-alpha.2 release profiles are supported.' }
+        'v0.1.0-alpha.3' {
+            $alpha2 = Get-ReleaseProfile -Version 'v0.1.0-alpha.2'
+            $alpha3SourceFiles = @($alpha2.SourceFiles | Where-Object { [string]$_.Destination -cne 'README.md' }) + @(
+                @{ Source='docs\releases\v0.1.0-alpha.3-package-README.md'; Destination='README.md' },
+                @{ Source='docs\BM来话身份显示.md'; Destination='docs\BM来话身份显示.md' }
+            )
+            $alpha3AssetMap = [ordered]@{}
+            foreach ($path in $alpha2.AssetMap.Keys) { $alpha3AssetMap[$path] = $alpha2.AssetMap[$path] }
+            $alpha3AssetMap['docs/BM来话身份显示.md'] = 'docs__bm-call-identity.md'
+            return [pscustomobject]@{
+                Version = 'v0.1.0-alpha.3'
+                TestNames = $script:alpha3TestNames
+                SourceFiles = $alpha3SourceFiles
+                PackageFiles = @($alpha2.PackageFiles) + 'docs/BM来话身份显示.md'
+                Directories = $alpha2.Directories
+                AssetMap = $alpha3AssetMap
+                PackageReadme = 'docs\releases\v0.1.0-alpha.3-package-README.md'
+                ReleaseScope = 'FTX-1 DIRECT BrandMeister bridge with Windows desktop controls and a per-accepted-call DMR Source ID label in the HRI start record; LCD display remains unverified'
+                NotIncluded = @('C4FM RF node operation is not implemented', 'FTX-1 LCD display result is not verified')
+            }
+        }
+        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, and v0.1.0-alpha.3 release profiles are supported.' }
     }
 }
 

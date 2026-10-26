@@ -26,6 +26,17 @@ $script:alpha2TestNames = @(
     $script:alpha1TestNames[0..14] + 'ui_pipe_test' +
     $script:alpha1TestNames[15..($script:alpha1TestNames.Count - 1)]
 )
+$script:alpha3TestNames = @(
+    'dmrd_test', 'direct_frame_test', 'hri_t_payload_test', 'hri_call_header_test', 'hri_t_record_test',
+    'hri_lcd_identity_candidate_test', 'direct_stream_test', 'hri_session_test', 'hri_ptt_gate_test',
+    'hri_p_status_test', 'hri_downlink_session_test', 'hri_radio_protocol_test',
+    'operation_audio_cleanup_test', 'audio_input_cleanup_test', 'wave_output_open_test', 'session_timing_test',
+    'wave_file_test', 'pcm_gain_test', 'bounded_pipe_writer_test', 'ui_pipe_test', 'console_lifecycle_test',
+    'session_report_test', 'dmr_call_test', 'bm_session_test', 'bm_udp_test', 'dmr_vocoder_test',
+    'ambe_dmr72_test', 'ysf_vd2_vch_test', 'voice_transcode_buffer_test', 'pcm_resampler_test',
+    'bm_voice_pipeline_test', 'bm_test_profile_test', 'bm_connection_config_test', 'hri_stream_session_test',
+    'bm_bridge_loopback_test'
+)
 
 function Set-PublishProfile {
     param([Parameter(Mandatory=$true)][string]$Tag)
@@ -88,7 +99,17 @@ function Set-PublishProfile {
             $script:expectedDirectories = @('docs', 'licenses', 'licenses/dmr_signal', 'licenses/droidstar_mbe', 'logs', 'private', 'ui', 'ui/windows')
             $script:expectedTestNames = $script:alpha2TestNames
         }
-        default { throw 'Only v0.1.0-alpha.1 and v0.1.0-alpha.2 release profiles are supported.' }
+        'v0.1.0-alpha.3' {
+            $alpha2 = Set-PublishProfile -Tag 'v0.1.0-alpha.2'
+            $assetMap = [ordered]@{}
+            foreach ($path in $alpha2.AssetPathMap.Keys) { $assetMap[$path] = $alpha2.AssetPathMap[$path] }
+            $assetMap['docs/BM来话身份显示.md'] = 'docs__bm-call-identity.md'
+            $script:publishTag = $Tag
+            $script:assetPathMap = $assetMap
+            $script:expectedDirectories = @($alpha2.Directories)
+            $script:expectedTestNames = $script:alpha3TestNames
+        }
+        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, and v0.1.0-alpha.3 release profiles are supported.' }
     }
     return [pscustomobject]@{
         Tag = $script:publishTag

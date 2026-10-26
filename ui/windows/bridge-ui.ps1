@@ -143,6 +143,10 @@ function Fit-WpfWindowToWorkArea {
     $Window.MaxHeight = $script:maxWindowHeight
     $Window.Width = [Math]::Min($Window.Width, $script:maxWindowWidth)
     $Window.Height = [Math]::Min($Window.Height, $script:maxWindowHeight)
+    $eventList = $Window.FindName('EventList')
+    if ($null -ne $eventList) {
+        $eventList.Height = if ($script:maxWindowHeight -le 720) { 54 } else { 94 }
+    }
 }
 
 function Get-WpfWindowLayoutInfo {
@@ -152,10 +156,12 @@ function Get-WpfWindowLayoutInfo {
         $control = $Window.FindName($name)
         $visibility[$name] = ($null -ne $control -and $control.IsVisible)
     }
+    $eventList = $Window.FindName('EventList')
     return [pscustomobject][ordered]@{
         width = [double]$Window.ActualWidth
         height = [double]$Window.ActualHeight
         controls_visible = [pscustomobject]$visibility
+        event_list_height = if ($null -ne $eventList) { [double]$eventList.ActualHeight } else { $null }
     }
 }
 
@@ -195,6 +201,7 @@ function Get-VisibleUiEventText {
         'tx_started_from_radio_ptt_down' { return '手咪开始发送' }
         'tx_audio_draining_after_radio_ptt_release' { return '手咪已松开，正在完成发送' }
         'hri_t3_observed_playback_enabled' { return '电台开始播放来话' }
+        'lcd_source_identity_prepared_for_this_call' { return '本次来话来源标签已准备' }
         'downlink_call_drained_t0_observed' { return '本次来话播放结束' }
         'radio_ptt_call_120s_limit_reached_release_required' { return '单次发送到达时限，请松开手咪后再讲话' }
         'shutdown_requested' { return '正在停止桥接' }
@@ -246,6 +253,9 @@ function Set-OfflineDisplay {
     Set-MainText -Name 'RecentCallDetail' -Text '当前运行还没有来话记录'
     Set-MainText -Name 'CurrentCallValue' -Text '状态等待本次运行报告'
     Set-MainText -Name 'CurrentCallDetail' -Text '当前没有可显示的活动来话。'
+    $identityDisplay = Get-UiSourceIdentityDisplay -State 'offline'
+    Set-MainText -Name 'HriSourceIdentityValue' -Text $identityDisplay.value
+    Set-MainText -Name 'RadioDisplayValue' -Text $identityDisplay.radio_display
     Set-MainText -Name 'TrafficValue' -Text '等待核心状态'
     Set-MainText -Name 'TrafficDetail' -Text '目标选择用于下一次连接。'
     Set-MainText -Name 'RadioStateValue' -Text '电台状态：未知'
@@ -292,6 +302,210 @@ function New-EffectiveTargetProfile {
     return ConvertTo-BridgeUserConnectionProfile -Connection $connection -Devices $Profile.devices
 }
 
+function Test-UiSourceIdentityRecord {
+    param([Parameter(Mandatory=$true)][object]$Identity, [Parameter(Mandatory=$true)][object]$ParentRecord)
+    if ($Identity -isnot [System.Management.Automation.PSCustomObject]) { return $false }
+    $expectedNames = @('prepared', 'source_id', 'receive_generation', 'label', 'display')
+    $actualNames = @($Identity.PSObject.Properties | ForEach-Object { [string]$_.Name })
+    if ($actualNames.Count -ne $expectedNames.Count) { return $false }
+    foreach ($name in $expectedNames) {
+        if ($actualNames -cnotcontains $name) { return $false }
+    }
+    if ($Identity.prepared -isnot [bool] -or $Identity.label -isnot [string] -or
+        $Identity.display -isnot [string] -or $Identity.display -cne 'unknown') { return $false }
+
+    $numberTypes = @([byte], [sbyte], [int16], [uint16], [int32], [uint32], [int64], [uint64])
+    foreach ($name in @('source_id', 'receive_generation')) {
+        $property = $Identity.PSObject.Properties[$name]
+        if ($null -eq $property) { return $false }
+        $isNumber = $false
+        foreach ($type in $numberTypes) {
+            if ($property.Value -is $type) { $isNumber = $true; break }
+        }
+        if (-not $isNumber) { return $false }
+        $parsed = [uint64]0
+        if (-not [uint64]::TryParse([string]$property.Value, [Globalization.NumberStyles]::None,
+                [Globalization.CultureInfo]::InvariantCulture, [ref]$parsed)) { return $false }
+        if ($name -eq 'source_id' -and $parsed -gt 16777215) { return $false }
+        if ($name -eq 'source_id') { $sourceId = $parsed } else { $generation = $parsed }
+    }
+
+    if ($Identity.prepared) {
+        if ($sourceId -eq 0 -or $generation -eq 0 -or $Identity.label.Length -ne 10) { return $false }
+        $decimalId = $sourceId.ToString([Globalization.CultureInfo]::InvariantCulture)
+        $expectedLabel = ('ID' + $decimalId).PadRight(10, [char]' ')
+        if ($Identity.label -cne $expectedLabel) { return $false }
+        if ($null -ne $ParentRecord.PSObject.Properties['current_call_valid'] -and
+            [bool]$ParentRecord.current_call_valid -and
+            ($sourceId -ne [uint64]$ParentRecord.current_call_source_id -or
+             $generation -ne [uint64]$ParentRecord.current_call_generation)) { return $false }
+    } elseif ($sourceId -ne 0 -or $generation -ne 0 -or $Identity.label.Length -ne 0) {
+        return $false
+    }
+    return $true
+}
+
+function Get-UiSourceIdentityDisplay {
+    param([object]$Identity, [bool]$IdentityPresent = $true, [string]$State = 'status')
+    $value = '当前没有已准备的 HRI 来源标签'
+    switch -CaseSensitive ($State) {
+        'offline' { $value = '等待本次运行报告' }
+        'stale' { $value = '状态已过期，旧标签已清除' }
+        'exited' { $value = '本次运行已结束' }
+        'legacy' { $value = '当前核心未提供来源标签字段' }
+        default {
+            if (-not $IdentityPresent) {
+                $value = '当前核心未提供来源标签字段'
+            } elseif ($Identity.prepared) {
+                $value = (([string]$Identity.label).TrimEnd([char]' ') + ' · 已准备')
+            }
+        }
+    }
+    return [pscustomobject][ordered]@{
+        value = $value
+        radio_display = 'FTX-1 屏幕：未知'
+    }
+}
+
+function Get-UiCompletedRunRecord {
+    param([Parameter(Mandatory=$true)][string]$RunDirectory)
+    $statusPath = Join-Path $RunDirectory 'status.jsonl'
+    if (-not [System.IO.File]::Exists($statusPath)) { return $null }
+    $stream = $null
+    try {
+        $stream = [System.IO.File]::Open($statusPath, [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete)
+        if ($stream.Length -le 0) { return $null }
+        $length = [int][Math]::Min([int64]65536, $stream.Length)
+        $buffer = New-Object byte[] $length
+        $stream.Position = $stream.Length - $length
+        $read = $stream.Read($buffer, 0, $buffer.Length)
+        if ($read -le 0) { return $null }
+        $text = [System.Text.Encoding]::UTF8.GetString($buffer, 0, $read)
+        if (-not $text.EndsWith("`n", [System.StringComparison]::Ordinal)) { return $null }
+        $lines = $text.Split([char]10)
+        $line = ''
+        for ($index = $lines.Count - 2; $index -ge 0; $index--) {
+            $candidate = ([string]$lines[$index]).TrimEnd([char]13)
+            if (-not [string]::IsNullOrWhiteSpace($candidate)) { $line = $candidate; break }
+        }
+        if (-not $line -or $line.Length -gt 65536) { return $null }
+        $record = ConvertFrom-Json -InputObject $line -ErrorAction Stop
+        if (-not (Test-UiStatusRecord -Record $record) -or
+            $record.run_id -isnot [string] -or $record.event -isnot [string] -or
+            $record.event -cnotin @('stopped', 'stopped_with_failure', 'stopped_after_runtime_exception')) { return $null }
+        if ($record.run_id -cnotmatch '^([1-9][0-9]*)-[0-9]+$') { return $null }
+        $processId = [int]0
+        if (-not [int]::TryParse($Matches[1], [Globalization.NumberStyles]::None,
+                [Globalization.CultureInfo]::InvariantCulture, [ref]$processId) -or $processId -le 0) { return $null }
+        $process = $null
+        try {
+            $process = [System.Diagnostics.Process]::GetProcessById($processId)
+            if (-not $process.HasExited) { return $null }
+        } catch [System.ArgumentException] {
+            # PID 当前不存在，可将带终态记录的目录纳入保留清理。
+        } catch {
+            # 无法确认 PID 是否仍在运行时，保留该目录。
+            return $null
+        } finally {
+            if ($process) { $process.Dispose() }
+        }
+        return [pscustomobject][ordered]@{ run_id = [string]$record.run_id; event = [string]$record.event; process_id = $processId }
+    } catch {
+        return $null
+    } finally {
+        if ($stream) { $stream.Dispose() }
+    }
+}
+
+function Get-UiRunDirectorySize {
+    param([Parameter(Mandatory=$true)][string]$RunDirectory)
+    $total = [int64]0
+    $directories = New-Object 'System.Collections.Generic.Stack[string]'
+    try {
+        $root = [System.IO.DirectoryInfo]::new([System.IO.Path]::GetFullPath($RunDirectory))
+        if (-not $root.Exists -or (($root.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) { return $null }
+        $directories.Push($root.FullName)
+        while ($directories.Count -gt 0) {
+            $current = New-Object System.IO.DirectoryInfo($directories.Pop())
+            foreach ($entry in $current.GetFileSystemInfos()) {
+                if (($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $null }
+                if ($entry -is [System.IO.DirectoryInfo]) {
+                    $directories.Push($entry.FullName)
+                } elseif ($entry -is [System.IO.FileInfo]) {
+                    $length = [int64]$entry.Length
+                    if ($length -gt ([int64]::MaxValue - $total)) { return $null }
+                    $total += $length
+                }
+            }
+        }
+        return $total
+    } catch {
+        return $null
+    }
+}
+
+function Invoke-UiRunLogRetention {
+    param(
+        [Parameter(Mandatory=$true)][string]$RunRoot,
+        [Parameter(Mandatory=$true)][string]$ConfigRoot,
+        [string]$CurrentRunDirectory = '',
+        [int]$MaximumCompletedRuns = 10,
+        [int64]$MaximumCompletedBytes = 52428800
+    )
+    $result = [ordered]@{ removed = 0; retained = 0; retained_bytes = [int64]0; cleanup_errors = 0; skipped_unknown = 0 }
+    if ($MaximumCompletedRuns -lt 0 -or $MaximumCompletedBytes -lt 0) { throw 'UI 运行日志保留上限必须大于或等于零。' }
+    try {
+        $configPath = [System.IO.Path]::GetFullPath($ConfigRoot).TrimEnd('\', '/')
+        $rootPath = [System.IO.Path]::GetFullPath($RunRoot).TrimEnd('\', '/')
+        $rootPrefix = $configPath + [System.IO.Path]::DirectorySeparatorChar
+        if (-not $rootPath.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals([System.IO.Path]::GetDirectoryName($rootPath), $configPath, [System.StringComparison]::OrdinalIgnoreCase) -or
+            [System.IO.Path]::GetFileName($rootPath) -cne 'ui-runs') { throw 'UI 运行目录不在本机配置目录内。' }
+        if (-not [System.IO.Directory]::Exists($rootPath)) { return [pscustomobject]$result }
+        $rootInfo = [System.IO.DirectoryInfo]::new($rootPath)
+        if (($rootInfo.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'UI 运行目录是重解析点，拒绝清理。' }
+        $currentPath = ''
+        if (-not [string]::IsNullOrWhiteSpace($CurrentRunDirectory)) {
+            $currentPath = [System.IO.Path]::GetFullPath($CurrentRunDirectory).TrimEnd('\', '/')
+        }
+        $eligible = New-Object 'System.Collections.Generic.List[object]'
+        foreach ($directory in $rootInfo.GetDirectories()) {
+            if (($directory.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                $directory.Name -cnotmatch '^[0-9a-f]{32}$') { $result.skipped_unknown++; continue }
+            if ($currentPath -and [string]::Equals($directory.FullName.TrimEnd('\', '/'), $currentPath,
+                    [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+            $terminalRecord = Get-UiCompletedRunRecord -RunDirectory $directory.FullName
+            $size = if ($null -ne $terminalRecord) { Get-UiRunDirectorySize -RunDirectory $directory.FullName } else { $null }
+            if ($null -eq $terminalRecord -or $null -eq $size) { $result.skipped_unknown++; continue }
+            $eligible.Add([pscustomobject]@{ path = $directory.FullName; name = $directory.Name; bytes = [int64]$size; modified = $directory.LastWriteTimeUtc })
+        }
+        $orderedRuns = @($eligible | Sort-Object -Property @{Expression='modified';Descending=$true}, @{Expression='name';Descending=$false})
+        foreach ($run in $orderedRuns) {
+            if ($result.retained -lt $MaximumCompletedRuns -and
+                $run.bytes -le ($MaximumCompletedBytes - $result.retained_bytes)) {
+                $result.retained++
+                $result.retained_bytes += [int64]$run.bytes
+                continue
+            }
+            $target = [System.IO.Path]::GetFullPath([string]$run.path).TrimEnd('\', '/')
+            $targetPrefix = $rootPath + [System.IO.Path]::DirectorySeparatorChar
+            if (-not $target.StartsWith($targetPrefix, [System.StringComparison]::OrdinalIgnoreCase) -or
+                -not [string]::Equals([System.IO.Path]::GetDirectoryName($target), $rootPath, [System.StringComparison]::OrdinalIgnoreCase) -or
+                [System.IO.Path]::GetFileName($target) -cnotmatch '^[0-9a-f]{32}$') { throw '待清理的 UI 运行目录越界。' }
+            try {
+                Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction Stop
+                $result.removed++
+            } catch {
+                $result.cleanup_errors++
+            }
+        }
+    } catch {
+        $result.cleanup_errors++
+    }
+    return [pscustomobject]$result
+}
+
 function Test-UiStatusRecord {
     param([Parameter(Mandatory=$true)][object]$Record)
     if ($Record -isnot [System.Management.Automation.PSCustomObject]) { return $false }
@@ -327,6 +541,9 @@ function Test-UiStatusRecord {
             if ($null -eq $property -or $property.Value -isnot [string]) { return $false }
         }
     }
+    $sourceIdentityProperty = $Record.PSObject.Properties['lcd_source_identity']
+    if ($null -ne $sourceIdentityProperty -and
+        -not (Test-UiSourceIdentityRecord -Identity $sourceIdentityProperty.Value -ParentRecord $Record)) { return $false }
     $numberTypes = @([byte], [sbyte], [int16], [uint16], [int32], [uint32], [int64], [uint64])
     $numberNames = @('seq', 'timestamp_utc_ms', 'elapsed_ms', 'last_rx_source_id', 'last_rx_destination_id', 'last_rx_slot')
     if ($hasCurrentCallStatus) {
@@ -1227,6 +1444,10 @@ function Start-BridgeRun {
             Set-MainText -Name 'TargetValue' -Text $script:targetLabel
         }
         $audio = Get-BridgeAudioSettings -Path $script:audioSettingsPath
+        $retention = Invoke-UiRunLogRetention -RunRoot (Join-Path $script:configDirectory 'ui-runs') `
+            -ConfigRoot $script:configDirectory
+        if ($retention.removed -gt 0) { Add-UiEvent ('已清理 {0} 个已结束运行目录' -f $retention.removed) }
+        if ($retention.cleanup_errors -gt 0) { Add-UiEvent '有已结束运行记录未能清理' }
         $script:preparedRunDirectory = Join-Path (Join-Path $script:configDirectory 'ui-runs') ([guid]::NewGuid().ToString('N'))
         [System.IO.Directory]::CreateDirectory($script:preparedRunDirectory) | Out-Null
         $temporaryProfilePath = Join-Path $script:preparedRunDirectory 'connection-profile.json'
@@ -1438,6 +1659,14 @@ function Apply-StatusRecord {
         Set-MainText -Name 'CurrentCallValue' -Text '当前没有已接受的 BM 来话'
         Set-MainText -Name 'CurrentCallDetail' -Text '等待通过目标、时隙和呼叫类型过滤的来话。'
     }
+    $identityProperty = $Record.PSObject.Properties['lcd_source_identity']
+    $identityDisplay = if ($null -eq $identityProperty) {
+        Get-UiSourceIdentityDisplay -IdentityPresent $false
+    } else {
+        Get-UiSourceIdentityDisplay -Identity $identityProperty.Value
+    }
+    Set-MainText -Name 'HriSourceIdentityValue' -Text $identityDisplay.value
+    Set-MainText -Name 'RadioDisplayValue' -Text $identityDisplay.radio_display
 
     if ([bool]$Record.last_rx_header_valid) {
         $caller = 'DMR ID ' + [string]$Record.last_rx_source_id
@@ -1503,6 +1732,9 @@ function Set-StaleDisplay {
     Set-MainText -Name 'RadioStateValue' -Text '电台状态：未知'
     Set-MainText -Name 'CurrentCallValue' -Text '活动来话状态已过期'
     Set-MainText -Name 'CurrentCallDetail' -Text '已清除上次状态中的当前 BM 话者；等待新状态报告。'
+    $identityDisplay = Get-UiSourceIdentityDisplay -State 'stale'
+    Set-MainText -Name 'HriSourceIdentityValue' -Text $identityDisplay.value
+    Set-MainText -Name 'RadioDisplayValue' -Text $identityDisplay.radio_display
     Set-MainText -Name 'FreshnessValue' -Text '状态报告过期'
 }
 
@@ -1678,6 +1910,9 @@ function On-UiTimerTick {
             Set-MainText -Name 'RadioStateValue' -Text '电台状态：未知'
             Set-MainText -Name 'CurrentCallValue' -Text '核心已退出'
             Set-MainText -Name 'CurrentCallDetail' -Text '活动 BM 来话状态已清除。'
+            $identityDisplay = Get-UiSourceIdentityDisplay -State 'exited'
+            Set-MainText -Name 'HriSourceIdentityValue' -Text $identityDisplay.value
+            Set-MainText -Name 'RadioDisplayValue' -Text $identityDisplay.radio_display
             Set-MainText -Name 'RunValue' -Text '已停止'
             Set-MainText -Name 'FreshnessValue' -Text '本次运行已结束'
             if (-not $script:stopTask) {
@@ -1906,8 +2141,13 @@ if ($RenderOnly) {
         max_window_width = $script:maxWindowWidth
         max_window_height = $script:maxWindowHeight
         device_combo_rendered_text = $deviceComboEvidence
-        main = Get-WpfWindowLayoutInfo -Window $script:mainWindow -ControlNames @('ConnectButton', 'SettingsButton', 'StopButton', 'FooterText')
+        main = Get-WpfWindowLayoutInfo -Window $script:mainWindow -ControlNames @('ConnectButton', 'SettingsButton', 'StopButton', 'FooterText', 'HriSourceIdentityValue', 'RadioDisplayValue', 'CurrentCallValue', 'CurrentCallDetail')
         settings = Get-WpfWindowLayoutInfo -Window $script:settingsWindow -ControlNames @('CancelSettingsButton', 'SaveSettingsButton', 'SettingsErrorText', 'PasswordPathBox', 'BrowsePasswordButton', 'DeviceDiscoveryText', 'RefreshDevicesButton', 'SerialBox', 'WaveInEndpointBox', 'WaveOutEndpointBox', 'PlaybackGainSlider', 'PlaybackGainValueText', 'TransmitGainSlider', 'TransmitGainValueText')
+        main_source_identity = [pscustomobject][ordered]@{
+            value = (Get-UiControl 'HriSourceIdentityValue').Text
+            radio_display = (Get-UiControl 'RadioDisplayValue').Text
+            visual_text = @(Get-UiVisualTextValues -Root $script:mainWindow)
+        }
     }
     [System.IO.File]::WriteAllText((Join-Path $renderDirectory 'layout-info.json'), (ConvertTo-Json -InputObject $layoutInfo -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
     $script:settingsWindow.Close()

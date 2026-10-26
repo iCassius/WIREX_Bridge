@@ -51,6 +51,7 @@ Assert-True (@($mappedAssetNames | Where-Object { $_ -notmatch '^[A-Za-z0-9._-]+
     '所有固定文件的 GitHub asset 名称均为 ASCII'
 Assert-True (Test-ReleaseVersion -Value 'v0.1.0-alpha.1') '候选版本格式可用'
 Assert-True (Test-ReleaseVersion -Value 'v0.1.0-alpha.2') 'alpha.2 明确版本允许'
+Assert-True (Test-ReleaseVersion -Value 'v0.1.0-alpha.3') 'alpha.3 明确版本允许'
 Assert-True (-not (Test-ReleaseVersion -Value 'v0.1.0')) '正式版本格式不能混入 alpha 标签'
 Assert-True (-not (Test-ReleaseVersion -Value 'v0.2.0-alpha.1')) '未登记的 alpha 版本必须拒绝'
 Assert-True (-not (Test-ReleaseVersion -Value 'V0.1.0-ALPHA.1')) '版本匹配区分大小写'
@@ -75,11 +76,8 @@ Assert-True ($alpha2Tests[14] -ceq 'bounded_pipe_writer_test' -and
 $builderTestLines = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'build-bm-bridge.ps1') -Encoding UTF8 |
     Where-Object { $_ -match "^\s*@\{\s*Name='[^']+';\s*Source='tests\\" })
 $builderTestNames = @($builderTestLines | ForEach-Object { [regex]::Match($_, "Name='([^']+)'").Groups[1].Value })
-Assert-Equal $builderTestNames.Count $alpha2Tests.Count 'alpha.2 测试配置数量与 builder 源码一致'
-for ($testIndex = 0; $testIndex -lt $alpha2Tests.Count; $testIndex++) {
-    Assert-True ($builderTestNames[$testIndex] -ceq $alpha2Tests[$testIndex]) `
-        "alpha.2 固定测试清单与 builder 源码顺序一致，索引 $testIndex"
-}
+Assert-True ($alpha2Tests.Count -eq 28 -and $alpha2Tests[15] -ceq 'ui_pipe_test') `
+    'alpha.2 retains its historical 28-test manifest independently of the current builder'
 Assert-True ($alpha2Files -ccontains 'start-ui.cmd' -and $alpha2Files -ccontains 'start-ui.ps1' -and
     $alpha2Files -ccontains 'ui/windows/SettingsWindow.xaml') 'alpha.2 允许清单中的桌面入口和设置窗口'
 foreach ($entry in @(
@@ -94,10 +92,34 @@ foreach ($entry in @(
 }
 Assert-True ((Get-ReleaseAssetName -RelativePath 'start-ui.cmd') -ceq 'start-ui.cmd') `
     '选择 alpha.2 profile 后 UI asset 映射启用'
+$alpha3Profile = Get-ReleaseProfile -Version 'v0.1.0-alpha.3'
+[void](Set-ReleaseVersion -Version 'v0.1.0-alpha.3')
+$alpha3Files = @(Get-ExpectedReleasePackageFiles)
+$alpha3Tests = @(Get-ExpectedReleaseTests)
+Assert-Equal $alpha3Files.Count 28 'alpha.3 固定本地文件数含 manifest 和身份说明'
+Assert-Equal $alpha3Tests.Count 35 'alpha.3 builder 测试数为精确 35 项'
+Assert-True ((Get-ReleaseAssetName -RelativePath 'docs/BM来话身份显示.md') -ceq 'docs__bm-call-identity.md') `
+    'alpha.3 identity guide has a fixed ASCII asset mapping'
+Assert-True (@($alpha3Profile.SourceFiles | Where-Object {
+    [string]$_.Source -ceq 'docs\BM来话身份显示.md' -and [string]$_.Destination -ceq 'docs\BM来话身份显示.md'
+}).Count -eq 1) 'alpha.3 package includes the BM call-identity guide'
+$alpha3ReadmeMap = @($alpha3Profile.SourceFiles | Where-Object { [string]$_.Destination -ceq 'README.md' })
+Assert-Equal $alpha3ReadmeMap.Count 1 'alpha.3 has exactly one README source mapping'
+Assert-True ([string]$alpha3ReadmeMap[0].Source -ceq 'docs\releases\v0.1.0-alpha.3-package-README.md') `
+    'alpha.3 package copies its own versioned README'
+Assert-True ($alpha3Profile.ReleaseScope -match 'per-accepted-call DMR Source ID label' -and
+    @($alpha3Profile.NotIncluded | Where-Object { $_ -match 'RF node operation is not implemented' }).Count -eq 1) `
+    'alpha.3 package scope states identity behavior and RF omission explicitly'
+Assert-Equal $builderTestNames.Count $alpha3Tests.Count 'alpha.3 test list count matches current builder source'
+for ($testIndex = 0; $testIndex -lt $alpha3Tests.Count; $testIndex++) {
+    Assert-True ($builderTestNames[$testIndex] -ceq $alpha3Tests[$testIndex]) `
+        "alpha.3 fixed test list matches builder source order at index $testIndex"
+}
 [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.1')
 Assert-Throws { Get-ReleaseAssetName -RelativePath 'start-ui.cmd' } 'alpha.1 不接受 alpha.2 UI asset'
 Assert-True ((Get-ReleaseAssetName -RelativePath 'docs/连接配置.md') -ceq 'docs__connection-profile.md') `
     '切回 alpha.1 后仍保留原 asset 映射'
+Assert-Throws { Get-ReleaseAssetName -RelativePath 'docs/BM来话身份显示.md' } 'alpha.1 不接受 alpha.3 identity guide'
 
 $testRoot = Join-Path $repositoryRoot ('build\_work\package-release-test-' + [guid]::NewGuid().ToString('N'))
 $buildDirectory = Join-Path $testRoot 'wirex-bridge-0123456-20261025-000000'
@@ -107,6 +129,14 @@ $approvedFixturePath = Join-Path $repositoryRoot 'build\bm-radio-bridge-5e33433\
 $approvedFixtureHash = Test-ApprovedYFixture -Path $approvedFixturePath
 New-Item -ItemType Directory -Path $buildDirectory -Force | Out-Null
 try {
+    $alpha3ReadmeOutput = Join-Path $testRoot 'synthetic-alpha3-readme\README.md'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $alpha3ReadmeOutput) -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot $alpha3ReadmeMap[0].Source) -Destination $alpha3ReadmeOutput
+    $copiedAlpha3Readme = [System.IO.File]::ReadAllText($alpha3ReadmeOutput, [System.Text.Encoding]::UTF8)
+    Assert-True ($copiedAlpha3Readme -match '(?m)^# WIREX Bridge v0\.1\.0-alpha\.3\s*$' -and
+        $copiedAlpha3Readme -notmatch 'v0\.1\.0-alpha\.2') `
+        'alpha.3 README copy contains alpha.3 instructions and no alpha.2 version text'
+
     $fakeExePath = Join-Path $buildDirectory 'wirex_bridge.exe'
     Write-Utf8NoBom -Path $fakeExePath -Text 'synthetic-only; not an executable'
     $fakeExe = Get-Item -LiteralPath $fakeExePath
@@ -280,6 +310,27 @@ try {
     Write-Utf8NoBom -Path $alpha2ManifestPath -Text ((ConvertTo-Json -InputObject $alpha2Manifest -Depth 8) + "`n")
     Assert-True ((Assert-ReleasePackageInventory -PackageRoot $alpha2PackageRoot -Version 'v0.1.0-alpha.2') -eq $null) `
         'alpha.2 合成目录和 asset 清单与显式包配置一致'
+
+    $alpha3PackageRoot = Join-Path $testRoot 'package-alpha3'
+    Copy-Item -LiteralPath $alpha2PackageRoot -Destination $alpha3PackageRoot -Recurse
+    [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.3')
+    $alpha3ManifestPath = Join-Path $alpha3PackageRoot 'manifest.json'
+    $alpha3Manifest = [System.IO.File]::ReadAllText($alpha3ManifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $identityGuide = Join-Path $alpha3PackageRoot 'docs\BM来话身份显示.md'
+    Write-Utf8NoBom -Path $identityGuide -Text 'synthetic alpha.3 identity guide'
+    $identityItem = Get-Item -LiteralPath $identityGuide
+    $alpha3Manifest.files += ,([pscustomobject]@{
+        path = 'docs/BM来话身份显示.md'
+        asset_name = (Get-ReleaseAssetName -RelativePath 'docs/BM来话身份显示.md')
+        length_bytes = [long]$identityItem.Length
+        sha256 = (Get-FileHash -LiteralPath $identityGuide -Algorithm SHA256).Hash.ToLowerInvariant()
+        source = 'synthetic alpha.3 test fixture'
+    })
+    $alpha3Manifest.version = 'v0.1.0-alpha.3'
+    $alpha3Manifest.tag_candidate = 'v0.1.0-alpha.3'
+    Write-Utf8NoBom -Path $alpha3ManifestPath -Text ((ConvertTo-Json -InputObject $alpha3Manifest -Depth 8) + "`n")
+    Assert-True ((Assert-ReleasePackageInventory -PackageRoot $alpha3PackageRoot -Version 'v0.1.0-alpha.3') -eq $null) `
+        'alpha.3 合成目录和 identity asset 清单与显式包配置一致'
     [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.1')
 
     $readmeFixture = Join-Path $packageRoot 'README.md'

@@ -26,7 +26,7 @@ $script:releaseAssetRedirectHosts = @(
 
 function Test-ReleaseTag {
     param([Parameter(Mandatory=$true)][string]$Tag)
-    return ($Tag -ceq 'v0.1.0-alpha.1' -or $Tag -ceq 'v0.1.0-alpha.2')
+    return ($Tag -ceq 'v0.1.0-alpha.1' -or $Tag -ceq 'v0.1.0-alpha.2' -or $Tag -ceq 'v0.1.0-alpha.3')
 }
 
 function Get-ExpectedReleaseTests {
@@ -44,7 +44,20 @@ function Get-ExpectedReleaseTests {
         'v0.1.0-alpha.2' {
             return @($alpha1[0..14] + 'ui_pipe_test' + $alpha1[15..($alpha1.Count - 1)])
         }
-        default { throw 'Only v0.1.0-alpha.1 and v0.1.0-alpha.2 release profiles are supported.' }
+        'v0.1.0-alpha.3' {
+            return @(
+                'dmrd_test', 'direct_frame_test', 'hri_t_payload_test', 'hri_call_header_test', 'hri_t_record_test',
+                'hri_lcd_identity_candidate_test', 'direct_stream_test', 'hri_session_test', 'hri_ptt_gate_test',
+                'hri_p_status_test', 'hri_downlink_session_test', 'hri_radio_protocol_test',
+                'operation_audio_cleanup_test', 'audio_input_cleanup_test', 'wave_output_open_test', 'session_timing_test',
+                'wave_file_test', 'pcm_gain_test', 'bounded_pipe_writer_test', 'ui_pipe_test', 'console_lifecycle_test',
+                'session_report_test', 'dmr_call_test', 'bm_session_test', 'bm_udp_test', 'dmr_vocoder_test',
+                'ambe_dmr72_test', 'ysf_vd2_vch_test', 'voice_transcode_buffer_test', 'pcm_resampler_test',
+                'bm_voice_pipeline_test', 'bm_test_profile_test', 'bm_connection_config_test', 'hri_stream_session_test',
+                'bm_bridge_loopback_test'
+            )
+        }
+        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, and v0.1.0-alpha.3 are supported.' }
     }
 }
 
@@ -84,7 +97,16 @@ function Get-ExpectedReleaseFiles {
             $alpha2 += [pscustomobject]@{ Path='ui/windows/SettingsWindow.xaml'; AssetName='ui__windows__SettingsWindow.xaml'; MaximumBytes=4194304L }
             return $alpha2
         }
-        default { throw 'Only v0.1.0-alpha.1 and v0.1.0-alpha.2 release profiles are supported.' }
+        'v0.1.0-alpha.3' {
+            $alpha3 = @(Get-ExpectedReleaseFiles -Tag 'v0.1.0-alpha.2')
+            $alpha3 += [pscustomobject]@{
+                Path='docs/BM来话身份显示.md'
+                AssetName='docs__bm-call-identity.md'
+                MaximumBytes=4194304L
+            }
+            return $alpha3
+        }
+        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, and v0.1.0-alpha.3 are supported.' }
     }
 }
 
@@ -358,7 +380,7 @@ function Test-BuildProvenanceDocument {
 
 function Select-ReleaseCandidate {
     param([object[]]$Releases, [Parameter(Mandatory=$true)][string]$RequestedTag, [switch]$AllowDraft)
-    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0-alpha.1 and v0.1.0-alpha.2 are supported.' }
+    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, and v0.1.0-alpha.3 are supported.' }
     $matches = @($Releases | Where-Object { [string]$_.tag_name -ceq $RequestedTag })
     if ($matches.Count -ne 1) { throw 'GitHub Release 列表中没有唯一匹配的 tag。' }
     $release = $matches[0]
@@ -529,7 +551,7 @@ function New-GitHubApiUri {
     )
     switch ($Kind) {
         'tag' {
-            if (-not (Test-ReleaseTag -Tag $Tag)) { throw 'Only v0.1.0-alpha.1 and v0.1.0-alpha.2 are supported.' }
+            if (-not (Test-ReleaseTag -Tag $Tag)) { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, and v0.1.0-alpha.3 are supported.' }
             return [Uri]($script:githubApiRoot + '/releases/tags/' + $Tag)
         }
         'list' {
@@ -732,7 +754,7 @@ function Invoke-ReleaseDownload {
     param([Parameter(Mandatory=$true)][string]$RequestedTag,
           [Parameter(Mandatory=$true)][string]$OutputDirectory,
           [switch]$AllowDraft)
-    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0-alpha.1 and v0.1.0-alpha.2 are supported.' }
+    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, and v0.1.0-alpha.3 are supported.' }
     $context = Get-DownloadDestinationContext -Destination $OutputDirectory
     $token = Get-GitCredentialToken
     $stagingCreated = $false

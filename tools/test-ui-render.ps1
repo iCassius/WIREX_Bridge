@@ -21,6 +21,16 @@ function Test-RenderedLayout {
             Assert-UiRender ([bool]$property.Value) ("$windowName 窗口中的 $($property.Name) 未显示。")
         }
     }
+    if ($MaximumHeight -le 700) {
+        Assert-UiRender ($layout.main.event_list_height -ge 50 -and $layout.main.event_list_height -le 60) '小工作区没有压缩运行记录区域，来话状态可能被裁切。'
+    }
+    $identity = $layout.main_source_identity
+    Assert-UiRender ($identity.value -ceq '等待本次运行报告' -and
+        $identity.radio_display -ceq 'FTX-1 屏幕：未知') '离线主窗口没有显示来源状态未知和电台屏显未知。'
+    $mainVisualText = @($identity.visual_text)
+    Assert-UiRender ($mainVisualText -ccontains 'HRI 来源标签' -and
+        $mainVisualText -ccontains '等待本次运行报告' -and
+        $mainVisualText -ccontains 'FTX-1 屏幕：未知') '主窗口来源标签或屏显文字没有进入 WPF 视觉树。'
     $expectedDeviceValues = @{ serial = 'COM5'; wave_input = '{render-input}'; wave_output = '{render-output}' }
     foreach ($comboName in @('serial', 'wave_input', 'wave_output')) {
         $evidence = $layout.device_combo_rendered_text.$comboName

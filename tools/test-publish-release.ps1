@@ -126,6 +126,34 @@ try {
     Assert-True ($alpha2Package.Assets.Count -eq 27) 'alpha.2 package accepts 26 files plus standalone manifest'
     Assert-True (@($alpha2Package.Assets | Where-Object { $_.Name -ceq 'ui__windows__SettingsWindow.xaml' }).Count -eq 1) 'alpha.2 UI asset mapping is fixed'
     Assert-Throws { Assert-PublishPackage -PackageRoot $alpha2Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.1' } 'alpha.2 package cannot pass the alpha.1 profile'
+
+    $alpha3Root = Join-Path $testRoot 'package-alpha3'
+    Copy-Item -LiteralPath $alpha2Root -Destination $alpha3Root -Recurse
+    [void](Set-PublishProfile -Tag 'v0.1.0-alpha.3')
+    $alpha3IdentityPath = Join-Path $alpha3Root 'docs\BM来话身份显示.md'
+    Write-Utf8NoBom -Path $alpha3IdentityPath -Text 'synthetic alpha.3 identity guide'
+    $alpha3IdentityItem = Get-Item -LiteralPath $alpha3IdentityPath
+    $alpha3ManifestPath = Join-Path $alpha3Root 'manifest.json'
+    $alpha3Manifest = [System.IO.File]::ReadAllText($alpha3ManifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $alpha3Manifest.files += ,([ordered]@{
+        path = 'docs/BM来话身份显示.md'
+        asset_name = (Get-PublishAssetName -RelativePath 'docs/BM来话身份显示.md')
+        length_bytes = [long]$alpha3IdentityItem.Length
+        sha256 = (Get-FileHash -LiteralPath $alpha3IdentityPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        source = 'synthetic test content'
+    })
+    $alpha3Manifest.version = 'v0.1.0-alpha.3'
+    $alpha3Manifest.tag_candidate = 'v0.1.0-alpha.3'
+    $alpha3Manifest.build.passed_test_count = $script:expectedTestNames.Count
+    $alpha3Manifest.build.passed_tests = @($script:expectedTestNames)
+    Write-Utf8NoBom -Path $alpha3ManifestPath -Text ((ConvertTo-Json -InputObject $alpha3Manifest -Depth 12) + "`n")
+    $alpha3Package = Assert-PublishPackage -PackageRoot $alpha3Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.3'
+    Assert-True ($alpha3Package.Assets.Count -eq 28) 'alpha.3 package accepts 27 files plus standalone manifest'
+    Assert-True (@($alpha3Package.Assets | Where-Object { $_.Name -ceq 'docs__bm-call-identity.md' }).Count -eq 1) `
+        'alpha.3 identity guide asset mapping is fixed'
+    Assert-Throws { Assert-PublishPackage -PackageRoot $alpha3Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.2' } `
+        'alpha.3 package cannot pass the alpha.2 profile'
+    $validAlpha3ManifestJson = [System.IO.File]::ReadAllText($alpha3ManifestPath, [System.Text.Encoding]::UTF8)
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.1')
     $manifest = [System.IO.File]::ReadAllText($manifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
 
@@ -255,7 +283,7 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $preflightRepo 'tools') -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $preflightRepo 'docs/releases') -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'download-release.ps1') -Destination (Join-Path $preflightRepo 'tools/download-release.ps1')
-    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2')) {
+    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3')) {
         Write-Utf8NoBom -Path (Join-Path $preflightRepo ('docs/releases/' + $tag + '.md')) -Text ('Synthetic offline release notes for ' + $tag + "`n")
     }
     $gitInit = @(& git -C $preflightRepo init --quiet 2>&1)
@@ -264,7 +292,7 @@ try {
         @('config', 'user.name', 'WIREX Offline Test'),
         @('config', 'user.email', 'wirex-offline-test@example.invalid'),
         @('remote', 'add', 'origin', $script:repositoryUrl),
-        @('add', '--', 'tools/download-release.ps1', 'docs/releases/v0.1.0-alpha.1.md', 'docs/releases/v0.1.0-alpha.2.md'),
+        @('add', '--', 'tools/download-release.ps1', 'docs/releases/v0.1.0-alpha.1.md', 'docs/releases/v0.1.0-alpha.2.md', 'docs/releases/v0.1.0-alpha.3.md'),
         @('commit', '--quiet', '-m', 'offline publisher preflight fixture')
     )) {
         $previousErrorActionPreference = $ErrorActionPreference
@@ -277,13 +305,21 @@ try {
     $preflightCommit = [string](@(& git -C $preflightRepo rev-parse HEAD 2>$null)[0]).Trim()
     if ($LASTEXITCODE -ne 0 -or $preflightCommit -cnotmatch '^[0-9a-f]{40}$') { throw 'Could not identify the temporary offline commit.' }
     New-Item -ItemType Directory -Path (Join-Path $preflightRepo 'build/_work') -Force | Out-Null
-    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2')) {
-        $sourcePackage = if ($tag -ceq 'v0.1.0-alpha.1') { $packageRoot } else { $alpha2Root }
+    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3')) {
+        $sourcePackage = switch ($tag) {
+            'v0.1.0-alpha.1' { $packageRoot; break }
+            'v0.1.0-alpha.2' { $alpha2Root; break }
+            'v0.1.0-alpha.3' { $alpha3Root; break }
+        }
         $targetPackage = Join-Path $preflightRepo ('build/releases/' + $tag)
         $targetParent = Split-Path -Parent $targetPackage
         New-Item -ItemType Directory -Path $targetParent -Force | Out-Null
         Copy-Item -LiteralPath $sourcePackage -Destination $targetPackage -Recurse
-        $sourceManifestText = if ($tag -ceq 'v0.1.0-alpha.1') { $validManifestJson } else { $validAlpha2ManifestJson }
+        $sourceManifestText = switch ($tag) {
+            'v0.1.0-alpha.1' { $validManifestJson; break }
+            'v0.1.0-alpha.2' { $validAlpha2ManifestJson; break }
+            'v0.1.0-alpha.3' { $validAlpha3ManifestJson; break }
+        }
         $preflightManifest = $sourceManifestText | ConvertFrom-Json
         $preflightManifest.source.commit = $preflightCommit
         $preflightManifest.build.source_commit = $preflightCommit
@@ -302,7 +338,7 @@ try {
         $script:credentialAttempted = $true
         throw 'OFFLINE_TEST_CREDENTIAL_ACCESS_BLOCKED'
     }
-    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2')) {
+    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3')) {
         $script:preflightBoundaryReached = $false
         $boundaryMessage = ''
         try {
