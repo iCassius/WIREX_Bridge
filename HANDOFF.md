@@ -2,6 +2,9 @@
 
 ## 当前版本与本机入口
 
+- 最新 `main` 源码提交为 `4ebec0cf2fe16e7a3ad5ead80393dd31ce1371cb`，增加 WPF 当前 BM 来话状态显示；alpha.2 tag 和发布资产保持原样。该提交的正式 clean build 有 35 项 C++ 测试全部通过，构建与 provenance 位于 `build/_work/wirex-bridge-4ebec0c-20261026-124823`，日志 `build/_work/r94-4ebec0c-build.log`，EXE SHA-256 `3f2e39f9cb930e7e047acba46ae8f3262cec976d834f72214e8b174b0043b8ad`，compiler/linker warning/error 为 0。
+- R94 状态JSON基于通过BM过滤后的 pipeline Snapshot 显示当前 Source ID、目标、呼叫类型、时隙、CC、LC验证情况和接收阶段；没有呼号资料时显示 DMR ID。BM EOT 到达后当前话者立即清除，本机尾音排空另行显示。取消、网络丢失、状态过期、native进程退出和新run均清理旧活动话者；左侧“最近来话”字段保留原有最近解码头语义。Windows PowerShell 5.1 状态测试和 WPF 离线渲染通过，渲染目录为 `build/_work/ui-render-5add0d5b83db4079b2bb6164551a8cd8`。COM999 启动失败集成 smoke 已通过：native 写出 `preflight_passed` 与 `serial_open_or_configure_failed` 两条状态记录，UI 严格校验器均接受；native以预期退出码2结束，11个当前来话字段均为zero/idle；不存在的 COM999 前后均未出现，音频端点只查询格式，串口未打开，UDP TX/RX/control计数均为0，音频流未打开，临时合成密码文件已删除。完整摘要及状态文件位于 `build/_work/r94-status-smoke-6807b5f2ffbf4098b5098e8d7ddaadf9`。
+- R94 只增加 WPF/BM 当前来话状态，不是 FTX-1 LCD 显示功能；LCD协议、来话呼号映射和实际屏幕更新仍未完成。新增 AMBE 参数映射和 YSF 转换缓冲尚未接入运行媒体链；仍需确认 HRI 语音记录的格式及 RF 路由。
 - HRI `TRCVTYPE` 配置路径静态研究见[报告](docs/HRI_TRCVTYPE配置路径.md)；[R91 双实例只读观察](docs/R91双实例只读观察.md)已完成一次约10秒采样，共57个样本、0次字段变化，随后会话查询确认已不再附加且 `cleanup_error` 为空。主会话已正常关闭本次启动的官方程序并确认进程退出。表项1在本次窗口显示 `TRCVTYPE=0`、`OPE_MODE=0` 并处于 OFF/未运行状态；实例与 `DGRP_DATA`、`DGRP_VOICE` 的对应关系及 LCD 路径仍待证据确认。
 - R93 的设置窗口中，Modulation 显示 `RX:FM - TX:FM`，下拉项为 `FM` 和 `DIGITAL`；点击 DIGITAL 和键盘 Down/Return 后显示值仍为 FM。主会话没有点 Apply/OK，随后 Cancel，主窗口仍显示 ANALOG，因此未确认 Digital 设置已生效或保存。取消后 10 秒只读快照记录 54 个样本、0 次字段变化；HRI 表项 0 `+0x50=1/+0x58=0`，表项 1 `+0x50=0` 且队列计数和 header 长度为 0。报告见 [R93 调制选项观察](docs/R93调制选项与取消后状态观察.md)。这次结果没有判定电台拒绝 Digital，也没有把 HRI 字段映射到 Node Mode、LCD 或 RF 路由。
 - 私有预发布 [v0.1.0-alpha.2](https://github.com/iCassius/WIREX_Bridge/releases/tag/v0.1.0-alpha.2) 已于 2026-10-26 05:26:14（中国标准时间）发布，Release ID `423670400`。源码 tag `v0.1.0-alpha.2` 指向 `a965df0ccd6649a972a0be6242a6ba2a1bd83dff`，annotated tag object 为 `848ee23ceb96adbb352e8106b2925c15eace2652`。
@@ -10,7 +13,7 @@
 - 8 组 PowerShell 检查及 WPF 离线渲染均通过。另以不存在的 COM999 端口运行启动失败路径，该路径写入磁盘的 native 状态记录；loopback 测试只查询音频格式，没有打开真实串口、发送 UDP 或启动音频流。UI 状态校验通过；证据目录为 `build/_work/ui-status-integration-a965df0-3dd6a47764524de1a7fd3dc7dd395af8`。alpha.2 的设备实机联测仍待集中执行。
 - alpha.2 发布后，`main` 增加了纯 AMBE+2 2450 参数映射与分组缓冲切片，源码提交为 `a5c5a8770305f9f6899895301cb5cee92c830267`。该提交 clean build 成功，35 项离线测试通过；构建来源记录在 `build/_work/wirex-bridge-a5c5a87-20261026-071313/build-provenance.json`，EXE SHA-256 为 `B4C3BC4E9621A4B975AFF26B39220361A883966FEF1FBAF0169C3B5D7178FACD`。root 按 provenance 列表独立重跑 35 项也全部通过，完整测试输出为 `build/_work/a5c5a87-root-tests.log`。新模块目前只用于独立离线测试，没有接入默认运行链；HRI 串口与 13 字节 YSF VCH 的对应格式及真实设备互通仍待确认。该提交没有更改 alpha.2 tag、Release 资产或两个已冻结候选目录。
 - 本机 `start-my-bridge.cmd` 已改为启动所选 alpha.2 WPF 界面。本机 `private/user-config` 中的连接配置和音量设置保持在 Git 忽略目录；版本指针已指向 alpha.2。密码仍通过原有本机文件路径提供，本轮没有读取或复制密码正文。
-- alpha.1 的一通 DIRECT 手咪→BM 鹦鹉→FTX-1 扬声器回声及退出确认继续作为 alpha.1 历史验收，详细计数和日志见下文。alpha.2 尚无新的设备 HIL 结果。下一阶段继续集中进行音量、TG91、长时间待机、断网恢复、退出和 RF 路由联测；LCD 当前话者与 C4FM RF 收发尚未实现，R77–R79 仍是软件研究证据。UI 运行日志的有界保留也列入后续工作。阶段细节见[下一阶段推进计划](docs/下一阶段推进计划.md)。
+- alpha.1 的一通 DIRECT 手咪→BM 鹦鹉→FTX-1 扬声器回声及退出确认继续作为 alpha.1 历史验收，详细计数和日志见下文。alpha.2 尚无新的设备 HIL 结果。下一阶段继续集中进行音量、TG91、长时间待机、断网恢复、退出和 RF 路由联测；R94 已增加 WPF 当前 BM 来话状态，FTX-1 LCD 显示和 C4FM RF 收发尚未实现，R77–R79 仍是软件研究证据。UI 运行日志的有界保留也列入后续工作。阶段细节见[下一阶段推进计划](docs/下一阶段推进计划.md)。
 
 ## v0.1.0-alpha.1 私有预发布状态
 
