@@ -4505,7 +4505,10 @@ void print_bm_bridge_help()
         L"状态报告按成功提交的 PCM 记录两条音频路径增益前后的统计和削波样本数。\n"
         L"Master 支持 IPv4 字面量或主机名；手工密码在控制台隐藏输入，预设从私有 UTF-8 文件读取。\n"
         L"两种密码入口只接受可打印 ASCII；手工隐藏输入允许空格。\n"
-        L"--ui-pipe 仅供桌面 UI 使用；必须提供完整配置或预设、显式密码文件、状态文件与匿名 stdin 管道，只接受 Q 换行或 EOF 停止。\n");
+        L"--ui-pipe 仅供桌面 UI 使用；必须提供完整配置或预设、显式密码文件、状态文件与匿名 stdin 管道，只接受 Q 换行或 EOF 停止。\n"
+        L"  --hri-lcd-identity-candidate --port COMn --body-file ABS --file WAV --report-file ABS --field destination|source|local --callsign ASCII\n"
+        L"                               单次本地WAV实验，仅替换一个呼号字段；1..8个无空格可见ASCII字符且含英文字母。\n"
+        L"                               不连接BM；报告中的电台LCD显示状态保持 unknown。\n");
 }
 
 struct BmBridgeCounters {
@@ -6531,6 +6534,31 @@ void print_help()
 
 int wmain(int argc, wchar_t* argv[])
 {
+    if (argc > 1 && std::wstring_view(argv[1]) == L"--hri-lcd-identity-candidate") {
+        try {
+            if (argc == 14 && std::wstring_view(argv[2]) == L"--port" &&
+                std::wstring_view(argv[4]) == L"--body-file" &&
+                std::wstring_view(argv[6]) == L"--file" &&
+                std::wstring_view(argv[8]) == L"--report-file" &&
+                std::wstring_view(argv[10]) == L"--field" &&
+                std::wstring_view(argv[12]) == L"--callsign") {
+                const auto field = parse_lcd_identity_field(argv[11]);
+                std::string callsign;
+                if (!field || !parse_lcd_identity_callsign(argv[13], callsign)) {
+                    std::wcerr << L"--field 必须为 destination/source/local；--callsign 接受 1..8 个无空格可见 ASCII 字符且至少含一个英文字母。\n";
+                    return 2;
+                }
+                return hri_downlink_candidate(argv[3], std::filesystem::path(argv[5]),
+                    std::filesystem::path(argv[7]), std::filesystem::path(argv[9]),
+                    LcdIdentityCandidateSelection{*field, std::move(callsign)});
+            }
+            std::wcerr << L"用法：--hri-lcd-identity-candidate --port COMn --body-file ABS --file WAV --report-file ABS --field destination|source|local --callsign ASCII。\n";
+            return 2;
+        } catch (...) {
+            std::wcerr << L"HRI LCD候选在受控启动期间失败；未记录密码或语音内容。\n";
+            return 2;
+        }
+    }
 #ifdef WIREX_ENABLE_BM_BRIDGE
     try {
         return bm_bridge_main(argc, argv);
@@ -6553,24 +6581,6 @@ int wmain(int argc, wchar_t* argv[])
     }
     if (argc == 4 && std::wstring_view(argv[1]) == L"--version" && std::wstring_view(argv[2]) == L"--port") {
         return query_version(argv[3]);
-    }
-    if (argc == 14 && std::wstring_view(argv[1]) == L"--hri-lcd-identity-candidate" &&
-        std::wstring_view(argv[2]) == L"--port" && std::wstring_view(argv[4]) == L"--body-file" &&
-        std::wstring_view(argv[6]) == L"--file" && std::wstring_view(argv[8]) == L"--report-file" &&
-        std::wstring_view(argv[10]) == L"--field" && std::wstring_view(argv[12]) == L"--callsign") {
-        const auto field = parse_lcd_identity_field(argv[11]);
-        std::string callsign;
-        if (!field || !parse_lcd_identity_callsign(argv[13], callsign)) {
-            std::wcerr << L"--field 必须为 destination/source/local；--callsign 接受 1..8 个无空格可见 ASCII 字符且至少含一个英文字母。\n";
-            return 2;
-        }
-        return hri_downlink_candidate(argv[3], std::filesystem::path(argv[5]),
-            std::filesystem::path(argv[7]), std::filesystem::path(argv[9]),
-            LcdIdentityCandidateSelection{*field, std::move(callsign)});
-    }
-    if (argc > 1 && std::wstring_view(argv[1]) == L"--hri-lcd-identity-candidate") {
-        std::wcerr << L"用法：--hri-lcd-identity-candidate --port COMn --body-file ABS --file WAV --report-file ABS --field destination|source|local --callsign ASCII。\n";
-        return 2;
     }
     if (argc == 10 && std::wstring_view(argv[1]) == L"--hri-downlink-candidate" &&
         std::wstring_view(argv[2]) == L"--port" && std::wstring_view(argv[4]) == L"--body-file" &&
