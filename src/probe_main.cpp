@@ -4506,7 +4506,6 @@ void print_bm_bridge_help()
         L"Master 支持 IPv4 字面量或主机名；手工密码在控制台隐藏输入，预设从私有 UTF-8 文件读取。\n"
         L"两种密码入口只接受可打印 ASCII；手工隐藏输入允许空格。\n"
         L"--ui-pipe 仅供桌面 UI 使用；必须提供完整配置或预设、显式密码文件、状态文件与匿名 stdin 管道，只接受 Q 换行或 EOF 停止。\n"
-        L"--experimental-lcd-source-id 启用每通来话 source ID 标签实验（默认关闭）。\n"
         L"  --hri-lcd-identity-candidate --port COMn --body-file ABS --file WAV --report-file ABS --field destination|source|local --callsign ASCII\n"
         L"                               单次本地WAV实验，仅替换一个呼号字段；1..8个无空格可见ASCII字符且含英文字母。\n"
         L"                               不连接BM；报告中的电台LCD显示状态保持 unknown。\n");
@@ -4561,11 +4560,10 @@ struct BmBridgeCounters {
     std::uint64_t rx_filtered_slot{};
     std::uint64_t rx_filtered_call_kind{};
     std::uint64_t rx_filtered_protocol{};
-    bool lcd_source_id_experiment_enabled{};
-    bool lcd_source_id_candidate_prepared{};
-    std::uint32_t lcd_source_id_candidate_source_id{};
-    std::uint64_t lcd_source_id_candidate_generation{};
-    std::string lcd_source_id_candidate_label;
+    bool lcd_source_identity_prepared{};
+    std::uint32_t lcd_source_identity_source_id{};
+    std::uint64_t lcd_source_identity_generation{};
+    std::string lcd_source_identity_label;
 };
 
 const char* ptt_level_name(wirex::hri_session::PttLevel level) noexcept
@@ -4715,13 +4713,12 @@ bool append_bridge_status(std::ofstream& file, std::string_view event, std::uint
          << (current_call_valid && receive_snapshot.receive_color_code_known ? "true" : "false")
          << ",\"current_call_generation\":" << (current_call_valid ? receive_snapshot.receive_generation : 0U)
          << ",\"receive_media_state\":\"" << receive_media_state_name(receive_snapshot.rx_state) << "\""
-         << ",\"lcd_experiment\":{\"enabled\":"
-         << (counters.lcd_source_id_experiment_enabled ? "true" : "false")
-         << ",\"display\":\"unknown\""
-         << ",\"candidate_prepared\":" << (counters.lcd_source_id_candidate_prepared ? "true" : "false")
-         << ",\"candidate_source_id\":" << counters.lcd_source_id_candidate_source_id
-         << ",\"receive_generation\":" << counters.lcd_source_id_candidate_generation
-         << ",\"candidate_label\":\"" << counters.lcd_source_id_candidate_label << "\"}"
+         << ",\"lcd_source_identity\":{\"prepared\":"
+         << (counters.lcd_source_identity_prepared ? "true" : "false")
+         << ",\"source_id\":" << counters.lcd_source_identity_source_id
+         << ",\"receive_generation\":" << counters.lcd_source_identity_generation
+         << ",\"label\":\"" << counters.lcd_source_identity_label << "\""
+         << ",\"display\":\"unknown\"}"
          << ",\"rx_filtered_datagrams\":" << counters.rx_filtered_datagrams
          << ",\"rx_filtered_destination_id\":" << counters.rx_filtered_destination_id
          << ",\"rx_filtered_slot\":" << counters.rx_filtered_slot
@@ -4769,7 +4766,6 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                   wirex::bm_test_profile::TxPolicy tx_policy,
                   bool manual_ptt,
                   bool ui_pipe,
-                  bool experimental_lcd_source_id,
                   std::uint32_t radio_playback_gain_milli,
                   std::uint32_t mic_transmit_gain_milli,
                   BmBridgeCounters counters,
@@ -4803,8 +4799,6 @@ int bm_bridge_main(int argc, wchar_t* argv[])
     bool manual_ptt_seen = false;
     bool ui_pipe = false;
     bool ui_pipe_seen = false;
-    bool experimental_lcd_source_id = false;
-    bool experimental_lcd_source_id_seen = false;
     bool preset_seen = false;
     bool password_file_seen = false;
     bool wavein_endpoint_seen = false;
@@ -4834,16 +4828,6 @@ int bm_bridge_main(int argc, wchar_t* argv[])
             }
             ui_pipe = true;
             ui_pipe_seen = true;
-            ++index;
-            continue;
-        }
-        if (option == L"--experimental-lcd-source-id") {
-            if (experimental_lcd_source_id_seen) {
-                (void)bm_stderr(L"--experimental-lcd-source-id 不可重复指定。\n");
-                return 2;
-            }
-            experimental_lcd_source_id = true;
-            experimental_lcd_source_id_seen = true;
             ++index;
             continue;
         }
@@ -5148,7 +5132,6 @@ int bm_bridge_main(int argc, wchar_t* argv[])
     BmBridgeCounters counters{};
     counters.run_id = make_bridge_run_id();
     counters.audio_endpoints_validated = true;
-    counters.lcd_source_id_experiment_enabled = experimental_lcd_source_id;
     counters.rx_output_gain_milli = radio_playback_gain_milli;
     counters.tx_input_gain_milli = mic_transmit_gain_milli;
     const wirex::hri_session::Snapshot hri_preflight_snapshot{};
@@ -5164,7 +5147,7 @@ int bm_bridge_main(int argc, wchar_t* argv[])
     return run_bm_bridge(argv[3], body_path, input_id, output_id,
                          expected_wavein_endpoint_id, expected_waveout_endpoint_id, endpoint,
                          std::move(profile), call_template, tx_policy, manual_ptt,
-                         ui_pipe, experimental_lcd_source_id,
+                         ui_pipe,
                          radio_playback_gain_milli, mic_transmit_gain_milli,
                          std::move(counters), status_file, control_scope);
 }
@@ -5178,7 +5161,6 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                   wirex::bm_test_profile::TxPolicy tx_policy,
                   bool manual_ptt,
                   bool ui_pipe,
-                  bool experimental_lcd_source_id,
                   std::uint32_t radio_playback_gain_milli,
                   std::uint32_t mic_transmit_gain_milli,
                   BmBridgeCounters counters,
@@ -5374,11 +5356,11 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         }
     };
 
-    auto clear_lcd_source_id_candidate = [&]() {
-        counters.lcd_source_id_candidate_prepared = false;
-        counters.lcd_source_id_candidate_source_id = 0U;
-        counters.lcd_source_id_candidate_generation = 0U;
-        counters.lcd_source_id_candidate_label.clear();
+    auto clear_lcd_source_identity = [&]() {
+        counters.lcd_source_identity_prepared = false;
+        counters.lcd_source_identity_source_id = 0U;
+        counters.lcd_source_identity_generation = 0U;
+        counters.lcd_source_identity_label.clear();
     };
 
     std::uint64_t next_runtime_snapshot_ms = 1000U;
@@ -5705,7 +5687,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 break;
             }
             case StreamActionKind::cancel_playback:
-                clear_lcd_source_id_candidate();
+                clear_lcd_source_identity();
                 pipeline->cancel_rx();
                 pending_receive_start = false;
                 pending_playback_drain = false;
@@ -5718,7 +5700,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 break;
             case StreamActionKind::call_finished: {
                 const auto state = stream_session->snapshot();
-                clear_lcd_source_id_candidate();
+                clear_lcd_source_identity();
                 ++counters.calls_ended;
                 if (state.reason == StreamReason::none && state.stop_write_succeeded &&
                     state.stop_t_record_observed) {
@@ -5792,7 +5774,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         if (pipeline_state.rx_state == wirex::bm_voice::RxState::idle) {
             pending_receive_start = false;
             pending_receive_ended = false;
-            clear_lcd_source_id_candidate();
+            clear_lcd_source_identity();
             return;
         }
         const auto stream_state = stream_session->snapshot();
@@ -5800,7 +5782,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
             ++counters.rejected_calls;
             pending_receive_start = false;
             pending_receive_ended = false;
-            clear_lcd_source_id_candidate();
+            clear_lcd_source_identity();
             pipeline->cancel_rx();
             if (stream_state.phase != StreamPhase::idle && stream_state.phase != StreamPhase::faulted) {
                 // Receiver替换流时旧播放队列已不再属于当前通话；复位电台输出并收尾旧T会话。
@@ -5819,7 +5801,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 ++counters.rejected_calls;
                 pending_receive_start = false;
                 pending_receive_ended = false;
-                clear_lcd_source_id_candidate();
+                clear_lcd_source_identity();
                 pipeline->cancel_rx();
                 downlink_blocked = true;
                 set_failure("radio_waveout_reopen_failed");
@@ -5834,65 +5816,57 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
             ++counters.rejected_calls;
             pending_receive_start = false;
             pending_receive_ended = false;
-            clear_lcd_source_id_candidate();
+            clear_lcd_source_identity();
             pipeline->cancel_rx();
             return;
         }
         const auto call_window_ms = continuous_run ? wirex::hri_stream_session::max_call_window_ms
             : std::min(wirex::hri_stream_session::max_call_window_ms, bm_bridge_window_ms - now_ms);
-        wirex::hri_stream_session::CandidateFrame per_call_start_frame;
-        std::optional<wirex::hri_lcd_identity_candidate::SourceIdResult> lcd_candidate;
-        if (experimental_lcd_source_id) {
-            using wirex::bm_voice::RxState;
-            const auto& receive_call = pipeline_state.receive_call;
-            const bool receive_snapshot_valid = pipeline_state.rx_state != RxState::idle &&
-                pipeline_state.rx_state != RxState::filtered && pipeline_state.receive_generation != 0U;
-            if (!receive_snapshot_valid) {
-                ++counters.rejected_calls;
-                pending_receive_start = false;
-                pending_receive_ended = false;
-                clear_lcd_source_id_candidate();
-                pipeline->cancel_rx();
-                status("lcd_source_id_candidate_rejected_invalid_receive_snapshot");
-                return;
-            }
-            lcd_candidate = wirex::hri_lcd_identity_candidate::overlay_source_id_test_label(
-                start_body, receive_call.source_id);
-            if (!*lcd_candidate) {
-                ++counters.rejected_calls;
-                pending_receive_start = false;
-                pending_receive_ended = false;
-                clear_lcd_source_id_candidate();
-                pipeline->cancel_rx();
-                status("lcd_source_id_candidate_rejected_invalid_source_id");
-                return;
-            }
-            const auto encoded = wirex::direct_frame::encode({static_cast<std::uint8_t>('T'),
-                std::vector<std::uint8_t>(lcd_candidate->body.begin(), lcd_candidate->body.end())});
-            if (!encoded) {
-                ++counters.rejected_calls;
-                pending_receive_start = false;
-                pending_receive_ended = false;
-                clear_lcd_source_id_candidate();
-                pipeline->cancel_rx();
-                status("lcd_source_id_candidate_frame_encode_failed");
-                return;
-            }
-            per_call_start_frame = encoded.bytes;
+        using wirex::bm_voice::RxState;
+        const auto& receive_call = pipeline_state.receive_call;
+        const bool receive_snapshot_valid = pipeline_state.rx_state != RxState::idle &&
+            pipeline_state.rx_state != RxState::filtered && pipeline_state.receive_generation != 0U;
+        if (!receive_snapshot_valid) {
+            ++counters.rejected_calls;
+            pending_receive_start = false;
+            pending_receive_ended = false;
+            clear_lcd_source_identity();
+            pipeline->cancel_rx();
+            status("lcd_source_identity_rejected_invalid_receive_snapshot");
+            return;
+        }
+        const auto lcd_identity = wirex::hri_lcd_identity_candidate::overlay_source_id_label(
+            start_body, receive_call.source_id);
+        if (!lcd_identity) {
+            ++counters.rejected_calls;
+            pending_receive_start = false;
+            pending_receive_ended = false;
+            clear_lcd_source_identity();
+            pipeline->cancel_rx();
+            status("lcd_source_identity_rejected_invalid_source_id");
+            return;
+        }
+        const auto per_call_start_frame = wirex::direct_frame::encode({static_cast<std::uint8_t>('T'),
+            std::vector<std::uint8_t>(lcd_identity.body.begin(), lcd_identity.body.end())});
+        if (!per_call_start_frame) {
+            ++counters.rejected_calls;
+            pending_receive_start = false;
+            pending_receive_ended = false;
+            clear_lcd_source_identity();
+            pipeline->cancel_rx();
+            status("lcd_source_identity_frame_encode_failed");
+            return;
         }
         const bool ended_before_hri_start = pending_receive_ended;
-        auto update = experimental_lcd_source_id
-            ? stream_session->begin_call_with_start_candidate(per_call_start_frame, now_ms, call_window_ms)
-            : stream_session->begin_call(now_ms, call_window_ms);
+        auto update = stream_session->begin_call_with_start_candidate(
+            per_call_start_frame.bytes, now_ms, call_window_ms);
         pending_receive_start = false;
         pending_receive_ended = false;
         if (update.error != wirex::hri_stream_session::Error::none) {
             ++counters.rejected_calls;
-            clear_lcd_source_id_candidate();
+            clear_lcd_source_identity();
             pipeline->cancel_rx();
-            status(experimental_lcd_source_id
-                ? "lcd_source_id_candidate_rejected_by_stream_session"
-                : "downlink_call_rejected_by_stream_session");
+            status("lcd_source_identity_rejected_by_stream_session");
             return;
         }
         if (update.state.phase == StreamPhase::faulted) {
@@ -5900,14 +5874,11 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
             downlink_blocked = true;
         } else {
             ++counters.calls_started;
-            if (lcd_candidate) {
-                counters.lcd_source_id_candidate_prepared = true;
-                counters.lcd_source_id_candidate_source_id = pipeline_state.receive_call.source_id;
-                counters.lcd_source_id_candidate_generation = pipeline_state.receive_generation;
-                counters.lcd_source_id_candidate_label.assign(
-                    lcd_candidate->label.data(), lcd_candidate->label.size());
-                status("lcd_source_id_candidate_prepared_for_this_call");
-            }
+            counters.lcd_source_identity_prepared = true;
+            counters.lcd_source_identity_source_id = receive_call.source_id;
+            counters.lcd_source_identity_generation = pipeline_state.receive_generation;
+            counters.lcd_source_identity_label.assign(lcd_identity.label.data(), lcd_identity.label.size());
+            status("lcd_source_identity_prepared_for_this_call");
         }
         service_stream_update(std::move(update));
         // BM 可以在电台首次 T3 之前结束短呼叫，保留这个顺序并在许可播放后排空尾音。
@@ -5938,12 +5909,13 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 status("bm_receive_playback_drained");
                 break;
             case PipelineEventKind::receive_cancelled:
-                clear_lcd_source_id_candidate();
+                clear_lcd_source_identity();
                 status("bm_receive_cancelled");
                 break;
             case PipelineEventKind::playback_start_timeout:
                 pending_receive_start = false;
                 pending_receive_ended = false;
+                clear_lcd_source_identity();
                 ++counters.rejected_calls;
                 status("hri_t3_start_window_expired_media_cleared");
                 break;
@@ -5972,7 +5944,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         cleanup_deadline = Clock::now() + std::chrono::milliseconds{bm_bridge_cleanup_ms};
         pending_receive_start = false;
         pending_receive_ended = false;
-        clear_lcd_source_id_candidate();
+        clear_lcd_source_identity();
         (void)stop_tx_input();
         const auto now_ms = elapsed_ms();
         if (pipeline->snapshot().tx_state != wirex::bm_voice::TxState::idle) {
@@ -6042,7 +6014,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         (void)stop_tx_input();
         pipeline->cancel_tx();
         pipeline->cancel_rx();
-        clear_lcd_source_id_candidate();
+        clear_lcd_source_identity();
         status("bm_receive_cancelled");
         pending_receive_start = false;
         pending_receive_ended = false;
@@ -6575,7 +6547,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         set_failure("runtime_exception");
         shutdown_requested = true;
         shutdown_reason = "runtime_exception";
-        clear_lcd_source_id_candidate();
+        clear_lcd_source_identity();
         (void)ptt_gate.set_ready(false);
         ptt_gate.disarm_until_release();
         cleanup_deadline = Clock::now() + std::chrono::milliseconds{bm_bridge_cleanup_ms};
@@ -6634,7 +6606,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
     transport.close();
     const bool signal_ok = control_scope.signal_cleanup_complete();
     const bool unregister_ok = control_scope.unregister_now();
-    clear_lcd_source_id_candidate();
+    clear_lcd_source_identity();
     if (!input_cleanup_ok || !output_cleanup_ok || !serial_cleanup_ok || !signal_ok || !unregister_ok) {
         set_failure("owned_resource_cleanup_failed");
     }

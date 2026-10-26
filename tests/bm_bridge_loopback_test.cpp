@@ -540,7 +540,7 @@ struct FakeHriAudioSink {
     }
 };
 
-void test_short_downlink_eot_waits_for_t3_and_final_audio_ack(bool use_source_id_label)
+void test_short_downlink_eot_waits_for_t3_and_final_audio_ack()
 {
     BmLoopback link;
     auto pipeline = std::make_unique<BmVoicePipeline>();
@@ -585,26 +585,18 @@ void test_short_downlink_eot_waits_for_t3_and_final_audio_ack(bool use_source_id
     }
     check(saw_network_end, "the short BM call reports EOT before HRI T3 starts");
 
-    if (use_source_id_label) {
-        const auto default_start_body = wirex::hri_t_payload::build_empty_header_empty_ambe_candidate_body(1, 1, 9U);
-        const auto tagged_start = wirex::hri_lcd_identity_candidate::overlay_source_id_test_label(
-            default_start_body, early_snapshot.receive_call.source_id);
-        check(static_cast<bool>(tagged_start), "the accepted short-call source ID builds one source test label");
-        const auto tagged_frame = wirex::direct_frame::encode({static_cast<std::uint8_t>('T'),
-            std::vector<std::uint8_t>(tagged_start.body.begin(), tagged_start.body.end())});
-        check(static_cast<bool>(tagged_frame), "the one-call T3 candidate encodes as a DIRECT frame");
-        hri_update = hri.begin_call_with_start_candidate(tagged_frame.bytes, base_ms);
-        check(hri_update.error == wirex::hri_stream_session::Error::none &&
-              hri_update.state.phase == wirex::hri_stream_session::Phase::start_write_pending &&
-              hri_update.actions.front().frame == tagged_frame.bytes,
-              "the T3 Action uses the source from this accepted receive call");
-    } else {
-        hri_update = hri.begin_call(base_ms);
-        check(hri_update.error == wirex::hri_stream_session::Error::none &&
-              hri_update.state.phase == wirex::hri_stream_session::Phase::start_write_pending &&
-              hri_update.actions.front().frame == hri_candidate(true),
-              "the default path still writes its original unmodified T3 candidate");
-    }
+    const auto default_start_body = wirex::hri_t_payload::build_empty_header_empty_ambe_candidate_body(1, 1, 9U);
+    const auto tagged_start = wirex::hri_lcd_identity_candidate::overlay_source_id_label(
+        default_start_body, early_snapshot.receive_call.source_id);
+    check(static_cast<bool>(tagged_start), "the accepted short-call source ID builds one source label");
+    const auto tagged_frame = wirex::direct_frame::encode({static_cast<std::uint8_t>('T'),
+        std::vector<std::uint8_t>(tagged_start.body.begin(), tagged_start.body.end())});
+    check(static_cast<bool>(tagged_frame), "the per-call T3 candidate encodes as a DIRECT frame");
+    hri_update = hri.begin_call_with_start_candidate(tagged_frame.bytes, base_ms);
+    check(hri_update.error == wirex::hri_stream_session::Error::none &&
+          hri_update.state.phase == wirex::hri_stream_session::Phase::start_write_pending &&
+          hri_update.actions.front().frame == tagged_frame.bytes,
+          "the default per-call path uses source from the accepted receive snapshot");
     record_write(hri, hri_update.actions.front(), base_ms, hri_writes);
     hri_update = hri.network_ended(base_ms + 300U);
     check(hri_update.error == wirex::hri_stream_session::Error::none &&
@@ -933,8 +925,7 @@ int main()
 {
     try {
         test_real_loopback_tx_and_cancel_before_rptcl();
-        test_short_downlink_eot_waits_for_t3_and_final_audio_ack(false);
-        test_short_downlink_eot_waits_for_t3_and_final_audio_ack(true);
+        test_short_downlink_eot_waits_for_t3_and_final_audio_ack();
         test_private_echo_ts2_return_and_narrow_filter();
         test_tg91_ts2_group_receive_filter();
         test_watchdog_and_disconnect_generation_isolation();

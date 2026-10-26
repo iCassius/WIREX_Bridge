@@ -93,7 +93,7 @@ Result overlay_single_callsign(
     return result;
 }
 
-SourceIdResult overlay_source_id_test_label(
+SourceIdResult overlay_source_id_label(
     const hri_t_payload::CandidateBody& start_body,
     std::uint32_t source_id) noexcept
 {
@@ -107,7 +107,7 @@ SourceIdResult overlay_source_id_test_label(
         return {Error::invalid_base_body, {}, {}};
     }
 
-    SourceIdTestLabel label{};
+    SourceIdLabel label{};
     label.fill(' ');
     label[0] = 'I';
     label[1] = 'D';

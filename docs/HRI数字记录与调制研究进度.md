@@ -1,6 +1,6 @@
 # HRI 数字记录、头字段与调制控件研究进度
 
-日期：2026-10-27。本页合并 R95 的 G 帧/头字段、R96 的 Modulation 控件、R97 的 R 记录路径和 R99 的 FrameAdd 队列闭合结论，并记录 R98 BM 来话 source ID 标签实验。WIRES-X 样本均为 2.0.1.0。静态函数与 PE 资源结果来自本机固定文件；研究期间没有加载厂商 DLL 或启动官方客户端。R91、R93 的既有被动观察只按各自报告的范围引用。
+日期：2026-10-27。本页合并 R95 的 G 帧/头字段、R96 的 Modulation 控件、R97 的 R 记录路径和 R99 的 FrameAdd 队列闭合结论，并记录 R100 BM 来话身份处理的核心代码状态。WIRES-X 样本均为 2.0.1.0。静态函数与 PE 资源结果来自本机固定文件；研究期间没有加载厂商 DLL 或启动官方客户端。R91、R93 的既有被动观察只按各自报告的范围引用。
 
 固定目标 SHA-256：`WIRES_X.EXE` `8f05dc26794144438566b880ce775f5178d62eb3c4deb8c053089216342bc671`；`HRI_UART.dll` `56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed`；`RIGDATAIF.DLL` `94d1217feb047288329e79e0d5de2167c79450f1945119b2ed6c6376b02a7410`；`SETTINGDLG.DLL` `e83b2ee0070a127ab33ebe0dca936bc214cca0b8fcb484c3d7fce3e0c455def5`。
 
@@ -45,9 +45,9 @@ RIGDATAIF.DLL 的 `ToHriFrameAdd`（VA `0x100028e0`）把输入字符串和第�
 
 ### 与现有 Bridge 代码的关系
 
-`hri_call_header` 已提供 68 字节头和目的/源 10 字节字段的纯内存访问；`hri_t_record` 已按静态证据构造内部 T 正文和尾文本。它们没有把头字段写入 FTX-1 屏幕的证据。当前独立 LCD identity candidate 可在原 T90 候选上替换一个呼号字段，作为单字段对照原型；它没有接入 BM 默认运行链，也没有经过 LCD 实机观察。BRIDGE 的 WPF 来话卡片显示的是 pipeline 接受的 DMR Source ID/TG 等状态，不是电台 LCD。
+`hri_call_header` 已提供 68 字节头和目的/源 10 字节字段的纯内存访问；`hri_t_record` 已按静态证据构造内部 T 正文和尾文本。它们没有把头字段写入 FTX-1 屏幕的证据。旧的 `hri_lcd_identity_candidate` 固定 WAV 工具仍可用于了解已定位字段的位置；R100 的 BM 来话身份处理会自动更新每通已接受来话的核心路径。Bridge 的 WPF 来话卡片显示 pipeline 接受的 DMR Source ID/TG 等状态，与电台 LCD 是两类输出。
 
-R98 另增加默认关闭的 BM 来话 source ID 标签开关：它把活动接收 Snapshot 中的数字 DMR Source ID 格式化为 `ID` 加十进制数字，覆盖 mode4 起始正文中的一个 10 字节 source 字段；T0 和原 PCM 下行生命周期不变。该标签不是 WIRES-X 呼号，且 LCD 结果保持 `unknown`。运行参数、LC 验证边界和待做联测见[BM 来话源 ID 显示实验](BM来话源ID显示实验.md)。本机默认入口仍选择 alpha.2；此源码实验开关不在该旧包中，也没有 WPF 按钮。
+R98 已提交源码曾把数字 Source ID 标签放在默认关闭的开关后，并针对该版本做过 COM999 启动失败状态 smoke。当前 R100 工作区代码已改为每通已接受 BM 来话自动生成标签：`ID` 加十进制 DMR Source ID，写入 mode4 起始正文的 10 字节 source 字段；T0 与 PCM 下行收尾保持现有顺序。标签不是 WIRES-X callsign，也不依赖呼号查询。Native 状态字段为 `lcd_source_identity.prepared`、`source_id`、`receive_generation`、`label` 和 `display`；`display` 固定为 `unknown`，直到有实际屏幕观察。focused 检查已通过，R100 改动尚未 clean build；R98 的旧 smoke 记录没有验证 R100 核心路径。WPF 当前仍只读取 R94 的 `current_call_*`，尚未读取 `lcd_source_identity`。详细说明见[BM 来话身份显示](BM来话身份显示.md)。本机默认入口仍指向 alpha.2，该发布包没有 R100 代码。
 
 没有远端 DMR ID→WIRES-X Callsign 数据源。DMR 数字 ID 不应直接写到头部 10 字节呼号字段；若后续测试选用 `ID1234` 这种可见文本，它只是一项明确的屏幕候选标签，不是已映射出的真实呼号。
 
@@ -63,12 +63,12 @@ R97 已修正输入偏移表达式：parser context 为 `ctx=*(this+0x2b4)`，�
 
 ## 后续工作边界
 
-R98 已把 BM 活动来话 source ID 标签接入显式 opt-in 的一次通话起始正文。开关只检查 Snapshot 处于非 idle、非 filtered 状态且 `receive_generation` 非零；它没有要求 `link_control_validated=true`。因此，若 pipeline 在完整 LC 尚未验证时已从有效 DMR 音频同步接受来话，该通话仍可能生成 `ID` 标签。标签沿用外层 DMR Source ID，不作呼号数据库查询；用户界面或日志不得把标签显示为已确认的无线电呼号。开关关闭时保持原 T3/T0 内容。
+R100 核心路径从每通已接受 Snapshot 读取外层 DMR Source ID，并保留独立的 `link_control_validated` 状态。若 pipeline 在完整 LC 尚未验证时已接受来话，仍会按该 Snapshot 的 Source ID 生成身份标签；软件状态不得把这项数字标签写成已确认呼号。当前工作区 Native 在通话收尾、接收取消、T3 启动超时、网络丢失、运行异常和退出路径清空身份元数据；该清理行为及新状态字段仍须由 R100 clean build 后的软件测试确认。WPF 没有显示 `lcd_source_identity`，只显示 R94 的 `current_call_*` 状态。
 
-要把“当前呼叫者显示在 FTX-1”做成已验证功能，还需确认 HRI G/H consumer 如何将内部记录交给实际选中的 UART serializer、设备如何接受该头字段、呼叫结束时实际清屏事务，以及一次受控 LCD 屏幕观察。R99 已闭合 Add/Get 队列地址，后续不再把该固定队列关系列为未知。
+要把“当前呼叫者显示在 FTX-1”做成已验证功能，还需确认 HRI G/H consumer 如何将内部记录交给实际选中的 UART serializer、设备如何接受该头字段、呼叫结束时实际清屏事务，以及一次受控 LCD 屏幕观察。R99 已闭合 Add/Get 队列地址，后续不再把该固定队列关系列为未知。R100 的软件状态和屏幕观察分别验收；Native 记录 `display=unknown` 时不能报告 LCD 已显示。
 
 ### 三个明确的下一步代码入口
 
-1. **确认 G/H 记录进入哪种最终串口 serializer。** 从 HRI `FUN_10014dd0` 的 HRI Get/ANA Get 分支和 `FUN_10014330` 的 `node+9` 头复制继续跟踪内部记录，核对它是否经过 `FUN_1000b130`、公共队列、EXE `WM 0x618` handler以及所选串口 serializer，直到 `WriteFile` 的输入缓冲区。R99 已确认 FrameAdd 和 HRI Get 使用 `0x1016830c`，ANA Get 使用 `0x10168324`。
+1. **确认 G/H 记录进入哪种最终串口 serializer。** 从 HRI `FUN_10014dd0` 的 HRI Get/ANA Get 分支和 `FUN_10014330` 的 `node+9` 头复制继续跟踪内部记录，核对它是否经过 `FUN_1000b130`、公共队列、EXE `WM 0x618` handler 以及所选串口 serializer，直到 `WriteFile` 的输入缓冲区。R99 已确认 FrameAdd 和 HRI Get 使用 `0x1016830c`，ANA Get 使用 `0x10168324`。
 2. **恢复呼叫结束的设备侧清屏事务。** 将 `FUN_10017ee0` 的 HRI 内部缓存清理与真正发往电台的记录分别追踪；只有找到设备写入和屏幕观察后，才记录显示清除结果。
 3. **定位 Modulation 控件所属类。** 从 `SETTINGDLG.DLL` 资源1028/ID `0x4A3` 开始，定位四条 `CBN_SELCHANGE` 映射属于哪个 dialog 类，再查其 vtable `+0x1BC/+0x1C8/+0x1CC` 和 `Apply/OK/Cancel` 写入路径。保留 R93 用户操作为“选择后读数仍为 FM，主会话选择 Cancel”，不推断其保存结果。

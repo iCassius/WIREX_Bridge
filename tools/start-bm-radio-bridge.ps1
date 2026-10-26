@@ -13,7 +13,6 @@ param(
     [string]$RadioPlaybackGain,
     [string]$MicTransmitGain,
     [switch]$ManualPtt,
-    [switch]$ExperimentalLcdSourceId,
     [switch]$PrepareOnly,
     [switch]$NoInteractive,
     [switch]$RequirePasswordFile,
@@ -994,7 +993,6 @@ try {
         if ($passwordPath) { $arguments += @('--password-file', $passwordPath) }
     }
     if ($ManualPtt) { $arguments += '--manual-ptt' }
-    if ($ExperimentalLcdSourceId) { $arguments += '--experimental-lcd-source-id' }
     if ($PrepareOnly) {
         if ($selectedPreset -ne 'manual') { throw '桌面 UI 只接受完整手工连接配置，不使用固定测试预设。' }
         $arguments += '--ui-pipe'
