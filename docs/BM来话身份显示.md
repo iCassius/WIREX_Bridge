@@ -1,6 +1,6 @@
 # BM 来话身份显示
 
-状态：R100 将该处理作为 Bridge 核心功能实现。当前工作区已经为每通已接受来话生成标签并写入 Native 状态 JSON，focused 检查已通过；clean build 待执行。随后在最终合并联测中观察 FTX-1 LCD。`display` 在取得电台屏幕证据前保持 `unknown`。
+状态：R100 已将该处理作为 Bridge 核心功能实现。源码提交 `ddeee3105002e5f923c9f727f8ad2811f61a829a` 的 clean build 通过 35 项 C++ 测试，warning/error 为 0；pipeline 与 BM loopback 测试覆盖每通已接受来话的标签生成和清理。COM999 状态 smoke 验证了无来话启动时 Native JSON 的身份对象。FTX-1 LCD 实际显示仍待最终合并联测；`display` 在取得电台屏幕证据前保持 `unknown`。
 
 ## 核心处理
 
@@ -14,11 +14,11 @@ Native 在通话收尾、接收取消、T3 启动超时、网络丢失、运行�
 
 ## 版本与验证状态
 
-R98 的已提交源码 `fef55067164e1ac12b410b5199db68546d78bc76` 使用默认关闭的开关构造单通 Source ID 标签。当前 R100 工作区将其改为每通已接受来话都执行的核心处理，并移除了该 Native 与 PowerShell 开关。R98 clean build 的 35 项测试和 COM999 状态 smoke 保留为旧实现的历史结果；它们没有验证 R100 的默认来话映射。
+R98 的已提交源码 `fef55067164e1ac12b410b5199db68546d78bc76` 使用默认关闭的开关构造单通 Source ID 标签。R100 提交将其改为每通已接受来话都执行的核心处理，并移除了该 Native 与 PowerShell 开关。R98 clean build 的 35 项测试和 COM999 状态 smoke 保留为旧实现的历史结果；它们没有验证 R100 的默认来话映射。
 
 `v0.1.0-alpha.2` 仍是已发布版本，本机默认入口也仍指向 alpha.2。alpha.2 没有本页所述的 R100 核心处理；本页不表示新版本已发布。
 
-R100 focused 检查已通过；clean build 和完整软件验收待执行。测试需覆盖每通已接受来话的 10 字节 `ID` 标签与 `source_id`、`receive_generation` 一致；未验证 LC 时状态分别保留外层 ID 和 LC 标志；通话收尾、取消、T3 启动超时、断网、异常及新 run 后 Native 元数据清空；原 PCM 语音与 T0 收尾保持有效。WPF 仍显示 R94 `current_call_*` 字段；新对象接入严格校验和界面显示待后续 UI 切片。软件测试完成后还要单独执行设备验收。
+R100 clean build 通过 35 项 C++ 测试，compiler/linker warning/error 为 0。构建目录为 `build/_work/wirex-bridge-ddeee31-20261026-191001`，正式构建日志为 `build/_work/r100-ddeee31-build.log`，EXE SHA-256 为 `0060826d02433a6fe90c7d57f631e6991cec7f07eb6d4b2a7cadf28a8ebe9649`。COM999 smoke 目录为 `build/_work/r100-lcd-source-identity-smoke-1f558b50b3fa4d7591f4ae5045cabe06`：两条实际 Native JSON 事件均包含空闲身份对象（`prepared=false`、`source_id=0`、`receive_generation=0`、`label=""`、`display="unknown"`），没有 `lcd_experiment`。Native 以预期退出码 2 报告串口打开失败；HRI 串口、WaveIn/WaveOut 保持关闭，TX/RX/control 计数均为 0。该 smoke 只核验默认启动状态 JSON 和 COM999 失败路径，未验证来话映射。测试使用 loopback 地址 `127.0.0.1`、仅查询音频格式，并使用已删除的临时合成密码文件；COM999 测试前确认不存在，未打开音频流或串口，也未发送 UDP。两条记录及结果摘要保存在该目录的 `native-status.jsonl` 和 `result.txt`。每通已接受来话的 10 字节 `ID` 标签与 `source_id`、`receive_generation` 对应关系，以及 LC 状态独立保留、通话结束/取消/T3 启动超时/断网/异常/新 run 清理，由 R100 pipeline 与 BM loopback 离线测试覆盖；原 PCM 语音与 T0 收尾也保留在测试范围内。WPF 仍只显示 R94 的 `current_call_*` 字段，尚未解析或显示 `lcd_source_identity`。实际电台显示需要最终设备联测。
 
 ## 最终合并联测
 

@@ -47,9 +47,9 @@ RIGDATAIF.DLL 的 `ToHriFrameAdd`（VA `0x100028e0`）把输入字符串和第�
 
 `hri_call_header` 已提供 68 字节头和目的/源 10 字节字段的纯内存访问；`hri_t_record` 已按静态证据构造内部 T 正文和尾文本。它们没有把头字段写入 FTX-1 屏幕的证据。旧的 `hri_lcd_identity_candidate` 固定 WAV 工具仍可用于了解已定位字段的位置；R100 的 BM 来话身份处理会自动更新每通已接受来话的核心路径。Bridge 的 WPF 来话卡片显示 pipeline 接受的 DMR Source ID/TG 等状态，与电台 LCD 是两类输出。
 
-R98 已提交源码曾把数字 Source ID 标签放在默认关闭的开关后，并针对该版本做过 COM999 启动失败状态 smoke。当前 R100 工作区代码已改为每通已接受 BM 来话自动生成标签：`ID` 加十进制 DMR Source ID，写入 mode4 起始正文的 10 字节 source 字段；T0 与 PCM 下行收尾保持现有顺序。标签不是 WIRES-X callsign，也不依赖呼号查询。Native 状态字段为 `lcd_source_identity.prepared`、`source_id`、`receive_generation`、`label` 和 `display`；`display` 固定为 `unknown`，直到有实际屏幕观察。focused 检查已通过，R100 改动尚未 clean build；R98 的旧 smoke 记录没有验证 R100 核心路径。WPF 当前仍只读取 R94 的 `current_call_*`，尚未读取 `lcd_source_identity`。详细说明见[BM 来话身份显示](BM来话身份显示.md)。本机默认入口仍指向 alpha.2，该发布包没有 R100 代码。
+R98 已提交源码曾把数字 Source ID 标签放在默认关闭的开关后，并针对该版本做过 COM999 启动失败状态 smoke。R100 源码提交 `ddeee3105002e5f923c9f727f8ad2811f61a829a` 已改为每通已接受 BM 来话自动生成标签：`ID` 加十进制 DMR Source ID，写入 mode4 起始正文的 10 字节 source 字段；T0 与 PCM 下行收尾保持现有顺序。标签不是 WIRES-X callsign，也不依赖呼号查询。Native 状态字段为 `lcd_source_identity.prepared`、`source_id`、`receive_generation`、`label` 和 `display`；`display` 固定为 `unknown`，直到有实际屏幕观察。R100 clean build 通过 35 项 C++ 测试，warning/error 为 0；COM999 smoke 的两条实际 JSON 事件含空闲身份对象，详细构建和 smoke 回执见[BM 来话身份显示](BM来话身份显示.md)。该 smoke 不覆盖来话映射或电台显示。WPF 当前仍只读取 R94 的 `current_call_*`，尚未读取 `lcd_source_identity`。本机默认入口仍指向 alpha.2，该发布包没有 R100 代码。
 
-没有远端 DMR ID→WIRES-X Callsign 数据源。DMR 数字 ID 不应直接写到头部 10 字节呼号字段；若后续测试选用 `ID1234` 这种可见文本，它只是一项明确的屏幕候选标签，不是已映射出的真实呼号。
+没有远端 DMR ID→WIRES-X Callsign 数据源。R100 把 `ID` 加十进制 DMR Source ID 作为数字身份标签写入头部的 10 字节 source 字段；例如 `ID1234` 是 DMR 数字身份标签，不是已映射出的真实呼号。实际 FTX-1 显示内容仍待设备观察。
 
 ## R96：Modulation 下拉项的资源候选
 
@@ -63,7 +63,7 @@ R97 已修正输入偏移表达式：parser context 为 `ctx=*(this+0x2b4)`，�
 
 ## 后续工作边界
 
-R100 核心路径从每通已接受 Snapshot 读取外层 DMR Source ID，并保留独立的 `link_control_validated` 状态。若 pipeline 在完整 LC 尚未验证时已接受来话，仍会按该 Snapshot 的 Source ID 生成身份标签；软件状态不得把这项数字标签写成已确认呼号。当前工作区 Native 在通话收尾、接收取消、T3 启动超时、网络丢失、运行异常和退出路径清空身份元数据；该清理行为及新状态字段仍须由 R100 clean build 后的软件测试确认。WPF 没有显示 `lcd_source_identity`，只显示 R94 的 `current_call_*` 状态。
+R100 核心路径从每通已接受 Snapshot 读取外层 DMR Source ID，并保留独立的 `link_control_validated` 状态。若 pipeline 在完整 LC 尚未验证时已接受来话，仍会按该 Snapshot 的 Source ID 生成身份标签；软件状态不得把这项数字标签写成已确认呼号。R100 clean build 的 35 项测试已通过；Native 在通话收尾、接收取消、T3 启动超时、网络丢失、运行异常和退出路径清空身份元数据。COM999 smoke 只验证无来话启动状态和串口失败路径，不验证身份标签显示。WPF 没有显示 `lcd_source_identity`，只显示 R94 的 `current_call_*` 状态。
 
 要把“当前呼叫者显示在 FTX-1”做成已验证功能，还需确认 HRI G/H consumer 如何将内部记录交给实际选中的 UART serializer、设备如何接受该头字段、呼叫结束时实际清屏事务，以及一次受控 LCD 屏幕观察。R99 已闭合 Add/Get 队列地址，后续不再把该固定队列关系列为未知。R100 的软件状态和屏幕观察分别验收；Native 记录 `display=unknown` 时不能报告 LCD 已显示。
 
