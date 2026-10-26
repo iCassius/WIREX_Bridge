@@ -29,7 +29,7 @@ void test_fixed_ascii_header_contract_and_fields()
     fixture.replace(destination_callsign_offset, callsign_size, "DEST000001");
     fixture.replace(source_callsign_offset, callsign_size, "SRC0000001");
     fixture.replace(local_callsign_offset, callsign_size, "LOCAL00001");
-    fixture[60] = '\x01'; // An unlabelled ASCII control byte must pass through unchanged.
+    fixture[60] = '\x01'; // 未命名的 ASCII 控制字节应原样保留。
 
     auto parsed = parse_header(fixture);
     check(parsed.has_value(), "exactly 68 non-NUL ASCII bytes parse");

@@ -69,6 +69,25 @@ else()
     target_compile_options(hri_call_header_test PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+add_library(wirex_hri_t_record src/hri_t_record.cpp)
+target_include_directories(wirex_hri_t_record PUBLIC include)
+target_compile_features(wirex_hri_t_record PUBLIC cxx_std_17)
+target_link_libraries(wirex_hri_t_record PUBLIC wirex_hri_call_header)
+if(MSVC)
+    target_compile_options(wirex_hri_t_record PRIVATE /W4 /permissive- /utf-8)
+else()
+    target_compile_options(wirex_hri_t_record PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_executable(hri_t_record_test tests/hri_t_record_test.cpp)
+target_compile_features(hri_t_record_test PRIVATE cxx_std_17)
+target_link_libraries(hri_t_record_test PRIVATE wirex_hri_t_record wirex_hri_call_header)
+if(MSVC)
+    target_compile_options(hri_t_record_test PRIVATE /W4 /permissive- /utf-8)
+else()
+    target_compile_options(hri_t_record_test PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 add_library(wirex_direct_stream src/direct_stream.cpp)
 target_include_directories(wirex_direct_stream PUBLIC include)
 target_compile_features(wirex_direct_stream PUBLIC cxx_std_17)
@@ -422,7 +441,7 @@ if(WIN32)
     endif()
     target_link_libraries(wirex_bridge PRIVATE
         wirex_direct_stream wirex_direct_frame wirex_hri_session wirex_hri_downlink_session
-        wirex_hri_radio_protocol wirex_hri_t_payload wirex_hri_call_header wirex_hri_ptt_gate wirex_wave_file wirex_pcm_gain
+        wirex_hri_radio_protocol wirex_hri_t_payload wirex_hri_call_header wirex_hri_t_record wirex_hri_ptt_gate wirex_wave_file wirex_pcm_gain
         wirex_console_lifecycle wirex_session_report wirex_bm_session wirex_bm_udp
         wirex_bm_voice_pipeline wirex_bm_test_profile wirex_bm_connection_config
         wirex_hri_stream_session winmm bcrypt ws2_32 user32)
@@ -432,7 +451,7 @@ if(WIN32)
     if(MSVC)
         target_compile_options(wirex_probe PRIVATE /W4 /permissive- /utf-8)
     endif()
-    target_link_libraries(wirex_probe PRIVATE wirex_direct_stream wirex_direct_frame wirex_hri_session wirex_hri_downlink_session wirex_hri_radio_protocol wirex_hri_t_payload wirex_hri_call_header wirex_wave_file wirex_pcm_gain wirex_console_lifecycle wirex_session_report winmm bcrypt)
+    target_link_libraries(wirex_probe PRIVATE wirex_direct_stream wirex_direct_frame wirex_hri_session wirex_hri_downlink_session wirex_hri_radio_protocol wirex_hri_t_payload wirex_hri_call_header wirex_hri_t_record wirex_wave_file wirex_pcm_gain wirex_console_lifecycle wirex_session_report winmm bcrypt)
 endif()
 
 enable_testing()
@@ -440,6 +459,7 @@ add_test(NAME dmrd_test COMMAND dmrd_test)
 add_test(NAME direct_frame_test COMMAND direct_frame_test)
 add_test(NAME hri_t_payload_test COMMAND hri_t_payload_test)
 add_test(NAME hri_call_header_test COMMAND hri_call_header_test)
+add_test(NAME hri_t_record_test COMMAND hri_t_record_test)
 add_test(NAME direct_stream_test COMMAND direct_stream_test)
 add_test(NAME hri_session_test COMMAND hri_session_test)
 add_test(NAME hri_ptt_gate_test COMMAND hri_ptt_gate_test)

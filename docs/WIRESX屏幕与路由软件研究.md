@@ -140,19 +140,29 @@ R83 追到 `FUN_10014330` 的两个直接调用者 `FUN_10014600`、`FUN_10014dd
 
 `FUN_1000bee0` 另把队列节点的 68 字节头复制到 scratch `+8`，并把头部相对偏移 `+4` 固定为 ASCII `'1'`。它按记录标志保留后续正文原字节或从 ASCII HEX 解码，在正文前另加入 3 个记录字节，再追加 `0x03`；输出时将这一段逐字节编码为 ASCII HEX，并对整段（包括 `0x03`）求低 8 位和作为两位 HEX 校验值。非空 T 路径由 `FUN_1000adb0` 处理 AMBE 二进制块：它也按字节转 ASCII HEX，追加 `03`，再对该块与 `0x03` 的和取低 8 位作为校验值。两段代码分别提供头部/记录边界和语音块尾部格式的静态证据，没有把这些字段接到某个 LCD 控件。`FUN_1000adb0` 记录为 R83 Evidence `ev_130fa47a6bbaa0c2b88fa89cbd51d4005c8f482ddc51ac167ddb5417e2b61739`，`FUN_1000bee0` 记录为 R82 Evidence `ev_3ca4f025b37919a32d0df5dad3ece722ff905e56d06ef89cd0fc8b3920579047`。
 
-### T 记录包含该头部并经过 UART 写入链
+### T 记录的内部正文与条件写入路径
 
 `FUN_10014b50` 的非空头分支从 `this+0x1420` 复制 68 字节到 T 正文偏移 `+7`。随后它写的是 T 正文绝对偏移 `0x0b`，也就是68字节头内部相对偏移 `+4`：将该字节低两位加 ASCII `'0'`。函数随后附加 AMBE 文本或空帧占位、五个星号和结尾字段，再调用 `FUN_1000b130` 建立类型 `'T'` 的队列记录。空头分支生成固定的 68 字节默认头；当前 Bridge 的 90 字节模板只实现了该空头、空 AMBE 数据候选。Evidence `ev_0b9ed8732ace5fbca14b93278f85c286ae2354053325a9da2b7c36b1e0c320b4` 和 `ev_a7403527ad5f9eaab9f38ff1a63fdbbf87e569244700d4f2384c3d427c833851`。
 
-类型 `'T'` 的记录进入公共 outgoing queue。`FUN_1000a240` 把队首缓冲区和长度交给 EXE 窗口消息 `0x618`；它对 T 正文的 HEX 解码用于诊断日志。R77 已恢复 EXE `0x618` handler 将同一缓冲区和长度交给 `WriteFile` 的静态路径。因此软件代码会把含 68 字符头的 T 记录交给 UART 写入函数。相关 HRI Evidence 为 `ev_d655b4be6bd24449c7d460909fb95eb74c345ca85c26e342499d88757dac4967`；EXE 下游 Evidence 为 `ev_b0aafad446c77fafe5688ec5b109f00275059ba97725657cec6ad39d60b3a61e`、`ev_04ee7da9fa2b802698348a29437077dde6f1ee9f1a5c5153e1affbf52d9d1f62`、`ev_6ab289bddeecbdb0bb70ba859d2d9238b403c368bcbe8ab3a51451f573216cca`。
+`FUN_1000b130` 以内部记录类型 `'T'` 建项，把 `FUN_10014b50` 生成的正文复制到该项，再交给公共队列。R77 已恢复该队列的一条条件路径：队首内容经 EXE 窗口消息 `0x618` 传到 `WriteFile`。相关 HRI Evidence 为 `ev_d655b4be6bd24449c7d460909fb95eb74c345ca85c26e342499d88757dac4967`；EXE 下游 Evidence 为 `ev_b0aafad446c77fafe5688ec5b109f00275059ba97725657cec6ad39d60b3a61e`、`ev_04ee7da9fa2b802698348a29437077dde6f1ee9f1a5c5153e1affbf52d9d1f62`、`ev_6ab289bddeecbdb0bb70ba859d2d9238b403c368bcbe8ab3a51451f573216cca`。静态链没有把每一种 `'T'` 内部项连接到所选 COM/USB 外层 serializer，也没有观察实际 `WriteFile` 成功或 FTX-1 LCD 显示。
 
-`FUN_10013720` 是另一条 `this+0x1420` 写入路径：它把宿主提供的二进制块编码为 ASCII HEX，附加 `03` 和加和值，再追加到该字符串。它的调用者 `FUN_1001e1c0` 先向宿主窗口发送 `0xc2a` 并收到可继续取帧的返回值，随后才调用 `FUN_10013720`。这属于待发送数据构造；没有发现它从 R79 的本机 `CallSign`、`ID_No`、`User_RadioID` 读取远端发话者身份。Evidence `ev_108646d7e00c6085f50e947ba0e8e6a4fdc9d97fc116d502d6a1c6428d95a92b` 和 `ev_998396d42019961c53dd6d500ad49bbf7dbdd12cc7b2168931fb53893a836b5d`。
+`FUN_10013720` 是另一条 `this+0x1420` 写入路径：它向宿主窗口请求下一块数据后，把返回的原始字节交给 `FUN_100139f0`。后者将每个字节编码为大写 ASCII HEX，累加原始字节的低 8 位和，再追加 ASCII `03` 与 `HEX((sum + 3) mod 256)`。`FUN_10013720` 将这段文本追加到 `+0x1420` 后；非空头 T 构造随后会把 68 字节头之后已有的尾文本放到五个星号之后。R85 的 `ev_6eb636b3122b4ba2468e254b69150a3d8755dc68b2dd0a2b162e86c0b2e6a7a9` 记录 `FUN_100139f0`；R82 的 `ev_108646d7e00c6085f50e947ba0e8e6a4fdc9d97fc116d502d6a1c6428d95a92b` 与 `ev_998396d42019961c53dd6d500ad49bbf7dbdd12cc7b2168931fb53893a836b5d` 记录 `FUN_10013720`、`FUN_1001e1c0`。这些函数没有从 R79 的本机 `CallSign`、`ID_No`、`User_RadioID` 读取远端发话者身份。
+
+### R84/R85：非空 T 正文和尾文本
+
+HRI-UART.dll 目标仍为 SHA-256 `56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed`。`FUN_10014b50` 从输入文本第 1 至第 4 位读取四位 HEX 计数，再减 1；复制的数据从输入偏移 `+6` 开始。计数字段只用于长度验证，不会复制到输出；有效 mode 的正文从偏移 `0x4b` 开始放载荷。根据复制头部 `+4` 低两位形成的模式字符，函数只接受以下“复制文本字符数 / 输入计数字段”组合：`0` 为 `96 / 0061`，`2` 为 `136 / 0089`，`3` 为 `186 / 00BB`。字符 `1` 的非空分支报告 `DataOnlyData has AMBE RAW` 并丢弃该长度。DLL 只检查计数和长度，没有验证数据字符是不是 HEX；新纯模块为避免构造畸形正文，还额外要求内容只含 ASCII HEX，并拒绝不支持的 mode 1。若长度非正，反编译显示另一分支在 `+0x4b` 写入固定 `00001F`；通过的非空 mode 0/2/3 不走这条占位分支。
+
+生成的 T 正文前 7 字符分别来自状态选择值、全局 `DAT_10167c4c` 的 4 字节、`DAT_10167c50` 的 1 字节和固定 ASCII `'0'`。前 5 个字段的运行值/业务意义尚未恢复，所以纯模块要求调用方显式提供 7 字符前缀，只校验 ASCII、首字符范围和末位固定字符，不命名未知字段。随后复制 68 字节头；只在输出副本中把头偏移 `+4` 改为模式字符，形成正文绝对偏移 `0x0b`。原头其它 67 字节保持不变。数据文本后附五个星号，再附加上游已写入 `+0x1420` 的头部尾文本。
+
+纯模块 `include/wirex/hri_t_record.hpp` / `src/hri_t_record.cpp` 只构造上述内部 T 文本正文，并提供与 `FUN_100139f0` 一致的 raw-tail HEX、ASCII `03`、sum8-plus-3 helper。它不添加 Direct/COM 或 USB 外层帧封装。C 的 R31 证据恢复了特定外层 vtable serializer，但尚未证明 HRI T 项在所有设备类型上都调用该 serializer；因此本模块没有自行追加第二个终止符或校验。模式、计数和尾部的离线边界样例位于 `tests/hri_t_record_test.cpp`，使用合成字符/字节，不是电台捕获，也没有发送到设备。原 `build_empty_header_empty_ambe_candidate_body` 的 90 字节 mode `'4'` PCM 候选保持不变。
+
+R84 全量 bundle 为 [`r84_hri_t_mode_payload_chain_20261026.evidence.json`](../../research/rea/v2.010/r84_hri_t_mode_payload_chain_20261026.evidence.json)；R85 补充尾文本函数，见 [`r85_hri_host_to_t_trailer_20261026.evidence.json`](../../research/rea/v2.010/r85_hri_host_to_t_trailer_20261026.evidence.json)。R84/R85 保留了目标 DLL 身份和完整函数反编译；文档中的 YSF 布局比较仍是候选，不能据 `96/136/186` 长度宣布 HRI 与 YSF payload 兼容。
 
 ### 当前可以实现与仍未知的范围
 
-已新增纯解析模块 `include/wirex/hri_call_header.hpp` / `src/hri_call_header.cpp`：它要求输入恰为 68 个非 NUL ASCII 字节，提供目的、源、HRI 本机呼号字段的 10 字符读取与替换，并可计算非空 T 路径在头部偏移 4 的 mode 字符。模块保留所有未解释的 ASCII 字节；替换字段要求调用方已经提供准确的 10 字符文本，不会把 DMR 数字 ID 转成 WIRES-X 呼号。合成离线测试 `tests/hri_call_header_test.cpp` 覆盖长度、ASCII、NUL 拒绝，三个有证据的呼号偏移、未知字节保留、T mode 索引，以及现有空头候选的 90 字节长度；本轮用 MSVC 独立编译并运行该测试通过。该模块还未接入 `probe_main` 的 BM 呼叫生命周期，也没有实现完整非空 T 正文组装；已恢复的 `0x03` 与 8 位校验计算尚未移入应用 serializer；旧空头 90 字节正文生成器保持原样。
+已新增纯解析模块 `include/wirex/hri_call_header.hpp` / `src/hri_call_header.cpp`：它要求输入恰为 68 个非 NUL ASCII 字节，提供目的、源、HRI 本机呼号字段的 10 字符读取与替换，并可计算非空 T 路径在头部偏移 4 的 mode 字符。模块保留所有未解释的 ASCII 字节；替换字段要求调用方已经提供准确的 10 字符文本，不会把 DMR 数字 ID 转成 WIRES-X 呼号。新模块 `include/wirex/hri_t_record.hpp` / `src/hri_t_record.cpp` 依据 R84/R85 构造非空头部的内部 T 正文，并编码上游 raw 尾块；外层 COM/USB 传输帧仍未实现。离线测试 `tests/hri_call_header_test.cpp` 与 `tests/hri_t_record_test.cpp` 覆盖头部字段、mode/count组合、HEX和长度拒绝、原头保留、尾部 `03+sum8`，以及旧空头候选。
 
-实现时仍应保留旧空头 90 字节候选作为默认分支，不猜测其余头字节或自动填充短呼号。完整 T 正文组装还需严格按静态函数重现 AMBE 长度校验、星号分隔符和结束字段，再分别测试；本轮没有新增这类 serializer。
+旧空头 90 字节 mode `'4'` 候选保持独立，没有拿它充当带呼号头部的模式。新 T 模块构造内部正文，不接 BM call-start/end 事件，不写 COM、不生成 USB 命令，也没有证明 FTX-1 接受或显示该正文。
 
 这些静态链只说明软件把头部送入 UART 写入路径。它没有证明 FTX-1 LCD 会把两个字段显示在何处、是否需要设备侧响应或额外事件，也没有证明任意手工拼出的头部会被电台接受。当前 DMR `CallConfig`/`ReceiveEvent` 只有远端 DMR Source ID，没有呼号/TA 文本；从 DMR ID 到合法的 10 字符 Source CallSign 仍需要经核实的映射来源。没有进行官方程序启动、DLL 加载、串口或电台测试，也没有生成或发送新的 LCD 命令。
 
@@ -162,8 +172,11 @@ R83 追到 `FUN_10014330` 的两个直接调用者 `FUN_10014600`、`FUN_10014dd
 
 建议显示时先以当前通话的 Source ID 作身份主值；可选地按单个 ID 查询官方 RadioID 服务，并把结果标为外部映射及记录更新时间。缓存应带 TTL/检索时间，离线或无记录时继续显示数字 ID；不要把整份 Radio ID 目录镜像进便携包。call-start 建立远端身份，收到同一通话的补充资料时更新，call-end、断线或会话切换时清除临时身份。本机呼号始终作为本机资料单独显示。
 
-## 下一步最小闭合条件
+## 接入 BM 来话 LCD 前的具体缺口
 
-下一步追查 EXE `FUN_004e5580` 使用的 `this+0x1b5c8` 对象及 `DAT_007bff04`、`E3` 回调、`E4` 输入来源，并确认这些字段在官方软件中对应什么资料。随后需要把具体字段值与 HRI 队列里的内部 F 记录、设备端显示语义连接起来，才可实现 LCD 更新。当前没有为 LCD 构造或发送任何命令。
+1. Bridge 有 DMR `Source ID` 和 `TG`，但 T 头的源呼号偏移 `+0x12` 是固定 10 字节的 `Src CallSign` 区。当前没有把 DMR Source ID 转成合法 WIRES-X 呼号的已验证来源。应用可先保留数值 Source ID 作自身状态；只有单 ID 查询或 DMR Talker Alias 的来源/编码经核实后，才可填入这 10 字节。不能把 DMR 数字 ID 直接写进该呼号区。
+2. T 头目的呼号偏移 `+8` 和源呼号偏移 `+0x12` 已在 HRI 日志/缓冲区读出，但没有设备屏幕照片或电台侧响应证明两者在 FTX-1 LCD 的位置、显示时机和清除方式。Room/Node 浏览列表不是当前 BM 来话 LCD 的必要前置范围。
+3. HRI 正文开头 7 字节中全局 `DAT_10167c4c`/`DAT_10167c50` 的实际值与含义未知。模式字符 `'0'`/`'2'`/`'3'` 只由静态代码和长度校验恢复；它们与 YSF DT 的关系没有证据。HRI 的空头 PCM 候选单独使用 mode `'4'`，本轮没有发现 PCM mode4 可独立更新呼号/StationInfo 的确定路径。
+4. C 的 R31 静态证据显示 Direct 外层 vtable 与 ASCII factory 使用不同的记录序列化器；当前没有把内部 T 队列项沿 `0x618` 之后连续追到对应外层序列化器并对照设备接受响应。COM5 的 Direct vtable 选择是传输类别，不等于电台 Node Mode DIRECT。
 
-下一步分析官方会话启动和退出时配置的加载、保存与恢复行为，并确认 Bridge 运行期间 RF 接收状态。S 表指示与 Bridge 关闭后出现的 RF 音频是否同一时刻，仍需确认。若要发送新的 RF 模式写入命令，应先恢复该命令的协议和作用路径。本轮只做静态研究，没有进行这些观察或写入。
+下一步静态追踪应优先找 HRI 收包/来话消息里是否有独立的身份更新类型，以及它是否在 PCM mode4 路径也更新同一头部/呼号缓存；同时追 `FUN_004e5580` 及 `E3/E4` 的远端字段 producer，不把 PC Direct 面板或本机 `USER_INF` 身份当作远端 BM 呼号。若随后由主会话安排一次 DIRECT 设备对照，应先确定可用的合法 10 字节源呼号、6 个可见前缀值、mode 与 payload 是否配套、明确的单次结束/清除条件，并记录电台屏幕是否出现和清除相应字段。当前没有生成或发送这个试验正文，也没有连接真实 COM、RF、BM 或官方程序。
