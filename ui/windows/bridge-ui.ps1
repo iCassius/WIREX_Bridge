@@ -656,6 +656,29 @@ function Get-UiSerialOptions {
     return [pscustomobject]@{ Items = $options.ToArray(); SelectedValue = $selected; HriCount = $HriPorts.Count }
 }
 
+function Set-UiDeviceComboOptions {
+    param([Parameter(Mandatory=$true)][System.Windows.Controls.ComboBox]$Combo,
+        [Parameter(Mandatory=$true)][object[]]$Options,
+        [Parameter(Mandatory=$true)][string]$SelectedValue)
+    $Combo.Items.Clear()
+    $selectedContainer = $null
+    foreach ($option in $Options) {
+        if ($null -eq $option -or $option.Label -isnot [string] -or $option.Value -isnot [string] -or $option.IsAvailable -isnot [bool]) {
+            throw '设备选项缺少显示标签或稳定值。'
+        }
+        $container = New-Object System.Windows.Controls.ComboBoxItem
+        $container.Content = [string]$option.Label
+        $container.Tag = $option
+        $container.ToolTip = [string]$option.Label
+        [void]$Combo.Items.Add($container)
+        if ([string]::Equals([string]$option.Value, $SelectedValue, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $selectedContainer = $container
+        }
+    }
+    $Combo.SelectedItem = $selectedContainer
+    if ($null -eq $selectedContainer) { throw '当前设备选择没有对应的列表项。' }
+}
+
 function Set-SettingsDeviceControls {
     if (-not $script:settingsWindow) { return }
     $serialControl = Get-SettingsControl 'SerialBox'
@@ -669,18 +692,14 @@ function Set-SettingsDeviceControls {
     $hriPorts = if ($catalog) { @($catalog.hri_ports) } else { @() }
     $discoveryPending = ($script:deviceDiscoveryState -in @('not_started', 'loading', 'stopping'))
     $serialSetup = Get-UiSerialOptions -AllPorts $allPorts -HriPorts $hriPorts -SavedPort $savedSerial -DiscoveryPending:$discoveryPending
-    $serialControl.Items.Clear()
-    foreach ($item in $serialSetup.Items) { [void]$serialControl.Items.Add($item) }
-    $serialControl.SelectedValue = $serialSetup.SelectedValue
+    Set-UiDeviceComboOptions -Combo $serialControl -Options $serialSetup.Items -SelectedValue $serialSetup.SelectedValue
 
     $inputCatalog = if ($catalog) { @($catalog.wave_inputs) } else { @() }
     $outputCatalog = if ($catalog) { @($catalog.wave_outputs) } else { @() }
     $inputOptions = Get-UiEndpointOptions -Devices $inputCatalog -SavedEndpoint $savedInput -Direction input -DiscoveryPending:$discoveryPending
     $outputOptions = Get-UiEndpointOptions -Devices $outputCatalog -SavedEndpoint $savedOutput -Direction output -DiscoveryPending:$discoveryPending
-    $inputControl.Items.Clear(); foreach ($item in $inputOptions.Items) { [void]$inputControl.Items.Add($item) }
-    $outputControl.Items.Clear(); foreach ($item in $outputOptions.Items) { [void]$outputControl.Items.Add($item) }
-    $inputControl.SelectedValue = $inputOptions.SelectedValue
-    $outputControl.SelectedValue = $outputOptions.SelectedValue
+    Set-UiDeviceComboOptions -Combo $inputControl -Options $inputOptions.Items -SelectedValue $inputOptions.SelectedValue
+    Set-UiDeviceComboOptions -Combo $outputControl -Options $outputOptions.Items -SelectedValue $outputOptions.SelectedValue
 
     if ($script:deviceDiscoveryState -eq 'ready') {
         (Get-SettingsControl 'DeviceDiscoveryText').Text = '设备列表已更新；自动选择优先使用 COM5/HRI 和 USB Audio。'
@@ -978,11 +997,19 @@ function Save-SettingsFromWindow {
     try {
         $slotItem = (Get-SettingsControl 'SlotBox').SelectedItem
         $kindItem = (Get-SettingsControl 'CallKindBox').SelectedItem
-        $serialItem = (Get-SettingsControl 'SerialBox').SelectedItem
-        $waveInItem = (Get-SettingsControl 'WaveInEndpointBox').SelectedItem
-        $waveOutItem = (Get-SettingsControl 'WaveOutEndpointBox').SelectedItem
-        if ($null -eq $serialItem -or $null -eq $waveInItem -or $null -eq $waveOutItem) {
+        $serialContainer = (Get-SettingsControl 'SerialBox').SelectedItem
+        $waveInContainer = (Get-SettingsControl 'WaveInEndpointBox').SelectedItem
+        $waveOutContainer = (Get-SettingsControl 'WaveOutEndpointBox').SelectedItem
+        if ($serialContainer -isnot [System.Windows.Controls.ComboBoxItem] -or
+            $waveInContainer -isnot [System.Windows.Controls.ComboBoxItem] -or
+            $waveOutContainer -isnot [System.Windows.Controls.ComboBoxItem]) {
             throw '请从设备列表中明确选择串口、音频输入和音频输出。'
+        }
+        $serialItem = $serialContainer.Tag
+        $waveInItem = $waveInContainer.Tag
+        $waveOutItem = $waveOutContainer.Tag
+        if ($null -eq $serialItem -or $null -eq $waveInItem -or $null -eq $waveOutItem) {
+            throw '设备列表项目缺少内部选择信息；请刷新设备列表。'
         }
         if (-not $serialItem.IsAvailable -or -not $waveInItem.IsAvailable -or -not $waveOutItem.IsAvailable) {
             throw '所选设备当前不可用；请从列表中选择已发现的设备。'
@@ -1575,6 +1602,84 @@ function Save-RenderedWindow {
     try { $encoder.Save($stream) } finally { $stream.Dispose() }
 }
 
+function Get-UiVisualTextValues {
+    param([Parameter(Mandatory=$true)][System.Windows.DependencyObject]$Root)
+    $values = New-Object 'System.Collections.Generic.List[string]'
+    $pending = New-Object 'System.Collections.Generic.Stack[System.Windows.DependencyObject]'
+    $pending.Push($Root)
+    while ($pending.Count -gt 0) {
+        $current = $pending.Pop()
+        if ($current -is [System.Windows.Controls.ContentPresenter] -and $current.Content -is [string] -and
+            -not [string]::IsNullOrWhiteSpace($current.Content)) {
+            $values.Add([string]$current.Content)
+        }
+        if ($current -is [System.Windows.Controls.TextBlock] -and -not [string]::IsNullOrWhiteSpace($current.Text)) {
+            $values.Add([string]$current.Text)
+        }
+        if ($current -is [System.Windows.Controls.AccessText] -and -not [string]::IsNullOrWhiteSpace($current.Text)) {
+            $values.Add([string]$current.Text)
+        }
+        if ($current -is [System.Windows.Media.Visual] -or $current -is [System.Windows.Media.Media3D.Visual3D]) {
+            $childCount = [System.Windows.Media.VisualTreeHelper]::GetChildrenCount($current)
+            for ($index = 0; $index -lt $childCount; $index++) {
+                $child = [System.Windows.Media.VisualTreeHelper]::GetChild($current, $index)
+                if ($child -is [System.Windows.DependencyObject]) { $pending.Push($child) }
+            }
+        }
+    }
+    return @($values | Select-Object -Unique)
+}
+
+function Get-UiComboRenderEvidence {
+    param([Parameter(Mandatory=$true)][System.Windows.Controls.ComboBox]$Combo)
+    $Combo.ApplyTemplate()
+    $Combo.UpdateLayout()
+    $selectedContainer = $Combo.SelectedItem
+    if ($selectedContainer -isnot [System.Windows.Controls.ComboBoxItem] -or $selectedContainer.Content -isnot [string]) {
+        throw ('{0} 的选中项没有显示纯文本标签。' -f $Combo.Name)
+    }
+    $expectedLabel = [string]$selectedContainer.Content
+    $selectedMetadata = $selectedContainer.Tag
+    if ($null -eq $selectedMetadata -or $selectedMetadata.Label -isnot [string] -or
+        $selectedMetadata.Value -isnot [string] -or $selectedMetadata.IsAvailable -isnot [bool] -or
+        $selectedMetadata.Label -cne $expectedLabel) {
+        throw ('{0} 的选中项没有保留独立的稳定值元数据。' -f $Combo.Name)
+    }
+    $selectionPresenter = $Combo.Template.FindName('PART_SelectionBoxItem', $Combo)
+    if ($selectionPresenter -isnot [System.Windows.Controls.ContentPresenter]) {
+        throw ('{0} 的模板缺少选中项文本显示区域。' -f $Combo.Name)
+    }
+    $selectedTexts = @(Get-UiVisualTextValues -Root $selectionPresenter)
+    if (-not ($selectedTexts -ccontains $expectedLabel)) {
+        throw ('{0} 选中框视觉树没有显示设备标签。' -f $Combo.Name)
+    }
+
+    $Combo.IsDropDownOpen = $true
+    $Combo.UpdateLayout()
+    [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::Render)
+    $popup = $Combo.Template.FindName('PART_Popup', $Combo)
+    if ($null -eq $popup -or $null -eq $popup.Child) { throw ('{0} 下拉列表没有创建视觉树。' -f $Combo.Name) }
+    $dropDownTexts = @(Get-UiVisualTextValues -Root $popup.Child)
+    foreach ($container in $Combo.Items) {
+        if ($container -isnot [System.Windows.Controls.ComboBoxItem] -or $container.Content -isnot [string] -or
+            -not ($dropDownTexts -ccontains [string]$container.Content) -or $null -eq $container.Tag -or
+            $container.Tag.Label -cne [string]$container.Content) {
+            throw ('{0} 下拉项视觉树没有显示纯文本标签。' -f $Combo.Name)
+        }
+    }
+    $Combo.IsDropDownOpen = $false
+    $Combo.UpdateLayout()
+    $metadataText = @($selectedTexts + $dropDownTexts | Where-Object { $_ -match '@\{(Label|Value|IsAvailable|Kind)=' })
+    if ($metadataText.Count -gt 0) { throw ('{0} 视觉树泄漏了 PowerShell 对象元数据。' -f $Combo.Name) }
+    return [pscustomobject]@{
+        expected_label = $expectedLabel
+        stable_value = [string]$selectedMetadata.Value
+        available = [bool]$selectedMetadata.IsAvailable
+        selected_text = $selectedTexts
+        dropdown_text = $dropDownTexts
+    }
+}
+
 $script:mainWindow = Import-WpfWindow -Path $script:mainXamlPath
 Fit-WpfWindowToWorkArea -Window $script:mainWindow
 $script:application.MainWindow = $script:mainWindow
@@ -1672,14 +1777,27 @@ if ($RenderOnly) {
     [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::ApplicationIdle)
     Save-RenderedWindow -Window $script:mainWindow -Path (Join-Path $renderDirectory 'main-window.png')
     Initialize-SettingsWindow
+    $serialFixture = New-UiDeviceOption -Label '离线样例 · HRI (COM5)' -Value 'COM5' -IsAvailable $true -Kind 'serial'
+    $inputFixture = New-UiDeviceOption -Label '离线样例 · USB Audio 输入' -Value '{render-input}' -IsAvailable $true -Kind 'input'
+    $outputFixture = New-UiDeviceOption -Label '离线样例 · USB Audio 输出' -Value '{render-output}' -IsAvailable $true -Kind 'output'
+    Set-UiDeviceComboOptions -Combo (Get-SettingsControl 'SerialBox') -Options @($serialFixture) -SelectedValue 'COM5'
+    Set-UiDeviceComboOptions -Combo (Get-SettingsControl 'WaveInEndpointBox') -Options @($inputFixture) -SelectedValue '{render-input}'
+    Set-UiDeviceComboOptions -Combo (Get-SettingsControl 'WaveOutEndpointBox') -Options @($outputFixture) -SelectedValue '{render-output}'
+    (Get-SettingsControl 'DeviceDiscoveryText').Text = '离线渲染样例；没有读取本机设备。'
     $script:settingsWindow.Show()
     $script:settingsWindow.UpdateLayout()
+    $deviceComboEvidence = [pscustomobject][ordered]@{
+        serial = Get-UiComboRenderEvidence -Combo (Get-SettingsControl 'SerialBox')
+        wave_input = Get-UiComboRenderEvidence -Combo (Get-SettingsControl 'WaveInEndpointBox')
+        wave_output = Get-UiComboRenderEvidence -Combo (Get-SettingsControl 'WaveOutEndpointBox')
+    }
     Save-RenderedWindow -Window $script:settingsWindow -Path (Join-Path $renderDirectory 'settings-window.png')
     $layoutInfo = [pscustomobject][ordered]@{
         work_area_width = $script:workAreaWidth
         work_area_height = $script:workAreaHeight
         max_window_width = $script:maxWindowWidth
         max_window_height = $script:maxWindowHeight
+        device_combo_rendered_text = $deviceComboEvidence
         main = Get-WpfWindowLayoutInfo -Window $script:mainWindow -ControlNames @('ConnectButton', 'SettingsButton', 'StopButton', 'FooterText')
         settings = Get-WpfWindowLayoutInfo -Window $script:settingsWindow -ControlNames @('CancelSettingsButton', 'SaveSettingsButton', 'SettingsErrorText', 'PasswordPathBox', 'BrowsePasswordButton', 'DeviceDiscoveryText', 'RefreshDevicesButton', 'SerialBox', 'WaveInEndpointBox', 'WaveOutEndpointBox', 'PlaybackGainSlider', 'PlaybackGainValueText', 'TransmitGainSlider', 'TransmitGainValueText')
     }

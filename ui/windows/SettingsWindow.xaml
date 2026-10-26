@@ -21,8 +21,12 @@
               <Border x:Name="Outer" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"/>
               <Grid Margin="{TemplateBinding BorderThickness}">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="30"/></Grid.ColumnDefinitions>
-                <ContentPresenter Margin="{TemplateBinding Padding}" VerticalAlignment="Center" HorizontalAlignment="Left"
-                                  Content="{TemplateBinding SelectionBoxItem}" ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"/>
+                <ContentPresenter x:Name="PART_SelectionBoxItem" IsHitTestVisible="False"
+                                  Margin="{TemplateBinding Padding}" VerticalAlignment="Center" HorizontalAlignment="Left"
+                                  Content="{TemplateBinding SelectionBoxItem}"
+                                  ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                  ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
+                                  ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"/>
                 <ToggleButton Grid.Column="1" Focusable="False" IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}" ClickMode="Press" Background="#252B2F" BorderThickness="0">
                   <Path Fill="{TemplateBinding Foreground}" HorizontalAlignment="Center" VerticalAlignment="Center" Data="M 0 0 L 8 0 L 4 5 Z"/>
                 </ToggleButton>
@@ -117,10 +121,10 @@
             <TextBlock x:Name="DeviceDiscoveryText" Text="设备列表尚未读取。" Foreground="#9DA8AD" TextWrapping="Wrap" Margin="0,0,0,5"/>
             <Button x:Name="RefreshDevicesButton" Content="刷新设备" HorizontalAlignment="Left" MinWidth="120" Margin="0,0,0,7"/>
             <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-              <StackPanel><TextBlock Text="HRI 串口" Foreground="#AAB5BA"/><ComboBox x:Name="SerialBox" DisplayMemberPath="Label" SelectedValuePath="Value"/></StackPanel>
-              <StackPanel Grid.Column="1"><TextBlock Text="电台音频输入" Foreground="#AAB5BA"/><ComboBox x:Name="WaveInEndpointBox" DisplayMemberPath="Label" SelectedValuePath="Value"/></StackPanel>
+              <StackPanel><TextBlock Text="HRI 串口" Foreground="#AAB5BA"/><ComboBox x:Name="SerialBox"/></StackPanel>
+              <StackPanel Grid.Column="1"><TextBlock Text="电台音频输入" Foreground="#AAB5BA"/><ComboBox x:Name="WaveInEndpointBox"/></StackPanel>
             </Grid>
-            <StackPanel><TextBlock Text="电台音频输出" Foreground="#AAB5BA"/><ComboBox x:Name="WaveOutEndpointBox" DisplayMemberPath="Label" SelectedValuePath="Value"/></StackPanel>
+            <StackPanel><TextBlock Text="电台音频输出" Foreground="#AAB5BA"/><ComboBox x:Name="WaveOutEndpointBox"/></StackPanel>
           </StackPanel>
         </Border>
         <Border Background="#20252A" BorderBrush="#3A4248" BorderThickness="1" Padding="14" Margin="0,0,0,10">
