@@ -62,6 +62,16 @@ R57 的 X 配置导入会写 `DGKEY_NUM_TRX`，故静态上存在候选间接关
 
 `DGRP_DATA` 和 `DGRP_VOICE` 是共享配置接口传入的组名。已有 R77/R11 静态资料把单个 HRI 对象线程的队列消息接到 EXE 的 `WriteFile`，并把所选 COM 路径接到同一全局串口句柄字段；R64 的一次运行观察看到 Direct 实例，但没有测量这些设置 handler 的调用。现有证据没有显示两个组分别创建 COM，也没有证据证明 `0x4a1600` 或 `0x4a1900` 改变了该 COM 句柄。COM5 是此前本机硬件/运行观察，不是这些静态配置写入推导出来的值。
 
+## 官方帮助术语与 R91 观测边界
+
+固定 WIRES-X 2.010 CHM 的 `Transceiver.html` 将 Voice CH 的 `[Modulation]` 定义为 WIRES-X 的语音通道设置：`Digital` 表示 RX/TX 均为 C4FM digital，`Analog` 表示 RX/TX 均为 FM analog。该页还说明 Analog/FM 只用于 Voice CH，不能在 GM 模式下选择；FTX-1 可用 USB 线直连 PC。`Status.html` 把状态标签 `HRI` 定义为 Fullspec Node operation（列举 FTX-1），并把 `P-HRI`、`PDN` 列为其他操作类别。`Transceiver.html` 对 PDN 的数字模式限制针对 PDN 配置；不能把它套用到该页归为 Fullspec Node 的 FTX-1。
+
+R91 的一次 10 秒窗口记录的是 HRI 实例字段：表项 0 的 `+0x50=1`，按 HRI 文本表显示为 `Analog`；表项 1 的 `+0x50=0`，按同一表显示为 `OFF`；两个表项的 `+0x58=0`。这组字段描述当次 HRI 对象状态。现有证据没有把它们映射到电台菜单中的 `Node Mode`，也没有证明它们决定 FTX-1 的 RF 音频路由或 LCD 内容。
+
+FTX-1 的 `Node Mode` 是电台自身设置。官方手册将 `AP RADIO` 描述为电台侧接入点模式，将 `AP PC` 描述为 PC 与电台配合、经 C4FM 空中链路工作的模式，将 `DIRECT` 描述为 PC 与 FTX-1 直连通信、该模式不经空中发送或接收；用户确认当前选择 `DIRECT`。WIRES-X 帮助里的 Voice CH `[Modulation]` 是另一项语音通道设置；Status 的 `HRI`/`PDN` 是连接/运行类别；R91 的 `TRCVTYPE`/`OPE_MODE` 是当次 HRI 对象字段。现有材料没有显示修改其中一项会设置另外几项，也没有解释 LCD 空白或 Bridge 运行期间的 RF 接收状态。Node Mode 的手册描述与待核对的运行/退出路由见[下一阶段推进计划](下一阶段推进计划.md)。
+
+复核来源：原始 `WIRES_X.CHM` SHA-256 `EACF2FDC55788665966F4ED2B4D0D1028DE070BA07A3B5F7357532B9E8E615A3`；提取页 [`Transceiver.html`](../../research/rea/wiresx-chm-static/html/Transceiver.html) SHA-256 `4579671A7D15B26B808CDD8E0941DCCF79281BFF2DAF44FB0DA26DE18B8D330E`；[`Status.html`](../../research/rea/wiresx-chm-static/html/Status.html) SHA-256 `5DBE1126A090BDFBEAC21E0AB39E2EE876959B408319C8A02A9C1438797699B8`。R91 的观测条件及字段见 [R91 双实例只读观察](R91双实例只读观察.md)。
+
 ## 尚未确认的产品含义
 
 - `TRCVTYPE` 显示文本与 FTX-1 面板的 `FM`、`DN`、`AMS` 是否对应仍未知。不能只凭 `Analog`/`Digital`/`AMS` 字符串推断电台当时的模式。
