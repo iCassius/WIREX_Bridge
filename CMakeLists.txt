@@ -459,6 +459,32 @@ if(WIN32)
     target_link_libraries(bm_udp_test PRIVATE wirex_bm_udp)
     add_executable(dmr_vocoder_test tests/dmr_vocoder_test.cpp)
     target_link_libraries(dmr_vocoder_test PRIVATE wirex_dmr_vocoder)
+    add_executable(ambe_dmr72_test
+        tests/ambe_dmr72_test.cpp
+        src/ambe_dmr72.cpp)
+    target_include_directories(ambe_dmr72_test PRIVATE
+        include
+        third_party/droidstar_mbe/upstream)
+    target_compile_features(ambe_dmr72_test PRIVATE cxx_std_17)
+    add_executable(ysf_vd2_vch_test
+        tests/ysf_vd2_vch_test.cpp
+        src/ysf_vd2_vch.cpp)
+    target_include_directories(ysf_vd2_vch_test PRIVATE include)
+    target_compile_features(ysf_vd2_vch_test PRIVATE cxx_std_17)
+    add_executable(voice_transcode_buffer_test
+        tests/voice_transcode_buffer_test.cpp
+        src/voice_transcode_buffer.cpp
+        src/ambe_dmr72.cpp
+        src/ysf_vd2_vch.cpp)
+    target_include_directories(voice_transcode_buffer_test PRIVATE
+        include
+        third_party/droidstar_mbe/upstream)
+    target_compile_features(voice_transcode_buffer_test PRIVATE cxx_std_17)
+    if(MSVC)
+        target_compile_options(ambe_dmr72_test PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(ysf_vd2_vch_test PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(voice_transcode_buffer_test PRIVATE /W4 /permissive- /utf-8)
+    endif()
     add_executable(pcm_resampler_test tests/pcm_resampler_test.cpp)
     target_link_libraries(pcm_resampler_test PRIVATE wirex_pcm_resampler)
     add_executable(bm_voice_pipeline_test tests/bm_voice_pipeline_test.cpp)
@@ -523,6 +549,9 @@ if(WIN32)
     add_test(NAME bm_connection_config_test COMMAND bm_connection_config_test)
     add_test(NAME bm_udp_test COMMAND bm_udp_test)
     add_test(NAME dmr_vocoder_test COMMAND dmr_vocoder_test)
+    add_test(NAME ambe_dmr72_test COMMAND ambe_dmr72_test)
+    add_test(NAME ysf_vd2_vch_test COMMAND ysf_vd2_vch_test)
+    add_test(NAME voice_transcode_buffer_test COMMAND voice_transcode_buffer_test)
     add_test(NAME pcm_resampler_test COMMAND pcm_resampler_test)
     add_test(NAME bm_voice_pipeline_test COMMAND bm_voice_pipeline_test)
     add_test(NAME bm_test_profile_test COMMAND bm_test_profile_test)
