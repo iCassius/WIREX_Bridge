@@ -1,6 +1,6 @@
 # HRI 数字记录、头字段与调制控件研究进度
 
-日期：2026-10-27。本页合并 R95 的 G 帧/头字段、R96 的 Modulation 控件和 R97 的 R 记录路径结论，方便后续软件实现与联测复核。WIRES-X 样本均为 2.0.1.0。静态函数与 PE 资源结果来自本机固定文件；研究期间没有加载厂商 DLL 或启动官方客户端。R91、R93 的既有被动观察只按各自报告的范围引用。
+日期：2026-10-27。本页合并 R95 的 G 帧/头字段、R96 的 Modulation 控件、R97 的 R 记录路径和 R99 的 FrameAdd 队列闭合结论，并记录 R98 BM 来话 source ID 标签实验。WIRES-X 样本均为 2.0.1.0。静态函数与 PE 资源结果来自本机固定文件；研究期间没有加载厂商 DLL 或启动官方客户端。R91、R93 的既有被动观察只按各自报告的范围引用。
 
 固定目标 SHA-256：`WIRES_X.EXE` `8f05dc26794144438566b880ce775f5178d62eb3c4deb8c053089216342bc671`；`HRI_UART.dll` `56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed`；`RIGDATAIF.DLL` `94d1217feb047288329e79e0d5de2167c79450f1945119b2ed6c6376b02a7410`；`SETTINGDLG.DLL` `e83b2ee0070a127ab33ebe0dca936bc214cca0b8fcb484c3d7fce3e0c455def5`。
 
@@ -23,11 +23,11 @@ HRI resolver `FUN_100251d0` 登记的回调名如下；此表与 EXE 的 RigData
 
 HRI `FUN_10014dd0` 的 G/H 分支通过 `+0x44` 或 `+0x64` 取记录；它没有调用 `+0x40` 或 `+0x60` 的 TopFrameGet 槽。表项名称来自 HRI resolver `FUN_100251d0` 的 Evidence `ev_b24f6fe7c7a23517a4205c80f233802c6b45fb400063e341d8564aa35b3dd24f`；`TOHRITOPFRAMEGET` 字符串在 `0x1002539b` 的引用及函数归属分别见 `ev_3c6f265c5d0f8d1d2b016fda433c012f40803f727e80991015b69f6b989935f9`、`ev_d54dee5d12a476cae6183601b731ab5064d5c630e6501f8351b7b682bcdae273`。G/H 消费循环见 R82 Evidence `ev_5b0823e547bc0fb0a3fecd6484054ee080a5e9b94d083ae4cc791ef7ab4afe1d`。
 
-因此，主程序把 G/H 交给 `ToHriFrameAdd`；HRI 的 G/H 处理循环随后从按模式选择的 `ToHriAmbeGet` 或 `ToAnaAmbeGet` 回调取一条记录。RIGDATAIF 的 `ToHriFrameAdd` 节点实现和运行时表对象尚未单独核对，所以当前没有把这两个 API 直接描述成同一条链表，也不把 G 输入称为来自 `AmbeAdd` 或 `AmbeGet`。
+因此，主程序把 G/H 交给 `ToHriFrameAdd`；R99 随后确认该入口写入的队列对象地址与 HRI 的 `ToHriAmbeGet` head 完全相同。HRI 的 G/H 处理循环按模式选择 HRI Get 或 ANA Get，但 ANA Get 使用另一队列。记录仍不能称为来自 `ToHriAmbeAdd`；G/H 与 E/R 是主程序分发到不同 Add 入口的两类记录。
 
 ### G 记录和 68 字节头的偏移
 
-在 EXE `FUN_0043d810` 的局部 G 字符串中，索引 `0` 是 `G`，索引 `1..4` 是四个 ASCII HEX 字符。模式判断读取 `local_18f & 3`；`local_18f` 位于字符串基址 `local_198+9`，所以索引 `9` 的低两位控制该分支。头部从字符串索引 `5` 开始时，索引 `9` 正好是头部偏移 `+4`。在 HRI 端，`FUN_10014dd0` 从返回节点 `+4` 读取类型；它把该节点指针传入 `FUN_10014330`，后者从节点 `+9` 复制连续 68 字节到对象 `+0x1420`。这两个读址与“节点字符串缓冲从 `+4` 开始、G 后接四个 HEX 字符、68 字节头从原始字符串索引 5 开始”的布局相符。R6 对 RigDataIf 其他 Add 队列记录了节点字符串缓冲 `+4`，但 `ToHriFrameAdd` 本身实现仍未单独反编译，故这项 Add 到 Get 的精确节点布局还需闭合。
+在 EXE `FUN_0043d810` 的局部 G 字符串中，索引 `0` 是 `G`，索引 `1..4` 是四个 ASCII HEX 字符。模式判断读取 `local_18f & 3`；`local_18f` 位于字符串基址 `local_198+9`，所以索引 `9` 的低两位控制该分支。头部从字符串索引 `5` 开始时，索引 `9` 正好是头部偏移 `+4`。在 HRI 端，`FUN_10014dd0` 从返回节点 `+4` 读取类型；它把该节点指针传入 `FUN_10014330`，后者从节点 `+9` 复制连续 68 字节到对象 `+0x1420`。R99 对 `ToHriFrameAdd` 的直接反编译确认字符串缓冲从节点 `+4` 开始，因此 `node+9` 对应原始 G 字符串索引 `5`，也就是四个 HEX 字符后的 68 字节头起点。头内偏移 `+4` 对应原始 G 字符串索引 `9`。R99 的函数地址和 Evidence ID 见下节。
 
 EXE 只将四位 HEX 转成整数并作记录长度检查：低两位为 0/1 时不执行该检查；为 2 时要求记录长度等于 `uVar3+1`；为 3 时要求等于 `uVar3+5`。代码没有说明 `uVar3` 是 payload 字节数、HEX 字符数还是帧数。HRI `FUN_10014330` 的 `param_3+0x4d` 是以 HRI 节点为基址的后续文本读取地址；在节点 `+4` 存放原始字符串的条件下，它对应字符串索引 73，不能把该内部指针偏移原样写成 EXE 输入字符串索引 77。原始 G 记录的尾部编码用途尚未确认。
 
@@ -35,9 +35,19 @@ HRI 头解析器 `FUN_10014330` 把 68 字节复制到 `this+0x1420`，写头部
 
 `FUN_10017ee0` 会清空 HRI 对象的 `+0x1420` 内部头缓存。静态材料没有显示它发送电台 LCD 清屏命令。头字段的写入、内部缓存清理和 FTX-1 屏幕呈现是三个不同结果；本轮只恢复了前两者的部分软件路径。
 
+### R99：FrameAdd 与 HRI G/H consumer 使用同一队列
+
+RIGDATAIF.DLL 的 `ToHriFrameAdd`（VA `0x100028e0`）把输入字符串和第二参数交给 `FUN_100011c0`，并把队列对象 `0x1016830c` 传给该函数。`FUN_100011c0`（VA `0x100011c0`）使用该对象的 head `+0`、tail `+4`、mutex `+8`、count `+0x10`；新节点为 `0x330` 字节，next 链接位于 `+0x324`。`FUN_10001000` 初始化节点，把类型值写入 node[0]，并在 node+4 建立最多 800 字节的字符串缓冲；G 输入的字符串复制到该缓冲。函数级 Evidence ID 依次为 `ev_48c102f231f757edf2ca0da003dee6fe267c4b877856b667d2be86e8c7657758`、`ev_511b4f33a6adc48d3c215a27f46494f7f554aebeae5cde3615a017388025c893`、`ev_b251db448306d067410166d7899b176c0c0968f06659d731f841df8329ea0be2`。
+
+同一 DLL 的 `ToHriAmbeGet`（VA `0x10002950`）读取 head `0x1016830c`、count `0x1016831c`，与 `ToHriFrameAdd` 使用的队列对象地址相同。`ToAnaAmbeGet`（VA `0x10002a40`）读取 head `0x10168324`、count `0x10168334`，属于独立队列。Get 参数非零时各自把 head 移至旧节点 `+0x324` 的 next；参数为零时仅窥读 head。由此，R95 中的 G/H 输入→`ToHriFrameAdd`→HRI Get 队首链在静态对象指针上闭合；HRI consumer 选择 ANA Get 时会读另一队列。
+
+完整 R99 摘要位于 [`research/rf/R99_ToHriFrameAdd与HRI队列闭合.md`](../../research/rf/R99_ToHriFrameAdd与HRI队列闭合.md)，私有静态 Evidence bundle 为 `research/rea/v2.010/r99_rigdataif_frameadd_queue_20261027.json`，SHA-256 `069c5a9287a9ed3d7d2d01cfd508a341cd4e794e1c6cb1c8203cd281a0fde092`。这些结果来自固定 DLL 的静态指令，没有运行时读取队列；`param_2` 语义、节点释放责任及 Get 的上游条件仍未知。
+
 ### 与现有 Bridge 代码的关系
 
 `hri_call_header` 已提供 68 字节头和目的/源 10 字节字段的纯内存访问；`hri_t_record` 已按静态证据构造内部 T 正文和尾文本。它们没有把头字段写入 FTX-1 屏幕的证据。当前独立 LCD identity candidate 可在原 T90 候选上替换一个呼号字段，作为单字段对照原型；它没有接入 BM 默认运行链，也没有经过 LCD 实机观察。BRIDGE 的 WPF 来话卡片显示的是 pipeline 接受的 DMR Source ID/TG 等状态，不是电台 LCD。
+
+R98 另增加默认关闭的 BM 来话 source ID 标签开关：它把活动接收 Snapshot 中的数字 DMR Source ID 格式化为 `ID` 加十进制数字，覆盖 mode4 起始正文中的一个 10 字节 source 字段；T0 和原 PCM 下行生命周期不变。该标签不是 WIRES-X 呼号，且 LCD 结果保持 `unknown`。运行参数、LC 验证边界和待做联测见[BM 来话源 ID 显示实验](BM来话源ID显示实验.md)。本机默认入口仍选择 alpha.2；此源码实验开关不在该旧包中，也没有 WPF 按钮。
 
 没有远端 DMR ID→WIRES-X Callsign 数据源。DMR 数字 ID 不应直接写到头部 10 字节呼号字段；若后续测试选用 `ID1234` 这种可见文本，它只是一项明确的屏幕候选标签，不是已映射出的真实呼号。
 
@@ -53,12 +63,12 @@ R97 已修正输入偏移表达式：parser context 为 `ctx=*(this+0x2b4)`，�
 
 ## 后续工作边界
 
-下一步如把 BM 活动来话用于 T90 单字段对照，应只在已接受的 `receive_started`/有效 Snapshot 上生成候选标签，保持目的 TG、本机呼号与头部其余 58 字节及整个既有控制记录的其他内容原样；`ID1234` 应明确显示为由 DMR ID 生成的测试标签，不应冒充真实 callsign。开关必须显式 opt-in，默认 T90/T0 内容完全保持。交付候选供最终集中联测；本页没有发送该记录或验证屏幕结果。
+R98 已把 BM 活动来话 source ID 标签接入显式 opt-in 的一次通话起始正文。开关只检查 Snapshot 处于非 idle、非 filtered 状态且 `receive_generation` 非零；它没有要求 `link_control_validated=true`。因此，若 pipeline 在完整 LC 尚未验证时已从有效 DMR 音频同步接受来话，该通话仍可能生成 `ID` 标签。标签沿用外层 DMR Source ID，不作呼号数据库查询；用户界面或日志不得把标签显示为已确认的无线电呼号。开关关闭时保持原 T3/T0 内容。
 
-要把“当前呼叫者显示在 FTX-1”做成已完成功能，还需补证：`ToHriFrameAdd` 与 HRI G/H 消费者的实际队列实例对应；HRI 内部 68B 头如何通过所选串口 serializer 变成最终电台写入；电台对头字段的接受规则；呼叫结束时的实际清屏事务；以及一次有界 LCD 屏幕观察。
+要把“当前呼叫者显示在 FTX-1”做成已验证功能，还需确认 HRI G/H consumer 如何将内部记录交给实际选中的 UART serializer、设备如何接受该头字段、呼叫结束时实际清屏事务，以及一次受控 LCD 屏幕观察。R99 已闭合 Add/Get 队列地址，后续不再把该固定队列关系列为未知。
 
 ### 三个明确的下一步代码入口
 
-1. **补齐 G/H 队列连接。** 在 `RIGDATAIF.DLL!ToHriFrameAdd`（导出 VA `0x100028e0`）检查其队列对象和节点布局，再与 HRI `FUN_10014dd0` 的 `+0x44/+0x64` Get 分支、`FUN_10014330` 的 `node+9` 头复制逐字节核对。R6 只详查 `ToHriAmbeAdd` 共用节点 Add 入口，不覆盖 `ToHriFrameAdd`。
-2. **跟到最终串口写入和清理。** 从 HRI `FUN_10014330` / `FUN_10017ee0` 查生成的内部记录是否经过 `FUN_1000b130`、公共队列和 EXE `WM 0x618` handler，最终落到哪个串口 serializer 及 `WriteFile`。分别确认头部更新和呼叫结束时实际发送的清理记录；静态缓存置零不作为屏幕清除。
+1. **确认 G/H 记录进入哪种最终串口 serializer。** 从 HRI `FUN_10014dd0` 的 HRI Get/ANA Get 分支和 `FUN_10014330` 的 `node+9` 头复制继续跟踪内部记录，核对它是否经过 `FUN_1000b130`、公共队列、EXE `WM 0x618` handler以及所选串口 serializer，直到 `WriteFile` 的输入缓冲区。R99 已确认 FrameAdd 和 HRI Get 使用 `0x1016830c`，ANA Get 使用 `0x10168324`。
+2. **恢复呼叫结束的设备侧清屏事务。** 将 `FUN_10017ee0` 的 HRI 内部缓存清理与真正发往电台的记录分别追踪；只有找到设备写入和屏幕观察后，才记录显示清除结果。
 3. **定位 Modulation 控件所属类。** 从 `SETTINGDLG.DLL` 资源1028/ID `0x4A3` 开始，定位四条 `CBN_SELCHANGE` 映射属于哪个 dialog 类，再查其 vtable `+0x1BC/+0x1C8/+0x1CC` 和 `Apply/OK/Cancel` 写入路径。保留 R93 用户操作为“选择后读数仍为 FM，主会话选择 Cancel”，不推断其保存结果。
