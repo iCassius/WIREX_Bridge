@@ -38,7 +38,10 @@ if ($parseErrors.Count -ne 0) {
     throw "启动器 PowerShell 语法错误：$messages"
 }
 $launcherText = [System.IO.File]::ReadAllText([System.IO.Path]::GetFullPath($LauncherPath))
-foreach ($requiredText in @('--radio-playback-gain', '--mic-transmit-gain', 'Resolve-AudioSettingsPath -Path $AudioSettingsPath')) {
+foreach ($requiredText in @('--radio-playback-gain', '--mic-transmit-gain',
+        'Resolve-AudioSettingsPath -Path $AudioSettingsPath',
+        '[switch]$ExperimentalLcdSourceId',
+        "if (`$ExperimentalLcdSourceId) { `$arguments += '--experimental-lcd-source-id' }")) {
     if (-not $launcherText.Contains($requiredText)) { throw "启动器缺少音量配置接线：$requiredText" }
 }
 $profileLauncherPath = Join-Path (Split-Path -Parent $LauncherPath) 'start-profile.cmd'

@@ -65,6 +65,7 @@ enum class Error : std::uint8_t {
     write_not_attempted,
     invalid_time,
     null_input,
+    invalid_candidate_frame,
 };
 
 struct Config {
@@ -104,6 +105,10 @@ public:
     Session(CandidateFrame start_candidate, CandidateFrame stop_candidate, Config config = {});
 
     [[nodiscard]] Update begin_call(std::uint64_t now_ms, std::uint64_t call_window_ms = max_call_window_ms);
+    /// 仅用传入的 start frame 创建本通 write_start Action，不修改会话默认候选。
+    [[nodiscard]] Update begin_call_with_start_candidate(
+        const CandidateFrame& candidate, std::uint64_t now_ms,
+        std::uint64_t call_window_ms = max_call_window_ms);
     [[nodiscard]] Update write_attempted(std::uint64_t write_id, std::uint64_t now_ms);
     [[nodiscard]] Update write_completed(std::uint64_t write_id, bool succeeded, std::uint64_t now_ms);
     [[nodiscard]] Update feed(const std::uint8_t* bytes, std::size_t size, std::uint64_t now_ms);
@@ -129,6 +134,9 @@ private:
     bool stop_scheduled_{};
     bool network_ended_pending_{};
 
+    [[nodiscard]] Update begin_call_impl(
+        const CandidateFrame& start_candidate, bool one_shot_override,
+        std::uint64_t now_ms, std::uint64_t call_window_ms);
     [[nodiscard]] Update make_update() const;
     [[nodiscard]] bool observe_time(std::uint64_t now_ms, Update& update);
     void process_bytes(const std::uint8_t* bytes, std::size_t size, std::uint64_t now_ms, Update& update);

@@ -1,6 +1,7 @@
 #include "wirex/direct_frame.hpp"
 #include "wirex/hri_stream_session.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <iostream>
 #include <stdexcept>
@@ -21,6 +22,18 @@ wirex::hri_stream_session::CandidateFrame candidate(bool start)
     const auto frame = wirex::direct_frame::encode({static_cast<std::uint8_t>('T'), std::move(payload)});
     check(static_cast<bool>(frame), "T candidate encoding failed");
     return frame.bytes;
+}
+
+wirex::hri_stream_session::CandidateFrame candidate_with_marker(bool start, std::uint8_t marker)
+{
+    auto frame = candidate(start);
+    const auto decoded = wirex::direct_frame::decode(frame.data(), frame.size());
+    check(static_cast<bool>(decoded), "candidate marker fixture decodes");
+    auto payload = decoded.record.payload;
+    payload.at(12U) = marker;
+    const auto encoded = wirex::direct_frame::encode({static_cast<std::uint8_t>('T'), std::move(payload)});
+    check(static_cast<bool>(encoded), "candidate marker fixture re-encodes");
+    return encoded.bytes;
 }
 
 std::vector<std::uint8_t> t_record(std::size_t payload_size)
@@ -212,6 +225,77 @@ void test_malformed_and_wrong_phase_records_are_not_acknowledgements()
           "malformed serial data changed readiness or radio state");
 }
 
+void test_start_candidate_override_is_one_shot_and_fail_closed()
+{
+    using namespace wirex::hri_stream_session;
+    const auto default_start = candidate(true);
+    const auto first_start = candidate_with_marker(true, static_cast<std::uint8_t>('1'));
+    const auto second_start = candidate_with_marker(true, static_cast<std::uint8_t>('2'));
+    const auto default_stop = candidate(false);
+    Session session(default_start, default_stop);
+
+    auto update = session.begin_call_with_start_candidate(first_start, 10U);
+    check(update.error == Error::none && update.state.phase == Phase::start_write_pending &&
+          update.actions.size() == 1U && update.actions.front().frame == first_start,
+          "the one-shot source candidate is copied into this call's T3 Action");
+
+    const auto active_before_rejection = session.snapshot();
+    update = session.begin_call_with_start_candidate(second_start, 11U);
+    check(update.error == Error::invalid_phase && update.actions.empty() &&
+          update.state.phase == active_before_rejection.phase &&
+          update.state.start_write_attempted == active_before_rejection.start_write_attempted,
+          "a second override while the first call is active is rejected without changing it");
+
+    update = session.cancel(Reason::cancelled, 12U);
+    check(update.state.phase == Phase::idle && update.state.completed_calls == 1U,
+          "cancel before the first write closes the call without changing the retained candidates");
+
+    update = session.begin_call_with_start_candidate(second_start, 20U);
+    check(update.error == Error::none && update.actions.front().frame == second_start,
+          "a later call can use its own different source candidate");
+    complete_write(session, update.actions.front().write_id, 21U);
+    const auto start_response = t_record(0U);
+    update = session.feed(start_response.data(), start_response.size(), 23U);
+    check(update.state.phase == Phase::playing, "the overridden start receives normal T3 gating");
+    update = session.cancel(Reason::network_lost, 24U);
+    const auto stop = std::find_if(update.actions.begin(), update.actions.end(), [](const Action& action) {
+        return action.kind == ActionKind::write_stop_candidate;
+    });
+    check(update.state.reason == Reason::network_lost && stop != update.actions.end() &&
+          stop->frame == default_stop,
+          "network loss after an overridden T3 still queues the retained default T0 candidate");
+    complete_write(session, stop->write_id, 26U);
+    const auto stop_response = t_record(0U);
+    update = session.feed(stop_response.data(), stop_response.size(), 28U);
+    check(update.state.phase == Phase::idle && update.state.completed_calls == 2U,
+          "the overridden call reaches bounded T0 completion after network loss");
+
+    const auto invalid_before = session.snapshot();
+    const CandidateFrame invalid_frame{};
+    update = session.begin_call_with_start_candidate(invalid_frame, 30U);
+    check(update.error == Error::invalid_candidate_frame && update.actions.empty() &&
+          update.state.phase == invalid_before.phase && update.state.completed_calls == invalid_before.completed_calls,
+          "an invalid one-shot candidate is rejected without emitting a default T3 or mutating session state");
+
+    update = session.begin_call(31U);
+    check(update.error == Error::none && update.actions.size() == 1U &&
+          update.actions.front().kind == ActionKind::write_start_candidate &&
+          update.actions.front().frame == default_start,
+          "the next ordinary begin_call returns to the original default T3 candidate");
+
+    const auto drain_start_id = update.actions.front().write_id;
+    complete_write(session, drain_start_id, 32U);
+    update = session.feed(start_response.data(), start_response.size(), 34U);
+    check(update.state.phase == Phase::playing, "default call reaches playback before drain rejection check");
+    (void)session.network_ended(35U);
+    const auto draining_before_rejection = session.snapshot();
+    update = session.begin_call_with_start_candidate(first_start, 36U);
+    check(update.error == Error::invalid_phase && update.actions.empty() &&
+          update.state.phase == draining_before_rejection.phase &&
+          update.state.completed_calls == draining_before_rejection.completed_calls,
+          "an override during playback/draining cannot replace the active call candidate");
+}
+
 } // namespace
 
 int main()
@@ -223,6 +307,7 @@ int main()
         test_t0_observation_timeout_allows_reentry();
         test_short_call_waits_for_late_t3_before_draining();
         test_malformed_and_wrong_phase_records_are_not_acknowledgements();
+        test_start_candidate_override_is_one_shot_and_fail_closed();
         std::cout << "All HRI streaming session checks passed.\n";
         return 0;
     } catch (const std::exception& error) {

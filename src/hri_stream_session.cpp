@@ -50,6 +50,19 @@ Session::Session(CandidateFrame start_candidate, CandidateFrame stop_candidate, 
 
 Update Session::begin_call(std::uint64_t now_ms, std::uint64_t call_window_ms)
 {
+    return begin_call_impl(start_candidate_, false, now_ms, call_window_ms);
+}
+
+Update Session::begin_call_with_start_candidate(
+    const CandidateFrame& candidate, std::uint64_t now_ms, std::uint64_t call_window_ms)
+{
+    return begin_call_impl(candidate, true, now_ms, call_window_ms);
+}
+
+Update Session::begin_call_impl(
+    const CandidateFrame& start_candidate, bool one_shot_override,
+    std::uint64_t now_ms, std::uint64_t call_window_ms)
+{
     Update update = make_update();
     if (state_.phase != Phase::idle || active_call_) {
         update.error = Error::invalid_phase;
@@ -59,13 +72,18 @@ Update Session::begin_call(std::uint64_t now_ms, std::uint64_t call_window_ms)
         update.error = Error::invalid_time;
         return update;
     }
+    if (one_shot_override && !valid_candidate(start_candidate)) {
+        update.error = Error::invalid_candidate_frame;
+        return update;
+    }
     last_observed_ms_ = now_ms;
     reset_call_state();
     if (!valid_config(config_) || call_window_ms == 0U || call_window_ms > config_.max_call_window_ms) {
         state_.reason = Reason::invalid_configuration;
         state_.phase = Phase::faulted;
         update.actions.push_back(Action{ActionKind::call_finished, 0U, {}});
-    } else if (!valid_candidate(start_candidate_) || !valid_candidate(stop_candidate_)) {
+    } else if ((!one_shot_override && !valid_candidate(start_candidate_)) ||
+               !valid_candidate(stop_candidate_)) {
         state_.reason = Reason::invalid_candidate_frame;
         state_.phase = Phase::faulted;
         update.actions.push_back(Action{ActionKind::call_finished, 0U, {}});
@@ -73,7 +91,7 @@ Update Session::begin_call(std::uint64_t now_ms, std::uint64_t call_window_ms)
         active_call_ = true;
         call_deadline_ms_ = add_bounded(now_ms, call_window_ms);
         state_.phase = Phase::start_write_pending;
-        update.actions.push_back(Action{ActionKind::write_start_candidate, start_write_id, start_candidate_});
+        update.actions.push_back(Action{ActionKind::write_start_candidate, start_write_id, start_candidate});
     }
     update.state = state_;
     return update;

@@ -3,6 +3,7 @@
 #include "wirex/hri_call_header.hpp"
 
 #include <array>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
@@ -88,6 +89,49 @@ Result overlay_single_callsign(
     const auto body_field_offset = hri_call_header::t_body_header_offset + field_byte_offset;
     for (std::size_t index = 0; index < padded.size(); ++index) {
         result.body[body_field_offset + index] = static_cast<std::uint8_t>(padded[index]);
+    }
+    return result;
+}
+
+SourceIdResult overlay_source_id_test_label(
+    const hri_t_payload::CandidateBody& start_body,
+    std::uint32_t source_id) noexcept
+{
+    constexpr std::uint32_t max_source_id = 16777215U;
+    if (source_id == 0U || source_id > max_source_id) {
+        return {Error::invalid_source_id, {}, {}};
+    }
+
+    const auto expected_start = hri_t_payload::build_empty_header_empty_ambe_candidate_body(1, 1, 9U);
+    if (start_body != expected_start) {
+        return {Error::invalid_base_body, {}, {}};
+    }
+
+    SourceIdTestLabel label{};
+    label.fill(' ');
+    label[0] = 'I';
+    label[1] = 'D';
+    const auto converted = std::to_chars(label.data() + 2, label.data() + label.size(), source_id);
+    if (converted.ec != std::errc{}) {
+        return {Error::invalid_source_id, {}, {}};
+    }
+
+    constexpr std::size_t body_header_offset = hri_call_header::t_body_header_offset;
+    std::array<char, hri_call_header::header_size> header_bytes{};
+    for (std::size_t index = 0; index < header_bytes.size(); ++index) {
+        header_bytes[index] = static_cast<char>(start_body[body_header_offset + index]);
+    }
+    auto header = hri_call_header::parse_header(std::string_view(header_bytes.data(), header_bytes.size()));
+    if (!header || !hri_call_header::set_source_callsign(
+            *header, std::string_view(label.data(), label.size()))) {
+        return {Error::invalid_base_body, {}, {}};
+    }
+
+    SourceIdResult result{};
+    result.label = label;
+    result.body = start_body;
+    for (std::size_t index = 0; index < header_bytes.size(); ++index) {
+        result.body[body_header_offset + index] = static_cast<std::uint8_t>((*header)[index]);
     }
     return result;
 }

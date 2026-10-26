@@ -75,12 +75,58 @@ void test_input_rejections()
           "the helper rejects a stop T body so it cannot alter the existing T0 cleanup");
 }
 
+void test_source_id_test_label_boundaries_and_scope()
+{
+    using namespace wirex::hri_lcd_identity_candidate;
+    constexpr std::size_t source_offset = wirex::hri_call_header::t_body_header_offset +
+        wirex::hri_call_header::source_callsign_offset;
+    const auto base = wirex::hri_t_payload::build_empty_header_empty_ambe_candidate_body(1, 1, 9U);
+
+    const auto minimum = overlay_source_id_test_label(base, 1U);
+    check(static_cast<bool>(minimum), "source ID 1 creates a one-call test label");
+    check(std::string_view(minimum.label.data(), minimum.label.size()) == "ID1       " &&
+          std::string_view(reinterpret_cast<const char*>(minimum.body.data() + source_offset), 10U) ==
+              std::string_view(minimum.label.data(), minimum.label.size()),
+          "minimum source ID is decimal and right padded to exactly ten bytes");
+
+    const auto maximum = overlay_source_id_test_label(base, 16777215U);
+    check(static_cast<bool>(maximum), "maximum 24-bit DMR source ID creates a one-call test label");
+    check(std::string_view(maximum.label.data(), maximum.label.size()) == "ID16777215" &&
+          std::string_view(reinterpret_cast<const char*>(maximum.body.data() + source_offset), 10U) ==
+              std::string_view(maximum.label.data(), maximum.label.size()),
+          "maximum source ID fills the ten-byte field without truncation");
+
+    auto expected = base;
+    constexpr std::string_view middle_label = "ID4611355 ";
+    for (std::size_t index = 0; index < middle_label.size(); ++index) {
+        expected[source_offset + index] = static_cast<std::uint8_t>(middle_label[index]);
+    }
+    const auto middle = overlay_source_id_test_label(base, 4611355U);
+    check(static_cast<bool>(middle) && middle.body == expected,
+          "source ID overlay changes only the source ten-byte field in the default T90 candidate");
+    check(middle.body[wirex::hri_call_header::t_body_mode_offset] == '4' &&
+          middle.body[75] == '0' && middle.body[80] == 'F' && middle.body[86] == '3' &&
+          middle.body[89] == '3',
+          "source ID overlay preserves T90 mode, empty AMBE area, and existing candidate tail");
+
+    check(overlay_source_id_test_label(base, 0U).error == Error::invalid_source_id,
+          "source ID zero is rejected without producing a candidate");
+    check(overlay_source_id_test_label(base, 16777216U).error == Error::invalid_source_id,
+          "source IDs above the 24-bit DMR limit are rejected");
+    const auto stop = wirex::hri_t_payload::build_empty_header_empty_ambe_candidate_body(0, 1, 9U);
+    check(overlay_source_id_test_label(stop, 4611355U).error == Error::invalid_base_body,
+          "source ID overlay cannot modify the existing T0 stop body");
+    check(!is_valid_callsign_input("4611355"),
+          "adding a DMR test label does not relax the separate amateur callsign validator");
+}
+
 } // namespace
 
 int main()
 {
     test_each_known_field_offset();
     test_input_rejections();
+    test_source_id_test_label_boundaries_and_scope();
     std::cout << "All offline HRI LCD identity candidate checks passed.\n";
     return EXIT_SUCCESS;
 }

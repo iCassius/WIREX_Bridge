@@ -9,7 +9,9 @@
 #include "wirex/bm_test_profile.hpp"
 #include "wirex/direct_frame.hpp"
 #include "wirex/dmr_vocoder.hpp"
+#include "wirex/hri_lcd_identity_candidate.hpp"
 #include "wirex/hri_stream_session.hpp"
+#include "wirex/hri_t_payload.hpp"
 
 #include <algorithm>
 #include <array>
@@ -538,7 +540,7 @@ struct FakeHriAudioSink {
     }
 };
 
-void test_short_downlink_eot_waits_for_t3_and_final_audio_ack()
+void test_short_downlink_eot_waits_for_t3_and_final_audio_ack(bool use_source_id_label)
 {
     BmLoopback link;
     auto pipeline = std::make_unique<BmVoicePipeline>();
@@ -548,8 +550,7 @@ void test_short_downlink_eot_waits_for_t3_and_final_audio_ack()
     wirex::hri_stream_session::Session hri(hri_candidate(true), hri_candidate(false));
     std::vector<wirex::hri_stream_session::CandidateFrame> hri_writes;
     const std::uint64_t base_ms = 5000U;
-    auto hri_update = hri.begin_call(base_ms);
-    record_write(hri, hri_update.actions.front(), base_ms, hri_writes);
+    wirex::hri_stream_session::Update hri_update{};
 
     auto call = call_config(remote_id, 3U);
     wirex::dmr_call::Transmitter sender;
@@ -576,17 +577,39 @@ void test_short_downlink_eot_waits_for_t3_and_final_audio_ack()
     check(early_snapshot.rx_state == wirex::bm_voice::RxState::draining &&
               early_snapshot.queued_rx_bursts == 2U && early_snapshot.queued_playback_frames == 0U,
           "early EOT retains both speech bursts without decoding before T3 permission");
+    check(early_snapshot.receive_call.source_id == remote_id && early_snapshot.receive_generation != 0U,
+          "early BM EOT retains the accepted call source ID and generation until HRI T3 can start");
     bool saw_network_end = false;
     while (const auto event = pipeline->take_event()) {
-        if (event->kind == wirex::bm_voice::EventKind::network_ended) {
-            saw_network_end = true;
-            hri_update = hri.network_ended(base_ms + 300U);
-            check(hri_update.error == wirex::hri_stream_session::Error::none,
-                  "HRI state records EOT received before T3");
-        }
+        if (event->kind == wirex::bm_voice::EventKind::network_ended) saw_network_end = true;
     }
-    check(saw_network_end && hri.snapshot().phase == wirex::hri_stream_session::Phase::awaiting_start_record,
-          "network EOT at 300 ms does not cancel pending T3 startup");
+    check(saw_network_end, "the short BM call reports EOT before HRI T3 starts");
+
+    if (use_source_id_label) {
+        const auto default_start_body = wirex::hri_t_payload::build_empty_header_empty_ambe_candidate_body(1, 1, 9U);
+        const auto tagged_start = wirex::hri_lcd_identity_candidate::overlay_source_id_test_label(
+            default_start_body, early_snapshot.receive_call.source_id);
+        check(static_cast<bool>(tagged_start), "the accepted short-call source ID builds one source test label");
+        const auto tagged_frame = wirex::direct_frame::encode({static_cast<std::uint8_t>('T'),
+            std::vector<std::uint8_t>(tagged_start.body.begin(), tagged_start.body.end())});
+        check(static_cast<bool>(tagged_frame), "the one-call T3 candidate encodes as a DIRECT frame");
+        hri_update = hri.begin_call_with_start_candidate(tagged_frame.bytes, base_ms);
+        check(hri_update.error == wirex::hri_stream_session::Error::none &&
+              hri_update.state.phase == wirex::hri_stream_session::Phase::start_write_pending &&
+              hri_update.actions.front().frame == tagged_frame.bytes,
+              "the T3 Action uses the source from this accepted receive call");
+    } else {
+        hri_update = hri.begin_call(base_ms);
+        check(hri_update.error == wirex::hri_stream_session::Error::none &&
+              hri_update.state.phase == wirex::hri_stream_session::Phase::start_write_pending &&
+              hri_update.actions.front().frame == hri_candidate(true),
+              "the default path still writes its original unmodified T3 candidate");
+    }
+    record_write(hri, hri_update.actions.front(), base_ms, hri_writes);
+    hri_update = hri.network_ended(base_ms + 300U);
+    check(hri_update.error == wirex::hri_stream_session::Error::none &&
+          hri.snapshot().phase == wirex::hri_stream_session::Phase::awaiting_start_record,
+          "network EOT at 300 ms remains pending until HRI observes T3");
 
     // Fake HRI delays its T record until 1000 ms after this call began.
     hri_update = hri.feed(hri_writes.front().data(), hri_writes.front().size(), base_ms + 1000U);
@@ -910,7 +933,8 @@ int main()
 {
     try {
         test_real_loopback_tx_and_cancel_before_rptcl();
-        test_short_downlink_eot_waits_for_t3_and_final_audio_ack();
+        test_short_downlink_eot_waits_for_t3_and_final_audio_ack(false);
+        test_short_downlink_eot_waits_for_t3_and_final_audio_ack(true);
         test_private_echo_ts2_return_and_narrow_filter();
         test_tg91_ts2_group_receive_filter();
         test_watchdog_and_disconnect_generation_isolation();

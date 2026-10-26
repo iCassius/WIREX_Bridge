@@ -2,6 +2,8 @@
 
 #include "wirex/hri_t_payload.hpp"
 
+#include <array>
+#include <cstdint>
 #include <string_view>
 
 namespace wirex::hri_lcd_identity_candidate {
@@ -17,11 +19,22 @@ enum class Error {
     invalid_base_body,
     invalid_field,
     invalid_callsign,
+    invalid_source_id,
 };
 
 struct Result {
     Error error{Error::none};
     hri_t_payload::CandidateBody body{};
+
+    [[nodiscard]] explicit operator bool() const noexcept { return error == Error::none; }
+};
+
+using SourceIdTestLabel = std::array<char, 10U>;
+
+struct SourceIdResult {
+    Error error{Error::none};
+    hri_t_payload::CandidateBody body{};
+    SourceIdTestLabel label{};
 
     [[nodiscard]] explicit operator bool() const noexcept { return error == Error::none; }
 };
@@ -39,5 +52,11 @@ struct Result {
     const hri_t_payload::CandidateBody& start_body,
     CallsignField field,
     std::string_view callsign) noexcept;
+
+/// 为 BM DMR source ID 构造单次 T90 测试标签 `ID`+十进制数字+空格。
+/// 该标签占用 HRI source 10 字节字段，不是呼号，也不改变原始呼号校验；函数不判断电台是否显示它。
+[[nodiscard]] SourceIdResult overlay_source_id_test_label(
+    const hri_t_payload::CandidateBody& start_body,
+    std::uint32_t source_id) noexcept;
 
 } // namespace wirex::hri_lcd_identity_candidate
