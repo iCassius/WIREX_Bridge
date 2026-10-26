@@ -122,6 +122,40 @@ R78 的新证据并未观察任何实际定时器、线程或电台运行；它�
 
 新增 EXE Evidence：`FUN_004e5580` 为 `ev_5131b0c70d73a5f6b72c69e23fb4ff735ce3e5d673ac8d5c9bd16a32e39d8ef9`；`FUN_004bdb50` 为 `ev_69c0d7a75eeb03b5c49eed4754457f21bde1e9eea5b38a659ed5a88df7b9afa9`；`FUN_004b38d0` 为 `ev_459b683155f93cac683fe76c8ba0738df62dd045d310b7ae8ec8113059e2ca53`；`FUN_004b3350` 为 `ev_199862d7adfbb45f0ef5d253a87f59d9951043c7e67809eaa5fc513920075727`。完整 EXE 会话证据包位于 [`r79_exe_hri_identity_fields_20261026.evidence.json`](../../research/rea/v2.010/r79_exe_hri_identity_fields_20261026.evidence.json)。`FUN_004184f0` 的配置写入侧记录仍见既有 Evidence `ev_682a085bde8acbeda5e36bb8b31c3d2d73bf6bc7a1552b0eb50864813298aba8`。
 
+## R82：68 字符呼叫头进入 T 记录的静态路径
+
+本轮使用 HRI-UART.dll 2.0.1.0，SHA-256 `56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed`。REA Ghidra 12.1.4 x86 全量证据包为 [`r82_hri_t_header_callsign_20261026.evidence.json`](../../research/rea/v2.010/r82_hri_t_header_callsign_20261026.evidence.json)；bundle 包含本节引用的函数伪代码、汇编和目标身份。
+
+### 头缓冲区来源和呼号字段
+
+`FUN_10017ee0` 在处理状态事件时先清空 `this+0x1420`。处理 HRI 的 `G` 帧时，`FUN_10014330` 从输入记录 `param_3+9` 复制连续 68 个字节到 `this+0x1420`，再改写若干控制字符。这个 68 字节区就是后续 T 记录复用的头部，而不是 R79 的本机 `USER_INF` 文本。Evidence `ev_dd4741e6a283be5d7a5c88c8e35f4a98f22825de30ac56f6d3e015d8ee702ad9`。
+
+R83 追到 `FUN_10014330` 的两个直接调用者 `FUN_10014600`、`FUN_10014dd0`。它们从对象 `+0x1d8ec` 的虚函数槽取记录，查看记录 `+4` 的类型字符；遇到 `'G'` 时调用 `FUN_10014330`，并把返回块送入后续 AMBE 处理。调用者会同时读取 `'H'`、`'R'`、`'E'` 和其他类型记录，但这只确认了 HRI 内部数据源到头部解析器的路径。当前静态证据没有解析 `+0x1d8ec` 虚函数实现的上游数据来源，因此还不能把这个头部判为来自 BM、宿主身份配置或电台接收内容。直接调用者列表为 R83 Evidence `ev_f3e1c57ea4cca311d67fe7c3a95e36350a930b58d9caee8530c44155fb9ae0d9`，两个调用循环分别见 `ev_21b36e37a883e46e15a6f0a4e6713d46f1347d0a6528dbbac0a305b4fb74e872` 与 `ev_e0eaf1ab2302ef45109d91a9cda53cd175c911718409b7dc5f66a0ff0f138d2e`。
+
+`FUN_10014070` 处理该头部时，从相对偏移 `+8` 与 `+0x12` 各读取 10 个字符，并按日志字段 `DestCallSign` 和 `Src CallSign` 保存到对象 `+0x28cf` 与 `+0x28c4`。它检查字段首字符大于空格后才更新缓存；因此字段长度和缓冲偏移有代码证据，但空白/数字填充、显示格式及其最终 LCD 含义尚未完全验证。Evidence `ev_af377ccbc045e89e9964c53d4ab86c39d7534f358fda167ec8bf64bfc7435d28`。
+
+本机 HRI 配置也有一个单独的呼号槽。`FUN_1000d370` 从 `DGRP_COMMON/DGKEY_STR_CALL_SIGN` 读取文本，经 `StrFixSizeCopy` 保存到对象 `+0x322`；`FUN_10014330` 再把 10 字节复制到头部相对偏移 `+0x1c`（对象 `+0x143c`）。头部因此包含不同位置的目的呼号 `+8`、源呼号 `+0x12` 和 HRI 本机呼号 `+0x1c`。这只确认了配置到 HRI 缓冲区的复制关系；它没有证明 `DGKEY_STR_CALL_SIGN` 与 EXE 的 `USER_INF/CallSign` 是同一配置来源，也没有证明 `+0x1c` 在电台 LCD 上的呈现方式。`FUN_1000d370` 的完整静态记录为 R14 Evidence `ev_872f6848966086fe1393376f10eb179c48305a1cb4bb8a541d52f14b9878c888`；头部复制位置见本节 R82 Evidence `ev_dd4741e6a283be5d7a5c88c8e35f4a98f22825de30ac56f6d3e015d8ee702ad9`。
+
+同一配置函数还从 `DGRP_COMMON/DGKEY_STR_NODE_RADIO_ID` 读取本机 Node Radio ID。输入长度正好为 5 时，HRI 原样复制到对象 `+0x2f9`；其他非负长度会交给 `FUN_1000f660`，该函数对纯十进制文本作格式转换：小于 100000 时写为 5 位十进制文本；在 1000000 到 `1000000+0x834e0` 范围时按 `0123456789ABCD` 字符表编码为 5 位。`FUN_10014330` 把对象 `+0x2f9` 的 5 字节复制到头部 `+0x30`。`FUN_1000f7e0` 会依据对象 `+0x1d900` 的转换模式选择 `FUN_1000f660`、`FUN_1000f4e0` 或 `FUN_1000f2d0`；当前没有把该模式映射到电台 Node Mode 的证据。函数证据见 R14 `ev_872f6848966086fe1393376f10eb179c48305a1cb8a541d52f14b9878c888` 与本轮 R83 的 `ev_e5ea93510aac680beb57e163f5abf9ebec9b22fbd8c1bd3fca6328630a1047e`、`ev_848f27e53e6881e3629cc52e26242b1b1356f2a57745cc50f9e60d3140504f3b`。R83 全量证据包为 [`r83_hri_header_identity_conversion_20261026.evidence.json`](../../research/rea/v2.010/r83_hri_header_identity_conversion_20261026.evidence.json)（43 条记录，目标 SHA 与函数内容均在包内）。这 5 字节是本机 Node Radio ID 编码字段；不能据此把 BrandMeister DMR Source ID 直接转成 WIRES-X 呼号。
+
+`FUN_1000bee0` 另把队列节点的 68 字节头复制到 scratch `+8`，并把头部相对偏移 `+4` 固定为 ASCII `'1'`。它按记录标志保留后续正文原字节或从 ASCII HEX 解码，在正文前另加入 3 个记录字节，再追加 `0x03`；输出时将这一段逐字节编码为 ASCII HEX，并对整段（包括 `0x03`）求低 8 位和作为两位 HEX 校验值。非空 T 路径由 `FUN_1000adb0` 处理 AMBE 二进制块：它也按字节转 ASCII HEX，追加 `03`，再对该块与 `0x03` 的和取低 8 位作为校验值。两段代码分别提供头部/记录边界和语音块尾部格式的静态证据，没有把这些字段接到某个 LCD 控件。`FUN_1000adb0` 记录为 R83 Evidence `ev_130fa47a6bbaa0c2b88fa89cbd51d4005c8f482ddc51ac167ddb5417e2b61739`，`FUN_1000bee0` 记录为 R82 Evidence `ev_3ca4f025b37919a32d0df5dad3ece722ff905e56d06ef89cd0fc8b3920579047`。
+
+### T 记录包含该头部并经过 UART 写入链
+
+`FUN_10014b50` 的非空头分支从 `this+0x1420` 复制 68 字节到 T 正文偏移 `+7`。随后它写的是 T 正文绝对偏移 `0x0b`，也就是68字节头内部相对偏移 `+4`：将该字节低两位加 ASCII `'0'`。函数随后附加 AMBE 文本或空帧占位、五个星号和结尾字段，再调用 `FUN_1000b130` 建立类型 `'T'` 的队列记录。空头分支生成固定的 68 字节默认头；当前 Bridge 的 90 字节模板只实现了该空头、空 AMBE 数据候选。Evidence `ev_0b9ed8732ace5fbca14b93278f85c286ae2354053325a9da2b7c36b1e0c320b4` 和 `ev_a7403527ad5f9eaab9f38ff1a63fdbbf87e569244700d4f2384c3d427c833851`。
+
+类型 `'T'` 的记录进入公共 outgoing queue。`FUN_1000a240` 把队首缓冲区和长度交给 EXE 窗口消息 `0x618`；它对 T 正文的 HEX 解码用于诊断日志。R77 已恢复 EXE `0x618` handler 将同一缓冲区和长度交给 `WriteFile` 的静态路径。因此软件代码会把含 68 字符头的 T 记录交给 UART 写入函数。相关 HRI Evidence 为 `ev_d655b4be6bd24449c7d460909fb95eb74c345ca85c26e342499d88757dac4967`；EXE 下游 Evidence 为 `ev_b0aafad446c77fafe5688ec5b109f00275059ba97725657cec6ad39d60b3a61e`、`ev_04ee7da9fa2b802698348a29437077dde6f1ee9f1a5c5153e1affbf52d9d1f62`、`ev_6ab289bddeecbdb0bb70ba859d2d9238b403c368bcbe8ab3a51451f573216cca`。
+
+`FUN_10013720` 是另一条 `this+0x1420` 写入路径：它把宿主提供的二进制块编码为 ASCII HEX，附加 `03` 和加和值，再追加到该字符串。它的调用者 `FUN_1001e1c0` 先向宿主窗口发送 `0xc2a` 并收到可继续取帧的返回值，随后才调用 `FUN_10013720`。这属于待发送数据构造；没有发现它从 R79 的本机 `CallSign`、`ID_No`、`User_RadioID` 读取远端发话者身份。Evidence `ev_108646d7e00c6085f50e947ba0e8e6a4fdc9d97fc116d502d6a1c6428d95a92b` 和 `ev_998396d42019961c53dd6d500ad49bbf7dbdd12cc7b2168931fb53893a836b5d`。
+
+### 当前可以实现与仍未知的范围
+
+已新增纯解析模块 `include/wirex/hri_call_header.hpp` / `src/hri_call_header.cpp`：它要求输入恰为 68 个非 NUL ASCII 字节，提供目的、源、HRI 本机呼号字段的 10 字符读取与替换，并可计算非空 T 路径在头部偏移 4 的 mode 字符。模块保留所有未解释的 ASCII 字节；替换字段要求调用方已经提供准确的 10 字符文本，不会把 DMR 数字 ID 转成 WIRES-X 呼号。合成离线测试 `tests/hri_call_header_test.cpp` 覆盖长度、ASCII、NUL 拒绝，三个有证据的呼号偏移、未知字节保留、T mode 索引，以及现有空头候选的 90 字节长度；本轮用 MSVC 独立编译并运行该测试通过。该模块还未接入 `probe_main` 的 BM 呼叫生命周期，也没有实现完整非空 T 正文组装；已恢复的 `0x03` 与 8 位校验计算尚未移入应用 serializer；旧空头 90 字节正文生成器保持原样。
+
+实现时仍应保留旧空头 90 字节候选作为默认分支，不猜测其余头字节或自动填充短呼号。完整 T 正文组装还需严格按静态函数重现 AMBE 长度校验、星号分隔符和结束字段，再分别测试；本轮没有新增这类 serializer。
+
+这些静态链只说明软件把头部送入 UART 写入路径。它没有证明 FTX-1 LCD 会把两个字段显示在何处、是否需要设备侧响应或额外事件，也没有证明任意手工拼出的头部会被电台接受。当前 DMR `CallConfig`/`ReceiveEvent` 只有远端 DMR Source ID，没有呼号/TA 文本；从 DMR ID 到合法的 10 字符 Source CallSign 仍需要经核实的映射来源。没有进行官方程序启动、DLL 加载、串口或电台测试，也没有生成或发送新的 LCD 命令。
+
 ## 显示 DMR 呼号的安全数据来源
 
 当前 Bridge 的 `CallConfig` / `ReceiveEvent` 有远端 Source ID、目标 TG、时隙、CC 等，不含远端呼号或 TA 文本。远端呼号不能使用本机 `BI7KGD`、`USER_INF/CallSign` 或静态订阅值代替。
