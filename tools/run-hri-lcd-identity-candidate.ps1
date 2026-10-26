@@ -111,7 +111,7 @@ $wavPath = Join-Path $PackageRoot 'assets\voice-test.wav'
 $yPath = Join-Path $PackageRoot 'private\device-y.bin'
 $reportsPath = Join-Path $PackageRoot 'reports'
 
-Assert-LcdAsset $nativePath 707072 '2e1bb14402166fbc101108b2e3bece6448997b90cf807817e40e3daaffa4ce5d'
+Assert-LcdAsset $nativePath 782336 '2e1bb14402166fbc101108b2e3bece6448997b90cf807817e40e3daaffa4ce5d'
 Assert-LcdAsset $wavPath 695836 '4beaf3d5539084f33ae05ba02112823edb75985d2f9e03668e2bdf28cd75570d'
 Assert-LcdAsset $yPath 100 '82e0085ccaccb769a83362c5b335ce6b9a0e3ae93afdf2ad4f46eb81f908577f'
 
