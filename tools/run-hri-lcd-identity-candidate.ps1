@@ -79,7 +79,7 @@ function Resolve-Callsign {
 
     $value = Read-ConfiguredCallsign $Path
     if ($null -ne $value) {
-        Write-Host '已从本机连接配置读取呼号；脚本不会输出或保存该值。'
+        Write-Host '已读取本机呼号。'
         return $value
     }
 
@@ -106,12 +106,12 @@ if ($Port -notmatch '^COM[1-9][0-9]*$') {
     throw 'Port must be a COM port name such as COM5.'
 }
 
-$nativePath = Join-Path $PackageRoot 'wirex_bridge.exe'
+$testProgramPath = Join-Path $PackageRoot 'wirex_bridge.exe'
 $wavPath = Join-Path $PackageRoot 'assets\voice-test.wav'
 $yPath = Join-Path $PackageRoot 'private\device-y.bin'
 $reportsPath = Join-Path $PackageRoot 'reports'
 
-Assert-LcdAsset $nativePath 782336 '2e1bb14402166fbc101108b2e3bece6448997b90cf807817e40e3daaffa4ce5d'
+Assert-LcdAsset $testProgramPath 782336 '2e1bb14402166fbc101108b2e3bece6448997b90cf807817e40e3daaffa4ce5d'
 Assert-LcdAsset $wavPath 695836 '4beaf3d5539084f33ae05ba02112823edb75985d2f9e03668e2bdf28cd75570d'
 Assert-LcdAsset $yPath 100 '82e0085ccaccb769a83362c5b335ce6b9a0e3ae93afdf2ad4f46eb81f908577f'
 
@@ -123,7 +123,7 @@ $callsign = Resolve-Callsign $ProfilePath
 Write-Host ''
 Write-Host 'HRI LCD 呼号字段位置测试'
 Write-Host ("串口：{0}；WAV约7.25秒；Y模板和输入文件校验通过。" -f $Port)
-Write-Host '前置条件：FTX-1置于DIRECT，HRI已连接，官方WIRES-X程序已关闭，手咪PTT保持松开。'
+Write-Host '电台进入 WIRES-X HRI 界面，Node Mode 设为 DIRECT；关闭官方 WIRES-X 和其他 Bridge，松开手咪 PTT。'
 Write-Host '每次选择一个字段并确认后开始测试；程序返回后可再选择字段。Q退出。'
 
 while ($true) {
@@ -145,19 +145,19 @@ while ($true) {
         continue
     }
 
-    Write-Host ("本次替换 {0} 的10字节呼号字段；报告不会记录呼号。" -f $field)
-    $confirm = Read-Host '确认DIRECT/HRI/官方程序/PTT状态正确后，输入Y开始本次实验'
+    Write-Host ("本次测试字段：{0}。" -f $field)
+    $confirm = Read-Host '确认电台状态正确后，输入Y开始本次测试'
     if ($confirm -notmatch '^[Yy]$') {
-        Write-Host '本次已取消，未启动native。'
+        Write-Host '已取消，返回字段选择。'
         continue
     }
 
     $stamp = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff')
     $reportPath = [IO.Path]::GetFullPath((Join-Path $reportsPath ("lcd-candidate-{0}-{1}.json" -f $stamp, $field)))
-    & $nativePath '--hri-lcd-identity-candidate' '--port' $Port '--body-file' $yPath `
+    & $testProgramPath '--hri-lcd-identity-candidate' '--port' $Port '--body-file' $yPath `
         '--file' $wavPath '--report-file' $reportPath '--field' $field '--callsign' $callsign
-    $nativeExitCode = $LASTEXITCODE
-    Write-Host ("native退出码：{0}；报告：{1}" -f $nativeExitCode, $reportPath)
+    $testExitCode = $LASTEXITCODE
+    Write-Host ("测试程序退出码：{0}；报告：{1}" -f $testExitCode, $reportPath)
 }
 
 Write-Host '已退出LCD字段候选菜单。'
