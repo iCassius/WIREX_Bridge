@@ -212,6 +212,7 @@ try {
         @{ Name='direct_stream_test'; Source='tests\direct_stream_test.cpp' },
         @{ Name='hri_session_test'; Source='tests\hri_session_test.cpp' },
         @{ Name='hri_ptt_gate_test'; Source='tests\hri_ptt_gate_test.cpp' },
+        @{ Name='hri_p_status_test'; Source='tests\hri_p_status_test.cpp'; SupportSources=@('src\hri_p_status.cpp') },
         @{ Name='hri_downlink_session_test'; Source='tests\hri_downlink_session_test.cpp' },
         @{ Name='hri_radio_protocol_test'; Source='tests\hri_radio_protocol_test.cpp' },
         @{ Name='operation_audio_cleanup_test'; Source='tests\operation_audio_cleanup_test.cpp' },
@@ -242,14 +243,21 @@ try {
         }
         $testObject = Invoke-CompileGroup -Name $test.Name -Sources @($test.Source) `
             -ObjectDirectory ('objects\tests\' + $test.Name) -WarningLevel 'W4'
-        $testObjects += ,@{ Name=$test.Name; Object=$testObject[0] }
+        $supportObjects = @()
+        if ($test.ContainsKey('SupportSources')) {
+            $supportObjects = Invoke-CompileGroup -Name ($test.Name + ' support') `
+                -Sources @($test.SupportSources) `
+                -ObjectDirectory ('objects\tests\' + $test.Name + '-support') -WarningLevel 'W4'
+        }
+        $testObjects += ,@{ Name=$test.Name; Object=$testObject[0]; SupportObjects=@($supportObjects) }
     }
 
     $testResults = @()
     if (-not $CompileOnly) {
         foreach ($test in $testObjects) {
             $testName = [string]$test.Name
-            Invoke-LinkExecutable -Name $testName -Objects (@($test.Object) + @($coreObjects) + @($upstreamObjects))
+            Invoke-LinkExecutable -Name $testName `
+                -Objects (@($test.Object) + @($coreObjects) + @($upstreamObjects) + @($test.SupportObjects))
             $testExecutable = Join-Path $outputDirectory ($testName + '.exe')
             Write-Host "运行离线测试：$testName"
             & $testExecutable

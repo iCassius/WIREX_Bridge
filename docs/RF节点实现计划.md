@@ -103,3 +103,16 @@ UI 只展示有对应数据源的状态，并分别显示 RF 状态和 BM/HRI �
 ## 当前交接
 
 alpha2 可先推进官方 PTT/串口收发路径的静态恢复与有证据的数据类型，再实现与 UI 分离的纯 RF route policy。RF→BM 的 RF 音频源/busy 语义仍待官方路径分析和受控设备验证；BM→RF 的射频键控协议与停止证据尚未恢复。LCD 协议与 UI/屏幕字段由另一个研究任务继续，本计划不将 HRI PC 面板或当前 UI 显示说成 FTX-1 LCD。
+
+## HRI `P` 内部数字状态解析切片
+
+对官方 `HRI-UART.dll` 2.010 的静态分析闭合了一条 `P` 状态记录路径。分析样本 SHA-256 为 `56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed`，本机原始样本位于外层 `research/inputs/v2.010/payload/HRI_UART.dll`。下面的 VA 和行为只对应此哈希版本。
+
+- `FUN_10022730` 将 `P` 记录交给 `FUN_10023B10`。该处理函数调用 `FUN_10024D70` 校验有效长度和当前 HRI 会话字段；`-1`、`-2` 会丢弃，`-3` 设置 HRI 内部值后不派发 FSM 事件。校验通过后，`FUN_10023B10` 对状态对象执行虚表 `+0x28` 调用并派发事件 `0x0c`。
+- `FUN_10024D70` 接受 4 字节或 11 字节 payload。4 字节记录先检查 HRI `+0x2c8` 的有符号 BYTE 与 `0x20` 的 `JLE` 结果：原始值 `0x00–0x20` 或 `0x80–0xff` 才通过。11 字节记录中，payload `[3] == 'D'` 是单独的哨兵分支；否则 payload `[5..8]` 的四个原始字节和 `[9]` 必须分别匹配当前会话 `+0x2c8` 和 `+0x2cc`，不符返回 `-2`。payload `[10]` 会被复制到内部对象，但 `+0x18` 状态谓词不读取它。
+- HRI 构造函数 `FUN_1000C3D0` 建立 16 字节状态对象并放在 HRI `+0x2b0`。`FUN_10017B60` 根据当前 HRI 子对象状态在 `CDigiTrxStateTrcv` 与 `CDigiTrxStateRept` 两张虚表之间选择；P 记录处理和状态机回调读取的是同一个 `+0x2b0` 对象。
+- Transceiver 虚表 `+0x18`（`FUN_10025020`）只在对象字节 `[7] == '4'` 时返回 1。Repeater 虚表 `+0x18`（`FUN_10025190`，由 `FUN_100251B0` 转发）只在对象字节 `[8]` 为 `'4'`、`'8'`、`'A'` 或 `'C'` 时返回 1。`rSt20_RcvPttSwInd` 和 `rSt55_RcvPttSwInd` 都调用该对象的虚表 `+0x18`；前者在结果为 1 时记录 `Digital PTT ON Detected`，后者在非 1 时进入 `Digital PTT OFF Detected` 路径。
+
+新增的独立纯函数 `wirex::hri_p_status::analyze` 接收已由 `direct_frame` 校验的记录、当前实例 `StateClass` 和同一 HRI 会话采集的比较字段。它保留完整原始 payload；缺少会话比较字段时给出 `unknown`，不派发状态谓词；四字节门限拒绝或长记录比较不符时给出 `rejected`；`'D'` 作为独立哨兵结果；只有会话门通过后才给出 Transceiver/Repeater 虚表输入字节和 `+0x18` 谓词值。未知虚表类、错误记录类型及其他长度会显式拒绝。此模块不解释未恢复的字段，也不把谓词值命名为 RF 发射、RF 接收或射频 OFF；它仅表达官方软件的内部数字状态判断，不替代物理 X12 手咪观察，也不声称电台实际发射或停止。
+
+`tests/hri_p_status_test.cpp` 是独立离线测试源，覆盖两类会话门、4/11 字节映射、哨兵、未知上下文、非法输入及谓词字节边界。此切片尚未加入 CMake 或正式 builder 测试列表，未连接 HRI/COM、音频、BM 或电台，也未做 RF/HIL 验收。
