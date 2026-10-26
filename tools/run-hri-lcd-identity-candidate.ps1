@@ -121,11 +121,10 @@ if (-not (Test-Path -LiteralPath $reportsPath -PathType Container)) {
 
 $callsign = Resolve-Callsign $ProfilePath
 Write-Host ''
-Write-Host 'HRI LCD 呼号字段位置候选（单次本地WAV；不启动BM会话）'
+Write-Host 'HRI LCD 呼号字段位置测试'
 Write-Host ("串口：{0}；WAV约7.25秒；Y模板和输入文件校验通过。" -f $Port)
 Write-Host '前置条件：FTX-1置于DIRECT，HRI已连接，官方WIRES-X程序已关闭，手咪PTT保持松开。'
-Write-Host '每次只选择一个字段；native返回菜单后不会自动执行下一字段。Q退出；Ctrl+C交由native现有清理流程处理。'
-Write-Host 'LCD显示结果由操作者观察；运行报告固定写lcd_display=unknown。'
+Write-Host '每次选择一个字段并确认后开始测试；程序返回后可再选择字段。Q退出。'
 
 while ($true) {
     Write-Host ''
@@ -146,7 +145,7 @@ while ($true) {
         continue
     }
 
-    Write-Host ("本次只替换 {0} 的10字节呼号字段；报告不会记录呼号。" -f $field)
+    Write-Host ("本次替换 {0} 的10字节呼号字段；报告不会记录呼号。" -f $field)
     $confirm = Read-Host '确认DIRECT/HRI/官方程序/PTT状态正确后，输入Y开始本次实验'
     if ($confirm -notmatch '^[Yy]$') {
         Write-Host '本次已取消，未启动native。'
