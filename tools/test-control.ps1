@@ -1,7 +1,10 @@
 ﻿[CmdletBinding()]
-param([string]$ExecutablePath = (Join-Path $PSScriptRoot 'wirex_bridge.exe'))
+param([string]$ExecutablePath)
 
 $ErrorActionPreference = 'Stop'
+if ([string]::IsNullOrWhiteSpace($ExecutablePath)) {
+    $ExecutablePath = Join-Path $PSScriptRoot 'wirex_bridge.exe'
+}
 $exePath = [System.IO.Path]::GetFullPath($ExecutablePath)
 $process = $null
 $stderrTask = $null

@@ -1,5 +1,5 @@
 ﻿[CmdletBinding()]
-param()
+param([string]$ControlPackageDirectory)
 
 $ErrorActionPreference = 'Stop'
 $script:assertions = 0
@@ -249,6 +249,20 @@ foreach ($scriptPath in @('tools\test-control.ps1','tools\start-step1-test.ps1')
     [void][System.Management.Automation.Language.Parser]::ParseFile($fullScriptPath, [ref]$tokens, [ref]$parseErrors)
     Assert-True ($parseErrors.Count -eq 0) "$scriptPath parses in Windows PowerShell"
 }
+$controlScriptPath = Join-Path $repositoryRoot 'tools\test-control.ps1'
+$controlTokens = $null
+$controlParseErrors = $null
+$controlScriptAst = [System.Management.Automation.Language.Parser]::ParseFile(
+    $controlScriptPath, [ref]$controlTokens, [ref]$controlParseErrors)
+$controlExecutableParameter = @($controlScriptAst.ParamBlock.Parameters | Where-Object {
+    [string]$_.Name.VariablePath.UserPath -ceq 'ExecutablePath'
+})
+Assert-True ($controlParseErrors.Count -eq 0 -and $controlExecutableParameter.Count -eq 1 -and
+    $null -eq $controlExecutableParameter[0].DefaultValue) `
+    'test-control defers its package-relative path until after parameter binding'
+$controlScriptText = [System.IO.File]::ReadAllText($controlScriptPath, [System.Text.Encoding]::UTF8)
+Assert-True ($controlScriptText.Contains('$ExecutablePath = Join-Path $PSScriptRoot ''wirex_bridge.exe''')) `
+    'test-control resolves an omitted executable argument from its own package directory'
 Assert-True (([System.IO.File]::ReadAllText((Join-Path $repositoryRoot 'tools\start-step1-test.ps1'), [System.Text.Encoding]::UTF8)).Contains('private\r106-step1-test-config') -and
     ([System.IO.File]::ReadAllText((Join-Path $repositoryRoot 'tools\start-step1-test.ps1'), [System.Text.Encoding]::UTF8)).Contains('-UserConfigDirectory $resolvedUserConfigDirectory')) `
     'step-one UI entry uses the dedicated test configuration directory explicitly'
@@ -524,7 +538,11 @@ try {
     Copy-Item -LiteralPath $badFixture -Destination (Join-Path $packageRoot 'private\device-y.bin') -Force
     Assert-Throws { Assert-ReleasePackageInventory -PackageRoot $packageRoot } '被替换的 Y 素材'
 
-    Write-Host ("Release packager 离线合成断言通过：{0}；未生成发布包，未运行 EXE。" -f $script:assertions)
+    if ([string]::IsNullOrWhiteSpace($ControlPackageDirectory)) {
+        Write-Host ("Release packager 离线合成断言通过：{0}；未生成发布包，未运行 EXE。" -f $script:assertions)
+    } else {
+        Write-Host ("Release packager 离线合成断言通过：{0}；将检查指定 alpha.5 包的默认诊断入口。" -f $script:assertions)
+    }
 }
 finally {
     if ((Test-Path -LiteralPath $testRoot -PathType Container) -and
@@ -532,4 +550,23 @@ finally {
         ([System.IO.Path]::GetFileName($testRoot).StartsWith('package-release-test-', [System.StringComparison]::Ordinal))) {
         Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
+}
+
+if (-not [string]::IsNullOrWhiteSpace($ControlPackageDirectory)) {
+    $expectedPackageRoot = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot 'build\releases\v0.1.0-alpha.5'))
+    $controlPackageRoot = [System.IO.Path]::GetFullPath($ControlPackageDirectory)
+    if (-not $controlPackageRoot.Equals($expectedPackageRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "默认入口集成测试只接受本地 alpha.5 包目录：$expectedPackageRoot"
+    }
+    $packagedControlScript = Join-Path $controlPackageRoot 'test-control.ps1'
+    if (-not [System.IO.File]::Exists((Join-Path $controlPackageRoot 'wirex_bridge.exe')) -or
+        -not [System.IO.File]::Exists($packagedControlScript)) {
+        throw '默认入口集成测试需要同目录中的 test-control.ps1 与 wirex_bridge.exe。'
+    }
+    $powershellExe = Get-Command powershell.exe -ErrorAction Stop
+    $controlOutput = @(& $powershellExe.Source -NoLogo -NoProfile -ExecutionPolicy Bypass -File $packagedControlScript 2>&1)
+    $controlExitCode = $LASTEXITCODE
+    Assert-True ($controlExitCode -eq 0) `
+        ('alpha.5 test-control.ps1 must use its same-directory executable without -ExecutablePath; output: ' + ($controlOutput -join ' | '))
+    Write-Output 'Packaged test-control default-path integration passed: same-directory wirex_bridge.exe completed ready/hello/status/shutdown/exit0 without an executable argument.'
 }
