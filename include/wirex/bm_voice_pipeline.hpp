@@ -117,6 +117,8 @@ struct ReceiveFilter {
     dmr_call::Slot slot{dmr_call::Slot::ts1};
     bool match_call_kind{};
     dmr_call::CallKind call_kind{dmr_call::CallKind::group};
+    std::uint32_t source_id{}; // 仅在 match_source_id 时参与过滤。
+    bool match_source_id{};
 };
 
 struct ReceiveResult {
@@ -152,6 +154,8 @@ public:
     BmVoicePipeline& operator=(const BmVoicePipeline&) = delete;
 
     [[nodiscard]] Error set_receive_filter(const ReceiveFilter& filter) noexcept;
+    [[nodiscard]] Error set_secondary_receive_filter(
+        const std::optional<ReceiveFilter>& filter) noexcept;
     [[nodiscard]] Error begin_tx(const dmr_call::CallConfig& call,
                                  Readiness readiness,
                                  TimePoint now) noexcept;
@@ -202,6 +206,8 @@ private:
     [[nodiscard]] Error tick_rx(TimePoint now);
     [[nodiscard]] bool queue_event(const Event& event) noexcept;
     [[nodiscard]] bool filter_accepts(const dmr_call::CallConfig& call) const noexcept;
+    [[nodiscard]] static bool filter_matches(const ReceiveFilter& filter,
+                                             const dmr_call::CallConfig& call) noexcept;
     [[nodiscard]] bool filter_accepts_datagram(const dmrd::Datagram& datagram) const noexcept;
     [[nodiscard]] bool accept_time(TimePoint now) noexcept;
     [[nodiscard]] bool advance_rx_generation() noexcept;
@@ -219,6 +225,8 @@ private:
     audio::PcmResampler48To8 downsampler_{};
     audio::PcmResampler8To48 upsampler_{};
     ReceiveFilter receive_filter_{};
+    ReceiveFilter secondary_receive_filter_{};
+    bool secondary_receive_filter_enabled_{};
     TxState tx_state_{TxState::idle};
     RxState rx_state_{RxState::idle};
     dmr_call::CallConfig rx_call_{};

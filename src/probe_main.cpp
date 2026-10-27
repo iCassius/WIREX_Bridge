@@ -4495,11 +4495,13 @@ void print_bm_bridge_help()
         L"wirex_bridge - 本地 DIRECT / BrandMeister 声音桥接候选\n"
         L"  --help\n"
         L"  --list-audio-json\n"
-        L"  --run --port COMn --body-file ABS --input N --output N --status-file ABS --expected-wavein-endpoint ID --expected-waveout-endpoint ID [--test-preset parrot-cn|parrot-global|listen-46001|listen-91 --password-file ABS] [完整手工配置字段] [--manual-ptt] [--radio-playback-gain N] [--mic-transmit-gain N]\n"
+        L"  --run --port COMn --body-file ABS --input N --output N --status-file ABS --expected-wavein-endpoint ID --expected-waveout-endpoint ID [--test-preset parrot-cn|parrot-global|listen-46001|listen-91 --password-file ABS] [完整手工配置字段] [独立接收目标字段] [--listen-only] [--manual-ptt] [--radio-playback-gain N] [--mic-transmit-gain N]\n"
         L"手工配置字段：--profile-callsign、--profile-gateway-id、--profile-source-id、--profile-master、--profile-master-port、--profile-destination-id、--profile-slot、--profile-color-code、--profile-call-kind（G 或 P）。九项必须同时提供。\n"
+        L"独立接收目标字段：--profile-receive-destination-id、--profile-receive-slot、--profile-receive-call-kind（G 或 P）。三项必须同时提供；省略时沿用组呼目标或本机私呼 Source ID。\n"
         L"手工配置字段省略时保留逐项交互输入；密码文件为本机私有明文 UTF-8 文本，启动参数只传文件路径。\n"
         L"WaveIn/WaveOut endpoint ID来自本次 WinMM 枚举；打开和重开音频流前都会核对。\n"
         L"默认在 BM/HRI ready 后用有效 HRI 手咪PTT边沿控制上行；--manual-ptt 显式启用键盘 T 诊断模式。\n"
+        L"--listen-only 禁止本次运行的所有 BM 上行。\n"
         L"Q 停止并退出；电台手咪 PTT 控制 BM 上行。\n"
         L"--radio-playback-gain 和 --mic-transmit-gain 接受 0.25..16.0，最多 3 位小数；默认分别为 1x 和 16x。\n"
         L"状态报告按成功提交的 PCM 记录两条音频路径增益前后的统计和削波样本数。\n"
@@ -4763,6 +4765,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                   const std::wstring& expected_waveout_endpoint_id,
                   wirex::bm::Endpoint master,
                   wirex::bm::Profile profile, wirex::dmr_call::CallConfig call_template,
+                  wirex::bm_voice::ReceiveFilter receive_filter,
                   wirex::bm_test_profile::TxPolicy tx_policy,
                   bool manual_ptt,
                   bool ui_pipe,
@@ -4797,6 +4800,8 @@ int bm_bridge_main(int argc, wchar_t* argv[])
     std::wstring expected_waveout_endpoint_id;
     bool manual_ptt = false;
     bool manual_ptt_seen = false;
+    bool listen_only = false;
+    bool listen_only_seen = false;
     bool ui_pipe = false;
     bool ui_pipe_seen = false;
     bool preset_seen = false;
@@ -4807,6 +4812,8 @@ int bm_bridge_main(int argc, wchar_t* argv[])
     bool mic_transmit_gain_seen = false;
     std::array<std::wstring, 9U> manual_field_values{};
     std::array<bool, 9U> manual_field_seen{};
+    std::array<std::wstring, 3U> receive_field_values{};
+    std::array<bool, 3U> receive_field_seen{};
     std::uint32_t radio_playback_gain_milli = wirex::pcm_gain::unity_milli;
     std::uint32_t mic_transmit_gain_milli = 16000U;
     for (int index = 12; index < argc;) {
@@ -4818,6 +4825,16 @@ int bm_bridge_main(int argc, wchar_t* argv[])
             }
             manual_ptt = true;
             manual_ptt_seen = true;
+            ++index;
+            continue;
+        }
+        if (option == L"--listen-only") {
+            if (listen_only_seen) {
+                (void)bm_stderr(L"--listen-only 不可重复指定。\n");
+                return 2;
+            }
+            listen_only = true;
+            listen_only_seen = true;
             ++index;
             continue;
         }
@@ -4881,6 +4898,21 @@ int bm_bridge_main(int argc, wchar_t* argv[])
             }
             manual_field_values[field_index].assign(value);
             manual_field_seen[field_index] = true;
+        } else if (option == L"--profile-receive-destination-id" ||
+                   option == L"--profile-receive-slot" ||
+                   option == L"--profile-receive-call-kind") {
+            const std::array<std::wstring_view, 3U> field_options{{
+                L"--profile-receive-destination-id",
+                L"--profile-receive-slot",
+                L"--profile-receive-call-kind"}};
+            const auto found = std::find(field_options.begin(), field_options.end(), option);
+            const auto field_index = static_cast<std::size_t>(std::distance(field_options.begin(), found));
+            if (field_index >= receive_field_values.size() || receive_field_seen[field_index] || value.empty()) {
+                (void)bm_stderr(L"接收目标字段不可重复或留空。\n");
+                return 2;
+            }
+            receive_field_values[field_index].assign(value);
+            receive_field_seen[field_index] = true;
         } else if (option == L"--radio-playback-gain") {
             if (radio_playback_gain_seen || !wirex::pcm_gain::parse_gain(value, radio_playback_gain_milli)) {
                 (void)bm_stderr(L"--radio-playback-gain 必须唯一指定为 0.25..16.0 的十进制数，最多 3 位小数。\n");
@@ -4901,6 +4933,10 @@ int bm_bridge_main(int argc, wchar_t* argv[])
     }
     const bool any_manual_field = wirex::bm_connection_config::any_field_seen(manual_field_seen);
     const bool all_manual_fields = wirex::bm_connection_config::all_fields_seen(manual_field_seen);
+    const bool any_receive_field = std::any_of(receive_field_seen.begin(), receive_field_seen.end(),
+        [](bool seen) { return seen; });
+    const bool all_receive_fields = std::all_of(receive_field_seen.begin(), receive_field_seen.end(),
+        [](bool seen) { return seen; });
     if (preset_seen && (!password_file_seen || any_manual_field)) {
         (void)bm_stderr(L"固定预设必须单独使用 --test-preset 和 --password-file，不能混入手工配置字段。\n");
         return 2;
@@ -4908,6 +4944,28 @@ int bm_bridge_main(int argc, wchar_t* argv[])
     if (any_manual_field && !all_manual_fields) {
         (void)bm_stderr(L"手工连接配置字段必须九项完整提供。\n");
         return 2;
+    }
+    if (any_receive_field && !all_receive_fields) {
+        (void)bm_stderr(L"独立接收目标字段必须三项完整提供。\n");
+        return 2;
+    }
+    std::uint32_t receive_destination_id = 0U;
+    std::uint32_t receive_slot_number = 0U;
+    std::string receive_call_kind_text;
+    if (any_receive_field) {
+        std::string destination_text;
+        std::string slot_text;
+        wirex::bm_connection_config::ReceiveTarget receive_target{};
+        if (!narrow_ascii_text(receive_field_values[0], destination_text, 8U) ||
+            !narrow_ascii_text(receive_field_values[1], slot_text, 1U) ||
+            !narrow_ascii_text(receive_field_values[2], receive_call_kind_text, 1U) ||
+            !wirex::bm_connection_config::parse_receive_target(
+                destination_text, slot_text, receive_call_kind_text, receive_target)) {
+            (void)bm_stderr(L"接收目标必须是 1..16777215 的号码、TS1或TS2，以及 G 或 P。尚未打开设备。\n");
+            return 2;
+        }
+        receive_destination_id = receive_target.destination_id;
+        receive_slot_number = receive_target.slot;
     }
     if (ui_pipe && (manual_ptt || !password_file_seen || (!preset_seen && !all_manual_fields))) {
         (void)bm_stderr(L"--ui-pipe 需要完整预设或九项手工连接配置、显式密码文件，并且不能启用键盘诊断输入。\n");
@@ -4962,6 +5020,7 @@ int bm_bridge_main(int argc, wchar_t* argv[])
     std::uint32_t color_code = 0U;
     wirex::bm::Endpoint endpoint{};
     wirex::dmr_call::CallConfig call_template{};
+    wirex::bm_voice::ReceiveFilter receive_filter{};
     auto tx_policy = wirex::bm_test_profile::TxPolicy::enabled;
     bool connection_ready = false;
     const auto finish_connection = [&]() -> bool {
@@ -4978,7 +5037,20 @@ int bm_bridge_main(int argc, wchar_t* argv[])
         call_template.kind = call_kind_text == "G" ? wirex::dmr_call::CallKind::group
                                                     : wirex::dmr_call::CallKind::private_call;
         call_template.color_code = static_cast<std::uint8_t>(color_code);
-        tx_policy = wirex::bm_test_profile::policy_for(call_template);
+        tx_policy = wirex::bm_test_profile::policy_for(call_template, listen_only);
+        receive_filter.destination_id = call_template.kind == wirex::dmr_call::CallKind::group
+            ? call_template.destination_id : call_template.source_id;
+        receive_filter.match_slot = true;
+        receive_filter.slot = call_template.slot;
+        receive_filter.match_call_kind = true;
+        receive_filter.call_kind = call_template.kind;
+        if (any_receive_field) {
+            receive_filter.destination_id = receive_destination_id;
+            receive_filter.slot = receive_slot_number == 1U ? wirex::dmr_call::Slot::ts1
+                                                             : wirex::dmr_call::Slot::ts2;
+            receive_filter.call_kind = receive_call_kind_text == "G"
+                ? wirex::dmr_call::CallKind::group : wirex::dmr_call::CallKind::private_call;
+        }
         return true;
     };
     const auto resolve_connection_and_read_password = [&]() -> bool {
@@ -5146,7 +5218,7 @@ int bm_bridge_main(int argc, wchar_t* argv[])
     }
     return run_bm_bridge(argv[3], body_path, input_id, output_id,
                          expected_wavein_endpoint_id, expected_waveout_endpoint_id, endpoint,
-                         std::move(profile), call_template, tx_policy, manual_ptt,
+                         std::move(profile), call_template, receive_filter, tx_policy, manual_ptt,
                          ui_pipe,
                          radio_playback_gain_milli, mic_transmit_gain_milli,
                          std::move(counters), status_file, control_scope);
@@ -5158,6 +5230,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                   const std::wstring& expected_waveout_endpoint_id,
                   wirex::bm::Endpoint master,
                   wirex::bm::Profile profile, wirex::dmr_call::CallConfig call_template,
+                  wirex::bm_voice::ReceiveFilter receive_filter,
                   wirex::bm_test_profile::TxPolicy tx_policy,
                   bool manual_ptt,
                   bool ui_pipe,
@@ -5241,15 +5314,25 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         (void)bm_stderr(L"Bridge software state allocation failed before devices were opened.\n");
         return 2;
     }
-    wirex::bm_voice::ReceiveFilter receive_filter{};
-    receive_filter.destination_id = call_template.kind == wirex::dmr_call::CallKind::group
-        ? call_template.destination_id : call_template.source_id;
-    receive_filter.match_slot = true;
-    receive_filter.slot = call_template.slot;
-    receive_filter.match_call_kind = true;
-    receive_filter.call_kind = call_template.kind;
     if (pipeline->set_receive_filter(receive_filter) != wirex::bm_voice::Error::none) {
         (void)bm_stderr(L"The selected DMR receive filter is invalid.\n");
+        return 2;
+    }
+    std::optional<wirex::bm_voice::ReceiveFilter> parrot_return_filter;
+    if (wirex::bm_test_profile::permits_transmit(tx_policy) &&
+        call_template.kind == wirex::dmr_call::CallKind::private_call) {
+        wirex::bm_voice::ReceiveFilter filter{};
+        filter.destination_id = call_template.source_id;
+        filter.source_id = call_template.destination_id;
+        filter.slot = call_template.slot;
+        filter.call_kind = wirex::dmr_call::CallKind::private_call;
+        filter.match_slot = true;
+        filter.match_call_kind = true;
+        filter.match_source_id = true;
+        parrot_return_filter = filter;
+    }
+    if (pipeline->set_secondary_receive_filter(parrot_return_filter) != wirex::bm_voice::Error::none) {
+        (void)bm_stderr(L"The selected private-call return filter is invalid.\n");
         return 2;
     }
 
@@ -6369,21 +6452,47 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                     const auto accepted = pipeline->ingest_rx(decoded.datagram, Clock::now());
                     if (accepted.error == wirex::bm_voice::Error::filtered) {
                         ++counters.rx_filtered_datagrams;
-                        bool had_header_mismatch = false;
-                        if (receive_filter.destination_id != 0U &&
-                            datagram.destination_id != receive_filter.destination_id) {
-                            ++counters.rx_filtered_destination_id;
-                            had_header_mismatch = true;
+                        struct FilterMismatch {
+                            bool destination{};
+                            bool slot{};
+                            bool call_kind{};
+                            bool source{};
+                            unsigned count{};
+                        };
+                        const auto inspect_filter = [&](const wirex::bm_voice::ReceiveFilter& filter) {
+                            FilterMismatch mismatch{};
+                            mismatch.destination = filter.destination_id != 0U &&
+                                datagram.destination_id != filter.destination_id;
+                            mismatch.slot = filter.match_slot && received_slot != filter.slot;
+                            mismatch.call_kind = filter.match_call_kind &&
+                                received_call_kind != filter.call_kind;
+                            mismatch.source = filter.match_source_id &&
+                                datagram.source_id != filter.source_id;
+                            mismatch.count = static_cast<unsigned>(mismatch.destination) +
+                                static_cast<unsigned>(mismatch.slot) +
+                                static_cast<unsigned>(mismatch.call_kind) +
+                                static_cast<unsigned>(mismatch.source);
+                            return mismatch;
+                        };
+                        const auto primary_mismatch = inspect_filter(receive_filter);
+                        const auto return_mismatch = parrot_return_filter
+                            ? inspect_filter(*parrot_return_filter) : FilterMismatch{};
+                        const auto primary_count = primary_mismatch.count;
+                        const auto return_count = parrot_return_filter
+                            ? return_mismatch.count : std::numeric_limits<unsigned>::max();
+                        if (primary_count == 0U || return_count == 0U) {
+                            // 包头满足至少一条接收规则；pipeline仍拒绝时属于语音/协议内容问题。
+                            ++counters.rx_filtered_protocol;
+                        } else {
+                            // 选失败条件最少的规则解释此拒包；回音规则平局时优先，便于识别来源ID不符。
+                            const auto& mismatch = return_count <= primary_count
+                                ? return_mismatch : primary_mismatch;
+                            if (mismatch.destination) ++counters.rx_filtered_destination_id;
+                            if (mismatch.slot) ++counters.rx_filtered_slot;
+                            if (mismatch.call_kind) ++counters.rx_filtered_call_kind;
+                            if (mismatch.source) ++counters.rx_filtered_protocol;
+                            if (mismatch.count == 0U) ++counters.rx_filtered_protocol;
                         }
-                        if (receive_filter.match_slot && received_slot != receive_filter.slot) {
-                            ++counters.rx_filtered_slot;
-                            had_header_mismatch = true;
-                        }
-                        if (receive_filter.match_call_kind && received_call_kind != receive_filter.call_kind) {
-                            ++counters.rx_filtered_call_kind;
-                            had_header_mismatch = true;
-                        }
-                        if (!had_header_mismatch) ++counters.rx_filtered_protocol;
                     }
                     if (accepted.error != wirex::bm_voice::Error::none &&
                         accepted.error != wirex::bm_voice::Error::filtered &&

@@ -40,6 +40,8 @@ struct TxStartResult {
 
 [[nodiscard]] std::optional<Preset> find(std::string_view id) noexcept;
 [[nodiscard]] TxPolicy policy_for(const dmr_call::CallConfig& call) noexcept;
+[[nodiscard]] TxPolicy policy_for(const dmr_call::CallConfig& call,
+                                  bool listen_only) noexcept;
 [[nodiscard]] bool permits_transmit(TxPolicy policy) noexcept;
 [[nodiscard]] TxStartResult begin_tx(TxPolicy policy,
                                      bm_voice::BmVoicePipeline& pipeline,

@@ -39,6 +39,11 @@ TxPolicy policy_for(const dmr_call::CallConfig& call) noexcept
     return TxPolicy::enabled;
 }
 
+TxPolicy policy_for(const dmr_call::CallConfig& call, bool listen_only) noexcept
+{
+    return listen_only ? TxPolicy::receive_only : policy_for(call);
+}
+
 bool permits_transmit(TxPolicy policy) noexcept
 {
     return policy == TxPolicy::enabled;

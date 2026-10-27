@@ -29,6 +29,7 @@ int main()
     using wirex::bm_connection_config::any_field_seen;
     using wirex::bm_connection_config::all_fields_seen;
     using wirex::bm_connection_config::validate;
+    using wirex::bm_connection_config::parse_receive_target;
     std::array<bool, 9U> field_group{};
     check(!any_field_seen(field_group) && !all_fields_seen(field_group), "未提供手工字段时不启用字段组");
     field_group[0] = true;
@@ -42,6 +43,20 @@ int main()
     check(!parse_decimal_u32("1.5", number), "十进制整数字段拒绝小数");
     check(!parse_decimal_u32("-1", number), "十进制整数字段拒绝负数");
     check(!parse_decimal_u32("", number), "十进制整数字段拒绝空值");
+
+    wirex::bm_connection_config::ReceiveTarget receive_target{};
+    check(wirex::bm_connection_config::parse_receive_target("91", "2", "G", receive_target) &&
+          receive_target.destination_id == 91U && receive_target.slot == 2U &&
+          receive_target.call_kind == 'G', "独立TG91 TS2接收目标能正确解析");
+    check(wirex::bm_connection_config::parse_receive_target("4611355", "2", "P", receive_target) &&
+          receive_target.destination_id == 4611355U && receive_target.slot == 2U &&
+          receive_target.call_kind == 'P', "独立本机Radio ID私呼接收目标能正确解析");
+    check(!parse_receive_target("0", "2", "G", receive_target) &&
+          !parse_receive_target("16777216", "2", "G", receive_target) &&
+          !parse_receive_target("91", "0", "G", receive_target) &&
+          !parse_receive_target("91", "3", "G", receive_target) &&
+          !parse_receive_target("91", "2", "X", receive_target),
+          "独立接收目标拒绝无效ID、时隙或呼叫类型");
 
     auto fields = valid_fields();
     fields.gateway_id = 0xffffffffU;

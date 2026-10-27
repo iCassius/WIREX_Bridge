@@ -212,6 +212,10 @@ int main()
     check(bm_test_profile::policy_for(call_for(*china)) == TxPolicy::enabled &&
           bm_test_profile::policy_for(call_for(*global)) == TxPolicy::enabled,
           "parrot presets allow explicitly requested transmit");
+    const auto parrot_call = call_for(*china);
+    check(bm_test_profile::policy_for(parrot_call, true) == TxPolicy::receive_only &&
+          !bm_test_profile::permits_transmit(bm_test_profile::policy_for(parrot_call, true)),
+          "explicit listen-only mode disables private parrot transmit too");
     const auto listen_call = call_for(*listen);
     check(bm_test_profile::policy_for(listen_call) == TxPolicy::receive_only,
           "46001 group preset is receive-only");
@@ -228,6 +232,15 @@ int main()
           "receive-only T does not start the TX pipeline or create LC");
     check(!listen_pipeline.take_outbound().has_value(),
           "receive-only T creates no DMRD packet");
+
+    bm_voice::BmVoicePipeline listen_only_parrot_pipeline;
+    const auto listen_only_parrot = bm_test_profile::begin_tx(
+        bm_test_profile::policy_for(parrot_call, true), listen_only_parrot_pipeline,
+        parrot_call, bm_voice::Readiness{true, true}, bm_voice::TimePoint{});
+    check(listen_only_parrot.status == TxStartStatus::denied_receive_only &&
+          listen_only_parrot_pipeline.snapshot().tx_state == bm_voice::TxState::idle &&
+          !listen_only_parrot_pipeline.take_outbound().has_value(),
+          "listen-only mode blocks private call start without creating DMRD packets");
 
     bm_voice::BmVoicePipeline listen_91_pipeline;
     const auto listen_91_denied = bm_test_profile::begin_tx(

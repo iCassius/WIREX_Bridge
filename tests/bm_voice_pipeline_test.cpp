@@ -404,6 +404,141 @@ struct RxSource {
     return true;
 }
 
+[[nodiscard]] bool test_independent_tg91_receive_and_private_parrot_return_filters()
+{
+    using wirex::dmr_call::CallKind;
+    using wirex::dmr_call::Slot;
+    BmVoicePipeline pipeline;
+    wirex::bm_voice::ReceiveFilter primary{};
+    primary.destination_id = 91U;
+    primary.match_slot = true;
+    primary.slot = Slot::ts2;
+    primary.match_call_kind = true;
+    primary.call_kind = CallKind::group;
+    if (!require(pipeline.set_receive_filter(primary) == Error::none,
+                 "independent TG91 receive filter setup failed")) return false;
+
+    wirex::bm_voice::ReceiveFilter parrot_return{};
+    parrot_return.destination_id = 4611355U;
+    parrot_return.source_id = 460997U;
+    parrot_return.slot = Slot::ts2;
+    parrot_return.call_kind = CallKind::private_call;
+    parrot_return.match_slot = true;
+    parrot_return.match_call_kind = true;
+    parrot_return.match_source_id = true;
+    if (!require(pipeline.set_secondary_receive_filter(parrot_return) == Error::none,
+                 "narrow private parrot return filter setup failed")) return false;
+
+    auto filter_check_now = TimePoint{} + 60s;
+    auto check_header = [&](wirex::dmr_call::CallConfig call, bool expected, const char* message) {
+        RxSource source;
+        wirex::dmr_call::TxPacket header{};
+        if (!source.start(call, header)) return require(false, "failed to create RX filter header");
+        const auto result = pipeline.ingest_rx(header.datagram, filter_check_now);
+        filter_check_now += 1ms;
+        const bool accepted = result.error == Error::none;
+        if (accepted) pipeline.cancel_rx();
+        return require(accepted == expected, message);
+    };
+
+    RxSource tg91;
+    wirex::dmr_call::TxPacket tg91_header{};
+    const auto tg91_start = TimePoint{} + 60s;
+    if (!require(tg91.start(make_call(3149876U, 91U, 31U, Slot::ts2, CallKind::group), tg91_header),
+                 "could not create TG91 receive call")) return false;
+    if (!require(pipeline.ingest_rx(tg91_header.datagram, tg91_start).error == Error::none &&
+                 pipeline.playback_ready(tg91_start) == Error::none,
+                 "independent TG91 TS2 group receive was not accepted")) return false;
+    (void)pipeline.take_event();
+    wirex::dmr_call::TxPacket tg91_voice{};
+    if (!require(tg91.voice(tg91_voice) &&
+                 pipeline.ingest_rx(tg91_voice.datagram, tg91_start + 1ms).error == Error::none &&
+                 pipeline.tick(tg91_start + 60ms) == Error::none &&
+                 tg91.voice(tg91_voice) &&
+                 pipeline.ingest_rx(tg91_voice.datagram, tg91_start + 61ms).error == Error::none &&
+                 pipeline.tick(tg91_start + 120ms) == Error::none,
+                 "TG91 voice packets did not reach the DMR decoder")) return false;
+    PlaybackFrame tg91_pcm{};
+    if (!require(pipeline.snapshot().rx_state == wirex::bm_voice::RxState::playing &&
+                 pipeline.take_playback_pcm(tg91_pcm) && tg91_pcm.sample_count > 0U &&
+                 pipeline.acknowledge_playback(tg91_pcm.generation, 1U, tg91_start + 121ms) == Error::none,
+                 "accepted TG91 call did not produce PCM for the configured playback route")) return false;
+    wirex::dmr_call::TxPacket tg91_end{};
+    if (!require(tg91.finish(tg91_end) &&
+                 pipeline.ingest_rx(tg91_end.datagram, tg91_start + 122ms).error == Error::none,
+                 "TG91 terminator did not reach the receive call state")) return false;
+    bool tg91_network_end = false;
+    while (const auto event = pipeline.take_event()) {
+        tg91_network_end = tg91_network_end ||
+            (event->kind == EventKind::network_ended && event->call.source_id == 3149876U &&
+             event->call.destination_id == 91U);
+    }
+    if (!require(tg91_network_end, "TG91 EOT did not end the decoded receive call")) return false;
+    pipeline.cancel_rx();
+    filter_check_now = tg91_start + 200ms;
+
+    RxSource parrot;
+    wirex::dmr_call::TxPacket parrot_header{};
+    const auto parrot_start = TimePoint{} + 61s;
+    if (!require(parrot.start(make_call(460997U, 4611355U, 32U, Slot::ts2, CallKind::private_call),
+                              parrot_header), "could not create private parrot return")) return false;
+    if (!require(pipeline.ingest_rx(parrot_header.datagram, parrot_start).error == Error::none &&
+                 pipeline.playback_ready(parrot_start) == Error::none,
+                 "private echo reply from the selected parrot to the local Source ID was not accepted")) return false;
+    (void)pipeline.take_event();
+    wirex::dmr_call::TxPacket parrot_voice{};
+    if (!require(parrot.voice(parrot_voice) &&
+                 pipeline.ingest_rx(parrot_voice.datagram, parrot_start + 1ms).error == Error::none &&
+                 pipeline.tick(parrot_start + 60ms) == Error::none &&
+                 parrot.voice(parrot_voice) &&
+                 pipeline.ingest_rx(parrot_voice.datagram, parrot_start + 61ms).error == Error::none &&
+                 pipeline.tick(parrot_start + 120ms) == Error::none,
+                 "parrot return voice packets did not reach the DMR decoder")) return false;
+    PlaybackFrame pcm{};
+    if (!require(pipeline.snapshot().rx_state == wirex::bm_voice::RxState::playing &&
+                 pipeline.take_playback_pcm(pcm) && pcm.sample_count > 0U &&
+                 pipeline.acknowledge_playback(pcm.generation, 1U, parrot_start + 121ms) == Error::none,
+                 "accepted parrot return did not produce PCM for the configured playback route")) return false;
+    wirex::dmr_call::TxPacket parrot_end{};
+    if (!require(parrot.finish(parrot_end) &&
+                 pipeline.ingest_rx(parrot_end.datagram, parrot_start + 122ms).error == Error::none,
+                 "parrot return terminator did not reach the receive call state")) return false;
+    bool parrot_network_end = false;
+    while (const auto event = pipeline.take_event()) {
+        parrot_network_end = parrot_network_end ||
+            (event->kind == EventKind::network_ended && event->call.source_id == 460997U &&
+             event->call.destination_id == 4611355U);
+    }
+    if (!require(parrot_network_end, "parrot return EOT did not end the decoded receive call")) return false;
+    pipeline.cancel_rx();
+
+    filter_check_now = parrot_start + 1s;
+    if (!check_header(make_call(3149876U, 4611355U, 33U, Slot::ts2, CallKind::private_call), false,
+                      "private call from an unselected source was accepted as the parrot reply")) return false;
+    if (!check_header(make_call(460997U, 1234567U, 34U, Slot::ts2, CallKind::private_call), false,
+                      "private reply to another Radio ID was accepted")) return false;
+    if (!check_header(make_call(460997U, 4611355U, 35U, Slot::ts1, CallKind::private_call), false,
+                      "private reply on a different timeslot was accepted")) return false;
+    if (!check_header(make_call(460997U, 4611355U, 36U, Slot::ts2, CallKind::group), false,
+                      "group call was accepted by the private parrot return filter")) return false;
+    if (!check_header(make_call(3149876U, 91U, 38U, Slot::ts2, CallKind::group), true,
+                      "RX filter changed after a completed parrot return")) return false;
+    if (!require(pipeline.set_secondary_receive_filter(std::nullopt) == Error::none,
+                 "secondary receive rule did not clear for listen-only mode")) return false;
+    if (!check_header(make_call(460997U, 4611355U, 39U, Slot::ts2, CallKind::private_call), false,
+                      "listen-only mode retained the optional private parrot return rule")) return false;
+    if (!check_header(make_call(3149876U, 91U, 37U, Slot::ts1, CallKind::group), false,
+                      "TG91 group on a different timeslot was accepted")) return false;
+
+    wirex::bm_voice::ReceiveFilter invalid_source{};
+    invalid_source.match_source_id = true;
+    invalid_source.source_id = 0U;
+    if (!require(pipeline.set_secondary_receive_filter(invalid_source) == Error::invalid_call,
+                 "source constrained filter accepted an invalid source ID")) return false;
+
+    return true;
+}
+
 [[nodiscard]] bool test_rx_eot_drain_and_ack()
 {
     BmVoicePipeline pipeline;
@@ -942,6 +1077,7 @@ int main()
 {
     if (!test_tx_pacing_and_drain() || !test_tx_backpressure_and_cancel() ||
         !test_rx_filter_startup_timeout_and_delayed_ready() || !test_rx_eot_drain_and_ack() ||
+        !test_independent_tg91_receive_and_private_parrot_return_filters() ||
         !test_half_duplex_collision() || !test_rx_queue_bound_cancel_and_reentry() ||
         !test_rx_missing_eot_watchdog() || !test_nonmatching_calls_do_not_interrupt_active_rx() ||
         !test_absolute_tx_clock_with_waveinput_chunks_and_jitter()) {

@@ -35,12 +35,36 @@ Error BmVoicePipeline::set_receive_filter(const ReceiveFilter& filter) noexcept
         return Error::busy;
     }
     if (filter.destination_id > dmrd::max_id24 ||
+        (filter.match_source_id && (filter.source_id == 0U || filter.source_id > dmrd::max_id24)) ||
         (filter.match_slot && filter.slot != dmr_call::Slot::ts1 && filter.slot != dmr_call::Slot::ts2) ||
         (filter.match_call_kind && filter.call_kind != dmr_call::CallKind::group &&
          filter.call_kind != dmr_call::CallKind::private_call)) {
         return Error::invalid_call;
     }
     receive_filter_ = filter;
+    secondary_receive_filter_ = {};
+    secondary_receive_filter_enabled_ = false;
+    return Error::none;
+}
+
+Error BmVoicePipeline::set_secondary_receive_filter(
+    const std::optional<ReceiveFilter>& filter) noexcept
+{
+    if (tx_state_ != TxState::idle || rx_state_ != RxState::idle) return Error::busy;
+    if (!filter) {
+        secondary_receive_filter_ = {};
+        secondary_receive_filter_enabled_ = false;
+        return Error::none;
+    }
+    if (filter->destination_id > dmrd::max_id24 ||
+        (filter->match_source_id && (filter->source_id == 0U || filter->source_id > dmrd::max_id24)) ||
+        (filter->match_slot && filter->slot != dmr_call::Slot::ts1 && filter->slot != dmr_call::Slot::ts2) ||
+        (filter->match_call_kind && filter->call_kind != dmr_call::CallKind::group &&
+         filter->call_kind != dmr_call::CallKind::private_call)) {
+        return Error::invalid_call;
+    }
+    secondary_receive_filter_ = *filter;
+    secondary_receive_filter_enabled_ = true;
     return Error::none;
 }
 
@@ -411,6 +435,8 @@ void BmVoicePipeline::reset() noexcept
     event_read_ = 0U;
     event_count_ = 0U;
     receive_filter_ = {};
+    secondary_receive_filter_ = {};
+    secondary_receive_filter_enabled_ = false;
     last_now_ = {};
     has_last_now_ = false;
 }
@@ -738,10 +764,17 @@ bool BmVoicePipeline::queue_event(const Event& event) noexcept
 
 bool BmVoicePipeline::filter_accepts(const dmr_call::CallConfig& call) const noexcept
 {
-    return (receive_filter_.destination_id == 0U ||
-            receive_filter_.destination_id == call.destination_id) &&
-           (!receive_filter_.match_slot || receive_filter_.slot == call.slot) &&
-           (!receive_filter_.match_call_kind || receive_filter_.call_kind == call.kind);
+    return filter_matches(receive_filter_, call) ||
+        (secondary_receive_filter_enabled_ && filter_matches(secondary_receive_filter_, call));
+}
+
+bool BmVoicePipeline::filter_matches(const ReceiveFilter& filter,
+                                     const dmr_call::CallConfig& call) noexcept
+{
+    return (filter.destination_id == 0U || filter.destination_id == call.destination_id) &&
+           (!filter.match_slot || filter.slot == call.slot) &&
+           (!filter.match_call_kind || filter.call_kind == call.kind) &&
+           (!filter.match_source_id || filter.source_id == call.source_id);
 }
 
 bool BmVoicePipeline::filter_accepts_datagram(const dmrd::Datagram& datagram) const noexcept
@@ -749,6 +782,7 @@ bool BmVoicePipeline::filter_accepts_datagram(const dmrd::Datagram& datagram) co
     constexpr std::uint8_t flag_ts2 = 0x80U;
     constexpr std::uint8_t flag_private_call = 0x40U;
     dmr_call::CallConfig candidate{};
+    candidate.source_id = datagram.source_id;
     candidate.destination_id = datagram.destination_id;
     candidate.slot = (datagram.flags & flag_ts2) != 0U
         ? dmr_call::Slot::ts2

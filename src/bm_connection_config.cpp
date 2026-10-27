@@ -103,4 +103,24 @@ bool validate(const Fields& fields) noexcept
     return true;
 }
 
+bool parse_receive_target(std::string_view destination_id,
+                          std::string_view slot,
+                          std::string_view call_kind,
+                          ReceiveTarget& target) noexcept
+{
+    std::uint32_t parsed_destination = 0U;
+    std::uint32_t parsed_slot = 0U;
+    if (!parse_decimal_u32(destination_id, parsed_destination) ||
+        !parse_decimal_u32(slot, parsed_slot) ||
+        parsed_destination == 0U || parsed_destination > 0x00ffffffU ||
+        (parsed_slot != 1U && parsed_slot != 2U) ||
+        (call_kind != "G" && call_kind != "P")) {
+        return false;
+    }
+    target.destination_id = parsed_destination;
+    target.slot = static_cast<std::uint8_t>(parsed_slot);
+    target.call_kind = call_kind.front();
+    return true;
+}
+
 } // namespace wirex::bm_connection_config
