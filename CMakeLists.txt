@@ -291,6 +291,24 @@ else()
     target_compile_options(ui_pipe_test PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+add_library(wirex_ui_control_protocol src/ui_control_protocol.cpp)
+target_include_directories(wirex_ui_control_protocol PUBLIC include)
+target_compile_features(wirex_ui_control_protocol PUBLIC cxx_std_17)
+if(MSVC)
+    target_compile_options(wirex_ui_control_protocol PRIVATE /W4 /permissive- /utf-8)
+else()
+    target_compile_options(wirex_ui_control_protocol PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_executable(ui_control_protocol_v2_test tests/ui_control_protocol_v2_test.cpp)
+target_link_libraries(ui_control_protocol_v2_test PRIVATE wirex_ui_control_protocol)
+target_compile_features(ui_control_protocol_v2_test PRIVATE cxx_std_17)
+if(MSVC)
+    target_compile_options(ui_control_protocol_v2_test PRIVATE /W4 /permissive- /utf-8)
+else()
+    target_compile_options(ui_control_protocol_v2_test PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 if(WIN32)
     add_executable(bounded_pipe_writer_test tests/bounded_pipe_writer_test.cpp)
     target_compile_features(bounded_pipe_writer_test PRIVATE cxx_std_17)
@@ -506,7 +524,7 @@ if(WIN32)
     endif()
     target_link_libraries(wirex_bridge PRIVATE
         wirex_direct_stream wirex_direct_frame wirex_hri_session wirex_hri_downlink_session
-        wirex_hri_radio_protocol wirex_hri_t_payload wirex_hri_call_header wirex_hri_t_record wirex_hri_lcd_identity_candidate wirex_hri_ptt_gate wirex_wave_file wirex_pcm_gain
+        wirex_hri_radio_protocol wirex_ui_control_protocol wirex_hri_t_payload wirex_hri_call_header wirex_hri_t_record wirex_hri_lcd_identity_candidate wirex_hri_ptt_gate wirex_wave_file wirex_pcm_gain
         wirex_console_lifecycle wirex_session_report wirex_bm_session wirex_bm_udp
         wirex_bm_voice_pipeline wirex_bm_test_profile wirex_bm_connection_config
         wirex_hri_stream_session winmm bcrypt ws2_32 user32)
@@ -558,3 +576,4 @@ if(WIN32)
     add_test(NAME hri_stream_session_test COMMAND hri_stream_session_test)
     add_test(NAME bm_bridge_loopback_test COMMAND bm_bridge_loopback_test)
 endif()
+add_test(NAME ui_control_protocol_v2_test COMMAND ui_control_protocol_v2_test)

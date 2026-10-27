@@ -110,6 +110,16 @@ $script:statusOffset = [int64]0
 $script:partialStatusLine = ''
 $script:currentRunId = ''
 $script:lastSequence = [uint64]0
+$script:controlRunId = ''
+$script:controlLastSequence = [uint64]0
+$script:controlConfirmed = $false
+$script:controlDiagnostic = $false
+$script:controlOverflowHandled = $false
+$script:pendingControlRequests = @{}
+$script:pendingStatusRequestId = ''
+$script:profileEditable = $true
+$script:profileWriteAllowed = $true
+$script:receiveEditorState = $null
 $script:lastStatusUtc = [DateTime]::MinValue
 $script:latestStatus = $null
 $script:storedProfile = $null
@@ -164,6 +174,9 @@ function Fit-WpfWindowToWorkArea {
             $summary.FontSize = 11
             $summary.Margin = [System.Windows.Thickness]::new(0.0, 1.0, 0.0, 0.0)
         }
+        $Window.FindName('ControlProtocolValue').FontSize = 10
+        $Window.FindName('ControlProtocolValue').Margin = [System.Windows.Thickness]::new(0.0, 2.0, 0.0, 2.0)
+        $Window.FindName('ControlStatusButton').Height = 23
         $trafficCard = $Window.FindName('TrafficCard')
         $trafficCard.Padding = [System.Windows.Thickness]::new(8.0)
         $trafficValue = $Window.FindName('TrafficValue')
@@ -232,7 +245,17 @@ function Get-WpfWindowLayoutInfo {
         $control = $Window.FindName($name)
         $visibility[$name] = ($null -ne $control -and $control.IsVisible)
         if ($control -is [System.Windows.FrameworkElement]) {
-            $bounds[$name] = Get-WpfElementLayoutEvidence -Window $Window -Element $control
+            $evidence = Get-WpfElementLayoutEvidence -Window $Window -Element $control
+            if ($control -is [System.Windows.Controls.Button]) {
+                $evidence | Add-Member -NotePropertyName content_available_height -NotePropertyValue ([double](
+                    $control.ActualHeight - $control.Padding.Top - $control.Padding.Bottom -
+                    $control.BorderThickness.Top - $control.BorderThickness.Bottom))
+                $evidence | Add-Member -NotePropertyName font_size -NotePropertyValue ([double]$control.FontSize)
+            }
+            if ($name -ceq 'ControlStatusButton') {
+                $evidence | Add-Member -NotePropertyName visual_text -NotePropertyValue @(Get-UiVisualTextValues -Root $control)
+            }
+            $bounds[$name] = $evidence
         }
     }
     $eventList = $Window.FindName('EventList')
@@ -346,35 +369,46 @@ function Set-OfflineDisplay {
 function Format-ProfileTarget {
     param([object]$Profile)
     if ($null -eq $Profile) { return '尚未设置' }
-    $connection = $Profile.connection
-    $slot = [uint64]$connection.slot
-    if ($connection.call_kind -ceq 'private') {
-        return ('单呼目标 {0} · TS{1}' -f $connection.destination_id, $slot)
+    $target = $Profile.tx_target
+    $slot = [uint64]$target.slot
+    if ($target.kind -ceq 'private') {
+        return ('单呼目标 {0} · TS{1}' -f $target.destination_id, $slot)
     }
-    return ('TG {0} · TS{1}' -f $connection.destination_id, $slot)
+    return ('TG {0} · TS{1}' -f $target.destination_id, $slot)
 }
 
 function Format-ProfileReceiveTarget {
     param([object]$Profile)
-    if ($null -eq $Profile -or $null -eq $Profile.receive) { return '接收：尚未设置' }
-    $receive = $Profile.receive
-    $primary = if ($receive.call_kind -ceq 'private') {
-        ('接收：单呼 {0} · TS{1}' -f $receive.destination_id, $receive.slot)
-    } else {
-        ('接收：TG {0} · TS{1}' -f $receive.destination_id, $receive.slot)
+    if ($null -eq $Profile -or $null -eq $Profile.rx_policy) { return '接收：尚未设置' }
+    $parts = New-Object System.Collections.Generic.List[string]
+    $policy = $Profile.rx_policy
+    if ($policy.group_mode -ceq 'all_delivered') { $parts.Add('所有已送达组呼') }
+    elseif (@($policy.allow_groups).Count -eq 0) { $parts.Add('无 Selected 组呼') }
+    else {
+        $groupText = @($policy.allow_groups | ForEach-Object { 'TG {0} · TS{1}' -f $_.destination_id, $_.slot }) -join '、'
+        $parts.Add(('组呼 ' + $groupText))
     }
-    $transmitAllowed = $null -eq $Profile.PSObject.Properties['transmit_enabled'] -or [bool]$Profile.transmit_enabled
-    $tx = $Profile.connection
-    if ($transmitAllowed -and $tx.call_kind -ceq 'private') {
-        $alreadyCovered = $receive.call_kind -ceq 'private' -and
-            [uint64]$receive.destination_id -eq [uint64]$Profile.connection.source_id -and
-            [uint64]$receive.slot -eq [uint64]$tx.slot
-        if (-not $alreadyCovered) {
-            $returnLabel = if ([uint64]$tx.destination_id -eq 460997) { '鹦鹉回声' } else { '发射目标私呼回话' }
-            $primary += ('；另收：{0} · TS{1}' -f $returnLabel, $tx.slot)
+    switch -CaseSensitive ([string]$policy.private_mode) {
+        'disabled' { $parts.Add('私呼关闭') }
+        'selected_peers' {
+            if (@($policy.allow_private_peers).Count -eq 0) { $parts.Add('没有获准私呼 peer') }
+            else {
+                $peerText = @($policy.allow_private_peers | ForEach-Object { '{0} → 本机 · TS{1}' -f $_.source_id, $_.slot }) -join '、'
+                $parts.Add(('精确私呼 peer ' + $peerText))
+            }
+        }
+        'all_peers_to_local' {
+            $routeText = @($policy.local_private_routes | ForEach-Object { '本机 · TS{0}' -f $_.slot }) -join '、'
+            $parts.Add(('本机私呼 ' + $(if ($routeText) { $routeText } else { '路由缺失' })))
+            if (@($policy.allow_private_peers).Count -gt 0) {
+                $peerText = @($policy.allow_private_peers | ForEach-Object { '{0} · TS{1}' -f $_.source_id, $_.slot }) -join '、'
+                $parts.Add(('另含精确 peer ' + $peerText))
+            }
         }
     }
-    return $primary
+    if (@($policy.blocked_groups).Count -gt 0) { $parts.Add(('屏蔽组呼 {0} 项' -f @($policy.blocked_groups).Count)) }
+    if (@($policy.blocked_source_ids).Count -gt 0) { $parts.Add(('屏蔽来源 {0} 个' -f @($policy.blocked_source_ids).Count)) }
+    return ('接收：' + ($parts -join '；'))
 }
 
 function Format-ProfileTransmitPermission {
@@ -401,49 +435,68 @@ function Get-SelectedTargetTag {
 
 function New-EffectiveTargetProfile {
     param([Parameter(Mandatory=$true)][object]$Profile, [Parameter(Mandatory=$true)][string]$Target)
+    if ($Target -cne 'custom') {
+        $editorState = Get-UiReceiveEditorState -Profile $Profile
+        if (-not $editorState.CanEdit) {
+            throw ('当前 schema 2 接收策略为只读；无法用 {0} 单路由预设覆盖。请保留“使用已保存目标”，启动时会完整检查策略。' -f $Target)
+        }
+    }
     $connection = [pscustomobject][ordered]@{
         callsign = [string]$Profile.connection.callsign
         gateway_id = [uint64]$Profile.connection.gateway_id
         source_id = [uint64]$Profile.connection.source_id
         master = [string]$Profile.connection.master
         master_port = [uint64]$Profile.connection.master_port
-        destination_id = [uint64]$Profile.connection.destination_id
-        slot = [uint64]$Profile.connection.slot
         color_code = [uint64]$Profile.connection.color_code
-        call_kind = [string]$Profile.connection.call_kind
     }
-    $receive = [pscustomobject][ordered]@{
-        destination_id = [uint64]$Profile.receive.destination_id
-        slot = [uint64]$Profile.receive.slot
-        call_kind = [string]$Profile.receive.call_kind
+    $txTarget = [pscustomobject][ordered]@{
+        destination_id=[uint64]$Profile.tx_target.destination_id
+        kind=[string]$Profile.tx_target.kind
+        slot=[uint64]$Profile.tx_target.slot
     }
-    $transmitEnabled = if ($null -ne $Profile.PSObject.Properties['transmit_enabled']) { [bool]$Profile.transmit_enabled } else { $true }
+    $rxPolicy = [pscustomobject][ordered]@{
+        group_mode=[string]$Profile.rx_policy.group_mode
+        private_mode=[string]$Profile.rx_policy.private_mode
+        allow_groups=[object[]]@($Profile.rx_policy.allow_groups)
+        allow_private_peers=[object[]]@($Profile.rx_policy.allow_private_peers)
+        local_private_routes=[object[]]@($Profile.rx_policy.local_private_routes)
+        blocked_groups=[object[]]@($Profile.rx_policy.blocked_groups)
+        blocked_source_ids=[uint64[]]@($Profile.rx_policy.blocked_source_ids)
+    }
+    $transmitEnabled = [bool]$Profile.transmit_enabled
     switch ($Target) {
         'parrot-cn' {
-            $connection.destination_id = [uint64]460997
-            $connection.slot = [uint64]2
-            $connection.call_kind = 'private'
-            $receive.destination_id = [uint64]$connection.source_id
-            $receive.slot = [uint64]2
-            $receive.call_kind = 'private'
+            $txTarget.destination_id = [uint64]460997
+            $txTarget.slot = [uint64]2
+            $txTarget.kind = 'private'
+            $rxPolicy.group_mode = 'selected'
+            $rxPolicy.allow_groups = @()
+            $rxPolicy.private_mode = 'all_peers_to_local'
+            $rxPolicy.local_private_routes = @([pscustomobject][ordered]@{
+                local_destination_id=[uint64]$connection.source_id; slot=[uint64]2
+            })
             $transmitEnabled = $true
         }
         'listen-91' {
-            $receive.destination_id = [uint64]91
-            $receive.slot = [uint64]2
-            $receive.call_kind = 'group'
+            $rxPolicy.group_mode = 'selected'
+            $rxPolicy.allow_groups = @([pscustomobject][ordered]@{ destination_id=[uint64]91; slot=[uint64]2 })
+            $rxPolicy.private_mode = 'disabled'
+            $rxPolicy.allow_private_peers = @()
+            $rxPolicy.local_private_routes = @()
             $transmitEnabled = $false
         }
         'listen-46001' {
-            $receive.destination_id = [uint64]46001
-            $receive.slot = [uint64]2
-            $receive.call_kind = 'group'
+            $rxPolicy.group_mode = 'selected'
+            $rxPolicy.allow_groups = @([pscustomobject][ordered]@{ destination_id=[uint64]46001; slot=[uint64]2 })
+            $rxPolicy.private_mode = 'disabled'
+            $rxPolicy.allow_private_peers = @()
+            $rxPolicy.local_private_routes = @()
             $transmitEnabled = $false
         }
         default { }
     }
-    return ConvertTo-BridgeUserConnectionProfile -Connection $connection -Devices $Profile.devices `
-        -Receive $receive -TransmitEnabled $transmitEnabled
+    return ConvertTo-BridgeUserConnectionProfile -Connection $connection -TxTarget $txTarget -Devices $Profile.devices `
+        -RxPolicy $rxPolicy -TransmitEnabled $transmitEnabled
 }
 
 function Test-UiSourceIdentityRecord {
@@ -773,6 +826,227 @@ function Test-UiRunRecordAcceptance {
     return (Test-UiStatusFreshness -TimestampUtcMs ([uint64]$Record.timestamp_utc_ms) -NowUtcMs $NowUtcMs)
 }
 
+function Test-UiExactControlFields {
+    param([object]$Record, [string[]]$Required, [string[]]$Optional = @())
+    if ($Record -isnot [System.Management.Automation.PSCustomObject]) { return $false }
+    $actual = @($Record.PSObject.Properties | ForEach-Object { [string]$_.Name })
+    foreach ($name in $Required) { if ($actual -cnotcontains $name) { return $false } }
+    foreach ($name in $actual) { if (($Required -cnotcontains $name) -and ($Optional -cnotcontains $name)) { return $false } }
+    return $true
+}
+
+function Test-UiControlUnsigned {
+    param([object]$Value, [uint64]$Minimum = 0, [uint64]$Maximum = [uint64]::MaxValue)
+    if ($Value -is [bool] -or $Value -isnot [byte] -and $Value -isnot [sbyte] -and $Value -isnot [int16] -and
+        $Value -isnot [uint16] -and $Value -isnot [int32] -and $Value -isnot [uint32] -and
+        $Value -isnot [int64] -and $Value -isnot [uint64]) { return $false }
+    $parsed = [uint64]0
+    if (-not [uint64]::TryParse([string]$Value, [Globalization.NumberStyles]::None,
+            [Globalization.CultureInfo]::InvariantCulture, [ref]$parsed)) { return $false }
+    return ($parsed -ge $Minimum -and $parsed -le $Maximum)
+}
+
+function Test-UiControlSnapshot {
+    param([object]$Snapshot)
+    $names = @('mode','status','phase','media_seq','diagnostic','bm_state','hri_phase','hri_ready',
+        'serial_open','wavein_open','waveout_open','radio_state')
+    if (-not (Test-UiExactControlFields -Record $Snapshot -Required $names)) { return $false }
+    foreach ($name in @('mode','status','phase','bm_state','hri_phase','radio_state')) {
+        if ($Snapshot.PSObject.Properties[$name].Value -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$Snapshot.$name)) { return $false }
+    }
+    if (-not (Test-UiControlUnsigned -Value $Snapshot.media_seq)) { return $false }
+    foreach ($name in @('diagnostic','hri_ready','serial_open','wavein_open','waveout_open')) {
+        if ($Snapshot.PSObject.Properties[$name].Value -isnot [bool]) { return $false }
+    }
+    if ($Snapshot.diagnostic -and ($Snapshot.mode -cne 'diagnostic' -or $Snapshot.status -cne 'running' -or
+            $Snapshot.phase -cne 'protocol_diagnostic' -or [uint64]$Snapshot.media_seq -ne 0 -or
+            $Snapshot.bm_state -cne 'not_started' -or $Snapshot.hri_phase -cne 'not_started' -or
+            $Snapshot.hri_ready -or $Snapshot.serial_open -or $Snapshot.wavein_open -or
+            $Snapshot.waveout_open -or $Snapshot.radio_state -cne 'unknown')) { return $false }
+    return $true
+}
+
+function ConvertFrom-UiControlFrame {
+    param([Parameter(Mandatory=$true)][string]$Json, [string]$LockedRunId = '',
+        [uint64]$LastControlSequence = 0, [int]$ExpectedProcessId = 0)
+    try { $record = ConvertFrom-Json -InputObject $Json -ErrorAction Stop }
+    catch { throw '控制协议 v2 JSON 无法解析。' }
+    if ($record -isnot [System.Management.Automation.PSCustomObject] -or
+        -not (Test-UiControlUnsigned -Value $record.schema_version -Minimum 2 -Maximum 2) -or
+        $record.type -isnot [string]) { throw '控制协议 v2 帧头无效。' }
+    if ($record.type -ceq 'control_ready') {
+        $names = @('schema_version','type','run_id','control_seq','process_id','control_version','supported_commands','diagnostic')
+        if (-not (Test-UiExactControlFields -Record $record -Required $names) -or
+            $record.run_id -isnot [string] -or $record.run_id.Length -gt 128 -or
+            -not (Test-UiControlUnsigned -Value $record.control_seq -Minimum 1) -or
+            -not (Test-UiControlUnsigned -Value $record.process_id -Minimum 1 -Maximum ([uint32]::MaxValue)) -or
+            -not (Test-UiControlUnsigned -Value $record.control_version -Minimum 2 -Maximum 2) -or
+            $record.diagnostic -isnot [bool] -or -not ($record.supported_commands -is [System.Array]) -or
+            (@($record.supported_commands | Where-Object { $_ -isnot [string] }).Count -gt 0) -or
+            ((@($record.supported_commands) -join ',') -cne 'hello,status,shutdown')) { throw 'control_ready 字段或支持命令列表无效。' }
+        if ([string]$record.run_id -cnotmatch '^[0-9]{1,10}-[0-9]{1,20}$' -or
+            ($ExpectedProcessId -gt 0 -and [uint32]$record.process_id -ne [uint32]$ExpectedProcessId) -or
+            [uint64]$record.control_seq -le $LastControlSequence -or ($LockedRunId -and $record.run_id -cne $LockedRunId)) {
+            throw 'control_ready 的进程、run_id 或 control_seq 与当前子进程不匹配。'
+        }
+        $runPid = [uint32]0
+        $runPidText = ([string]$record.run_id).Split('-')[0]
+        if (-not [uint32]::TryParse($runPidText, [Globalization.NumberStyles]::None,
+                [Globalization.CultureInfo]::InvariantCulture, [ref]$runPid) -or
+            $runPid -ne [uint32]$record.process_id) { throw 'control_ready.run_id 的 PID 前缀与 process_id 不符。' }
+        return $record
+    }
+    if ($record.type -cne 'control_result') { throw '控制协议 v2 只接受 control_ready 或 control_result。' }
+    $common = @('schema_version','type','run_id','control_seq','request_id','command','result','replayed')
+    if ($record.command -isnot [string] -or @('hello','status','shutdown') -cnotcontains $record.command) { throw 'control_result.command 无效。' }
+    $specific = switch -CaseSensitive ([string]$record.command) {
+        'hello' { @('supported_commands') }
+        'status' { @('snapshot') }
+        'shutdown' { @('shutdown_requested') }
+    }
+    if ($record.result -isnot [string] -or @('ok','unsupported','rejected') -cnotcontains $record.result) { throw 'control_result.result 无效。' }
+    $requiredResultFields = if ($record.result -ceq 'ok') { $common + $specific } else { $common + @('error') }
+    $optionalResultFields = if ($record.result -ceq 'ok') { @('error') } else { @() }
+    if (-not (Test-UiExactControlFields -Record $record -Required $requiredResultFields -Optional $optionalResultFields) -or
+        $record.run_id -isnot [string] -or $record.request_id -isnot [string] -or
+        $record.replayed -isnot [bool] -or -not (Test-UiControlUnsigned -Value $record.control_seq -Minimum 1) -or
+        [uint64]$record.control_seq -le $LastControlSequence -or
+        [string]::IsNullOrWhiteSpace($LockedRunId) -or $record.run_id -cne $LockedRunId) { throw 'control_result 字段、run_id 或 control_seq 无效。' }
+    $requestGuid = [guid]::Empty
+    if (-not [guid]::TryParse([string]$record.request_id, [ref]$requestGuid)) { throw 'control_result.request_id 无效。' }
+    if ($null -ne $record.PSObject.Properties['error'] -and $record.error -isnot [string]) { throw 'control_result.error 必须是字符串。' }
+    if ($record.result -cne 'ok' -and [string]::IsNullOrWhiteSpace([string]$record.error)) { throw '拒绝或不支持的响应必须说明 error。' }
+    if ($record.result -ceq 'ok') {
+        switch -CaseSensitive ([string]$record.command) {
+            'hello' {
+                if (-not ($record.supported_commands -is [System.Array]) -or
+                    (@($record.supported_commands | Where-Object { $_ -isnot [string] }).Count -gt 0) -or
+                    ((@($record.supported_commands) -join ',') -cne 'hello,status,shutdown')) { throw 'hello ACK 命令列表无效。' }
+            }
+            'status' { if (-not (Test-UiControlSnapshot -Snapshot $record.snapshot)) { throw 'status ACK snapshot 无效。' } }
+            'shutdown' { if ($record.shutdown_requested -isnot [bool] -or -not $record.shutdown_requested) { throw 'shutdown ACK 未确认请求。' } }
+        }
+    } elseif ($record.PSObject.Properties['error'] -and $record.error -isnot [string]) { throw '拒绝响应的 error 字段无效。' }
+    return $record
+}
+
+function Reset-UiControlState {
+    param([string]$Text = '控制协议：等待')
+    $script:controlRunId = ''
+    $script:controlLastSequence = [uint64]0
+    $script:controlConfirmed = $false
+    $script:controlDiagnostic = $false
+    $script:controlOverflowHandled = $false
+    $script:pendingControlRequests = @{}
+    $script:pendingStatusRequestId = ''
+    if ($script:mainWindow) {
+        Set-MainText -Name 'ControlProtocolValue' -Text $Text
+        (Get-UiControl 'ControlStatusButton').IsEnabled = $false
+    }
+}
+
+function Set-UiControlStatus {
+    param([string]$Text, [bool]$Confirmed = $false)
+    Set-MainText -Name 'ControlProtocolValue' -Text $Text
+    (Get-UiControl 'ControlProtocolValue').Foreground = if ($Confirmed) {
+        [Windows.Media.Brushes]::LightGreen
+    } else { [Windows.Media.Brushes]::Goldenrod }
+    (Get-UiControl 'ControlStatusButton').IsEnabled = ([bool]$Confirmed -and -not [string]::IsNullOrWhiteSpace($script:controlRunId))
+}
+
+function Request-UiControlStatus {
+    if (-not $script:supervisor -or $script:supervisor.HasExited -or -not $script:controlConfirmed) { return }
+    if ($script:pendingStatusRequestId) { return }
+    $requestId = [guid]::NewGuid().ToString('D')
+    $script:pendingControlRequests[$requestId] = 'status'
+    $script:pendingStatusRequestId = $requestId
+    if (-not $script:supervisor.SendControlCommand($requestId, 'status')) {
+        [void]$script:pendingControlRequests.Remove($requestId)
+        $script:pendingStatusRequestId = ''
+        Set-UiControlStatus -Text '控制协议 v2 状态查询发送失败' -Confirmed $false
+    }
+}
+
+function Process-UiControlEvents {
+    if (-not $script:supervisor -or $script:supervisor.ControlVersion -ne 2) { return }
+    if ($script:supervisor.HasControlEventOverflow -and -not $script:controlOverflowHandled) {
+        $script:controlOverflowHandled = $true
+        $script:controlConfirmed = $false
+        (Get-UiControl 'ControlStatusButton').IsEnabled = $false
+        Set-UiControlStatus -Text '控制协议 v2 事件队列溢出，未确认连接' -Confirmed $false
+        Add-UiEvent '控制协议事件队列溢出'
+        return
+    }
+    foreach ($line in @($script:supervisor.DrainControlEvents(32))) {
+        try {
+            $record = ConvertFrom-UiControlFrame -Json $line -LockedRunId $script:controlRunId `
+                -LastControlSequence $script:controlLastSequence -ExpectedProcessId $script:supervisor.ProcessId
+        } catch {
+            $script:controlConfirmed = $false
+            (Get-UiControl 'ControlStatusButton').IsEnabled = $false
+            Set-UiControlStatus -Text ('控制协议 v2 验证失败：' + $_.Exception.Message) -Confirmed $false
+            Add-UiEvent '控制协议帧校验失败'
+            continue
+        }
+        $script:controlLastSequence = [uint64]$record.control_seq
+        if ($record.type -ceq 'control_ready') {
+            if ($script:controlRunId -or -not $script:supervisor.SetControlRunId([string]$record.run_id)) {
+                $script:controlConfirmed = $false
+                Set-UiControlStatus -Text '控制协议 v2 run_id 锁定失败' -Confirmed $false
+                continue
+            }
+            $script:controlRunId = [string]$record.run_id
+            $script:controlDiagnostic = [bool]$record.diagnostic
+            $requestId = [guid]::NewGuid().ToString('D')
+            $script:pendingControlRequests[$requestId] = 'hello'
+            Set-UiControlStatus -Text '控制协议 v2 已收到 ready，等待 hello 确认' -Confirmed $false
+            if (-not $script:supervisor.SendControlCommand($requestId, 'hello')) {
+                [void]$script:pendingControlRequests.Remove($requestId)
+                Set-UiControlStatus -Text '控制协议 v2 hello 发送失败' -Confirmed $false
+            }
+            continue
+        }
+        if ($record.command -ceq 'shutdown' -and ($script:stopTask -or $script:closingAfterStop)) { continue }
+        if (-not $script:pendingControlRequests.ContainsKey([string]$record.request_id) -or
+            $script:pendingControlRequests[[string]$record.request_id] -cne [string]$record.command) {
+            Set-UiControlStatus -Text '控制协议 v2 收到未请求的响应' -Confirmed $false
+            continue
+        }
+        [void]$script:pendingControlRequests.Remove([string]$record.request_id)
+        if ($record.command -ceq 'status' -and $script:pendingStatusRequestId -ceq [string]$record.request_id) {
+            $script:pendingStatusRequestId = ''
+        }
+        if ($record.result -cne 'ok') {
+            $detail = if ($record.PSObject.Properties['error']) { [string]$record.error } else { [string]$record.result }
+            Set-UiControlStatus -Text ('控制协议 v2 请求失败：' + $detail) -Confirmed $script:controlConfirmed
+            continue
+        }
+        switch -CaseSensitive ([string]$record.command) {
+            'hello' {
+                if ($record.supported_commands -join ',' -cne 'hello,status,shutdown') {
+                    Set-UiControlStatus -Text '控制协议 v2 ACK 命令列表不匹配' -Confirmed $false
+                    continue
+                }
+                $script:controlConfirmed = $true
+                $diagLabel = if ($script:controlDiagnostic) { ' · 无设备诊断进程' } else { '' }
+                Set-UiControlStatus -Text ('控制协议 v2 已确认' + $diagLabel) -Confirmed $true
+                Add-UiEvent '控制协议 v2 已确认'
+            }
+            'status' {
+                $snapshot = $record.snapshot
+                if ([bool]$snapshot.diagnostic) {
+                    $statusText = '控制状态已收到：无设备诊断 · BM未启动 · HRI未连接 · RF未知'
+                } else {
+                    $replayText = if ($record.replayed) { '重放摘要' } else { '状态摘要' }
+                    $statusText = ('{0}：{1} / {2} · media_seq {3}' -f $replayText, $snapshot.status, $snapshot.phase, $snapshot.media_seq)
+                }
+                # This control snapshot never refreshes the v1 media cards or their freshness clock.
+                Set-UiControlStatus -Text $statusText -Confirmed $true
+            }
+        }
+    }
+}
+
 function Test-UiPreparationRecord {
     param(
         [Parameter(Mandatory=$true)][object]$Record,
@@ -824,6 +1098,7 @@ function Test-UiPreparationRecord {
         '--port', '--body-file', '--input', '--output', '--status-file',
         '--expected-wavein-endpoint', '--expected-waveout-endpoint',
         '--radio-playback-gain', '--mic-transmit-gain', '--password-file',
+        '--ui-control-version',
         '--profile-callsign', '--profile-gateway-id', '--profile-source-id',
         '--profile-master', '--profile-master-port', '--profile-destination-id',
         '--profile-slot', '--profile-color-code', '--profile-call-kind',
@@ -850,7 +1125,7 @@ function Test-UiPreparationRecord {
     foreach ($requiredOption in @(
         '--run', '--ui-pipe', '--port', '--body-file', '--input', '--output', '--status-file',
         '--expected-wavein-endpoint', '--expected-waveout-endpoint', '--radio-playback-gain', '--mic-transmit-gain',
-        '--password-file', '--profile-callsign', '--profile-gateway-id', '--profile-source-id',
+        '--password-file', '--ui-control-version', '--profile-callsign', '--profile-gateway-id', '--profile-source-id',
         '--profile-master', '--profile-master-port', '--profile-destination-id', '--profile-slot',
         '--profile-color-code', '--profile-call-kind', '--profile-receive-destination-id',
         '--profile-receive-slot', '--profile-receive-call-kind'
@@ -871,6 +1146,7 @@ function Test-UiPreparationRecord {
     if ($parsedArguments['--profile-call-kind'] -cnotin @('G', 'P')) {
         throw '设备预检返回的发射呼叫类型无效。'
     }
+    if ($parsedArguments['--ui-control-version'] -cne '2') { throw '设备预检必须启用 UI 控制协议 v2。' }
     $pipeCount = 0
     $statusValue = ''
     $statusCount = 0
@@ -1383,6 +1659,76 @@ function Set-GainValueLabel {
     (Get-SettingsControl $LabelName).Text = ((Format-BridgeGain -GainMilli $milli) + 'x')
 }
 
+function Get-UiReceiveEditorState {
+    param([object]$Profile)
+    if ($null -eq $Profile) {
+        return [pscustomobject]@{ CanEdit=$true; Destination=''; Slot='2'; Kind='group'; Reason='新配置' }
+    }
+    $policy = $Profile.rx_policy
+    if (@($policy.blocked_groups).Count -gt 0 -or @($policy.blocked_source_ids).Count -gt 0 -or
+        @($policy.allow_private_peers).Count -gt 0 -or $policy.group_mode -cne 'selected') {
+        return [pscustomobject]@{ CanEdit=$false; Destination=''; Slot='2'; Kind='group'; Reason='接收策略包含当前单路由编辑器不能编辑的组、来源屏蔽或精确 peer。' }
+    }
+    try { $legacy = Get-BridgeLegacyRuntimeProfile -Profile $Profile }
+    catch {
+        return [pscustomobject]@{ CanEdit=$false; Destination=''; Slot='2'; Kind='group'; Reason=$_.Exception.Message }
+    }
+    if ($policy.allow_groups.Count -eq 1 -and $policy.private_mode -ceq 'disabled' -and
+        $policy.local_private_routes.Count -eq 0) {
+        return [pscustomobject]@{ CanEdit=$true; Destination=[string]$legacy.receive.destination_id; Slot=[string]$legacy.receive.slot; Kind='group'; Reason='' }
+    }
+    if ($policy.allow_groups.Count -eq 0 -and $policy.private_mode -ceq 'all_peers_to_local' -and
+        $policy.local_private_routes.Count -eq 1) {
+        return [pscustomobject]@{ CanEdit=$true; Destination=[string]$legacy.receive.destination_id; Slot=[string]$legacy.receive.slot; Kind='private'; Reason='' }
+    }
+    return [pscustomobject]@{ CanEdit=$false; Destination=''; Slot='2'; Kind='group'; Reason='接收策略不是一个 Selected 组呼或本机私呼路由。' }
+}
+
+function New-UiSimpleReceivePolicy {
+    param([Parameter(Mandatory=$true)][object]$Connection, [Parameter(Mandatory=$true)][object]$TxTarget,
+        [Parameter(Mandatory=$true)][string]$ReceiveDestination, [Parameter(Mandatory=$true)][uint64]$ReceiveSlot,
+        [Parameter(Mandatory=$true)][string]$ReceiveKind, [Parameter(Mandatory=$true)][bool]$TransmitEnabled)
+    if ($ReceiveKind -ceq 'group') {
+        $policy = [pscustomobject][ordered]@{
+            group_mode='selected'; private_mode='disabled'
+            allow_groups=@([pscustomobject][ordered]@{ destination_id=[uint64]$ReceiveDestination; slot=$ReceiveSlot })
+            allow_private_peers=@(); local_private_routes=@(); blocked_groups=@(); blocked_source_ids=@()
+        }
+    } else {
+        if ([uint64]$ReceiveDestination -ne [uint64]$Connection.source_id) {
+            throw '私呼接收目标必须等于本机 Source ID；请修正接收 ID。'
+        }
+        $policy = [pscustomobject][ordered]@{
+            group_mode='selected'; private_mode='all_peers_to_local'; allow_groups=@(); allow_private_peers=@()
+            local_private_routes=@([pscustomobject][ordered]@{ local_destination_id=[uint64]$Connection.source_id; slot=$ReceiveSlot })
+            blocked_groups=@(); blocked_source_ids=@()
+        }
+    }
+    if ($TransmitEnabled -and $TxTarget.kind -ceq 'private') {
+        $covered = $ReceiveKind -ceq 'private' -and [uint64]$ReceiveSlot -eq [uint64]$TxTarget.slot
+        if (-not $covered) {
+            $policy.allow_private_peers = @([pscustomobject][ordered]@{
+                source_id=[uint64]$TxTarget.destination_id; local_destination_id=[uint64]$Connection.source_id; slot=[uint64]$TxTarget.slot
+            })
+            if ($policy.private_mode -ceq 'disabled') { $policy.private_mode='selected_peers' }
+        }
+    }
+    return $policy
+}
+
+function Get-UiProfileMigrationSourceSchema {
+    param([object]$Profile)
+    if ($null -eq $Profile) { return 0 }
+    $migration = $Profile.PSObject.Properties['migration_source_schema_version']
+    if ($null -ne $migration -and -not ($migration.Value -is [bool])) {
+        $parsed = 0
+        if ([int]::TryParse([string]$migration.Value, [ref]$parsed) -and $parsed -in @(1,2)) { return $parsed }
+    }
+    $schema = $Profile.PSObject.Properties['schema_version']
+    if ($null -ne $schema -and -not ($schema.Value -is [bool]) -and [int]$schema.Value -eq 1) { return 1 }
+    return 2
+}
+
 function Convert-UiGainSliderToMilli {
     param([double]$Value)
     if ([double]::IsNaN($Value) -or [double]::IsInfinity($Value) -or $Value -lt 0.25 -or $Value -gt 16.0) {
@@ -1399,18 +1745,42 @@ function Set-SettingsWindowFields {
     try { $audio = Read-BridgeAudioSettings -Path $script:audioSettingsPath }
     catch { $audio = $null; $audioError = $_.Exception.Message }
     if ($null -eq $audio) { $audio = [pscustomobject]@{ RadioPlaybackGainMilli = [uint32]1000; MicTransmitGainMilli = [uint32]16000 } }
+    $receiveState = Get-UiReceiveEditorState -Profile $script:storedProfile
+    $script:receiveEditorState = $receiveState
+    $script:profileEditable = ($null -eq $script:storedProfile -or $receiveState.CanEdit)
+    $sourceSchema = Get-UiProfileMigrationSourceSchema -Profile $script:storedProfile
+    $script:profileWriteAllowed = ($null -eq $script:storedProfile -or $receiveState.CanEdit -or $sourceSchema -eq 1)
+    $txTarget = if ($script:storedProfile) { $script:storedProfile.tx_target } else { $null }
+    $migrationText = if (-not $script:storedProfile) {
+        '新配置将保存为 schema 2。'
+    } elseif ($sourceSchema -eq 1) {
+        '迁移预览：从文件 schema 1 生成 schema 2 内存视图；当前文件未修改。点击保存后会先备份原文件再写入 schema 2。'
+    } else {
+        '配置文件 schema 2；读取不会写回原文件。'
+    }
+    $receivePreview = if ($script:storedProfile) { Format-ProfileReceiveTarget -Profile $script:storedProfile } else { '接收策略：新配置' }
+    if (-not $script:profileEditable -and $script:storedProfile) {
+        if ($sourceSchema -eq 1) {
+            $migrationText += (' 接收策略只读：' + $receiveState.Reason + ' 点击保存会完整保留策略并备份原 schema 1 文件。')
+        } else {
+            $migrationText += (' 连接策略只读：' + $receiveState.Reason + ' 保存仅更新音量和密码路径。')
+        }
+        $receivePreview += '（当前单路由编辑器只读；完整策略会保留。）'
+    }
     $fields = @{
         CallsignBox = if ($script:storedProfile) { $script:storedProfile.connection.callsign } else { '' }
         GatewayBox = if ($script:storedProfile) { $script:storedProfile.connection.gateway_id } else { '' }
         SourceBox = if ($script:storedProfile) { $script:storedProfile.connection.source_id } else { '' }
         MasterBox = if ($script:storedProfile) { $script:storedProfile.connection.master } else { '' }
         MasterPortBox = if ($script:storedProfile) { $script:storedProfile.connection.master_port } else { '' }
-        DestinationBox = if ($script:storedProfile) { $script:storedProfile.connection.destination_id } else { '' }
-        ReceiveDestinationBox = if ($script:storedProfile) { $script:storedProfile.receive.destination_id } else { '' }
+        DestinationBox = if ($script:storedProfile) { $txTarget.destination_id } else { '' }
+        ReceiveDestinationBox = if ($script:storedProfile) { $receiveState.Destination } else { '' }
         ColorCodeBox = if ($script:storedProfile) { $script:storedProfile.connection.color_code } else { '' }
         PasswordPathBox = Read-CurrentPasswordPath
     }
     $script:loadingSettings = $true
+    (Get-SettingsControl 'ProfileMigrationText').Text = $migrationText
+    (Get-SettingsControl 'ReceivePolicyPreviewText').Text = $receivePreview
     foreach ($name in $fields.Keys) { (Get-SettingsControl $name).Text = [string]$fields[$name] }
     (Get-SettingsControl 'PlaybackGainSlider').Value = [double]$audio.RadioPlaybackGainMilli / 1000.0
     (Get-SettingsControl 'TransmitGainSlider').Value = [double]$audio.MicTransmitGainMilli / 1000.0
@@ -1418,16 +1788,16 @@ function Set-SettingsWindowFields {
     Set-GainValueLabel -SliderName 'TransmitGainSlider' -LabelName 'TransmitGainValueText'
     Set-SettingsDeviceControls
     $slotBox = Get-SettingsControl 'SlotBox'
-    $slotValue = if ($script:storedProfile) { [string]$script:storedProfile.connection.slot } else { '2' }
+    $slotValue = if ($script:storedProfile) { [string]$txTarget.slot } else { '2' }
     $slotBox.SelectedItem = @($slotBox.Items | Where-Object { [string]$_.Tag -ceq $slotValue })[0]
     $kindBox = Get-SettingsControl 'CallKindBox'
-    $kindValue = if ($script:storedProfile) { [string]$script:storedProfile.connection.call_kind } else { 'private' }
+    $kindValue = if ($script:storedProfile) { [string]$txTarget.kind } else { 'private' }
     $kindBox.SelectedItem = @($kindBox.Items | Where-Object { [string]$_.Tag -ceq $kindValue })[0]
     $receiveSlotBox = Get-SettingsControl 'ReceiveSlotBox'
-    $receiveSlotValue = if ($script:storedProfile) { [string]$script:storedProfile.receive.slot } else { '2' }
+    $receiveSlotValue = [string]$receiveState.Slot
     $receiveSlotBox.SelectedItem = @($receiveSlotBox.Items | Where-Object { [string]$_.Tag -ceq $receiveSlotValue })[0]
     $receiveKindBox = Get-SettingsControl 'ReceiveCallKindBox'
-    $receiveKindValue = if ($script:storedProfile) { [string]$script:storedProfile.receive.call_kind } else { 'private' }
+    $receiveKindValue = [string]$receiveState.Kind
     $receiveKindBox.SelectedItem = @($receiveKindBox.Items | Where-Object { [string]$_.Tag -ceq $receiveKindValue })[0]
     $transmitEnabled = if ($script:storedProfile -and $null -ne $script:storedProfile.PSObject.Properties['transmit_enabled']) {
         [bool]$script:storedProfile.transmit_enabled
@@ -1438,13 +1808,19 @@ function Set-SettingsWindowFields {
         [string]$script:storedProfile.connection.master -ceq '43.129.83.124' -and
         [uint64]$script:storedProfile.connection.master_port -eq 62031) { 'bm-china-4602' } else { 'custom' }
     $masterPreset.SelectedItem = @($masterPreset.Items | Where-Object { [string]$_.Tag -ceq $masterPresetTag })[0]
+    foreach ($name in @('CallsignBox','GatewayBox','SourceBox','MasterBox','MasterPortBox','DestinationBox','ColorCodeBox',
+            'SlotBox','CallKindBox','ReceiveDestinationBox','ReceiveSlotBox','ReceiveCallKindBox','TransmitEnabledBox','MasterPresetBox',
+            'SerialBox','WaveInEndpointBox','WaveOutEndpointBox')) {
+        (Get-SettingsControl $name).IsEnabled = [bool]$script:profileEditable
+    }
+    (Get-SettingsControl 'RefreshDevicesButton').IsEnabled = [bool]$script:profileEditable
     $script:loadingSettings = $false
     if ($profileError -or $audioError) {
         $readErrors = @($profileError, $audioError | Where-Object { $_ }) -join '；'
         (Get-SettingsControl 'SettingsErrorText').Text = ('有本机设置无法读取，请检查并重新保存。' + $readErrors)
         (Get-SettingsControl 'SettingsErrorText').Foreground = [Windows.Media.Brushes]::IndianRed
     } elseif ($script:storedProfile) {
-        (Get-SettingsControl 'SettingsErrorText').Text = '保存后，下次连接时使用新设置。'
+        (Get-SettingsControl 'SettingsErrorText').Text = if ($script:profileEditable) { '保存后，下次连接时使用新设置。' } else { '连接配置为只读；此窗口只会保存音量和密码路径。' }
     } else {
         (Get-SettingsControl 'SettingsErrorText').Text = '请填写连接信息后保存。'
     }
@@ -1490,7 +1866,8 @@ function Initialize-SettingsWindow {
     })
     (Get-SettingsControl 'SaveSettingsButton').Add_Click({ Save-SettingsFromWindow })
     Set-SettingsWindowFields
-    Start-UiDeviceDiscovery
+    if ($RenderOnly) { (Get-SettingsControl 'DeviceDiscoveryText').Text = '离线渲染；未读取本机设备。' }
+    else { Start-UiDeviceDiscovery }
 }
 
 function Show-SettingsWindow {
@@ -1510,72 +1887,64 @@ function Test-UiAutoEndpointResolvable {
 
 function Save-SettingsFromWindow {
     try {
-        $slotItem = (Get-SettingsControl 'SlotBox').SelectedItem
-        $kindItem = (Get-SettingsControl 'CallKindBox').SelectedItem
-        $receiveSlotItem = (Get-SettingsControl 'ReceiveSlotBox').SelectedItem
-        $receiveKindItem = (Get-SettingsControl 'ReceiveCallKindBox').SelectedItem
-        $serialContainer = (Get-SettingsControl 'SerialBox').SelectedItem
-        $waveInContainer = (Get-SettingsControl 'WaveInEndpointBox').SelectedItem
-        $waveOutContainer = (Get-SettingsControl 'WaveOutEndpointBox').SelectedItem
-        if ($serialContainer -isnot [System.Windows.Controls.ComboBoxItem] -or
-            $waveInContainer -isnot [System.Windows.Controls.ComboBoxItem] -or
-            $waveOutContainer -isnot [System.Windows.Controls.ComboBoxItem]) {
-            throw '请从设备列表中明确选择串口、音频输入和音频输出。'
-        }
-        $serialItem = $serialContainer.Tag
-        $waveInItem = $waveInContainer.Tag
-        $waveOutItem = $waveOutContainer.Tag
-        if ($null -eq $serialItem -or $null -eq $waveInItem -or $null -eq $waveOutItem) {
-            throw '设备列表项目缺少内部选择信息；请刷新设备列表。'
-        }
-        if (-not $serialItem.IsAvailable -or -not $waveInItem.IsAvailable -or -not $waveOutItem.IsAvailable) {
-            throw '所选设备当前不可用；请从列表中选择已发现的设备。'
-        }
-        if ($script:deviceDiscoveryState -eq 'ready') {
-            if ([string]$serialItem.Value -ceq 'auto') {
-                $hri = @($script:deviceCatalog.hri_ports)
-                $knownCom5 = @($hri | Where-Object { $_.PortName -ceq 'COM5' })
-                if ($hri.Count -eq 0 -or ($knownCom5.Count -ne 1 -and $hri.Count -ne 1)) {
-                    throw '当前有多个或没有已确认的 HRI 串口；请从下拉列表中选择 HRI 设备。'
+        $writeProfile = [bool]$script:profileWriteAllowed
+        $profile = $script:storedProfile
+        if ($script:profileEditable) {
+            $slotItem = (Get-SettingsControl 'SlotBox').SelectedItem
+            $kindItem = (Get-SettingsControl 'CallKindBox').SelectedItem
+            $receiveSlotItem = (Get-SettingsControl 'ReceiveSlotBox').SelectedItem
+            $receiveKindItem = (Get-SettingsControl 'ReceiveCallKindBox').SelectedItem
+            $serialContainer = (Get-SettingsControl 'SerialBox').SelectedItem
+            $waveInContainer = (Get-SettingsControl 'WaveInEndpointBox').SelectedItem
+            $waveOutContainer = (Get-SettingsControl 'WaveOutEndpointBox').SelectedItem
+            if ($serialContainer -isnot [System.Windows.Controls.ComboBoxItem] -or
+                $waveInContainer -isnot [System.Windows.Controls.ComboBoxItem] -or
+                $waveOutContainer -isnot [System.Windows.Controls.ComboBoxItem]) {
+                throw '请从设备列表中明确选择串口、音频输入和音频输出。'
+            }
+            $serialItem = $serialContainer.Tag; $waveInItem = $waveInContainer.Tag; $waveOutItem = $waveOutContainer.Tag
+            if ($null -eq $serialItem -or $null -eq $waveInItem -or $null -eq $waveOutItem) { throw '设备列表项目缺少内部选择信息；请刷新设备列表。' }
+            if (-not $serialItem.IsAvailable -or -not $waveInItem.IsAvailable -or -not $waveOutItem.IsAvailable) { throw '所选设备当前不可用；请从列表中选择已发现的设备。' }
+            if ($script:deviceDiscoveryState -eq 'ready') {
+                if ([string]$serialItem.Value -ceq 'auto') {
+                    $hri = @($script:deviceCatalog.hri_ports); $knownCom5 = @($hri | Where-Object { $_.PortName -ceq 'COM5' })
+                    if ($hri.Count -eq 0 -or ($knownCom5.Count -ne 1 -and $hri.Count -ne 1)) { throw '当前有多个或没有已确认的 HRI 串口；请从下拉列表中选择 HRI 设备。' }
                 }
+                if ([string]$waveInItem.Value -ceq 'auto' -and -not (Test-UiAutoEndpointResolvable -Devices @($script:deviceCatalog.wave_inputs))) { throw '电台音频输入有多个候选设备；请从下拉列表中选择稳定端点。' }
+                if ([string]$waveOutItem.Value -ceq 'auto' -and -not (Test-UiAutoEndpointResolvable -Devices @($script:deviceCatalog.wave_outputs))) { throw '电台音频输出有多个候选设备；请从下拉列表中选择稳定端点。' }
             }
-            if ([string]$waveInItem.Value -ceq 'auto' -and -not (Test-UiAutoEndpointResolvable -Devices @($script:deviceCatalog.wave_inputs))) {
-                throw '电台音频输入有多个候选设备；请从下拉列表中选择稳定端点。'
+            if ($slotItem -isnot [System.Windows.Controls.ComboBoxItem] -or $kindItem -isnot [System.Windows.Controls.ComboBoxItem] -or
+                $receiveSlotItem -isnot [System.Windows.Controls.ComboBoxItem] -or $receiveKindItem -isnot [System.Windows.Controls.ComboBoxItem]) {
+                throw '请分别选择发射与接收的时隙和呼叫类型。'
             }
-            if ([string]$waveOutItem.Value -ceq 'auto' -and -not (Test-UiAutoEndpointResolvable -Devices @($script:deviceCatalog.wave_outputs))) {
-                throw '电台音频输出有多个候选设备；请从下拉列表中选择稳定端点。'
+            $connection = [pscustomobject][ordered]@{
+                callsign=(Get-SettingsControl 'CallsignBox').Text; gateway_id=(Get-SettingsControl 'GatewayBox').Text
+                source_id=(Get-SettingsControl 'SourceBox').Text; master=(Get-SettingsControl 'MasterBox').Text
+                master_port=(Get-SettingsControl 'MasterPortBox').Text; color_code=(Get-SettingsControl 'ColorCodeBox').Text
             }
+            $txTarget = [pscustomobject][ordered]@{
+                destination_id=(Get-SettingsControl 'DestinationBox').Text
+                kind=[string]$kindItem.Tag; slot=[string]$slotItem.Tag
+            }
+            $devices = [pscustomobject][ordered]@{
+                serial_port=[string]$serialItem.Value; wave_in_endpoint_id=[string]$waveInItem.Value
+                wave_out_endpoint_id=[string]$waveOutItem.Value
+            }
+            $receiveDestination = [uint64]::Parse([string](Get-SettingsControl 'ReceiveDestinationBox').Text,
+                [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture)
+            $receiveSlot = [uint64]::Parse([string]$receiveSlotItem.Tag,
+                [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture)
+            $transmitEnabled = ((Get-SettingsControl 'TransmitEnabledBox').IsChecked -eq $true)
+            $rxPolicy = New-UiSimpleReceivePolicy -Connection ([pscustomobject]@{source_id=[uint64]::Parse([string]$connection.source_id,
+                    [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture)}) -TxTarget $txTarget `
+                -ReceiveDestination ([string]$receiveDestination) -ReceiveSlot $receiveSlot -ReceiveKind ([string]$receiveKindItem.Tag) `
+                -TransmitEnabled $transmitEnabled
+            $profile = ConvertTo-BridgeUserConnectionProfile -Connection $connection -TxTarget $txTarget -Devices $devices `
+                -RxPolicy $rxPolicy -TransmitEnabled $transmitEnabled -AllowTextNumbers
+            $writeProfile = $true
+        } elseif (-not $writeProfile) {
+            if ($null -eq $profile) { throw '连接配置处于只读状态，当前没有可保存的 schema 2 配置。' }
         }
-        if ($slotItem -isnot [System.Windows.Controls.ComboBoxItem] -or
-            $kindItem -isnot [System.Windows.Controls.ComboBoxItem] -or
-            $receiveSlotItem -isnot [System.Windows.Controls.ComboBoxItem] -or
-            $receiveKindItem -isnot [System.Windows.Controls.ComboBoxItem]) {
-            throw '请分别选择发射与接收的时隙和呼叫类型。'
-        }
-        $connection = [pscustomobject]@{
-            callsign = (Get-SettingsControl 'CallsignBox').Text
-            gateway_id = (Get-SettingsControl 'GatewayBox').Text
-            source_id = (Get-SettingsControl 'SourceBox').Text
-            master = (Get-SettingsControl 'MasterBox').Text
-            master_port = (Get-SettingsControl 'MasterPortBox').Text
-            destination_id = (Get-SettingsControl 'DestinationBox').Text
-            slot = [string]$slotItem.Tag
-            color_code = (Get-SettingsControl 'ColorCodeBox').Text
-            call_kind = [string]$kindItem.Tag
-        }
-        $receive = [pscustomobject]@{
-            destination_id = (Get-SettingsControl 'ReceiveDestinationBox').Text
-            slot = [string]$receiveSlotItem.Tag
-            call_kind = [string]$receiveKindItem.Tag
-        }
-        $devices = [pscustomobject]@{
-            serial_port = [string]$serialItem.Value
-            wave_in_endpoint_id = [string]$waveInItem.Value
-            wave_out_endpoint_id = [string]$waveOutItem.Value
-        }
-        $transmitEnabled = ((Get-SettingsControl 'TransmitEnabledBox').IsChecked -eq $true)
-        $profile = ConvertTo-BridgeUserConnectionProfile -Connection $connection -Devices $devices `
-            -Receive $receive -TransmitEnabled $transmitEnabled -AllowTextNumbers
         $playbackValue = [double](Get-SettingsControl 'PlaybackGainSlider').Value
         $transmitValue = [double](Get-SettingsControl 'TransmitGainSlider').Value
         $playbackMilli = Convert-UiGainSliderToMilli -Value $playbackValue
@@ -1586,7 +1955,8 @@ function Save-SettingsFromWindow {
             if (-not [System.IO.File]::Exists($passwordCandidate)) { throw '所选 BM 密码文件当前不存在。' }
         }
 
-        $saveFiles = @($script:profilePath, $script:audioSettingsPath, $script:passwordPointerPath)
+        $saveFiles = if ($writeProfile) { @($script:profilePath, $script:audioSettingsPath, $script:passwordPointerPath) } `
+            else { @($script:audioSettingsPath, $script:passwordPointerPath) }
         $transactionId = [guid]::NewGuid().ToString('N')
         $backupRecords = @()
         try {
@@ -1596,7 +1966,7 @@ function Save-SettingsFromWindow {
                 if ($existed) { [System.IO.File]::Copy($path, $backup, $false) }
                 $backupRecords += [pscustomobject]@{ Path = $path; Existed = $existed; Backup = $backup }
             }
-            Write-BridgeUserConnectionProfile -Path $script:profilePath -Profile $profile
+            if ($writeProfile) { Write-BridgeUserConnectionProfile -Path $script:profilePath -Profile $profile }
             Write-BridgeAudioSettings -Path $script:audioSettingsPath -RadioPlaybackGainMilli $playbackMilli `
                 -MicTransmitGainMilli $transmitMilli
             if ($passwordCandidate) {
@@ -1634,10 +2004,14 @@ function Save-SettingsFromWindow {
                 if ([System.IO.File]::Exists($record.Backup)) { [System.IO.File]::Delete($record.Backup) }
             }
         }
-        (Get-SettingsControl 'SettingsErrorText').Text = '设置已保存。'
-        $script:storedProfile = $profile
+        if ($writeProfile) {
+            $script:storedProfile = Read-BridgeUserConnectionProfile -Path $script:profilePath
+            (Get-SettingsControl 'SettingsErrorText').Text = if ($script:receiveEditorState.CanEdit) { '设置已保存为 schema 2。' } else { '原 schema 1 已备份，完整策略已迁移并保存为 schema 2。' }
+        } else {
+            (Get-SettingsControl 'SettingsErrorText').Text = '音量和密码路径已保存；连接策略保持原样。'
+        }
         $selectedTarget = Get-SelectedTargetTag
-        $pendingProfile = New-EffectiveTargetProfile -Profile $profile -Target $selectedTarget
+        $pendingProfile = if ($script:storedProfile) { New-EffectiveTargetProfile -Profile $script:storedProfile -Target $selectedTarget } else { $null }
         $script:targetLabel = Format-ProfileTarget -Profile $pendingProfile
         $wasRunning = ($script:supervisor -and -not $script:supervisor.HasExited)
         if ($wasRunning) {
@@ -1646,7 +2020,7 @@ function Save-SettingsFromWindow {
                 (Format-ProfileTarget -Profile $pendingProfile),
                 (Format-ProfileTransmitPermission -Profile $pendingProfile))
             Set-MainTargetSummary -Profile $script:activeProfile -OverallLabel $script:activeTargetLabel
-        } else {
+        } elseif ($pendingProfile) {
             Set-MainTargetSummary -Profile $pendingProfile -OverallLabel $script:targetLabel
         }
         $script:settingsWindow.Close()
@@ -1665,6 +2039,7 @@ function Save-SettingsFromWindow {
 function Start-BridgeRun {
     if ($script:preparationStarted -or ($script:supervisor -and -not $script:supervisor.HasExited)) { return }
     Set-OfflineDisplay -Reason '正在检查本次连接配置和设备。'
+    Reset-UiControlState
     $script:lastUiBmState = ''
     $script:lastUiHriState = ''
     try {
@@ -1751,7 +2126,8 @@ function Complete-BridgePreparation {
             -ExpectedExecutable $script:nativeExecutable
         $script:statusPath = $validatedPreparation.StatusPath
         $script:supervisor = New-Object WirexBridge.Ui.BridgeSupervisor
-        $script:supervisor.Start($validatedPreparation.Executable, $validatedPreparation.Arguments, $script:releaseDirectory)
+        $script:supervisor.Start($validatedPreparation.Executable, $validatedPreparation.Arguments, $script:releaseDirectory, 2)
+        Set-UiControlStatus -Text '控制协议：等待 v2 control_ready' -Confirmed $false
         $script:activeTargetTag = $script:preparedTargetTag
         $script:activeTargetLabel = $script:preparedTargetLabel
         $script:activeProfile = $script:effectiveProfile
@@ -2141,6 +2517,7 @@ function On-UiTimerTick {
     if (Complete-BridgeStop) { return }
     if ($script:supervisor) {
         if ($script:supervisor.HasExited) {
+            Reset-UiControlState -Text '控制协议：本次进程已退出'
             $exitCode = -1
             [void]$script:supervisor.TryGetExitCode([ref]$exitCode)
             Set-MainText -Name 'CoreValue' -Text '已停止'
@@ -2172,6 +2549,7 @@ function On-UiTimerTick {
             }
             if ($script:statusStream) { $script:statusStream.Dispose(); $script:statusStream = $null }
         } else {
+            Process-UiControlEvents
             Read-StatusUpdates
             Set-StaleDisplay
         }
@@ -2277,10 +2655,19 @@ $script:mainWindow.FindName('OfflineBanner').Visibility = [Windows.Visibility]::
 (Get-UiControl 'SettingsButton').Add_Click({ Show-SettingsWindow })
 (Get-UiControl 'ConnectButton').Add_Click({ Request-Reconnect })
 (Get-UiControl 'StopButton').Add_Click({ Request-StopAndExit })
+(Get-UiControl 'ControlStatusButton').Add_Click({ Request-UiControlStatus })
 (Get-UiControl 'TargetSelector').Add_SelectionChanged({
     $selectedTarget = Get-SelectedTargetTag
     if ($script:storedProfile) {
-        $targetProfile = New-EffectiveTargetProfile -Profile $script:storedProfile -Target $selectedTarget
+        try { $targetProfile = New-EffectiveTargetProfile -Profile $script:storedProfile -Target $selectedTarget }
+        catch {
+            $script:targetLabel = Format-ProfileTarget -Profile $script:storedProfile
+            Set-MainTargetSummary -Profile $script:storedProfile -OverallLabel $script:targetLabel
+            Set-MainText -Name 'TrafficDetail' -Text $_.Exception.Message
+            Add-UiEvent '所选目标预设不能覆盖只读接收策略'
+            Set-ConnectionButtonState
+            return
+        }
         $script:targetLabel = Format-ProfileTarget -Profile $targetProfile
         if ($script:supervisor -and -not $script:supervisor.HasExited) {
             Set-MainTargetSummary -Profile $script:activeProfile -OverallLabel $script:activeTargetLabel
@@ -2376,6 +2763,7 @@ if ($RenderOnly) {
     Set-UiDeviceComboOptions -Combo (Get-SettingsControl 'WaveInEndpointBox') -Options @($inputFixture) -SelectedValue '{render-input}'
     Set-UiDeviceComboOptions -Combo (Get-SettingsControl 'WaveOutEndpointBox') -Options @($outputFixture) -SelectedValue '{render-output}'
     (Get-SettingsControl 'DeviceDiscoveryText').Text = '离线渲染样例；没有读取本机设备。'
+    $script:settingsWindow.FindName('SettingsScrollViewer').ScrollToTop()
     $script:settingsWindow.Show()
     $script:settingsWindow.UpdateLayout()
     $deviceComboEvidence = [pscustomobject][ordered]@{
@@ -2383,6 +2771,10 @@ if ($RenderOnly) {
         wave_input = Get-UiComboRenderEvidence -Combo (Get-SettingsControl 'WaveInEndpointBox')
         wave_output = Get-UiComboRenderEvidence -Combo (Get-SettingsControl 'WaveOutEndpointBox')
     }
+    $settingsScroll = $script:settingsWindow.FindName('SettingsScrollViewer')
+    $settingsScroll.ScrollToVerticalOffset(0)
+    [void][System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::Render)
+    $script:settingsWindow.UpdateLayout()
     Save-RenderedWindow -Window $script:settingsWindow -Path (Join-Path $renderDirectory 'settings-window.png')
     $layoutInfo = [pscustomobject][ordered]@{
         work_area_width = $script:workAreaWidth
@@ -2390,8 +2782,8 @@ if ($RenderOnly) {
         max_window_width = $script:maxWindowWidth
         max_window_height = $script:maxWindowHeight
         device_combo_rendered_text = $deviceComboEvidence
-        main = Get-WpfWindowLayoutInfo -Window $script:mainWindow -ControlNames @('ConnectButton', 'SettingsButton', 'StopButton', 'FooterText', 'TargetSelector', 'ReceiveTargetValue', 'TransmitTargetValue', 'TransmitPermissionValue', 'CoreDetail', 'RadioDetail', 'AudioDetail', 'BmDetail', 'CoreStatusCard', 'RadioStatusCard', 'AudioStatusCard', 'BmStatusCard', 'HriSourceIdentityValue', 'RadioDisplayValue', 'CurrentCallLabel', 'CurrentCallValue', 'CurrentCallDetail', 'TrafficCard')
-        settings = Get-WpfWindowLayoutInfo -Window $script:settingsWindow -ControlNames @('CancelSettingsButton', 'SaveSettingsButton', 'SettingsErrorText', 'MasterPresetBox', 'PasswordPathBox', 'BrowsePasswordButton', 'DeviceDiscoveryText', 'RefreshDevicesButton', 'SerialBox', 'WaveInEndpointBox', 'WaveOutEndpointBox', 'DestinationBox', 'ReceiveDestinationBox', 'ReceiveSlotBox', 'ReceiveCallKindBox', 'TransmitEnabledBox', 'PlaybackGainSlider', 'PlaybackGainValueText', 'TransmitGainSlider', 'TransmitGainValueText')
+        main = Get-WpfWindowLayoutInfo -Window $script:mainWindow -ControlNames @('ConnectButton', 'SettingsButton', 'StopButton', 'ControlProtocolValue', 'ControlStatusButton', 'FooterText', 'TargetSelector', 'ReceiveTargetValue', 'TransmitTargetValue', 'TransmitPermissionValue', 'CoreDetail', 'RadioDetail', 'AudioDetail', 'BmDetail', 'CoreStatusCard', 'RadioStatusCard', 'AudioStatusCard', 'BmStatusCard', 'HriSourceIdentityValue', 'RadioDisplayValue', 'CurrentCallLabel', 'CurrentCallValue', 'CurrentCallDetail', 'TrafficCard')
+        settings = Get-WpfWindowLayoutInfo -Window $script:settingsWindow -ControlNames @('CancelSettingsButton', 'SaveSettingsButton', 'SettingsErrorText', 'ProfileMigrationText', 'ReceivePolicyPreviewText', 'MasterPresetBox', 'PasswordPathBox', 'BrowsePasswordButton', 'DeviceDiscoveryText', 'RefreshDevicesButton', 'SerialBox', 'WaveInEndpointBox', 'WaveOutEndpointBox', 'DestinationBox', 'ReceiveDestinationBox', 'ReceiveSlotBox', 'ReceiveCallKindBox', 'TransmitEnabledBox', 'PlaybackGainSlider', 'PlaybackGainValueText', 'TransmitGainSlider', 'TransmitGainValueText')
         main_source_identity = [pscustomobject][ordered]@{
             value = (Get-UiControl 'HriSourceIdentityValue').Text
             radio_display = (Get-UiControl 'RadioDisplayValue').Text
@@ -2428,7 +2820,7 @@ if ($RenderOnly) {
         max_window_width = $script:maxWindowWidth
         max_window_height = $script:maxWindowHeight
         device_combo_rendered_text = $deviceComboEvidence
-        main = Get-WpfWindowLayoutInfo -Window $script:mainWindow -ControlNames @('ConnectButton', 'SettingsButton', 'StopButton', 'FooterText', 'TargetSelector', 'ReceiveTargetValue', 'TransmitTargetValue', 'TransmitPermissionValue', 'CoreDetail', 'RadioDetail', 'AudioDetail', 'BmDetail', 'CoreStatusCard', 'RadioStatusCard', 'AudioStatusCard', 'BmStatusCard', 'HriSourceIdentityValue', 'RadioDisplayValue', 'CurrentCallLabel', 'CurrentCallValue', 'CurrentCallDetail', 'TrafficCard')
+        main = Get-WpfWindowLayoutInfo -Window $script:mainWindow -ControlNames @('ConnectButton', 'SettingsButton', 'StopButton', 'ControlProtocolValue', 'ControlStatusButton', 'FooterText', 'TargetSelector', 'ReceiveTargetValue', 'TransmitTargetValue', 'TransmitPermissionValue', 'CoreDetail', 'RadioDetail', 'AudioDetail', 'BmDetail', 'CoreStatusCard', 'RadioStatusCard', 'AudioStatusCard', 'BmStatusCard', 'HriSourceIdentityValue', 'RadioDisplayValue', 'CurrentCallLabel', 'CurrentCallValue', 'CurrentCallDetail', 'TrafficCard')
         settings = $layoutInfo.settings
         main_source_identity = $layoutInfo.main_source_identity
         configured_profile = $simulatedEffectiveProfile

@@ -54,6 +54,7 @@ $script:alpha3TestNames = @(
     'bm_bridge_loopback_test'
 )
 $script:alpha4TestNames = @($script:alpha3TestNames)
+$script:alpha5TestNames = @($script:alpha4TestNames + 'ui_control_protocol_v2_test')
 $script:activeReleaseVersion = 'v0.1.0-alpha.1'
 
 function Get-ReleaseProfile {
@@ -229,7 +230,45 @@ function Get-ReleaseProfile {
                 )
             }
         }
-        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, and v0.1.0-alpha.4 release profiles are supported.' }
+        'v0.1.0-alpha.5' {
+            $alpha4 = Get-ReleaseProfile -Version 'v0.1.0-alpha.4'
+            $alpha5SourceFiles = @($alpha4.SourceFiles | Where-Object { [string]$_.Destination -cne 'README.md' }) + @(
+                @{ Source='docs\releases\v0.1.0-alpha.5-package-README.md'; Destination='README.md' },
+                @{ Source='docs\R106_IPC第二版.md'; Destination='docs\R106_IPC第二版.md' },
+                @{ Source='docs\R106_配置迁移与测试.md'; Destination='docs\R106_配置迁移与测试.md' },
+                @{ Source='tools\start-step1-test.cmd'; Destination='start-step1-test.cmd' },
+                @{ Source='tools\start-step1-test.ps1'; Destination='start-step1-test.ps1' },
+                @{ Source='tools\test-control.cmd'; Destination='test-control.cmd' },
+                @{ Source='tools\test-control.ps1'; Destination='test-control.ps1' }
+            )
+            $alpha5AssetMap = [ordered]@{}
+            foreach ($path in $alpha4.AssetMap.Keys) { $alpha5AssetMap[$path] = $alpha4.AssetMap[$path] }
+            $alpha5AssetMap['docs/R106_IPC第二版.md'] = 'docs__r106-ipc-v2.md'
+            $alpha5AssetMap['docs/R106_配置迁移与测试.md'] = 'docs__r106-profile-migration-test.md'
+            $alpha5AssetMap['start-step1-test.cmd'] = 'start-step1-test.cmd'
+            $alpha5AssetMap['start-step1-test.ps1'] = 'start-step1-test.ps1'
+            $alpha5AssetMap['test-control.cmd'] = 'test-control.cmd'
+            $alpha5AssetMap['test-control.ps1'] = 'test-control.ps1'
+            return [pscustomobject]@{
+                Version = 'v0.1.0-alpha.5'
+                TestNames = $script:alpha5TestNames
+                SourceFiles = $alpha5SourceFiles
+                PackageFiles = @($alpha4.PackageFiles) + @(
+                    'docs/R106_IPC第二版.md', 'docs/R106_配置迁移与测试.md', 'start-step1-test.cmd', 'start-step1-test.ps1',
+                    'test-control.cmd', 'test-control.ps1'
+                )
+                Directories = @($alpha4.Directories)
+                AssetMap = $alpha5AssetMap
+                PackageReadme = 'docs\releases\v0.1.0-alpha.5-package-README.md'
+                ReleaseScope = 'R106 Step 1 test build: explicit IPC v2 hello/status/shutdown, schema-2 configuration migration, and lossless projection for legacy single-RX profiles; multi-group runtime is not implemented'
+                NotIncluded = @(
+                    'Multi-group runtime is not implemented; policies that cannot map to one legacy RX target are rejected before core startup',
+                    'No BM subscription API, multi-group delivery, quick-call, or new audio pipeline behavior',
+                    'No new serial, audio, PTT, RF, or BrandMeister hardware validation'
+                )
+            }
+        }
+        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, and v0.1.0-alpha.5 release profiles are supported.' }
     }
 }
 

@@ -89,11 +89,12 @@
       <TextBlock Text="连接与音量设置" FontSize="21" FontWeight="Bold"/>
       <TextBlock Text="在本机保存连接参数和音量，并选择 BM 密码文件。" Foreground="#9DA8AD" TextWrapping="Wrap" Margin="0,5,0,0"/>
     </StackPanel>
-    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+    <ScrollViewer x:Name="SettingsScrollViewer" Grid.Row="1" VerticalScrollBarVisibility="Auto">
       <StackPanel>
         <Border Background="#20252A" BorderBrush="#3A4248" BorderThickness="1" Padding="14" Margin="0,0,0,10">
           <StackPanel>
             <TextBlock Text="BrandMeister 连接" FontSize="14" FontWeight="Bold" Margin="0,0,0,10"/>
+            <TextBlock x:Name="ProfileMigrationText" Text="新配置将保存为 schema 2。" Foreground="#E1AE53" TextWrapping="Wrap" Margin="0,0,0,8"/>
             <Grid>
               <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
               <StackPanel><TextBlock Text="呼号" Foreground="#AAB5BA"/><TextBox x:Name="CallsignBox"/></StackPanel>
@@ -116,10 +117,11 @@
             <TextBlock Text="接收目标" FontSize="13" FontWeight="Bold" Margin="0,5,0,2"/>
             <Grid>
               <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-              <StackPanel><TextBlock Text="接收组 / Radio ID" Foreground="#AAB5BA"/><TextBox x:Name="ReceiveDestinationBox"/></StackPanel>
+              <StackPanel><TextBlock Text="接收组 ID / 私呼本机 Source ID" Foreground="#AAB5BA"/><TextBox x:Name="ReceiveDestinationBox"/></StackPanel>
               <StackPanel Grid.Column="1"><TextBlock Text="接收时隙" Foreground="#AAB5BA"/><ComboBox x:Name="ReceiveSlotBox" SelectedIndex="1"><ComboBoxItem Content="TS1" Tag="1"/><ComboBoxItem Content="TS2" Tag="2"/></ComboBox></StackPanel>
               <StackPanel Grid.Column="2"><TextBlock Text="接收类型" Foreground="#AAB5BA"/><ComboBox x:Name="ReceiveCallKindBox" SelectedIndex="0"><ComboBoxItem Content="组呼" Tag="group"/><ComboBoxItem Content="单呼" Tag="private"/></ComboBox></StackPanel>
             </Grid>
+            <TextBlock x:Name="ReceivePolicyPreviewText" Text="接收策略：新配置" Foreground="#8CC9A1" TextWrapping="Wrap" Margin="0,2,0,6"/>
             <CheckBox x:Name="TransmitEnabledBox" Content="允许向 BrandMeister 发射" IsChecked="True" Foreground="#EDF1F2" Margin="0,2,0,0"/>
             <TextBlock Text="接收目标只控制下行过滤；发射目标控制手咪上行。主界面选择 TG91 或 TG46001 时会关闭发射许可；要使用这里保存的发射许可，请在主界面选择“使用已保存目标”。" Foreground="#9DA8AD" TextWrapping="Wrap" Margin="0,4,0,0"/>
           </StackPanel>

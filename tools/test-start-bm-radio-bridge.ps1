@@ -3,6 +3,7 @@
 )
 
 $ErrorActionPreference = 'Stop'
+Import-Module -Name (Join-Path (Split-Path -Parent ([System.IO.Path]::GetFullPath($LauncherPath))) 'bridge-user-config.psm1') -Force
 $selectedFunctions = @(
     'ConvertTo-GainMilli',
     'Format-GainDecimal',
@@ -166,7 +167,7 @@ try {
     $inputReader = { param($prompt) [string]$firstRunValues.Dequeue() }.GetNewClosure()
     $firstRunProfile = Read-ManualConnectionProfile -InputReader $inputReader
     Assert-True ($firstRunProfile.connection.gateway_id -eq 461135501 -and
-        $firstRunProfile.connection.destination_id -eq 460997 -and $firstRunProfile.connection.call_kind -ceq 'private') `
+        $firstRunProfile.tx_target.destination_id -eq 460997 -and $firstRunProfile.tx_target.kind -ceq 'private') `
         '首次输入应规范化并校验手工连接字段'
     Write-ConnectionProfile -Path $connectionProfilePath -Profile $firstRunProfile
     Assert-True ((Read-ConnectionProfile -Path $connectionProfilePath).connection.source_id -eq 4611355) `
@@ -189,7 +190,7 @@ try {
     }
     $profile = ConvertTo-ValidatedConnectionProfile -Connection $profileConnection -Devices $profileDevices
     Assert-True ($profile.connection.gateway_id -eq 4294967295) 'profile 应接受 Gateway ID 上界'
-    Assert-True ($profile.connection.source_id -eq 16777215 -and $profile.connection.destination_id -eq 16777215) 'profile 应接受 Source/目标 ID 上界'
+    Assert-True ($profile.connection.source_id -eq 16777215 -and $profile.tx_target.destination_id -eq 16777215) 'profile 应接受 Source/目标 ID 上界'
     foreach ($validMaster in @('43.129.83.124', 'localhost', 'radio-master.example.net', 'radio.example.net.')) {
         Assert-True (Test-ValidMasterName -HostName $validMaster) "主机名应接受：$validMaster"
     }
@@ -198,14 +199,15 @@ try {
     }
     Write-ConnectionProfile -Path $connectionProfilePath -Profile $profile
     $loadedProfile = Read-ConnectionProfile -Path $connectionProfilePath
-    Assert-True ($loadedProfile.connection.call_kind -ceq 'group' -and $loadedProfile.devices.serial_port -ceq 'auto') 'profile 写入后应准确恢复呼叫类型和自动设备选择'
-    Assert-True ($loadedProfile.receive.destination_id -eq $loadedProfile.connection.destination_id -and
-        $loadedProfile.receive.call_kind -ceq 'group' -and $loadedProfile.receive.slot -eq 2) `
+    Assert-True ($loadedProfile.tx_target.kind -ceq 'group' -and $loadedProfile.devices.serial_port -ceq 'auto') 'profile 写入后应准确恢复呼叫类型和自动设备选择'
+    $loadedLegacyProfile = Get-BridgeLegacyRuntimeProfile -Profile $loadedProfile
+    Assert-True ($loadedLegacyProfile.receive.destination_id -eq $loadedProfile.tx_target.destination_id -and
+        $loadedLegacyProfile.receive.call_kind -ceq 'group' -and $loadedLegacyProfile.receive.slot -eq 2) `
         '旧组呼 profile 缺少接收对象时仍按原发射目标接收'
     $listenProfile = ConvertTo-ValidatedConnectionProfile -Connection $profileConnection -Devices $profileDevices `
         -Receive ([pscustomobject]@{ destination_id = [uint64]91; slot = [uint64]2; call_kind = 'group' }) `
         -TransmitEnabled $false
-    $listenArgs = @(Get-ProfileConnectionArgs -Profile $listenProfile)
+    $listenArgs = @(Get-ProfileConnectionArgs -Profile (Get-BridgeLegacyRuntimeProfile -Profile $listenProfile))
     Assert-True (($listenArgs -join ' ') -match '--profile-receive-destination-id 91 --profile-receive-slot 2 --profile-receive-call-kind G') `
         '独立 TG91 接收目标必须写入 native 启动参数'
     Assert-True ($listenArgs -ccontains '--listen-only') '只收配置必须向 native 传递 listen-only'
@@ -214,9 +216,9 @@ try {
     $legacyPrivateConnection.destination_id = [uint64]460997
     $legacyPrivateConnection.source_id = [uint64]4611355
     $legacyPrivateProfile = ConvertTo-ValidatedConnectionProfile -Connection $legacyPrivateConnection -Devices $profileDevices
-    Assert-True ($legacyPrivateProfile.receive.destination_id -eq 4611355 -and
-        $legacyPrivateProfile.receive.call_kind -ceq 'private') '旧私呼 profile 的默认接收目标应为本机 Source ID'
-    $legacyPrivateArgs = @(Get-ProfileConnectionArgs -Profile $legacyPrivateProfile)
+    Assert-True ($legacyPrivateProfile.rx_policy.local_private_routes[0].local_destination_id -eq 4611355 -and
+        $legacyPrivateProfile.rx_policy.allow_private_peers.Count -eq 0) '本机私呼默认接收路由已经覆盖同slot TX精确回程'
+    $legacyPrivateArgs = @(Get-ProfileConnectionArgs -Profile (Get-BridgeLegacyRuntimeProfile -Profile $legacyPrivateProfile))
     Assert-True (($legacyPrivateArgs -join ' ') -match '--profile-receive-destination-id 4611355 --profile-receive-slot 2 --profile-receive-call-kind P') `
         '本机私呼回声接收目标必须进入 native 启动参数'
     Assert-Throws {
@@ -226,7 +228,8 @@ try {
     Assert-Throws {
         ConvertTo-ValidatedConnectionProfile -Connection $profileConnection -Devices $profileDevices -TransmitEnabled 'false'
     } '发射许可只接受 JSON 布尔值'
-    Assert-True (@(Get-ChildItem -LiteralPath $temporaryRoot | Where-Object { $_.Name -match '\.(tmp|bak)-' }).Count -eq 0) 'profile 原子保存后不应残留临时文件'
+    Assert-True (@(Get-ChildItem -LiteralPath $temporaryRoot | Where-Object { $_.Name -match '\.tmp-' }).Count -eq 0) 'profile 原子保存后不应残留临时文件'
+    Assert-True (@(Get-ChildItem -LiteralPath $temporaryRoot | Where-Object { $_.Name -match '^connection-profile\.json\.bak-' }).Count -ge 1) '覆盖 profile 时应保留原文件备份'
 
     $profileJson = [System.IO.File]::ReadAllText($connectionProfilePath, [System.Text.Encoding]::UTF8)
     $duplicateConnectionJson = [regex]::Replace($profileJson, '"callsign"\s*:\s*"BI7KGD"', '"callsign": "BI7KGD", "callsign": "BI7KGD"', 1)

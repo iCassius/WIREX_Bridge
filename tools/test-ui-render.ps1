@@ -21,10 +21,14 @@ function Test-RenderedLayout {
             Assert-UiRender ([bool]$property.Value) ("$windowName 窗口中的 $($property.Name) 未显示。")
         }
     }
-    foreach ($controlName in @('TargetSelector', 'ReceiveTargetValue', 'TransmitTargetValue', 'TransmitPermissionValue')) {
+    foreach ($controlName in @('TargetSelector', 'ReceiveTargetValue', 'TransmitTargetValue', 'TransmitPermissionValue', 'ControlProtocolValue', 'ControlStatusButton')) {
         Assert-UiRender ([bool]$layout.main.controls_visible.$controlName) ("主窗口收发目标控件 $controlName 未显示。")
         Assert-UiRender ([bool]$layout.main.controls_bounds.$controlName.fully_visible) ("主窗口收发目标控件 $controlName 被裁切。")
     }
+    $statusButton = $layout.main.controls_bounds.ControlStatusButton
+    Assert-UiRender (@($statusButton.visual_text) -ccontains '查询状态') '查询状态按钮文字没有进入 WPF 视觉树。'
+    Assert-UiRender ($statusButton.content_available_height -ge ($statusButton.font_size * 1.3)) `
+        '查询状态按钮的内容高度不足，文字可能被按钮边框裁切。'
     $statusCards = @(
         @{ card = 'CoreStatusCard'; detail = 'CoreDetail' },
         @{ card = 'RadioStatusCard'; detail = 'RadioDetail' },
@@ -40,7 +44,7 @@ function Test-RenderedLayout {
             $detailBounds.actual.right -le $cardBounds.right -and $detailBounds.actual.bottom -le $cardBounds.bottom) `
             ("状态详情 $($status.detail) 超出卡片或被裁切。")
     }
-    foreach ($controlName in @('MasterPresetBox', 'DestinationBox', 'ReceiveDestinationBox', 'ReceiveSlotBox', 'ReceiveCallKindBox', 'TransmitEnabledBox', 'PlaybackGainSlider', 'TransmitGainSlider')) {
+    foreach ($controlName in @('ProfileMigrationText', 'ReceivePolicyPreviewText', 'MasterPresetBox', 'DestinationBox', 'ReceiveDestinationBox', 'ReceiveSlotBox', 'ReceiveCallKindBox', 'TransmitEnabledBox', 'PlaybackGainSlider', 'TransmitGainSlider')) {
         Assert-UiRender ([bool]$layout.settings.controls_visible.$controlName) ("设置窗口控件 $controlName 未显示。")
     }
     $trafficCard = $layout.main.controls_bounds.TrafficCard.actual
@@ -85,10 +89,11 @@ function Test-ConfiguredActiveCallLayout {
     Test-RenderedLayout -Directory $Directory -MaximumWidth $MaximumWidth -MaximumHeight $MaximumHeight
     $layoutPath = Join-Path $Directory 'layout-info.json'
     $layout = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($layoutPath, [System.Text.Encoding]::UTF8)) -ErrorAction Stop
-    Assert-UiRender ($layout.configured_profile.receive.destination_id -eq 91 -and
-        $layout.configured_profile.receive.call_kind -ceq 'group' -and $layout.configured_profile.receive.slot -eq 2 -and
-        $layout.configured_profile.connection.destination_id -eq 460997 -and
-        $layout.configured_profile.connection.call_kind -ceq 'private' -and -not [bool]$layout.configured_profile.transmit_enabled) `
+    Assert-UiRender ($layout.configured_profile.rx_policy.allow_groups.Count -eq 1 -and
+        $layout.configured_profile.rx_policy.allow_groups[0].destination_id -eq 91 -and
+        $layout.configured_profile.rx_policy.allow_groups[0].slot -eq 2 -and
+        $layout.configured_profile.tx_target.destination_id -eq 460997 -and
+        $layout.configured_profile.tx_target.kind -ceq 'private' -and -not [bool]$layout.configured_profile.transmit_enabled) `
         '配置与来话模拟场景没有保留 TG91 接收和禁发规则。'
     Assert-UiRender ($layout.active_call.value -ceq '离线模拟 · DMR ID 3149876' -and
         $layout.active_call.detail -ceq '离线模拟：组呼 · 目标 91 · TS2 · CC 1 · LC 已验证 · 接收中') `

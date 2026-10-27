@@ -53,6 +53,7 @@ Assert-True (Test-ReleaseVersion -Value 'v0.1.0-alpha.1') '候选版本格式可
 Assert-True (Test-ReleaseVersion -Value 'v0.1.0-alpha.2') 'alpha.2 明确版本允许'
 Assert-True (Test-ReleaseVersion -Value 'v0.1.0-alpha.3') 'alpha.3 明确版本允许'
 Assert-True (Test-ReleaseVersion -Value 'v0.1.0-alpha.4') 'alpha.4 明确版本允许'
+Assert-True (Test-ReleaseVersion -Value 'v0.1.0-alpha.5') 'alpha.5 明确版本允许'
 Assert-True (-not (Test-ReleaseVersion -Value 'v0.1.0')) '正式版本格式不能混入 alpha 标签'
 Assert-True (-not (Test-ReleaseVersion -Value 'v0.2.0-alpha.1')) '未登记的 alpha 版本必须拒绝'
 Assert-True (-not (Test-ReleaseVersion -Value 'V0.1.0-ALPHA.1')) '版本匹配区分大小写'
@@ -77,6 +78,7 @@ Assert-True ($alpha2Tests[14] -ceq 'bounded_pipe_writer_test' -and
 $builderTestLines = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'build-bm-bridge.ps1') -Encoding UTF8 |
     Where-Object { $_ -match "^\s*@\{\s*Name='[^']+';\s*Source='tests\\" })
 $builderTestNames = @($builderTestLines | ForEach-Object { [regex]::Match($_, "Name='([^']+)'").Groups[1].Value })
+$builderHistoricalTestNames = @($builderTestNames | Where-Object { $_ -cne 'ui_control_protocol_v2_test' })
 Assert-True ($alpha2Tests.Count -eq 28 -and $alpha2Tests[15] -ceq 'ui_pipe_test') `
     'alpha.2 retains its historical 28-test manifest independently of the current builder'
 Assert-True ($alpha2Files -ccontains 'start-ui.cmd' -and $alpha2Files -ccontains 'start-ui.ps1' -and
@@ -111,9 +113,9 @@ Assert-True ([string]$alpha3ReadmeMap[0].Source -ceq 'docs\releases\v0.1.0-alpha
 Assert-True ($alpha3Profile.ReleaseScope -match 'per-accepted-call DMR Source ID label' -and
     @($alpha3Profile.NotIncluded | Where-Object { $_ -match 'RF node operation is not implemented' }).Count -eq 1) `
     'alpha.3 package scope states identity behavior and RF omission explicitly'
-Assert-Equal $builderTestNames.Count $alpha3Tests.Count 'alpha.3 test list count matches current builder source'
+Assert-Equal $builderHistoricalTestNames.Count $alpha3Tests.Count 'alpha.3 historical test list count remains separate from the new alpha.5 test'
 for ($testIndex = 0; $testIndex -lt $alpha3Tests.Count; $testIndex++) {
-    Assert-True ($builderTestNames[$testIndex] -ceq $alpha3Tests[$testIndex]) `
+    Assert-True ($builderHistoricalTestNames[$testIndex] -ceq $alpha3Tests[$testIndex]) `
         "alpha.3 fixed test list matches builder source order at index $testIndex"
 }
 $alpha4Profile = Get-ReleaseProfile -Version 'v0.1.0-alpha.4'
@@ -121,12 +123,11 @@ $alpha4Profile = Get-ReleaseProfile -Version 'v0.1.0-alpha.4'
 $alpha4Files = @(Get-ExpectedReleasePackageFiles)
 $alpha4Tests = @(Get-ExpectedReleaseTests)
 Assert-Equal $alpha4Files.Count $alpha3Files.Count 'alpha.4 保留 alpha.3 全部便携运行文件'
-Assert-True ($alpha4Tests.Count -ge 35 -and $alpha4Tests.Count -ge $alpha3Tests.Count) `
-    'alpha.4 C++ 测试不少于 alpha.3 的 35 项'
-Assert-Equal $builderTestNames.Count $alpha4Tests.Count 'alpha.4 固定测试清单与当前 builder 数量一致'
+Assert-Equal $alpha4Tests.Count 35 'alpha.4 固定保留历史 35 项测试清单'
+Assert-True ($alpha4Tests.Count -eq $alpha3Tests.Count) 'alpha.4 沿用 alpha.3 的历史测试清单'
 for ($testIndex = 0; $testIndex -lt $alpha4Tests.Count; $testIndex++) {
-    Assert-True ($builderTestNames[$testIndex] -ceq $alpha4Tests[$testIndex]) `
-        "alpha.4 fixed test list matches builder source order at index $testIndex"
+    Assert-True ($alpha4Tests[$testIndex] -ceq $alpha3Tests[$testIndex]) `
+        "alpha.4 preserves alpha.3 historical test order at index $testIndex"
 }
 Assert-True ($alpha4Profile.ReleaseScope -match 'independent receive and transmit targets' -and
     $alpha4Profile.ReleaseScope -match 'listen-only TG91' -and
@@ -150,6 +151,107 @@ Assert-True ($alpha4ReadmeText.Contains('43.129.83.124:62031') -and
     'alpha.4 README 写明4602、独立收发目标、配置目录和PTT实机待验'
 Assert-Equal (Get-ReleaseAssetName -RelativePath 'start-ui.cmd') 'start-ui.cmd' `
     'alpha.4 保留 alpha.3 的绿色启动入口'
+
+$alpha5Profile = Get-ReleaseProfile -Version 'v0.1.0-alpha.5'
+[void](Set-ReleaseVersion -Version 'v0.1.0-alpha.5')
+$alpha5Files = @(Get-ExpectedReleasePackageFiles)
+$alpha5Tests = @(Get-ExpectedReleaseTests)
+Assert-Equal $alpha5Files.Count ($alpha4Files.Count + 6) 'alpha.5 在 alpha.4 运行文件上增加两份迁移/协议文档和四个测试入口文件'
+Assert-Equal $alpha5Tests.Count 36 'alpha.5 包记录原35项测试和IPC v2新测试'
+Assert-Equal $builderTestNames.Count $alpha5Tests.Count 'alpha.5 固定测试清单与当前 builder 数量一致'
+$expectedAlpha5Tests = @($alpha4Tests + 'ui_control_protocol_v2_test')
+for ($testIndex = 0; $testIndex -lt $alpha5Tests.Count; $testIndex++) {
+    Assert-True ($alpha5Tests[$testIndex] -ceq $expectedAlpha5Tests[$testIndex]) `
+        "alpha.5 profile inserts the IPC v2 test without reordering historical tests at index $testIndex"
+    Assert-True ($builderTestNames[$testIndex] -ceq $expectedAlpha5Tests[$testIndex]) `
+        "alpha.5 fixed test list matches builder source order at index $testIndex"
+}
+Assert-Equal $alpha5Tests[35] 'ui_control_protocol_v2_test' 'alpha.5 appends the IPC v2 protocol test as item 36'
+Assert-Equal $alpha5Files.Count 34 'alpha.5 fixed package file count includes manifest'
+foreach ($mapping in @(
+    @{ Source='docs\releases\v0.1.0-alpha.5-package-README.md'; Destination='README.md' },
+    @{ Source='docs\R106_IPC第二版.md'; Destination='docs\R106_IPC第二版.md' },
+    @{ Source='docs\R106_配置迁移与测试.md'; Destination='docs\R106_配置迁移与测试.md' },
+    @{ Source='tools\start-step1-test.cmd'; Destination='start-step1-test.cmd' },
+    @{ Source='tools\start-step1-test.ps1'; Destination='start-step1-test.ps1' },
+    @{ Source='tools\test-control.cmd'; Destination='test-control.cmd' },
+    @{ Source='tools\test-control.ps1'; Destination='test-control.ps1' }
+)) {
+    Assert-True (@($alpha5Profile.SourceFiles | Where-Object {
+        [string]$_.Source -ceq $mapping.Source -and [string]$_.Destination -ceq $mapping.Destination
+    }).Count -eq 1) "alpha.5 source mapping is fixed: $($mapping.Source)"
+}
+Assert-Equal (Get-ReleaseAssetName -RelativePath 'docs/R106_配置迁移与测试.md') 'docs__r106-profile-migration-test.md' `
+    'alpha.5 Unicode migration document has an ASCII asset name'
+Assert-Equal (Get-ReleaseAssetName -RelativePath 'docs/R106_IPC第二版.md') 'docs__r106-ipc-v2.md' `
+    'alpha.5 IPC v2 guide has an ASCII asset name'
+Assert-True ($alpha5Profile.ReleaseScope -match 'Step 1' -and
+    $alpha5Profile.ReleaseScope -match 'schema-2 configuration migration' -and
+    $alpha5Profile.ReleaseScope -match 'multi-group runtime is not implemented') `
+    'alpha.5 scope labels the first step and excludes multi-group runtime'
+Assert-True (@($alpha5Profile.NotIncluded | Where-Object { $_ -match 'multi-group runtime' }).Count -eq 1 -and
+    @($alpha5Profile.NotIncluded | Where-Object { $_ -match 'hardware validation' }).Count -eq 1) `
+    'alpha.5 names the unsupported multi-group runtime and missing hardware validation'
+$alpha5ReadmeMap = @($alpha5Profile.SourceFiles | Where-Object { [string]$_.Destination -ceq 'README.md' })
+Assert-Equal $alpha5ReadmeMap.Count 1 'alpha.5 has exactly one package README'
+Assert-True ([string]$alpha5ReadmeMap[0].Source -ceq 'docs\releases\v0.1.0-alpha.5-package-README.md') `
+    'alpha.5 package copies its own versioned README'
+$alpha5ReadmeText = [System.IO.File]::ReadAllText(
+    (Join-Path $repositoryRoot $alpha5ReadmeMap[0].Source), [System.Text.Encoding]::UTF8)
+Assert-True ($alpha5ReadmeText.Contains('test-control.cmd') -and
+    $alpha5ReadmeText.Contains('start-step1-test.cmd') -and
+    $alpha5ReadmeText.Contains('R106_IPC第二版.md') -and
+    $alpha5ReadmeText.Contains('schema_version') -and
+    $alpha5ReadmeText.Contains('多组运行') -and
+    $alpha5ReadmeText.Contains('不支持') -and
+    $alpha5ReadmeText.Contains('音频') -and
+    $alpha5ReadmeText.Contains('BrandMeister')) `
+    'alpha.5 README documents the protocol diagnostic, schema migration, and the runtime limitation'
+Assert-True ($alpha5ReadmeText.Contains('connection-profile.json') -and
+    $alpha5ReadmeText.Contains('audio-settings.json') -and
+    $alpha5ReadmeText.Contains('password-file-path.txt') -and
+    $alpha5ReadmeText.Contains('通用 manifest') -and
+    $alpha5ReadmeText.Contains('无需手工编辑 JSON') -and
+    $alpha5ReadmeText.Contains('不会复制或读取密码文件内容')) `
+    'alpha.5 README separates local approved config copies from the generic package and excludes password contents'
+$alpha5HandoffText = [System.IO.File]::ReadAllText(
+    (Join-Path $repositoryRoot 'docs\releases\v0.1.0-alpha.5-step1-handoff.md'), [System.Text.Encoding]::UTF8)
+Assert-True ($alpha5HandoffText.Contains('在测试配置副本放入前') -and
+    $alpha5HandoffText.Contains('通用 manifest 完成审计后') -and
+    $alpha5HandoffText.Contains('不需要手动编辑或输入配置 JSON')) `
+    'alpha.5 handoff orders the generic manifest audit before local config preparation and avoids manual JSON steps'
+foreach ($commandPath in @('tools\test-control.cmd','tools\start-step1-test.cmd')) {
+    $commandBytes = [System.IO.File]::ReadAllBytes((Join-Path $repositoryRoot $commandPath))
+    Assert-True (@($commandBytes | Where-Object { $_ -gt 127 }).Count -eq 0) "$commandPath is ASCII-only"
+    $commandText = [System.Text.Encoding]::ASCII.GetString($commandBytes)
+    Assert-True ($commandText.Contains("`r`n") -and -not $commandText.Replace("`r`n", '').Contains("`n")) `
+        "$commandPath uses Windows CRLF line endings"
+    if ($commandPath -ceq 'tools\test-control.cmd') {
+        $successMessageAt = $commandText.IndexOf('Protocol diagnostic passed. Press any key to close.', [System.StringComparison]::Ordinal)
+        $successPauseAt = if ($successMessageAt -ge 0) {
+            $commandText.IndexOf('pause', $successMessageAt, [System.StringComparison]::OrdinalIgnoreCase)
+        } else { -1 }
+        Assert-True ($successMessageAt -ge 0 -and $successPauseAt -gt $successMessageAt) `
+            'test-control keeps the successful diagnostic result visible until a keypress'
+    } else {
+        Assert-True (-not $commandText.Contains('passed. Press any key') -and
+            $commandText.Contains('Step 1 test UI failed.') -and $commandText.Contains('pause')) `
+            'start-step1-test retains failure-only pause behavior without waiting after a successful UI launch'
+    }
+}
+foreach ($scriptPath in @('tools\test-control.ps1','tools\start-step1-test.ps1')) {
+    $fullScriptPath = Join-Path $repositoryRoot $scriptPath
+    $scriptBytes = [System.IO.File]::ReadAllBytes($fullScriptPath)
+    Assert-True ($scriptBytes.Length -ge 3 -and $scriptBytes[0] -eq 0xEF -and
+        $scriptBytes[1] -eq 0xBB -and $scriptBytes[2] -eq 0xBF) "$scriptPath has a UTF-8 BOM for Windows PowerShell"
+    $tokens = $null
+    $parseErrors = $null
+    [void][System.Management.Automation.Language.Parser]::ParseFile($fullScriptPath, [ref]$tokens, [ref]$parseErrors)
+    Assert-True ($parseErrors.Count -eq 0) "$scriptPath parses in Windows PowerShell"
+}
+Assert-True (([System.IO.File]::ReadAllText((Join-Path $repositoryRoot 'tools\start-step1-test.ps1'), [System.Text.Encoding]::UTF8)).Contains('private\r106-step1-test-config') -and
+    ([System.IO.File]::ReadAllText((Join-Path $repositoryRoot 'tools\start-step1-test.ps1'), [System.Text.Encoding]::UTF8)).Contains('-UserConfigDirectory $resolvedUserConfigDirectory')) `
+    'step-one UI entry uses the dedicated test configuration directory explicitly'
 [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.1')
 Assert-Throws { Get-ReleaseAssetName -RelativePath 'start-ui.cmd' } 'alpha.1 不接受 alpha.2 UI asset'
 Assert-True ((Get-ReleaseAssetName -RelativePath 'docs/连接配置.md') -ceq 'docs__connection-profile.md') `
@@ -366,6 +468,38 @@ try {
     Write-Utf8NoBom -Path $alpha3ManifestPath -Text ((ConvertTo-Json -InputObject $alpha3Manifest -Depth 8) + "`n")
     Assert-True ((Assert-ReleasePackageInventory -PackageRoot $alpha3PackageRoot -Version 'v0.1.0-alpha.3') -eq $null) `
         'alpha.3 合成目录和 identity asset 清单与显式包配置一致'
+
+    $alpha5PackageRoot = Join-Path $testRoot 'package-alpha5'
+    Copy-Item -LiteralPath $alpha3PackageRoot -Destination $alpha5PackageRoot -Recurse
+    [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.5')
+    $alpha5ManifestPath = Join-Path $alpha5PackageRoot 'manifest.json'
+    $alpha5Manifest = [System.IO.File]::ReadAllText($alpha5ManifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $alpha5ReadmePath = Join-Path $alpha5PackageRoot 'README.md'
+    Write-Utf8NoBom -Path $alpha5ReadmePath -Text '# WIREX Bridge v0.1.0-alpha.5 synthetic test package'
+    foreach ($relativePath in @('docs/R106_IPC第二版.md', 'docs/R106_配置迁移与测试.md', 'start-step1-test.cmd', 'start-step1-test.ps1', 'test-control.cmd', 'test-control.ps1')) {
+        $fullPath = Join-Path $alpha5PackageRoot $relativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+        $parent = Split-Path -Parent $fullPath
+        if (-not (Test-Path -LiteralPath $parent -PathType Container)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+        Write-Utf8NoBom -Path $fullPath -Text ('synthetic alpha.5 inventory fixture: ' + $relativePath)
+        $item = Get-Item -LiteralPath $fullPath
+        $alpha5Manifest.files += ,([pscustomobject]@{
+            path = $relativePath
+            asset_name = (Get-ReleaseAssetName -RelativePath $relativePath)
+            length_bytes = [long]$item.Length
+            sha256 = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            source = 'synthetic alpha.5 test fixture'
+        })
+    }
+    $alpha5ReadmeItem = Get-Item -LiteralPath $alpha5ReadmePath
+    $alpha5ReadmeRecord = @($alpha5Manifest.files | Where-Object { [string]$_.path -ceq 'README.md' })
+    if ($alpha5ReadmeRecord.Count -ne 1) { throw 'Synthetic alpha.5 manifest must contain one README record.' }
+    $alpha5ReadmeRecord[0].length_bytes = [long]$alpha5ReadmeItem.Length
+    $alpha5ReadmeRecord[0].sha256 = (Get-FileHash -LiteralPath $alpha5ReadmePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $alpha5Manifest.version = 'v0.1.0-alpha.5'
+    $alpha5Manifest.tag_candidate = 'v0.1.0-alpha.5'
+    Write-Utf8NoBom -Path $alpha5ManifestPath -Text ((ConvertTo-Json -InputObject $alpha5Manifest -Depth 8) + "`n")
+    Assert-True ((Assert-ReleasePackageInventory -PackageRoot $alpha5PackageRoot -Version 'v0.1.0-alpha.5') -eq $null) `
+        'alpha.5 synthetic folder and the six new package records match the alpha.5 profile'
     [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.1')
 
     $readmeFixture = Join-Path $packageRoot 'README.md'

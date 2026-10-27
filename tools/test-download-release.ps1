@@ -27,7 +27,7 @@ $script:releaseAssetRedirectHosts = @(
 )
 $script:assertionCount = 0
 $downloadProfiles = @{}
-foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4')) {
+foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5')) {
     $downloadProfiles[$tag] = [pscustomobject]@{
         Files = @(Get-ExpectedReleaseFiles -Tag $tag)
         Tests = @(Get-ExpectedReleaseTests -Tag $tag)
@@ -178,6 +178,15 @@ Assert-True (@($alpha4Manifest.build.passed_tests).Count -eq 35 -and
         [string]::Join('|', @($alpha3Manifest.build.passed_tests))) `
     'alpha.4 preserves all 35 alpha.3 C++ tests in the same order'
 Assert-Throws { Test-ManifestDocument -Manifest $alpha4Manifest -RequestedTag 'v0.1.0-alpha.3' } 'alpha.4 manifest is rejected for alpha.3 tag'
+$alpha5Manifest = New-TestManifest -Tag 'v0.1.0-alpha.5'
+$alpha5Validated = Test-ManifestDocument -Manifest $alpha5Manifest -RequestedTag 'v0.1.0-alpha.5'
+Assert-True ($alpha5Validated.Files.Count -eq 33) 'alpha.5 manifest contains the 27 alpha.4 files plus two guides and four test entry files'
+Assert-True (@($alpha5Manifest.build.passed_tests).Count -eq 36 -and
+    [string]::Join('|', @($alpha5Manifest.build.passed_tests[0..34])) -ceq
+        [string]::Join('|', @($alpha4Manifest.build.passed_tests)) -and
+    $alpha5Manifest.build.passed_tests[35] -ceq 'ui_control_protocol_v2_test') `
+    'alpha.5 manifest retains all 35 alpha.4 tests in order then appends the IPC v2 test'
+Assert-Throws { Test-ManifestDocument -Manifest $alpha5Manifest -RequestedTag 'v0.1.0-alpha.4' } 'alpha.5 manifest is rejected for alpha.4 tag'
 
 $invalid = New-TestManifest; $invalid.package_status = 'awaiting_root_audit'
 Assert-Throws { Test-ManifestDocument -Manifest $invalid -RequestedTag 'v0.1.0-alpha.1' } 'unreviewed package status is rejected'
@@ -217,6 +226,8 @@ $publishedAlpha3 = [pscustomobject]@{ tag_name='v0.1.0-alpha.3'; draft=$false; p
 Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha3) -RequestedTag 'v0.1.0-alpha.3').tag_name -ceq 'v0.1.0-alpha.3') 'alpha.3 is selected by exact tag'
 $publishedAlpha4 = [pscustomobject]@{ tag_name='v0.1.0-alpha.4'; draft=$false; prerelease=$true }
 Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha4) -RequestedTag 'v0.1.0-alpha.4').tag_name -ceq 'v0.1.0-alpha.4') 'alpha.4 is selected by exact tag'
+$publishedAlpha5 = [pscustomobject]@{ tag_name='v0.1.0-alpha.5'; draft=$false; prerelease=$true }
+Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha5) -RequestedTag 'v0.1.0-alpha.5').tag_name -ceq 'v0.1.0-alpha.5') 'alpha.5 is selected by exact tag'
 
 $goodAssets = New-TestAssetList -Manifest $validManifest
 $release = [pscustomobject]@{ assets=$goodAssets; target_commitish=[string]$validManifest.source.commit }
@@ -241,6 +252,15 @@ $alpha4AssetMap = Resolve-ReleaseAssetInventory -Release $alpha4Release -Validat
 Assert-True ($alpha4AssetMap.Count -eq 29 -and $alpha4AssetMap.ContainsKey('download-release.ps1') -and
     $alpha4AssetMap.ContainsKey('docs__bm-call-identity.md')) `
     'alpha.4 remote inventory keeps 27 package files, manifest and helper'
+$alpha5GoodAssets = New-TestAssetList -Manifest $alpha5Manifest
+$alpha5Release = [pscustomobject]@{ assets=$alpha5GoodAssets; target_commitish=[string]$alpha5Manifest.source.commit }
+$alpha5AssetMap = Resolve-ReleaseAssetInventory -Release $alpha5Release -ValidatedManifest $alpha5Validated
+Assert-True ($alpha5AssetMap.Count -eq 35 -and $alpha5AssetMap.ContainsKey('download-release.ps1') -and
+    $alpha5AssetMap.ContainsKey('docs__r106-ipc-v2.md') -and
+    $alpha5AssetMap.ContainsKey('docs__r106-profile-migration-test.md') -and
+    $alpha5AssetMap.ContainsKey('test-control.cmd') -and $alpha5AssetMap.ContainsKey('test-control.ps1') -and
+    $alpha5AssetMap.ContainsKey('start-step1-test.cmd') -and $alpha5AssetMap.ContainsKey('start-step1-test.ps1')) `
+    'alpha.5 remote inventory has 33 package files, manifest and downloader helper'
 $wrongTarget = [pscustomobject]@{ target_commitish='main' }
 Assert-Throws { Assert-ReleaseTargetCommitish -Release $wrongTarget -SourceCommit ([string]$validManifest.source.commit) } 'branch target is rejected when it differs from the source commit'
 Assert-Throws { Assert-ReleaseTargetCommitish -Release ([pscustomobject]@{ target_commitish=('f' * 40) }) -SourceCommit ([string]$validManifest.source.commit) } 'release target commit mismatch is rejected'
@@ -298,6 +318,15 @@ Assert-True (Test-BuildProvenanceDocument -Provenance $alpha4Provenance -Validat
 $alpha4Provenance.tests = @($alpha4Provenance.tests | Select-Object -SkipLast 1)
 Assert-Throws { Test-BuildProvenanceDocument -Provenance $alpha4Provenance -ValidatedManifest $alpha4Validated } `
     'alpha.4 provenance missing a test is rejected'
+$alpha5Provenance = $provenance | Select-Object *
+$alpha5Provenance.tests = @((Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.5') | ForEach-Object {
+    [pscustomobject]@{ name=[string]$_; result='passed'; exit_code=0 }
+})
+Assert-True (Test-BuildProvenanceDocument -Provenance $alpha5Provenance -ValidatedManifest $alpha5Validated) `
+    'alpha.5 provenance records the 36-test order'
+$alpha5Provenance.tests = @($alpha5Provenance.tests | Select-Object -SkipLast 1)
+Assert-Throws { Test-BuildProvenanceDocument -Provenance $alpha5Provenance -ValidatedManifest $alpha5Validated } `
+    'alpha.5 provenance missing the IPC v2 test is rejected'
 
 $temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('wirex-release-download-offline-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $temporaryRoot -ErrorAction Stop | Out-Null
@@ -325,7 +354,7 @@ try {
 
 . (Join-Path $PSScriptRoot 'package-release.ps1')
 . (Join-Path $PSScriptRoot 'publish-release.ps1')
-foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4')) {
+foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5')) {
     $packageProfile = Set-ReleaseVersion -Version $tag
     $packagePaths = @($packageProfile.PackageFiles | Where-Object { $_ -cne 'manifest.json' })
     $downloadFiles = @($downloadProfiles[$tag].Files)

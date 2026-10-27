@@ -4507,7 +4507,9 @@ void print_bm_bridge_help()
         L"状态报告按成功提交的 PCM 记录两条音频路径增益前后的统计和削波样本数。\n"
         L"Master 支持 IPv4 字面量或主机名；手工密码在控制台隐藏输入，预设从私有 UTF-8 文件读取。\n"
         L"两种密码入口只接受可打印 ASCII；手工隐藏输入允许空格。\n"
-        L"--ui-pipe 仅供桌面 UI 使用；必须提供完整配置或预设、显式密码文件、状态文件与匿名 stdin 管道，只接受 Q 换行或 EOF 停止。\n"
+        L"--ui-pipe 仅供桌面 UI 使用；必须提供完整配置或预设、显式密码文件、状态文件与匿名 stdin 管道。默认控制版本 1，只接受 Q 换行或 EOF 停止。\n"
+        L"--ui-control-version 2 必须与 --ui-pipe 一起使用，采用 schema_version=2 的有界 JSONL；首阶段支持 hello/status/shutdown。\n"
+        L"--control-diagnostic --ui-pipe --ui-control-version 2 仅测试控制协议；只接匿名 stdin/stdout 管道，不访问 BM、串口或音频设备。\n"
         L"  --hri-lcd-identity-candidate --port COMn --body-file ABS --file WAV --report-file ABS --field destination|source|local --callsign ASCII\n"
         L"                               单次本地WAV实验，仅替换一个呼号字段；1..8个无空格可见ASCII字符且含英文字母。\n"
         L"                               不连接BM；报告中的电台LCD显示状态保持 unknown。\n");
@@ -4612,7 +4614,7 @@ enum class UiPipeInspection {
     failed
 };
 
-UiPipeInspection inspect_ui_pipe(HANDLE handle) noexcept
+UiPipeInspection inspect_ui_pipe(HANDLE handle, std::uint32_t control_version) noexcept
 {
     std::array<char, 4U> peeked{};
     DWORD bytes_read = 0U;
@@ -4626,11 +4628,93 @@ UiPipeInspection inspect_ui_pipe(HANDLE handle) noexcept
         return UiPipeInspection::failed;
     }
     if (bytes_available == 0U) return UiPipeInspection::waiting;
+    if (control_version == 2U) return UiPipeInspection::waiting;
     wirex::ui_control::Parser parser;
     const auto result = parser.feed(std::string_view(peeked.data(), bytes_read));
     if (result == wirex::ui_control::Result::shutdown) return UiPipeInspection::shutdown_requested;
     if (result == wirex::ui_control::Result::invalid) return UiPipeInspection::invalid_input;
     return UiPipeInspection::waiting;
+}
+
+int run_control_diagnostic()
+{
+    const HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+    const HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (input == nullptr || input == INVALID_HANDLE_VALUE || output == nullptr || output == INVALID_HANDLE_VALUE ||
+        GetFileType(input) != FILE_TYPE_PIPE || GetFileType(output) != FILE_TYPE_PIPE) {
+        (void)bm_stderr(L"--control-diagnostic 需要匿名 stdin/stdout 管道；未访问网络或设备。\n");
+        return 2;
+    }
+
+    wirex::bounded_pipe_writer::Writer writer(output);
+    if (!writer.enable_nonblocking()) {
+        (void)bm_stderr(L"无法将控制诊断 stdout 设置为有界非阻塞管道；未访问网络或设备。\n");
+        return 2;
+    }
+
+    const std::string run_id = make_bridge_run_id();
+    wirex::ui_control::Dispatcher dispatcher(run_id, true);
+    if (!writer.write_line(dispatcher.ready_line(GetCurrentProcessId()))) return 2;
+
+    wirex::ui_control::JsonLineParser parser;
+    wirex::ui_control::StatusSnapshot snapshot{};
+    snapshot.mode = "diagnostic";
+    snapshot.status = "running";
+    snapshot.phase = "protocol_diagnostic";
+    snapshot.bm_state = "not_started";
+    snapshot.hri_phase = "not_started";
+    snapshot.radio_state = "unknown";
+    snapshot.diagnostic = true;
+
+    const ULONGLONG deadline = GetTickCount64() + 10000U;
+    std::array<char, 4096U> bytes{};
+    while (GetTickCount64() < deadline) {
+        DWORD available = 0U;
+        if (PeekNamedPipe(input, nullptr, 0U, nullptr, &available, nullptr) == FALSE) {
+            const DWORD error = GetLastError();
+            if (error == ERROR_BROKEN_PIPE || error == ERROR_NO_DATA || error == ERROR_HANDLE_EOF ||
+                error == ERROR_PIPE_NOT_CONNECTED) {
+                if (parser.eof_at_frame_boundary()) return 0;
+                (void)writer.write_line(dispatcher.reject("partial_frame_at_eof").json_line);
+                return 2;
+            }
+            (void)writer.write_line(dispatcher.reject("input_pipe_read_failed").json_line);
+            return 2;
+        }
+        if (available == 0U) {
+            Sleep(1U);
+            continue;
+        }
+
+        const DWORD wanted = std::min<DWORD>(available, static_cast<DWORD>(bytes.size()));
+        DWORD actual = 0U;
+        if (ReadFile(input, bytes.data(), wanted, &actual, nullptr) == FALSE || actual == 0U || actual > wanted) {
+            const DWORD error = GetLastError();
+            if (error == ERROR_BROKEN_PIPE || error == ERROR_NO_DATA || error == ERROR_HANDLE_EOF ||
+                error == ERROR_PIPE_NOT_CONNECTED || actual == 0U) {
+                if (parser.eof_at_frame_boundary()) return 0;
+                (void)writer.write_line(dispatcher.reject("partial_frame_at_eof").json_line);
+                return 2;
+            }
+            (void)writer.write_line(dispatcher.reject("input_pipe_read_failed").json_line);
+            return 2;
+        }
+
+        std::vector<std::string> lines;
+        const auto feed = parser.feed(std::string_view(bytes.data(), actual), lines);
+        if (feed == wirex::ui_control::JsonLineStatus::invalid) {
+            (void)writer.write_line(dispatcher.reject("invalid_or_oversized_frame").json_line);
+            return 2;
+        }
+        for (const auto& line : lines) {
+            const auto response = dispatcher.handle(line, snapshot);
+            if (!writer.write_line(response.json_line)) return 2;
+            if (response.shutdown_requested) return 0;
+        }
+    }
+
+    (void)writer.write_line(dispatcher.reject("diagnostic_timeout").json_line);
+    return 2;
 }
 
 bool append_bridge_status(std::ofstream& file, std::string_view event, std::uint64_t elapsed_ms,
@@ -4769,6 +4853,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                   wirex::bm_test_profile::TxPolicy tx_policy,
                   bool manual_ptt,
                   bool ui_pipe,
+                  std::uint32_t ui_control_version,
                   std::uint32_t radio_playback_gain_milli,
                   std::uint32_t mic_transmit_gain_milli,
                   BmBridgeCounters counters,
@@ -4776,6 +4861,15 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
 
 int bm_bridge_main(int argc, wchar_t* argv[])
 {
+    if (argc > 1 && std::wstring_view(argv[1]) == L"--control-diagnostic") {
+        if (argc == 5 && std::wstring_view(argv[2]) == L"--ui-pipe" &&
+            std::wstring_view(argv[3]) == L"--ui-control-version" &&
+            std::wstring_view(argv[4]) == L"2") {
+            return run_control_diagnostic();
+        }
+        (void)bm_stderr(L"用法：--control-diagnostic --ui-pipe --ui-control-version 2；只使用匿名 stdin/stdout 管道，不读取配置，不连接网络或设备。\n");
+        return 2;
+    }
     if (argc == 2 && std::wstring_view(argv[1]) == L"--help") {
         print_bm_bridge_help();
         return 0;
@@ -4804,6 +4898,8 @@ int bm_bridge_main(int argc, wchar_t* argv[])
     bool listen_only_seen = false;
     bool ui_pipe = false;
     bool ui_pipe_seen = false;
+    bool ui_control_version_seen = false;
+    std::uint32_t ui_control_version = 1U;
     bool preset_seen = false;
     bool password_file_seen = false;
     bool wavein_endpoint_seen = false;
@@ -4846,6 +4942,17 @@ int bm_bridge_main(int argc, wchar_t* argv[])
             ui_pipe = true;
             ui_pipe_seen = true;
             ++index;
+            continue;
+        }
+        if (option == L"--ui-control-version") {
+            if (ui_control_version_seen || index + 1 >= argc ||
+                (std::wstring_view(argv[index + 1]) != L"1" && std::wstring_view(argv[index + 1]) != L"2")) {
+                (void)bm_stderr(L"--ui-control-version 只能指定一次，并且取值必须是 1 或 2。\n");
+                return 2;
+            }
+            ui_control_version = std::wstring_view(argv[index + 1]) == L"2" ? 2U : 1U;
+            ui_control_version_seen = true;
+            index += 2;
             continue;
         }
         if (index + 1 >= argc) {
@@ -4969,6 +5076,10 @@ int bm_bridge_main(int argc, wchar_t* argv[])
     }
     if (ui_pipe && (manual_ptt || !password_file_seen || (!preset_seen && !all_manual_fields))) {
         (void)bm_stderr(L"--ui-pipe 需要完整预设或九项手工连接配置、显式密码文件，并且不能启用键盘诊断输入。\n");
+        return 2;
+    }
+    if (ui_control_version_seen && !ui_pipe) {
+        (void)bm_stderr(L"--ui-control-version 只能与 --ui-pipe 一起使用。\n");
         return 2;
     }
     if (password_file_seen && !password_file_path.is_absolute()) {
@@ -5120,7 +5231,7 @@ int bm_bridge_main(int argc, wchar_t* argv[])
     }
 
     if (ui_pipe) {
-        const auto inspection = inspect_ui_pipe(stdin_handle);
+        const auto inspection = inspect_ui_pipe(stdin_handle, ui_control_version);
         if (inspection == UiPipeInspection::shutdown_requested) return 0;
         if (inspection == UiPipeInspection::invalid_input) {
             (void)bm_stderr(L"UI 控制管道只接受单独的 Q 换行或 EOF；没有启动设备。\n");
@@ -5219,7 +5330,7 @@ int bm_bridge_main(int argc, wchar_t* argv[])
     return run_bm_bridge(argv[3], body_path, input_id, output_id,
                          expected_wavein_endpoint_id, expected_waveout_endpoint_id, endpoint,
                          std::move(profile), call_template, receive_filter, tx_policy, manual_ptt,
-                         ui_pipe,
+                         ui_pipe, ui_control_version,
                          radio_playback_gain_milli, mic_transmit_gain_milli,
                          std::move(counters), status_file, control_scope);
 }
@@ -5234,6 +5345,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                   wirex::bm_test_profile::TxPolicy tx_policy,
                   bool manual_ptt,
                   bool ui_pipe,
+                  std::uint32_t ui_control_version,
                   std::uint32_t radio_playback_gain_milli,
                   std::uint32_t mic_transmit_gain_milli,
                   BmBridgeCounters counters,
@@ -5255,6 +5367,16 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
     ProfileSecretGuard secret_guard{profile};
     const HANDLE ui_pipe_handle = ui_pipe ? GetStdHandle(STD_INPUT_HANDLE) : INVALID_HANDLE_VALUE;
     wirex::ui_control::Parser ui_control_parser;
+    wirex::ui_control::JsonLineParser ui_control_json_parser;
+    wirex::ui_control::Dispatcher ui_control_dispatcher(counters.run_id, false);
+    wirex::bounded_pipe_writer::Writer ui_control_writer(GetStdHandle(STD_OUTPUT_HANDLE));
+    if (ui_pipe && ui_control_version == 2U) {
+        if (!ui_control_writer.enable_nonblocking() ||
+            !ui_control_writer.write_line(ui_control_dispatcher.ready_line(GetCurrentProcessId()))) {
+            (void)bm_stderr(L"无法发出 v2 control_ready；未打开 HRI、音频或BM传输。\n");
+            return 2;
+        }
+    }
     PttGate ptt_gate;
     std::function<void(PttAction, std::string_view)> handle_ptt_gate_action;
     std::function<void()> synchronize_ptt_gate;
@@ -5337,7 +5459,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
     }
 
     if (ui_pipe) {
-        const auto inspection = inspect_ui_pipe(ui_pipe_handle);
+        const auto inspection = inspect_ui_pipe(ui_pipe_handle, ui_control_version);
         if (inspection == UiPipeInspection::shutdown_requested) return 0;
         if (inspection == UiPipeInspection::invalid_input) {
             (void)bm_stderr(L"UI 控制管道只接受单独的 Q 换行或 EOF；没有启动设备。\n");
@@ -5363,7 +5485,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
     wirex::hri_session::Snapshot hri_state{};
     std::wstring device_path;
     if (ui_pipe) {
-        const auto inspection = inspect_ui_pipe(ui_pipe_handle);
+        const auto inspection = inspect_ui_pipe(ui_pipe_handle, ui_control_version);
         if (inspection == UiPipeInspection::shutdown_requested) {
             bm_session.stop(0U);
             return 0;
@@ -6261,37 +6383,92 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                     const DWORD error = GetLastError();
                     if (error == ERROR_BROKEN_PIPE || error == ERROR_NO_DATA || error == ERROR_HANDLE_EOF ||
                         error == ERROR_PIPE_NOT_CONNECTED) {
-                        (void)ui_control_parser.eof();
-                        begin_shutdown("ui_control_eof");
+                        if (ui_control_version == 2U && !ui_control_json_parser.eof_at_frame_boundary()) {
+                            (void)ui_control_writer.write_line(
+                                ui_control_dispatcher.reject("partial_frame_at_eof").json_line);
+                            set_failure("ui_control_partial_frame_at_eof");
+                            begin_shutdown("ui_control_partial_frame_at_eof");
+                        } else {
+                            (void)ui_control_parser.eof();
+                            begin_shutdown("ui_control_eof");
+                        }
                     } else {
                         set_failure("ui_control_pipe_poll_failed");
                         begin_shutdown("ui_control_pipe_poll_failed");
                     }
                 } else if (available != 0U) {
-                    std::array<char, 16U> command_bytes{};
+                    std::array<char, 4096U> command_bytes{};
                     DWORD actual = 0U;
                     const DWORD wanted = std::min<DWORD>(available, static_cast<DWORD>(command_bytes.size()));
                     const BOOL read_succeeded = ReadFile(ui_pipe_handle, command_bytes.data(), wanted, &actual, nullptr);
                     if (read_succeeded != FALSE && actual == 0U) {
-                        (void)ui_control_parser.eof();
-                        begin_shutdown("ui_control_eof");
+                        if (ui_control_version == 2U && !ui_control_json_parser.eof_at_frame_boundary()) {
+                            (void)ui_control_writer.write_line(
+                                ui_control_dispatcher.reject("partial_frame_at_eof").json_line);
+                            set_failure("ui_control_partial_frame_at_eof");
+                            begin_shutdown("ui_control_partial_frame_at_eof");
+                        } else {
+                            (void)ui_control_parser.eof();
+                            begin_shutdown("ui_control_eof");
+                        }
                     } else if (read_succeeded == FALSE || actual > wanted) {
                         const DWORD error = GetLastError();
                         if (error == ERROR_BROKEN_PIPE || error == ERROR_NO_DATA || error == ERROR_HANDLE_EOF ||
                             error == ERROR_PIPE_NOT_CONNECTED) {
-                            (void)ui_control_parser.eof();
-                            begin_shutdown("ui_control_eof");
+                            if (ui_control_version == 2U && !ui_control_json_parser.eof_at_frame_boundary()) {
+                                (void)ui_control_writer.write_line(
+                                    ui_control_dispatcher.reject("partial_frame_at_eof").json_line);
+                                set_failure("ui_control_partial_frame_at_eof");
+                                begin_shutdown("ui_control_partial_frame_at_eof");
+                            } else {
+                                (void)ui_control_parser.eof();
+                                begin_shutdown("ui_control_eof");
+                            }
                         } else {
                             set_failure("ui_control_pipe_read_failed");
                             begin_shutdown("ui_control_pipe_read_failed");
                         }
-                    } else {
+                    } else if (ui_control_version == 1U) {
                         const auto result = ui_control_parser.feed(std::string_view(command_bytes.data(), actual));
                         if (result == wirex::ui_control::Result::shutdown) {
                             begin_shutdown("ui_q_requested");
                         } else if (result == wirex::ui_control::Result::invalid) {
                             set_failure("ui_control_input_invalid");
                             begin_shutdown("ui_control_input_invalid");
+                        }
+                    } else {
+                        std::vector<std::string> control_lines;
+                        const auto feed = ui_control_json_parser.feed(
+                            std::string_view(command_bytes.data(), actual), control_lines);
+                        if (feed == wirex::ui_control::JsonLineStatus::invalid) {
+                            (void)ui_control_writer.write_line(
+                                ui_control_dispatcher.reject("invalid_or_oversized_frame").json_line);
+                            set_failure("ui_control_frame_invalid");
+                            begin_shutdown("ui_control_frame_invalid");
+                        } else {
+                            for (const auto& control_line : control_lines) {
+                                wirex::ui_control::StatusSnapshot snapshot{};
+                                snapshot.mode = "running";
+                                snapshot.status = failed ? "failed" : (shutdown_requested ? "stopping" : "running");
+                                snapshot.phase = shutdown_requested ? "stopping" : (hri_ready ? "ready" : "starting");
+                                snapshot.media_seq = counters.status_sequence;
+                                snapshot.bm_state = bm_state_name(bm_session.snapshot().state);
+                                snapshot.hri_phase = hri_phase_name(hri_state.phase);
+                                snapshot.hri_ready = hri_ready;
+                                snapshot.serial_open = port.valid();
+                                snapshot.wavein_open = radio_input_open;
+                                snapshot.waveout_open = radio_output_open;
+                                const auto response = ui_control_dispatcher.handle(control_line, snapshot);
+                                if (!ui_control_writer.write_line(response.json_line)) {
+                                    set_failure("ui_control_stdout_write_failed");
+                                    begin_shutdown("ui_control_stdout_write_failed");
+                                    break;
+                                }
+                                if (response.shutdown_requested) {
+                                    begin_shutdown("ui_shutdown_requested");
+                                    break;
+                                }
+                            }
                         }
                     }
                 }

@@ -169,6 +169,7 @@ function New-TestSupervisor {
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('wirex-supervisor-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tempRoot | Out-Null
 $script:testPassed = $false
+$script:independentFixtureProcess = $null
 try {
     $fixturePath = Join-Path $tempRoot 'child-fixture.ps1'
     $fixtureText = @'
@@ -260,6 +261,33 @@ exit 17
     $forced.Dispose()
     Assert-OwnedHandlesClosed $forced
 
+    # A full child stdin pipe must never pin the lifecycle lock; stop closes the writer,
+    # waits for the bounded grace, and closes only this supervisor's owned job.
+    $blocked = New-TestSupervisor
+    $blocked.Start($powershell, $hangArgs, $tempRoot, 2)
+    Wait-Until { $blocked.DiagnosticTail.Contains('FIXTURE-READY') } 4000 'non-reading child ready'
+    Assert-True ($blocked.SetControlRunId('fixture-run')) 'v2 test child must accept its run ID'
+    $script:independentFixtureProcess = Start-Process -FilePath $powershell -ArgumentList @(
+        '-NoLogo','-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 60') -WindowStyle Hidden -PassThru
+    $writeWatch = [Diagnostics.Stopwatch]::StartNew()
+    $writeFailed = $false
+    for ($index = 0; $index -lt 10000; $index++) {
+        if (-not $blocked.SendControlCommand([guid]::NewGuid().ToString('D'), 'status')) {
+            $writeFailed = $true
+            break
+        }
+    }
+    Assert-True $writeFailed 'a non-reading child must eventually fill the nonblocking stdin pipe and return a send failure'
+    Assert-True ($writeWatch.ElapsedMilliseconds -lt 5000) 'control writes to a full pipe must remain bounded'
+    $blockedStopWatch = [Diagnostics.Stopwatch]::StartNew()
+    $blockedStop = $blocked.StopAsync(100)
+    Assert-True $blockedStop.Wait(5000) 'StopAsync must finish after the non-reading child stdin pipe fills'
+    Assert-True $blocked.HasExited 'the supervisor must stop its own child after the bounded grace period'
+    Assert-True (-not $script:independentFixtureProcess.HasExited) 'stopping the supervisor must leave an unrelated process running'
+    Assert-True ($blockedStopWatch.ElapsedMilliseconds -lt 5000) 'StopAsync after stdin backpressure must remain bounded'
+    $blocked.Dispose()
+    Assert-OwnedHandlesClosed $blocked
+
     # A completed failed attempt may be retried if the process is still running.
     $retry = New-TestSupervisor
     $retry.Start($powershell, $hangArgs, $tempRoot)
@@ -332,6 +360,11 @@ exit 17
 }
 finally {
     $cleanupFailures = New-Object System.Collections.ArrayList
+    if ($script:independentFixtureProcess -and -not $script:independentFixtureProcess.HasExited) {
+        try { Stop-Process -Id $script:independentFixtureProcess.Id -Force -ErrorAction Stop }
+        catch { [void]$cleanupFailures.Add($_.Exception.Message) }
+    }
+    if ($script:independentFixtureProcess) { $script:independentFixtureProcess.Dispose() }
     foreach ($supervisor in $script:testSupervisors) {
         try { $supervisor.Dispose() }
         catch { [void]$cleanupFailures.Add($_.Exception.Message) }

@@ -175,7 +175,8 @@ try {
         'src\wave_file.cpp',
         'src\pcm_gain.cpp',
         'src\console_lifecycle.cpp',
-        'src\session_report.cpp'
+        'src\session_report.cpp',
+        'src\ui_control_protocol.cpp'
     )
     $upstreamSources = @($manifest.files | Where-Object {
         [string]$_.path -match '^upstream/(imbe_vocoder/.*\.cc|mbe/.*\.cpp)$'
@@ -237,7 +238,8 @@ try {
         @{ Name='bm_test_profile_test'; Source='tests\bm_test_profile_test.cpp' },
         @{ Name='bm_connection_config_test'; Source='tests\bm_connection_config_test.cpp' },
         @{ Name='hri_stream_session_test'; Source='tests\hri_stream_session_test.cpp' },
-        @{ Name='bm_bridge_loopback_test'; Source='tests\bm_bridge_loopback_test.cpp' }
+        @{ Name='bm_bridge_loopback_test'; Source='tests\bm_bridge_loopback_test.cpp' },
+        @{ Name='ui_control_protocol_v2_test'; Source='tests\ui_control_protocol_v2_test.cpp' }
     )
     $testObjects = @()
     foreach ($test in $testSpecs) {

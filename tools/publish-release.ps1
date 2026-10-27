@@ -37,6 +37,7 @@ $script:alpha3TestNames = @(
     'bm_voice_pipeline_test', 'bm_test_profile_test', 'bm_connection_config_test', 'hri_stream_session_test',
     'bm_bridge_loopback_test'
 )
+$script:alpha5TestNames = @($script:alpha3TestNames + 'ui_control_protocol_v2_test')
 
 function Set-PublishProfile {
     param([Parameter(Mandatory=$true)][string]$Tag)
@@ -117,7 +118,22 @@ function Set-PublishProfile {
             $script:expectedDirectories = @($alpha3.Directories)
             $script:expectedTestNames = @($alpha3.TestNames)
         }
-        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, and v0.1.0-alpha.4 release profiles are supported.' }
+        'v0.1.0-alpha.5' {
+            $alpha4 = Set-PublishProfile -Tag 'v0.1.0-alpha.4'
+            $assetMap = [ordered]@{}
+            foreach ($path in $alpha4.AssetPathMap.Keys) { $assetMap[$path] = $alpha4.AssetPathMap[$path] }
+            $assetMap['docs/R106_IPC第二版.md'] = 'docs__r106-ipc-v2.md'
+            $assetMap['docs/R106_配置迁移与测试.md'] = 'docs__r106-profile-migration-test.md'
+            $assetMap['start-step1-test.cmd'] = 'start-step1-test.cmd'
+            $assetMap['start-step1-test.ps1'] = 'start-step1-test.ps1'
+            $assetMap['test-control.cmd'] = 'test-control.cmd'
+            $assetMap['test-control.ps1'] = 'test-control.ps1'
+            $script:publishTag = $Tag
+            $script:assetPathMap = $assetMap
+            $script:expectedDirectories = @($alpha4.Directories)
+            $script:expectedTestNames = $script:alpha5TestNames
+        }
+        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, and v0.1.0-alpha.5 release profiles are supported.' }
     }
     return [pscustomobject]@{
         Tag = $script:publishTag

@@ -21,6 +21,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $script:packageRoot = [System.IO.Path]::GetFullPath($PSScriptRoot)
+$script:userConfigModule = Join-Path $PSScriptRoot 'bridge-user-config.psm1'
+if (-not [System.IO.File]::Exists($script:userConfigModule)) { throw '缺少本机配置模块 bridge-user-config.psm1。' }
+Import-Module -Name $script:userConfigModule -Force
 $script:expectedBodyLength = 100
 $script:expectedBodySha256 = '82e0085ccaccb769a83362c5b335ce6b9a0e3ae93afdf2ad4f46eb81f908577f'
 $script:nativeInvoked = $false
@@ -383,45 +386,13 @@ function ConvertTo-ValidatedConnectionProfile {
         }
     }
     if ($null -ne $TransmitEnabled) { $validated.transmit_enabled = [bool]$TransmitEnabled }
-    return [pscustomobject]$validated
+    return ConvertTo-BridgeUserConnectionProfile -Connection $Connection -Devices $Devices `
+        -Receive $Receive -TransmitEnabled $TransmitEnabled -AllowTextNumbers:$AllowTextNumbers
 }
 
 function Read-ConnectionProfile {
     param([Parameter(Mandatory=$true)][string]$Path)
-    $fullPath = [System.IO.Path]::GetFullPath($Path)
-    if (-not [System.IO.File]::Exists($fullPath)) { return $null }
-    if ((New-Object System.IO.FileInfo($fullPath)).Length -gt 65536) { throw '连接配置文件超过 64 KiB 上限。' }
-    try { $json = [System.IO.File]::ReadAllText($fullPath, [System.Text.Encoding]::UTF8) }
-    catch { throw "无法读取连接配置文件：$fullPath" }
-    Assert-JsonObjectKeysUnique -JsonText $json
-    try { $document = ConvertFrom-Json -InputObject $json -ErrorAction Stop }
-    catch { throw "连接配置 JSON 无效：$fullPath" }
-    $expectedNames = @('schema_version', 'connection', 'devices', 'receive', 'transmit_enabled')
-    $requiredNames = @('schema_version', 'connection', 'devices')
-    $actualNames = @($document.PSObject.Properties | ForEach-Object { [string]$_.Name })
-    if ($actualNames.Count -lt $requiredNames.Count -or $actualNames.Count -gt $expectedNames.Count) {
-        throw '连接配置字段不完整或包含未知字段。'
-    }
-    foreach ($name in $actualNames) {
-        if ($expectedNames -cnotcontains $name) { throw "连接配置包含未知字段：$name" }
-    }
-    foreach ($name in $requiredNames) {
-        if ($actualNames -cnotcontains $name) { throw "连接配置缺少字段：$name" }
-    }
-    $version = ConvertTo-ProfileUnsigned -Value $document.schema_version -Label 'schema_version' -Maximum 1
-    if ($version -ne 1) { throw '连接配置 schema_version 只支持 1。' }
-    $arguments = @{ Connection = $document.connection; Devices = $document.devices }
-    $receiveProperty = $document.PSObject.Properties['receive']
-    if ($null -ne $receiveProperty) {
-        if ($null -eq $receiveProperty.Value) { throw 'receive 存在时必须是完整对象。' }
-        $arguments.Receive = $receiveProperty.Value
-    }
-    $transmitProperty = $document.PSObject.Properties['transmit_enabled']
-    if ($null -ne $transmitProperty) {
-        if ($transmitProperty.Value -isnot [bool]) { throw 'transmit_enabled 必须是 JSON 布尔值。' }
-        $arguments.TransmitEnabled = $transmitProperty.Value
-    }
-    return ConvertTo-ValidatedConnectionProfile @arguments
+    return Read-BridgeUserConnectionProfile -Path $Path
 }
 
 function Read-ConnectionPrompt {
@@ -454,23 +425,7 @@ function Read-ManualConnectionProfile {
 
 function Write-ConnectionProfile {
     param([Parameter(Mandatory=$true)][string]$Path, [Parameter(Mandatory=$true)][object]$Profile)
-    $fullPath = [System.IO.Path]::GetFullPath($Path)
-    $directory = [System.IO.Path]::GetDirectoryName($fullPath)
-    if (-not [System.IO.Directory]::Exists($directory)) { throw "连接配置目录不存在：$directory" }
-    $temporaryPath = $fullPath + '.tmp-' + [guid]::NewGuid().ToString('N')
-    $backupPath = $fullPath + '.bak-' + [guid]::NewGuid().ToString('N')
-    $content = (ConvertTo-Json -InputObject $Profile -Depth 5) + "`n"
-    try {
-        [System.IO.File]::WriteAllText($temporaryPath, $content, (New-Object System.Text.UTF8Encoding($false)))
-        if ([System.IO.File]::Exists($fullPath)) {
-            [System.IO.File]::Replace($temporaryPath, $fullPath, $backupPath)
-        } else {
-            [System.IO.File]::Move($temporaryPath, $fullPath)
-        }
-    } finally {
-        if ([System.IO.File]::Exists($temporaryPath)) { [System.IO.File]::Delete($temporaryPath) }
-        if ([System.IO.File]::Exists($backupPath)) { [System.IO.File]::Delete($backupPath) }
-    }
+    Write-BridgeUserConnectionProfile -Path $Path -Profile $Profile
 }
 
 function Resolve-ConnectionProfilePath {
@@ -909,6 +864,7 @@ try {
     if ($BodyFile) { $bodySource = $BodyFile } else { $bodySource = Join-Path $script:packageRoot 'private\device-y.bin' }
     $body = Test-ApprovedBody -Path $bodySource
     $manualProfile = $null
+    $manualRuntimeProfile = $null
     $manualProfilePath = ''
     $manualProfileWasCreated = $false
     if ($selectedPreset -eq 'manual') {
@@ -919,6 +875,7 @@ try {
             $manualProfile = Read-ManualConnectionProfile
             $manualProfileWasCreated = $true
         }
+        $manualRuntimeProfile = Get-BridgeLegacyRuntimeProfile -Profile $manualProfile
     }
     $audioSettingsPath = Resolve-AudioSettingsPath -Path $AudioSettingsPath
     $radioPlaybackGainWasBound = $PSBoundParameters.ContainsKey('RadioPlaybackGain')
@@ -992,11 +949,7 @@ try {
             -SerialWasPrompted:$script:serialSelectionWasManual `
             -WaveInWasPrompted:$script:waveInSelectionWasManual `
             -WaveOutWasPrompted:$script:waveOutSelectionWasManual
-        if ($profileChanged) {
-            $profileArguments = @{ Connection = $manualProfile.connection; Devices = $manualProfile.devices }
-            if ($null -ne $manualProfile.PSObject.Properties['receive']) { $profileArguments.Receive = $manualProfile.receive }
-            if ($null -ne $manualProfile.PSObject.Properties['transmit_enabled']) { $profileArguments.TransmitEnabled = $manualProfile.transmit_enabled }
-            $manualProfile = ConvertTo-ValidatedConnectionProfile @profileArguments
+        if ($profileChanged -and $manualProfileWasCreated) {
             Write-ConnectionProfile -Path $manualProfilePath -Profile $manualProfile
         }
     }
@@ -1027,8 +980,8 @@ try {
         Write-Host '连接后在电台扬声器收听 BM 组呼，按 Q 停止并退出。'
     } elseif ($selectedPreset -eq 'parrot-cn' -or $selectedPreset -eq 'parrot-global') {
         Write-Host '连接后按住手咪讲话；松开后等待 BM 回声。按 Q 停止并退出。'
-    } elseif ($manualProfile.connection.call_kind -ceq 'group' -and
-              $manualProfile.connection.destination_id -in @(91, 46001)) {
+    } elseif ($manualRuntimeProfile.connection.call_kind -ceq 'group' -and
+              $manualRuntimeProfile.connection.destination_id -in @(91, 46001)) {
         Write-Host '连接后在电台扬声器收听 BM 组呼，按 Q 停止并退出。'
     } else {
         Write-Host '连接后按住手咪讲话；松开结束本次讲话。按 Q 停止并退出。'
@@ -1050,13 +1003,13 @@ try {
     if ($selectedPreset -ne 'manual') {
         $arguments += @('--test-preset', $selectedPreset, '--password-file', $passwordPath)
     } else {
-        $arguments += Get-ProfileConnectionArgs -Profile $manualProfile
+        $arguments += Get-ProfileConnectionArgs -Profile $manualRuntimeProfile
         if ($passwordPath) { $arguments += @('--password-file', $passwordPath) }
     }
     if ($ManualPtt) { $arguments += '--manual-ptt' }
     if ($PrepareOnly) {
         if ($selectedPreset -ne 'manual') { throw '桌面 UI 只接受完整手工连接配置，不使用固定测试预设。' }
-        $arguments += '--ui-pipe'
+        $arguments += @('--ui-pipe', '--ui-control-version', '2')
         $preparationPath = [System.IO.Path]::GetFullPath($PreparationOutputPath)
         $preparationDirectory = [System.IO.Path]::GetDirectoryName($preparationPath)
         if (-not [System.IO.Directory]::Exists($preparationDirectory)) {

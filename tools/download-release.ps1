@@ -27,7 +27,8 @@ $script:releaseAssetRedirectHosts = @(
 function Test-ReleaseTag {
     param([Parameter(Mandatory=$true)][string]$Tag)
     return ($Tag -ceq 'v0.1.0-alpha.1' -or $Tag -ceq 'v0.1.0-alpha.2' -or
-        $Tag -ceq 'v0.1.0-alpha.3' -or $Tag -ceq 'v0.1.0-alpha.4')
+        $Tag -ceq 'v0.1.0-alpha.3' -or $Tag -ceq 'v0.1.0-alpha.4' -or
+        $Tag -ceq 'v0.1.0-alpha.5')
 }
 
 function Get-ExpectedReleaseTests {
@@ -59,7 +60,8 @@ function Get-ExpectedReleaseTests {
             )
         }
         'v0.1.0-alpha.4' { return @(Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.3') }
-        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, and v0.1.0-alpha.4 are supported.' }
+        'v0.1.0-alpha.5' { return @((Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.4') + 'ui_control_protocol_v2_test') }
+        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, and v0.1.0-alpha.5 are supported.' }
     }
 }
 
@@ -109,7 +111,25 @@ function Get-ExpectedReleaseFiles {
             return $alpha3
         }
         'v0.1.0-alpha.4' { return @(Get-ExpectedReleaseFiles -Tag 'v0.1.0-alpha.3') }
-        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, and v0.1.0-alpha.4 are supported.' }
+        'v0.1.0-alpha.5' {
+            $alpha5 = @(Get-ExpectedReleaseFiles -Tag 'v0.1.0-alpha.4')
+            $alpha5 += [pscustomobject]@{
+                Path='docs/R106_IPC第二版.md'
+                AssetName='docs__r106-ipc-v2.md'
+                MaximumBytes=4194304L
+            }
+            $alpha5 += [pscustomobject]@{
+                Path='docs/R106_配置迁移与测试.md'
+                AssetName='docs__r106-profile-migration-test.md'
+                MaximumBytes=4194304L
+            }
+            $alpha5 += [pscustomobject]@{ Path='start-step1-test.cmd'; AssetName='start-step1-test.cmd'; MaximumBytes=524288L }
+            $alpha5 += [pscustomobject]@{ Path='start-step1-test.ps1'; AssetName='start-step1-test.ps1'; MaximumBytes=1048576L }
+            $alpha5 += [pscustomobject]@{ Path='test-control.cmd'; AssetName='test-control.cmd'; MaximumBytes=524288L }
+            $alpha5 += [pscustomobject]@{ Path='test-control.ps1'; AssetName='test-control.ps1'; MaximumBytes=1048576L }
+            return $alpha5
+        }
+        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, and v0.1.0-alpha.5 are supported.' }
     }
 }
 
@@ -383,7 +403,7 @@ function Test-BuildProvenanceDocument {
 
 function Select-ReleaseCandidate {
     param([object[]]$Releases, [Parameter(Mandatory=$true)][string]$RequestedTag, [switch]$AllowDraft)
-    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, and v0.1.0-alpha.4 are supported.' }
+    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, and v0.1.0-alpha.5 are supported.' }
     $matches = @($Releases | Where-Object { [string]$_.tag_name -ceq $RequestedTag })
     if ($matches.Count -ne 1) { throw 'GitHub Release 列表中没有唯一匹配的 tag。' }
     $release = $matches[0]
@@ -554,7 +574,7 @@ function New-GitHubApiUri {
     )
     switch ($Kind) {
         'tag' {
-            if (-not (Test-ReleaseTag -Tag $Tag)) { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, and v0.1.0-alpha.4 are supported.' }
+            if (-not (Test-ReleaseTag -Tag $Tag)) { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, and v0.1.0-alpha.5 are supported.' }
             return [Uri]($script:githubApiRoot + '/releases/tags/' + $Tag)
         }
         'list' {
@@ -757,7 +777,7 @@ function Invoke-ReleaseDownload {
     param([Parameter(Mandatory=$true)][string]$RequestedTag,
           [Parameter(Mandatory=$true)][string]$OutputDirectory,
           [switch]$AllowDraft)
-    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, and v0.1.0-alpha.4 are supported.' }
+    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, and v0.1.0-alpha.5 are supported.' }
     $context = Get-DownloadDestinationContext -Destination $OutputDirectory
     $token = Get-GitCredentialToken
     $stagingCreated = $false

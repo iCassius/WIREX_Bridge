@@ -38,7 +38,8 @@ $arguments.AddRange([string[]]@('--run', '--port', 'COM5', '--body-file', 'fixtu
     '--password-file', 'local-password-fixture.txt',
     '--profile-source-id', '1', '--profile-master', 'localhost', '--profile-master-port', '62031',
     '--profile-destination-id', '460997', '--profile-slot', '2', '--profile-color-code', '1', '--profile-call-kind', 'P',
-    '--profile-receive-destination-id', '1', '--profile-receive-slot', '2', '--profile-receive-call-kind', 'P', '--ui-pipe'))
+    '--profile-receive-destination-id', '1', '--profile-receive-slot', '2', '--profile-receive-call-kind', 'P',
+    '--ui-pipe', '--ui-control-version', '2'))
 $record = [pscustomobject][ordered]@{
     schema_version = [int64]1
     executable = [System.IO.Path]::GetFullPath($expectedExe)
@@ -51,6 +52,16 @@ try {
     Assert-UiPreparation ([string]::Equals($validated.StatusPath, [System.IO.Path]::GetFullPath($statusPath), [System.StringComparison]::OrdinalIgnoreCase)) '有效预检记录未返回实际状态路径。'
     Assert-UiPreparation ($validated.Arguments.Count -eq $record.arguments.Count -and
         [string]::Join([char]0, $validated.Arguments) -ceq [string]::Join([char]0, $record.arguments)) '有效预检记录的完整启动参数没有保留。'
+
+    $wrongControlVersion = $record.PSObject.Copy()
+    $wrongVersionArguments = [System.Collections.Generic.List[string]]::new()
+    $wrongVersionArguments.AddRange([string[]]$record.arguments)
+    $wrongVersionArguments[$wrongVersionArguments.IndexOf('--ui-control-version') + 1] = '1'
+    $wrongControlVersion.arguments = [string[]]$wrongVersionArguments.ToArray()
+    $rejected = $false
+    try { [void](Test-UiPreparationRecord -Record $wrongControlVersion -RunDirectory $runDirectory -RunRoot $runRoot -ExpectedExecutable $expectedExe) }
+    catch { $rejected = $true }
+    Assert-UiPreparation $rejected 'UI 启动准备必须拒绝 v1 控制协议。'
 
     $listenOnlyRecord = $record.PSObject.Copy()
     $listenOnlyRecord.arguments = [string[]]@($record.arguments) + [string[]]@('--listen-only')

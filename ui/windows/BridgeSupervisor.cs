@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -12,16 +13,20 @@ namespace WirexBridge.Ui
         private const uint CreateNoWindow = 0x08000000;
         private const uint StartfUseStdHandles = 0x00000100;
         private const uint HandleFlagInherit = 0x00000001;
+        private const uint PipeNowait = 0x00000001;
         private const uint JobObjectExtendedLimitInformation = 9;
         private const uint JobObjectLimitKillOnJobClose = 0x00002000;
         private const uint WaitObject0 = 0;
         private const uint WaitTimeout = 258;
         private const uint Infinite = 0xffffffff;
         private const int DiagnosticLimit = 16 * 1024;
+        private const int ControlQueueLimit = 64;
+        private const int ControlLineLimit = 16 * 1024;
 
         private readonly object gate = new object();
         private readonly object lifecycleGate = new object();
         private readonly StringBuilder diagnosticTail = new StringBuilder();
+        private readonly Queue<string> controlEvents = new Queue<string>();
         private IntPtr processHandle = IntPtr.Zero;
         private IntPtr threadHandle = IntPtr.Zero;
         private IntPtr jobHandle = IntPtr.Zero;
@@ -31,23 +36,81 @@ namespace WirexBridge.Ui
         private Thread standardOutputPump;
         private Thread standardErrorPump;
         private int processId;
+        private int controlVersion = 1;
+        private string controlRunId = String.Empty;
+        private bool controlEventOverflow;
         private bool disposed;
         private Task<int> stopTask;
 
         public int ProcessId { get { lock (gate) { return processId; } } }
         public bool IsStarted { get { lock (gate) { return processHandle != IntPtr.Zero; } } }
+        public int ControlVersion { get { lock (gate) { return controlVersion; } } }
+        public bool HasControlEventOverflow { get { lock (gate) { return controlEventOverflow; } } }
 
         public string DiagnosticTail
         {
             get { lock (gate) { return diagnosticTail.ToString(); } }
         }
 
-        public void Start(string executable, string[] arguments, string workingDirectory)
+        public bool SetControlRunId(string runId)
         {
-            lock (lifecycleGate) StartCore(executable, arguments, workingDirectory);
+            if (String.IsNullOrWhiteSpace(runId) || runId.Length > 128) return false;
+            lock (gate)
+            {
+                if (controlVersion != 2 || disposed || processHandle == IntPtr.Zero) return false;
+                if (controlRunId.Length != 0 && !String.Equals(controlRunId, runId, StringComparison.Ordinal)) return false;
+                controlRunId = runId;
+                return true;
+            }
         }
 
-        private void StartCore(string executable, string[] arguments, string workingDirectory)
+        public bool SendControlCommand(string requestId, string command)
+        {
+            if (String.IsNullOrWhiteSpace(requestId) || requestId.Length > 128) return false;
+            if (command != "hello" && command != "status" && command != "shutdown") return false;
+            lock (lifecycleGate)
+            {
+                IntPtr input;
+                IntPtr process;
+                string runId;
+                lock (gate)
+                {
+                    if (disposed || controlVersion != 2 || processHandle == IntPtr.Zero || standardInputWrite == IntPtr.Zero) return false;
+                    input = standardInputWrite;
+                    process = processHandle;
+                    runId = controlRunId;
+                }
+                if (runId.Length == 0 || WaitForSingleObject(process, 0U) == WaitObject0) return false;
+                bool sent = WriteControlRequest(input, runId, requestId, command);
+                if (!sent) CloseInputAfterWriteFailure(input);
+                return sent;
+            }
+        }
+
+        public string[] DrainControlEvents(int maximumCount)
+        {
+            if (maximumCount < 0) throw new ArgumentOutOfRangeException("maximumCount");
+            lock (gate)
+            {
+                int count = Math.Min(maximumCount, controlEvents.Count);
+                string[] result = new string[count];
+                for (int index = 0; index < count; index++) result[index] = controlEvents.Dequeue();
+                return result;
+            }
+        }
+
+        public void Start(string executable, string[] arguments, string workingDirectory)
+        {
+            Start(executable, arguments, workingDirectory, 1);
+        }
+
+        public void Start(string executable, string[] arguments, string workingDirectory, int requestedControlVersion)
+        {
+            if (requestedControlVersion != 1 && requestedControlVersion != 2) throw new ArgumentOutOfRangeException("requestedControlVersion");
+            lock (lifecycleGate) StartCore(executable, arguments, workingDirectory, requestedControlVersion);
+        }
+
+        private void StartCore(string executable, string[] arguments, string workingDirectory, int requestedControlVersion)
         {
             if (String.IsNullOrWhiteSpace(executable)) throw new ArgumentException("Executable path is required.", "executable");
             if (arguments == null) throw new ArgumentNullException("arguments");
@@ -74,6 +137,9 @@ namespace WirexBridge.Ui
 
                 if (!CreatePipe(out childInputRead, out parentInputWrite, ref security, 0)) ThrowLastError("CreatePipe(stdin)");
                 if (!SetHandleInformation(parentInputWrite, HandleFlagInherit, 0)) ThrowLastError("SetHandleInformation(stdin)");
+                uint inputPipeMode = PipeNowait;
+                if (!SetNamedPipeHandleState(parentInputWrite, ref inputPipeMode, IntPtr.Zero, IntPtr.Zero))
+                    ThrowLastError("SetNamedPipeHandleState(stdin PIPE_NOWAIT)");
                 if (!CreatePipe(out parentOutputRead, out childOutputWrite, ref security, 0)) ThrowLastError("CreatePipe(stdout)");
                 if (!SetHandleInformation(parentOutputRead, HandleFlagInherit, 0)) ThrowLastError("SetHandleInformation(stdout)");
                 if (!CreatePipe(out parentErrorRead, out childErrorWrite, ref security, 0)) ThrowLastError("CreatePipe(stderr)");
@@ -125,6 +191,10 @@ namespace WirexBridge.Ui
                     standardOutputRead = parentOutputRead;
                     standardErrorRead = parentErrorRead;
                     processId = unchecked((int)process.dwProcessId);
+                    controlVersion = requestedControlVersion;
+                    controlRunId = String.Empty;
+                    controlEventOverflow = false;
+                    controlEvents.Clear();
                 }
                 process.hProcess = IntPtr.Zero;
                 process.hThread = IntPtr.Zero;
@@ -253,20 +323,31 @@ namespace WirexBridge.Ui
                 IntPtr input;
                 IntPtr process;
                 IntPtr job;
+                int version;
+                string runId;
                 lock (gate)
                 {
                     process = processHandle;
                     input = standardInputWrite;
                     standardInputWrite = IntPtr.Zero;
                     job = jobHandle;
+                    version = controlVersion;
+                    runId = controlRunId;
                 }
                 if (input != IntPtr.Zero)
                 {
                     if (process != IntPtr.Zero && WaitForSingleObject(process, 0U) != WaitObject0)
                     {
-                        byte[] quit = new byte[] { (byte)'Q', (byte)'\r', (byte)'\n' };
-                        uint written;
-                        WriteFile(input, quit, (uint)quit.Length, out written, IntPtr.Zero);
+                        if (version == 2)
+                        {
+                            if (runId.Length != 0) WriteControlRequest(input, runId, Guid.NewGuid().ToString("D"), "shutdown");
+                        }
+                        else
+                        {
+                            byte[] quit = new byte[] { (byte)'Q', (byte)'\r', (byte)'\n' };
+                            uint written;
+                            WriteFile(input, quit, (uint)quit.Length, out written, IntPtr.Zero);
+                        }
                     }
                     CloseHandle(input);
                 }
@@ -341,16 +422,108 @@ namespace WirexBridge.Ui
             byte[] bytes = new byte[4096];
             char[] characters = new char[Encoding.UTF8.GetMaxCharCount(bytes.Length)];
             Decoder decoder = Encoding.UTF8.GetDecoder();
+            StringBuilder controlLine = channel == "stdout" ? new StringBuilder() : null;
+            bool discardControlLine = false;
             while (handle != IntPtr.Zero)
             {
                 uint actual;
                 if (!ReadFile(handle, bytes, (uint)bytes.Length, out actual, IntPtr.Zero) || actual == 0) break;
                 int characterCount = decoder.GetChars(bytes, 0, unchecked((int)actual), characters, 0, false);
                 AppendDiagnostic(channel, characters, characterCount);
+                if (controlLine != null) AppendControlLines(controlLine, characters, characterCount, ref discardControlLine);
             }
             int finalCharacterCount = decoder.GetChars(bytes, 0, 0, characters, 0, true);
             AppendDiagnostic(channel, characters, finalCharacterCount);
+            if (controlLine != null) AppendControlLines(controlLine, characters, finalCharacterCount, ref discardControlLine);
             CloseHandleIfValid(handle);
+        }
+
+        private void AppendControlLines(StringBuilder line, char[] characters, int characterCount, ref bool discardLine)
+        {
+            for (int index = 0; index < characterCount; index++)
+            {
+                char value = characters[index];
+                if (value == '\n')
+                {
+                    if (!discardLine)
+                    {
+                        int length = line.Length;
+                        if (length > 0 && line[length - 1] == '\r') line.Length = --length;
+                        if (length != 0) QueueControlLine(line.ToString());
+                    }
+                    line.Length = 0;
+                    discardLine = false;
+                    continue;
+                }
+                if (discardLine) continue;
+                if (line.Length >= ControlLineLimit)
+                {
+                    line.Length = 0;
+                    discardLine = true;
+                    lock (gate) controlEventOverflow = true;
+                    continue;
+                }
+                line.Append(value);
+            }
+        }
+
+        private void QueueControlLine(string line)
+        {
+            if (line.IndexOf("\"type\":\"control_ready\"", StringComparison.Ordinal) < 0 &&
+                line.IndexOf("\"type\":\"control_result\"", StringComparison.Ordinal) < 0) return;
+            lock (gate)
+            {
+                if (controlEvents.Count >= ControlQueueLimit)
+                {
+                    controlEventOverflow = true;
+                    return;
+                }
+                controlEvents.Enqueue(line);
+            }
+        }
+
+        private static bool WriteControlRequest(IntPtr input, string runId, string requestId, string command)
+        {
+            string json = "{\"schema_version\":2,\"run_id\":" + EscapeJson(runId) +
+                ",\"request_id\":" + EscapeJson(requestId) + ",\"command\":" + EscapeJson(command) + "}\n";
+            byte[] bytes = Encoding.UTF8.GetBytes(json);
+            uint written;
+            return WriteFile(input, bytes, (uint)bytes.Length, out written, IntPtr.Zero) && written == bytes.Length;
+        }
+
+        private void CloseInputAfterWriteFailure(IntPtr input)
+        {
+            lock (gate)
+            {
+                if (standardInputWrite != input) return;
+                standardInputWrite = IntPtr.Zero;
+                CloseHandleIfValid(input);
+            }
+        }
+
+        private static string EscapeJson(string value)
+        {
+            StringBuilder escaped = new StringBuilder(value.Length + 2);
+            escaped.Append('"');
+            foreach (char character in value)
+            {
+                switch (character)
+                {
+                case '"': escaped.Append("\\\""); break;
+                case '\\': escaped.Append("\\\\"); break;
+                case '\b': escaped.Append("\\b"); break;
+                case '\f': escaped.Append("\\f"); break;
+                case '\n': escaped.Append("\\n"); break;
+                case '\r': escaped.Append("\\r"); break;
+                case '\t': escaped.Append("\\t"); break;
+                default:
+                    if (character < 0x20) escaped.Append("\\u").Append(((int)character).ToString("x4"));
+                    else escaped.Append(character);
+                    break;
+                }
+            }
+            escaped.Append('"');
+            return escaped.ToString();
         }
 
         private void AppendDiagnostic(string channel, char[] characters, int characterCount)
@@ -517,6 +690,11 @@ namespace WirexBridge.Ui
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool SetHandleInformation(IntPtr hObject, uint dwMask, uint dwFlags);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool SetNamedPipeHandleState(IntPtr hNamedPipe, ref uint lpMode,
+            IntPtr lpMaxCollectionCount, IntPtr lpCollectDataTimeout);
 
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern IntPtr CreateJobObject(IntPtr lpJobAttributes, string lpName);
