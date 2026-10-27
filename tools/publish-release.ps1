@@ -109,7 +109,15 @@ function Set-PublishProfile {
             $script:expectedDirectories = @($alpha2.Directories)
             $script:expectedTestNames = $script:alpha3TestNames
         }
-        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, and v0.1.0-alpha.3 release profiles are supported.' }
+        'v0.1.0-alpha.4' {
+            $alpha3 = Set-PublishProfile -Tag 'v0.1.0-alpha.3'
+            $script:publishTag = $Tag
+            $script:assetPathMap = [ordered]@{}
+            foreach ($path in $alpha3.AssetPathMap.Keys) { $script:assetPathMap[$path] = $alpha3.AssetPathMap[$path] }
+            $script:expectedDirectories = @($alpha3.Directories)
+            $script:expectedTestNames = @($alpha3.TestNames)
+        }
+        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, and v0.1.0-alpha.4 release profiles are supported.' }
     }
     return [pscustomobject]@{
         Tag = $script:publishTag

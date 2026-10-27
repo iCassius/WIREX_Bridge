@@ -154,6 +154,32 @@ try {
     Assert-Throws { Assert-PublishPackage -PackageRoot $alpha3Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.2' } `
         'alpha.3 package cannot pass the alpha.2 profile'
     $validAlpha3ManifestJson = [System.IO.File]::ReadAllText($alpha3ManifestPath, [System.Text.Encoding]::UTF8)
+    $alpha4Root = Join-Path $testRoot 'package-alpha4'
+    Copy-Item -LiteralPath $alpha3Root -Destination $alpha4Root -Recurse
+    [void](Set-PublishProfile -Tag 'v0.1.0-alpha.4')
+    $alpha4ManifestPath = Join-Path $alpha4Root 'manifest.json'
+    $alpha4ReadmePath = Join-Path $alpha4Root 'README.md'
+    Write-Utf8NoBom -Path $alpha4ReadmePath -Text 'synthetic alpha.4 package README'
+    $alpha4Manifest = [System.IO.File]::ReadAllText($alpha4ManifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $alpha4ReadmeItem = Get-Item -LiteralPath $alpha4ReadmePath
+    $alpha4ReadmeRecord = @($alpha4Manifest.files | Where-Object { [string]$_.path -ceq 'README.md' })
+    if ($alpha4ReadmeRecord.Count -ne 1) { throw 'Synthetic alpha.3 manifest must contain one README record.' }
+    $alpha4ReadmeRecord[0].length_bytes = [long]$alpha4ReadmeItem.Length
+    $alpha4ReadmeRecord[0].sha256 = (Get-FileHash -LiteralPath $alpha4ReadmePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $alpha4Manifest.version = 'v0.1.0-alpha.4'
+    $alpha4Manifest.tag_candidate = 'v0.1.0-alpha.4'
+    $alpha4Manifest.build.passed_test_count = $script:expectedTestNames.Count
+    $alpha4Manifest.build.passed_tests = @($script:expectedTestNames)
+    $validAlpha4ManifestJson = ConvertTo-Json -InputObject $alpha4Manifest -Depth 12
+    Write-Utf8NoBom -Path $alpha4ManifestPath -Text ($validAlpha4ManifestJson + "`n")
+    $alpha4Package = Assert-PublishPackage -PackageRoot $alpha4Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.4'
+    Assert-True ($alpha4Package.Assets.Count -eq 28) 'alpha.4 package keeps alpha.3 27-file inventory plus standalone manifest'
+    Assert-True ((Set-PublishProfile -Tag 'v0.1.0-alpha.4').AssetPathMap.Count -eq
+        (Set-PublishProfile -Tag 'v0.1.0-alpha.3').AssetPathMap.Count) 'alpha.4 keeps alpha.3 asset map size'
+    Assert-Throws { Assert-PublishPackage -PackageRoot $alpha4Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.3' } `
+        'alpha.4 package cannot pass the alpha.3 profile'
+    [void](Set-PublishProfile -Tag 'v0.1.0-alpha.4')
+    $validAlpha4ManifestJson = [System.IO.File]::ReadAllText($alpha4ManifestPath, [System.Text.Encoding]::UTF8)
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.1')
     $manifest = [System.IO.File]::ReadAllText($manifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
 
@@ -283,7 +309,7 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $preflightRepo 'tools') -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $preflightRepo 'docs/releases') -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'download-release.ps1') -Destination (Join-Path $preflightRepo 'tools/download-release.ps1')
-    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3')) {
+    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4')) {
         Write-Utf8NoBom -Path (Join-Path $preflightRepo ('docs/releases/' + $tag + '.md')) -Text ('Synthetic offline release notes for ' + $tag + "`n")
     }
     $gitInit = @(& git -C $preflightRepo init --quiet 2>&1)
@@ -292,7 +318,7 @@ try {
         @('config', 'user.name', 'WIREX Offline Test'),
         @('config', 'user.email', 'wirex-offline-test@example.invalid'),
         @('remote', 'add', 'origin', $script:repositoryUrl),
-        @('add', '--', 'tools/download-release.ps1', 'docs/releases/v0.1.0-alpha.1.md', 'docs/releases/v0.1.0-alpha.2.md', 'docs/releases/v0.1.0-alpha.3.md'),
+        @('add', '--', 'tools/download-release.ps1', 'docs/releases/v0.1.0-alpha.1.md', 'docs/releases/v0.1.0-alpha.2.md', 'docs/releases/v0.1.0-alpha.3.md', 'docs/releases/v0.1.0-alpha.4.md'),
         @('commit', '--quiet', '-m', 'offline publisher preflight fixture')
     )) {
         $previousErrorActionPreference = $ErrorActionPreference
@@ -305,11 +331,12 @@ try {
     $preflightCommit = [string](@(& git -C $preflightRepo rev-parse HEAD 2>$null)[0]).Trim()
     if ($LASTEXITCODE -ne 0 -or $preflightCommit -cnotmatch '^[0-9a-f]{40}$') { throw 'Could not identify the temporary offline commit.' }
     New-Item -ItemType Directory -Path (Join-Path $preflightRepo 'build/_work') -Force | Out-Null
-    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3')) {
+    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4')) {
         $sourcePackage = switch ($tag) {
             'v0.1.0-alpha.1' { $packageRoot; break }
             'v0.1.0-alpha.2' { $alpha2Root; break }
             'v0.1.0-alpha.3' { $alpha3Root; break }
+            'v0.1.0-alpha.4' { $alpha4Root; break }
         }
         $targetPackage = Join-Path $preflightRepo ('build/releases/' + $tag)
         $targetParent = Split-Path -Parent $targetPackage
@@ -319,6 +346,7 @@ try {
             'v0.1.0-alpha.1' { $validManifestJson; break }
             'v0.1.0-alpha.2' { $validAlpha2ManifestJson; break }
             'v0.1.0-alpha.3' { $validAlpha3ManifestJson; break }
+            'v0.1.0-alpha.4' { $validAlpha4ManifestJson; break }
         }
         $preflightManifest = $sourceManifestText | ConvertFrom-Json
         $preflightManifest.source.commit = $preflightCommit
@@ -338,7 +366,7 @@ try {
         $script:credentialAttempted = $true
         throw 'OFFLINE_TEST_CREDENTIAL_ACCESS_BLOCKED'
     }
-    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3')) {
+    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4')) {
         $script:preflightBoundaryReached = $false
         $boundaryMessage = ''
         try {

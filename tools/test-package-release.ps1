@@ -52,6 +52,7 @@ Assert-True (@($mappedAssetNames | Where-Object { $_ -notmatch '^[A-Za-z0-9._-]+
 Assert-True (Test-ReleaseVersion -Value 'v0.1.0-alpha.1') '候选版本格式可用'
 Assert-True (Test-ReleaseVersion -Value 'v0.1.0-alpha.2') 'alpha.2 明确版本允许'
 Assert-True (Test-ReleaseVersion -Value 'v0.1.0-alpha.3') 'alpha.3 明确版本允许'
+Assert-True (Test-ReleaseVersion -Value 'v0.1.0-alpha.4') 'alpha.4 明确版本允许'
 Assert-True (-not (Test-ReleaseVersion -Value 'v0.1.0')) '正式版本格式不能混入 alpha 标签'
 Assert-True (-not (Test-ReleaseVersion -Value 'v0.2.0-alpha.1')) '未登记的 alpha 版本必须拒绝'
 Assert-True (-not (Test-ReleaseVersion -Value 'V0.1.0-ALPHA.1')) '版本匹配区分大小写'
@@ -115,6 +116,40 @@ for ($testIndex = 0; $testIndex -lt $alpha3Tests.Count; $testIndex++) {
     Assert-True ($builderTestNames[$testIndex] -ceq $alpha3Tests[$testIndex]) `
         "alpha.3 fixed test list matches builder source order at index $testIndex"
 }
+$alpha4Profile = Get-ReleaseProfile -Version 'v0.1.0-alpha.4'
+[void](Set-ReleaseVersion -Version 'v0.1.0-alpha.4')
+$alpha4Files = @(Get-ExpectedReleasePackageFiles)
+$alpha4Tests = @(Get-ExpectedReleaseTests)
+Assert-Equal $alpha4Files.Count $alpha3Files.Count 'alpha.4 保留 alpha.3 全部便携运行文件'
+Assert-True ($alpha4Tests.Count -ge 35 -and $alpha4Tests.Count -ge $alpha3Tests.Count) `
+    'alpha.4 C++ 测试不少于 alpha.3 的 35 项'
+Assert-Equal $builderTestNames.Count $alpha4Tests.Count 'alpha.4 固定测试清单与当前 builder 数量一致'
+for ($testIndex = 0; $testIndex -lt $alpha4Tests.Count; $testIndex++) {
+    Assert-True ($builderTestNames[$testIndex] -ceq $alpha4Tests[$testIndex]) `
+        "alpha.4 fixed test list matches builder source order at index $testIndex"
+}
+Assert-True ($alpha4Profile.ReleaseScope -match 'independent receive and transmit targets' -and
+    $alpha4Profile.ReleaseScope -match 'listen-only TG91' -and
+    $alpha4Profile.ReleaseScope -match 'BM China 4602') `
+    'alpha.4 包配置说明独立收发目标、TG91只收和4602预设'
+Assert-True (@($alpha4Profile.NotIncluded | Where-Object { $_ -match 'RF node operation is not implemented' }).Count -eq 1 -and
+    @($alpha4Profile.NotIncluded | Where-Object { $_ -match 'PTT behavior during Echo playback still requires alpha.4 device verification' }).Count -eq 1) `
+    'alpha.4 明确列出RF范围和鹦鹉回音PTT实机待验'
+$alpha4ReadmeMap = @($alpha4Profile.SourceFiles | Where-Object { [string]$_.Destination -ceq 'README.md' })
+Assert-Equal $alpha4ReadmeMap.Count 1 'alpha.4 有且只有一个随包 README'
+Assert-True ([string]$alpha4ReadmeMap[0].Source -ceq 'docs\releases\v0.1.0-alpha.4-package-README.md') `
+    'alpha.4 package copies its own versioned README'
+$alpha4ReadmeText = [System.IO.File]::ReadAllText(
+    (Join-Path $repositoryRoot $alpha4ReadmeMap[0].Source), [System.Text.Encoding]::UTF8)
+Assert-True ($alpha4ReadmeText.Contains('43.129.83.124:62031') -and
+    $alpha4ReadmeText.Contains('接收 `91/G/TS2`') -and
+    $alpha4ReadmeText.Contains('发射 `460997/P/TS2`') -and
+    $alpha4ReadmeText.Contains('默认保存在便携目录的 `private/user-config`') -and
+    $alpha4ReadmeText.Contains('-UserConfigDirectory') -and
+    $alpha4ReadmeText.Contains('请在本版实机验收中')) `
+    'alpha.4 README 写明4602、独立收发目标、配置目录和PTT实机待验'
+Assert-Equal (Get-ReleaseAssetName -RelativePath 'start-ui.cmd') 'start-ui.cmd' `
+    'alpha.4 保留 alpha.3 的绿色启动入口'
 [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.1')
 Assert-Throws { Get-ReleaseAssetName -RelativePath 'start-ui.cmd' } 'alpha.1 不接受 alpha.2 UI asset'
 Assert-True ((Get-ReleaseAssetName -RelativePath 'docs/连接配置.md') -ceq 'docs__connection-profile.md') `

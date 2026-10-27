@@ -53,6 +53,7 @@ $script:alpha3TestNames = @(
     'bm_voice_pipeline_test', 'bm_test_profile_test', 'bm_connection_config_test', 'hri_stream_session_test',
     'bm_bridge_loopback_test'
 )
+$script:alpha4TestNames = @($script:alpha3TestNames)
 $script:activeReleaseVersion = 'v0.1.0-alpha.1'
 
 function Get-ReleaseProfile {
@@ -205,7 +206,30 @@ function Get-ReleaseProfile {
                 NotIncluded = @('C4FM RF node operation is not implemented', 'FTX-1 LCD display result is not verified')
             }
         }
-        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, and v0.1.0-alpha.3 release profiles are supported.' }
+        'v0.1.0-alpha.4' {
+            $alpha3 = Get-ReleaseProfile -Version 'v0.1.0-alpha.3'
+            $alpha4SourceFiles = @($alpha3.SourceFiles | Where-Object { [string]$_.Destination -cne 'README.md' }) + @(
+                @{ Source='docs\releases\v0.1.0-alpha.4-package-README.md'; Destination='README.md' }
+            )
+            $alpha4AssetMap = [ordered]@{}
+            foreach ($path in $alpha3.AssetMap.Keys) { $alpha4AssetMap[$path] = $alpha3.AssetMap[$path] }
+            return [pscustomobject]@{
+                Version = 'v0.1.0-alpha.4'
+                TestNames = $script:alpha4TestNames
+                SourceFiles = $alpha4SourceFiles
+                PackageFiles = @($alpha3.PackageFiles)
+                Directories = $alpha3.Directories
+                AssetMap = $alpha4AssetMap
+                PackageReadme = 'docs\releases\v0.1.0-alpha.4-package-README.md'
+                ReleaseScope = 'FTX-1 DIRECT BrandMeister bridge with independent receive and transmit targets, a listen-only TG91 profile, a constrained private Echo return rule, and BM China 4602 preset'
+                NotIncluded = @(
+                    'C4FM RF node operation is not implemented',
+                    'FTX-1 LCD display result is not verified',
+                    'Radio PTT behavior during Echo playback still requires alpha.4 device verification'
+                )
+            }
+        }
+        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, and v0.1.0-alpha.4 release profiles are supported.' }
     }
 }
 
