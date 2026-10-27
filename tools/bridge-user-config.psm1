@@ -301,7 +301,7 @@ function Test-BridgeMasterName {
 
 function ConvertTo-BridgeUserConnectionProfile {
     param([Parameter(Mandatory=$true)][object]$Connection, [Parameter(Mandatory=$true)][object]$Devices,
-        [switch]$AllowTextNumbers)
+        [object]$Receive, [object]$TransmitEnabled, [switch]$AllowTextNumbers)
     Assert-BridgeExactJsonObject -Value $Connection -ExpectedNames @('callsign','gateway_id','source_id','master','master_port','destination_id','slot','color_code','call_kind') -Label 'connection'
     Assert-BridgeExactJsonObject -Value $Devices -ExpectedNames @('serial_port','wave_in_endpoint_id','wave_out_endpoint_id') -Label 'devices'
     if ($Connection.callsign -isnot [string] -or $Connection.callsign -cnotmatch '^[\x20-\x7e]{1,8}$') { throw 'callsign 必须是 1 到 8 个可打印 ASCII 字符。' }
@@ -316,6 +316,25 @@ function ConvertTo-BridgeUserConnectionProfile {
     if ($gateway -eq 0 -or $source -eq 0 -or $destination -eq 0 -or $masterPort -eq 0 -or $slot -lt 1) {
         throw '连接配置中的 ID、端口或时隙超出允许范围。'
     }
+    if ($null -eq $Receive) {
+        $receiveDestination = if ($Connection.call_kind -ceq 'private') { $source } else { $destination }
+        $receiveSlot = $slot
+        $receiveCallKind = [string]$Connection.call_kind
+    } else {
+        Assert-BridgeExactJsonObject -Value $Receive -ExpectedNames @('destination_id','slot','call_kind') -Label 'receive'
+        if ($Receive.call_kind -isnot [string] -or @('group','private') -cnotcontains $Receive.call_kind) {
+            throw 'receive.call_kind 只能是 group 或 private。'
+        }
+        $receiveDestination = ConvertTo-BridgeUnsigned $Receive.destination_id 'receive.destination_id' 16777215 -AllowText:$AllowTextNumbers
+        $receiveSlot = ConvertTo-BridgeUnsigned $Receive.slot 'receive.slot' 2 -AllowText:$AllowTextNumbers
+        $receiveCallKind = [string]$Receive.call_kind
+        if ($receiveDestination -eq 0 -or $receiveSlot -lt 1) {
+            throw 'receive 目标 ID 或时隙超出允许范围。'
+        }
+    }
+    if ($null -ne $TransmitEnabled -and $TransmitEnabled -isnot [bool]) {
+        throw 'transmit_enabled 必须是 JSON 布尔值。'
+    }
     if ($Devices.serial_port -isnot [string] -or ($Devices.serial_port -cne 'auto' -and $Devices.serial_port -cnotmatch '^COM[1-9][0-9]{0,2}$')) {
         throw 'devices.serial_port 必须是 auto 或 COM1 到 COM999。'
     }
@@ -324,7 +343,7 @@ function ConvertTo-BridgeUserConnectionProfile {
             throw '音频设备选择必须是 auto 或有效 endpoint ID。'
         }
     }
-    return [pscustomobject][ordered]@{
+    $validated = [ordered]@{
         schema_version = 1
         connection = [pscustomobject][ordered]@{
             callsign = $Connection.callsign
@@ -337,12 +356,19 @@ function ConvertTo-BridgeUserConnectionProfile {
             color_code = [uint64]$colorCode
             call_kind = $Connection.call_kind
         }
+        receive = [pscustomobject][ordered]@{
+            destination_id = [uint64]$receiveDestination
+            slot = [uint64]$receiveSlot
+            call_kind = $receiveCallKind
+        }
         devices = [pscustomobject][ordered]@{
             serial_port = $Devices.serial_port.ToUpperInvariant() -replace '^AUTO$', 'auto'
             wave_in_endpoint_id = $Devices.wave_in_endpoint_id
             wave_out_endpoint_id = $Devices.wave_out_endpoint_id
         }
     }
+    if ($null -ne $TransmitEnabled) { $validated.transmit_enabled = [bool]$TransmitEnabled }
+    return [pscustomobject]$validated
 }
 
 function Read-BridgeUserConnectionProfile {
@@ -353,14 +379,47 @@ function Read-BridgeUserConnectionProfile {
     $json = [System.IO.File]::ReadAllText($fullPath, [System.Text.Encoding]::UTF8)
     Assert-BridgeJsonKeysUnique -JsonText $json
     try { $document = ConvertFrom-Json -InputObject $json -ErrorAction Stop } catch { throw '连接配置 JSON 无效。' }
-    Assert-BridgeExactJsonObject -Value $document -ExpectedNames @('schema_version','connection','devices') -Label '连接配置'
+    $expectedNames = @('schema_version','connection','devices','receive','transmit_enabled')
+    $requiredNames = @('schema_version','connection','devices')
+    $actualNames = @($document.PSObject.Properties | ForEach-Object { [string]$_.Name })
+    if ($actualNames.Count -lt $requiredNames.Count -or $actualNames.Count -gt $expectedNames.Count) {
+        throw '连接配置字段不完整或包含未知字段。'
+    }
+    foreach ($name in $actualNames) {
+        if ($expectedNames -cnotcontains $name) { throw "连接配置包含未知字段：$name" }
+    }
+    foreach ($name in $requiredNames) {
+        if ($actualNames -cnotcontains $name) { throw "连接配置缺少字段：$name" }
+    }
     if ((ConvertTo-BridgeUnsigned $document.schema_version 'schema_version' 1) -ne 1) { throw '连接配置 schema_version 只支持 1。' }
-    return ConvertTo-BridgeUserConnectionProfile -Connection $document.connection -Devices $document.devices
+    $arguments = @{ Connection = $document.connection; Devices = $document.devices }
+    $receiveProperty = $document.PSObject.Properties['receive']
+    if ($null -ne $receiveProperty) {
+        if ($null -eq $receiveProperty.Value) { throw 'receive 存在时必须是完整对象。' }
+        $arguments.Receive = $receiveProperty.Value
+    }
+    $transmitProperty = $document.PSObject.Properties['transmit_enabled']
+    if ($null -ne $transmitProperty) {
+        if ($transmitProperty.Value -isnot [bool]) { throw 'transmit_enabled 必须是 JSON 布尔值。' }
+        $arguments.TransmitEnabled = $transmitProperty.Value
+    }
+    return ConvertTo-BridgeUserConnectionProfile @arguments
 }
 
 function Write-BridgeUserConnectionProfile {
     param([Parameter(Mandatory=$true)][string]$Path, [Parameter(Mandatory=$true)][object]$Profile)
-    $validated = ConvertTo-BridgeUserConnectionProfile -Connection $Profile.connection -Devices $Profile.devices
+    $arguments = @{ Connection = $Profile.connection; Devices = $Profile.devices }
+    $receiveProperty = $Profile.PSObject.Properties['receive']
+    if ($null -ne $receiveProperty) {
+        if ($null -eq $receiveProperty.Value) { throw 'receive 存在时必须是完整对象。' }
+        $arguments.Receive = $receiveProperty.Value
+    }
+    $transmitProperty = $Profile.PSObject.Properties['transmit_enabled']
+    if ($null -ne $transmitProperty) {
+        if ($transmitProperty.Value -isnot [bool]) { throw 'transmit_enabled 必须是 JSON 布尔值。' }
+        $arguments.TransmitEnabled = $transmitProperty.Value
+    }
+    $validated = ConvertTo-BridgeUserConnectionProfile @arguments
     $fullPath = [System.IO.Path]::GetFullPath($Path)
     $directory = [System.IO.Path]::GetDirectoryName($fullPath)
     if (-not [System.IO.Directory]::Exists($directory)) { throw '本机连接配置目录不存在。' }

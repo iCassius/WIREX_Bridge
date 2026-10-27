@@ -45,6 +45,50 @@ try {
         '便携包默认配置应位于包内 private/user-config'
     Assert-True ([System.IO.Directory]::Exists($packageDefault)) '便携包默认配置目录应自动创建'
 
+    $profilePath = Join-Path $configPath 'connection-profile.json'
+    $legacyConnection = [pscustomobject][ordered]@{
+        callsign = 'BI7KGD'; gateway_id = [uint64]461135501; source_id = [uint64]4611355
+        master = '43.129.83.124'; master_port = [uint64]62031; destination_id = [uint64]460997
+        slot = [uint64]2; color_code = [uint64]0; call_kind = 'private'
+    }
+    $profileDevices = [pscustomobject][ordered]@{
+        serial_port = 'COM5'; wave_in_endpoint_id = 'usb-in'; wave_out_endpoint_id = 'usb-out'
+    }
+    $legacyProfile = [pscustomobject]@{ connection = $legacyConnection; devices = $profileDevices }
+    Write-BridgeUserConnectionProfile -Path $profilePath -Profile $legacyProfile
+    $legacyPrivate = Read-BridgeUserConnectionProfile -Path $profilePath
+    Assert-True ($legacyPrivate.receive.destination_id -eq 4611355 -and
+        $legacyPrivate.receive.call_kind -ceq 'private' -and
+        $null -eq $legacyPrivate.PSObject.Properties['transmit_enabled']) `
+        '旧私呼配置保存和读取时按本机 Source ID 推导回程接收，不强制增加发射开关'
+    $legacyConnection.call_kind = 'group'
+    $legacyConnection.destination_id = [uint64]91
+    $legacyDocument = [pscustomobject][ordered]@{
+        schema_version = 1; connection = $legacyConnection; devices = $profileDevices
+    }
+    [System.IO.File]::WriteAllText($profilePath, (ConvertTo-Json -InputObject $legacyDocument -Depth 5),
+        (New-Object System.Text.UTF8Encoding($false)))
+    $legacyGroup = Read-BridgeUserConnectionProfile -Path $profilePath
+    Assert-True ($legacyGroup.receive.destination_id -eq 91 -and $legacyGroup.receive.call_kind -ceq 'group') `
+        '旧组呼配置缺少接收对象时沿用原接收目标'
+
+    foreach ($invalidProfile in @(
+        '{"schema_version":1,"connection":{},"devices":{},"receive":null}',
+        '{"schema_version":1,"connection":{},"devices":{},"transmit_enabled":null}',
+        '{"schema_version":1,"connection":{},"devices":{},"receive":{"destination_id":91,"slot":2}}',
+        '{"schema_version":1,"connection":{},"devices":{},"transmit_enabled":"false"}'
+    )) {
+        [System.IO.File]::WriteAllText($profilePath, $invalidProfile, (New-Object System.Text.UTF8Encoding($false)))
+        Assert-Throws { Read-BridgeUserConnectionProfile -Path $profilePath | Out-Null } `
+            '存在的接收对象和发射许可必须完整且类型正确'
+    }
+    $invalidObject = [pscustomobject]@{ connection = $legacyConnection; devices = $profileDevices; receive = $null }
+    Assert-Throws { Write-BridgeUserConnectionProfile -Path $profilePath -Profile $invalidObject } `
+        '保存时拒绝显式 receive=null'
+    $invalidObject = [pscustomobject]@{ connection = $legacyConnection; devices = $profileDevices; transmit_enabled = $null }
+    Assert-Throws { Write-BridgeUserConnectionProfile -Path $profilePath -Profile $invalidObject } `
+        '保存时拒绝显式 transmit_enabled=null'
+
     foreach ($required in @('start-bm-radio-bridge.ps1', 'wirex_bridge.exe')) {
         [System.IO.File]::WriteAllText((Join-Path $packagePath $required), 'stub')
     }
@@ -98,7 +142,7 @@ try {
     [System.IO.File]::WriteAllText((Join-Path $configPath 'password-file-path.txt'), '..\missing.txt')
     Assert-Throws { Get-BridgePasswordFile -UserConfigDirectory $configPath } '显式保存的相对凭据路径缺失时应提示修复'
 
-    Write-Host '通过：本机配置目录、相对版本指针、跨版本音量与密码路径检查。未启动核心或访问设备。'
+    Write-Host '通过：本机配置目录、收发目标兼容配置、服务器连接字段、跨版本音量与密码路径检查。未启动核心或访问设备。'
 } finally {
     if ([System.IO.Directory]::Exists($temporaryRoot)) {
         Remove-Item -LiteralPath $temporaryRoot -Recurse -Force

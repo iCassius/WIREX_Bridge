@@ -15,7 +15,8 @@ $ast = [System.Management.Automation.Language.Parser]::ParseFile($sourcePath, [r
 Assert-UiStatus ($parseErrors.Count -eq 0) 'bridge-ui.ps1 PowerShell 5.1 语法解析失败。'
 $wantedFunctions = @('Test-UiSourceIdentityRecord', 'Get-UiSourceIdentityDisplay', 'Get-UiCompletedRunRecord',
     'Get-UiRunDirectorySize', 'Invoke-UiRunLogRetention', 'Test-UiStatusRecord', 'Test-UiStatusFreshness',
-    'Test-UiRunRecordAcceptance', 'Get-VisibleUiEventText', 'Apply-StatusRecord', 'Set-StaleDisplay', 'On-UiTimerTick')
+    'Test-UiRunRecordAcceptance', 'Get-VisibleUiEventText', 'Apply-StatusRecord', 'Set-StaleDisplay',
+    'Format-ProfileTarget', 'Format-ProfileReceiveTarget', 'Format-ProfileTransmitPermission', 'Set-MainTargetSummary', 'On-UiTimerTick')
 $found = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wantedFunctions -ccontains $node.Name }, $true))
 Assert-UiStatus ($found.Count -eq $wantedFunctions.Count) '没有找到状态记录验证函数。'
 foreach ($functionAst in $found) { Invoke-Expression $functionAst.Extent.Text }

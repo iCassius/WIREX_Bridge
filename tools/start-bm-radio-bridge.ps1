@@ -288,6 +288,8 @@ function ConvertTo-ValidatedConnectionProfile {
     param(
         [Parameter(Mandatory=$true)][object]$Connection,
         [Parameter(Mandatory=$true)][object]$Devices,
+        [object]$Receive,
+        [object]$TransmitEnabled,
         [switch]$AllowTextNumbers
     )
     Assert-ExactJsonObject -Value $Connection -ExpectedNames @(
@@ -323,6 +325,25 @@ function ConvertTo-ValidatedConnectionProfile {
         $masterPort -eq 0 -or $slot -lt 1 -or $colorCode -gt 15) {
         throw '连接配置中的 ID、端口、时隙或 Color Code 超出允许范围。'
     }
+    if ($null -eq $Receive) {
+        $receiveDestinationId = if ($callKind -ceq 'private') { $sourceId } else { $destinationId }
+        $receiveSlot = $slot
+        $receiveCallKind = $callKind
+    } else {
+        Assert-ExactJsonObject -Value $Receive -ExpectedNames @('destination_id', 'slot', 'call_kind') -Label 'receive'
+        if ($Receive.call_kind -isnot [string] -or @('group', 'private') -cnotcontains $Receive.call_kind) {
+            throw 'receive.call_kind 只能是 group 或 private。'
+        }
+        $receiveDestinationId = ConvertTo-ProfileUnsigned -Value $Receive.destination_id -Label 'receive.destination_id' `
+            -Maximum 16777215 -AllowText:$AllowTextNumbers
+        $receiveSlot = ConvertTo-ProfileUnsigned -Value $Receive.slot -Label 'receive.slot' `
+            -Maximum 2 -AllowText:$AllowTextNumbers
+        $receiveCallKind = [string]$Receive.call_kind
+        if ($receiveDestinationId -eq 0 -or $receiveSlot -lt 1) { throw 'receive 目标 ID 或时隙超出允许范围。' }
+    }
+    if ($null -ne $TransmitEnabled -and $TransmitEnabled -isnot [bool]) {
+        throw 'transmit_enabled 必须是 JSON 布尔值。'
+    }
 
     $serialPort = $Devices.serial_port
     $waveInEndpointId = $Devices.wave_in_endpoint_id
@@ -337,7 +358,7 @@ function ConvertTo-ValidatedConnectionProfile {
         if ($endpoint.Value -isnot [string] -or [string]::IsNullOrWhiteSpace($endpoint.Value) -or
             $endpoint.Value.Length -gt 4096) { throw "devices.$($endpoint.Name) 必须是 auto 或有效 endpoint ID。" }
     }
-    return [pscustomobject][ordered]@{
+    $validated = [ordered]@{
         schema_version = 1
         connection = [pscustomobject][ordered]@{
             callsign = $callsign
@@ -350,12 +371,19 @@ function ConvertTo-ValidatedConnectionProfile {
             color_code = [uint64]$colorCode
             call_kind = $callKind
         }
+        receive = [pscustomobject][ordered]@{
+            destination_id = [uint64]$receiveDestinationId
+            slot = [uint64]$receiveSlot
+            call_kind = $receiveCallKind
+        }
         devices = [pscustomobject][ordered]@{
             serial_port = $serialPort.ToUpperInvariant() -replace '^AUTO$', 'auto'
             wave_in_endpoint_id = $waveInEndpointId
             wave_out_endpoint_id = $waveOutEndpointId
         }
     }
+    if ($null -ne $TransmitEnabled) { $validated.transmit_enabled = [bool]$TransmitEnabled }
+    return [pscustomobject]$validated
 }
 
 function Read-ConnectionProfile {
@@ -368,10 +396,32 @@ function Read-ConnectionProfile {
     Assert-JsonObjectKeysUnique -JsonText $json
     try { $document = ConvertFrom-Json -InputObject $json -ErrorAction Stop }
     catch { throw "连接配置 JSON 无效：$fullPath" }
-    Assert-ExactJsonObject -Value $document -ExpectedNames @('schema_version', 'connection', 'devices') -Label '连接配置'
+    $expectedNames = @('schema_version', 'connection', 'devices', 'receive', 'transmit_enabled')
+    $requiredNames = @('schema_version', 'connection', 'devices')
+    $actualNames = @($document.PSObject.Properties | ForEach-Object { [string]$_.Name })
+    if ($actualNames.Count -lt $requiredNames.Count -or $actualNames.Count -gt $expectedNames.Count) {
+        throw '连接配置字段不完整或包含未知字段。'
+    }
+    foreach ($name in $actualNames) {
+        if ($expectedNames -cnotcontains $name) { throw "连接配置包含未知字段：$name" }
+    }
+    foreach ($name in $requiredNames) {
+        if ($actualNames -cnotcontains $name) { throw "连接配置缺少字段：$name" }
+    }
     $version = ConvertTo-ProfileUnsigned -Value $document.schema_version -Label 'schema_version' -Maximum 1
     if ($version -ne 1) { throw '连接配置 schema_version 只支持 1。' }
-    return ConvertTo-ValidatedConnectionProfile -Connection $document.connection -Devices $document.devices
+    $arguments = @{ Connection = $document.connection; Devices = $document.devices }
+    $receiveProperty = $document.PSObject.Properties['receive']
+    if ($null -ne $receiveProperty) {
+        if ($null -eq $receiveProperty.Value) { throw 'receive 存在时必须是完整对象。' }
+        $arguments.Receive = $receiveProperty.Value
+    }
+    $transmitProperty = $document.PSObject.Properties['transmit_enabled']
+    if ($null -ne $transmitProperty) {
+        if ($transmitProperty.Value -isnot [bool]) { throw 'transmit_enabled 必须是 JSON 布尔值。' }
+        $arguments.TransmitEnabled = $transmitProperty.Value
+    }
+    return ConvertTo-ValidatedConnectionProfile @arguments
 }
 
 function Read-ConnectionPrompt {
@@ -802,7 +852,8 @@ function Find-WaveEndpointById {
 function Get-ProfileConnectionArgs {
     param([Parameter(Mandatory=$true)][object]$Profile)
     $connection = $Profile.connection
-    return @(
+    $receive = $Profile.receive
+    $arguments = @(
         '--profile-callsign', [string]$connection.callsign,
         '--profile-gateway-id', ([uint64]$connection.gateway_id).ToString([Globalization.CultureInfo]::InvariantCulture),
         '--profile-source-id', ([uint64]$connection.source_id).ToString([Globalization.CultureInfo]::InvariantCulture),
@@ -811,8 +862,15 @@ function Get-ProfileConnectionArgs {
         '--profile-destination-id', ([uint64]$connection.destination_id).ToString([Globalization.CultureInfo]::InvariantCulture),
         '--profile-slot', ([uint64]$connection.slot).ToString([Globalization.CultureInfo]::InvariantCulture),
         '--profile-color-code', ([uint64]$connection.color_code).ToString([Globalization.CultureInfo]::InvariantCulture),
-        '--profile-call-kind', $(if ($connection.call_kind -ceq 'group') { 'G' } else { 'P' })
+        '--profile-call-kind', $(if ($connection.call_kind -ceq 'group') { 'G' } else { 'P' }),
+        '--profile-receive-destination-id', ([uint64]$receive.destination_id).ToString([Globalization.CultureInfo]::InvariantCulture),
+        '--profile-receive-slot', ([uint64]$receive.slot).ToString([Globalization.CultureInfo]::InvariantCulture),
+        '--profile-receive-call-kind', $(if ($receive.call_kind -ceq 'group') { 'G' } else { 'P' })
     )
+    if ($null -ne $Profile.PSObject.Properties['transmit_enabled'] -and -not [bool]$Profile.transmit_enabled) {
+        $arguments += '--listen-only'
+    }
+    return $arguments
 }
 function Test-StatusDirectory {
     param([Parameter(Mandatory=$true)][string]$Path)
@@ -935,7 +993,10 @@ try {
             -WaveInWasPrompted:$script:waveInSelectionWasManual `
             -WaveOutWasPrompted:$script:waveOutSelectionWasManual
         if ($profileChanged) {
-            $manualProfile = ConvertTo-ValidatedConnectionProfile -Connection $manualProfile.connection -Devices $manualProfile.devices
+            $profileArguments = @{ Connection = $manualProfile.connection; Devices = $manualProfile.devices }
+            if ($null -ne $manualProfile.PSObject.Properties['receive']) { $profileArguments.Receive = $manualProfile.receive }
+            if ($null -ne $manualProfile.PSObject.Properties['transmit_enabled']) { $profileArguments.TransmitEnabled = $manualProfile.transmit_enabled }
+            $manualProfile = ConvertTo-ValidatedConnectionProfile @profileArguments
             Write-ConnectionProfile -Path $manualProfilePath -Profile $manualProfile
         }
     }

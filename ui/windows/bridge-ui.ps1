@@ -114,6 +114,7 @@ $script:lastStatusUtc = [DateTime]::MinValue
 $script:latestStatus = $null
 $script:storedProfile = $null
 $script:effectiveProfile = $null
+$script:activeProfile = $null
 $script:passwordPath = ''
 $script:allowWindowClose = $false
 $script:closingAfterStop = $false
@@ -145,22 +146,101 @@ function Fit-WpfWindowToWorkArea {
     $Window.Height = [Math]::Min($Window.Height, $script:maxWindowHeight)
     $eventList = $Window.FindName('EventList')
     if ($null -ne $eventList) {
-        $eventList.Height = if ($script:maxWindowHeight -le 720) { 54 } else { 94 }
+        $eventList.Height = if ($script:maxWindowHeight -le 720) { 48 } else { 94 }
+    }
+    if ($null -ne $Window.FindName('StatusCards') -and $script:maxWindowHeight -le 720) {
+        $rootGrid = $Window.Content -as [System.Windows.Controls.Grid]
+        $rootGrid.Margin = [System.Windows.Thickness]::new(12.0)
+        $rootGrid.RowDefinitions[2].Height = [System.Windows.GridLength]::new(108.0)
+        $Window.FindName('StatusCards').Margin = [System.Windows.Thickness]::new(0.0, 0.0, 0.0, 10.0)
+        $dashboard = $Window.FindName('DashboardPanel')
+        $dashboard.Padding = [System.Windows.Thickness]::new(10.0)
+        $dashboard.Margin = [System.Windows.Thickness]::new(0.0, 0.0, 0.0, 6.0)
+        $targetValue = $Window.FindName('TargetValue')
+        $targetValue.FontSize = 16
+        $targetValue.Margin = [System.Windows.Thickness]::new(0.0, 2.0, 0.0, 0.0)
+        foreach ($name in @('ReceiveTargetValue', 'TransmitTargetValue', 'TransmitPermissionValue')) {
+            $summary = $Window.FindName($name)
+            $summary.FontSize = 11
+            $summary.Margin = [System.Windows.Thickness]::new(0.0, 1.0, 0.0, 0.0)
+        }
+        $trafficCard = $Window.FindName('TrafficCard')
+        $trafficCard.Padding = [System.Windows.Thickness]::new(8.0)
+        $trafficValue = $Window.FindName('TrafficValue')
+        $trafficValue.FontSize = 17
+        $trafficValue.Margin = [System.Windows.Thickness]::new(0.0, 4.0, 0.0, 2.0)
+        $Window.FindName('TrafficDetail').FontSize = 11
+        $Window.FindName('RadioStateValue').Margin = [System.Windows.Thickness]::new(0.0, 5.0, 0.0, 0.0)
+        $Window.FindName('CurrentCallLabel').Margin = [System.Windows.Thickness]::new(0.0, 5.0, 0.0, 0.0)
+        $currentCallValue = $Window.FindName('CurrentCallValue')
+        $currentCallValue.FontSize = 13
+        $currentCallValue.Margin = [System.Windows.Thickness]::new(0.0, 1.0, 0.0, 1.0)
+        $Window.FindName('CurrentCallDetail').FontSize = 11
+    }
+}
+
+function ConvertTo-UiBoundsRecord {
+    param([System.Windows.Rect]$Bounds)
+    if ($Bounds.IsEmpty) {
+        return [pscustomobject][ordered]@{ x = 0.0; y = 0.0; width = 0.0; height = 0.0; right = 0.0; bottom = 0.0 }
+    }
+    return [pscustomobject][ordered]@{
+        x = [double]$Bounds.X; y = [double]$Bounds.Y
+        width = [double]$Bounds.Width; height = [double]$Bounds.Height
+        right = [double]$Bounds.Right; bottom = [double]$Bounds.Bottom
+    }
+}
+
+function Get-WpfElementLayoutEvidence {
+    param(
+        [Parameter(Mandatory=$true)][System.Windows.Window]$Window,
+        [Parameter(Mandatory=$true)][System.Windows.FrameworkElement]$Element
+    )
+    $localBounds = [System.Windows.Rect]::new(0.0, 0.0, [double]$Element.ActualWidth, [double]$Element.ActualHeight)
+    $actualBounds = $Element.TransformToAncestor($Window).TransformBounds($localBounds)
+    $visibleBounds = $actualBounds
+    $ancestor = [System.Windows.Media.VisualTreeHelper]::GetParent($Element)
+    while ($null -ne $ancestor) {
+        if ($ancestor -is [System.Windows.FrameworkElement]) {
+            $ancestorLocalBounds = [System.Windows.Rect]::new(0.0, 0.0, [double]$ancestor.ActualWidth, [double]$ancestor.ActualHeight)
+            $ancestorBounds = $ancestor.TransformToAncestor($Window).TransformBounds($ancestorLocalBounds)
+            $visibleBounds.Intersect($ancestorBounds)
+        }
+        if ([object]::ReferenceEquals($ancestor, $Window)) { break }
+        if ($ancestor -is [System.Windows.Media.Visual]) {
+            $ancestor = [System.Windows.Media.VisualTreeHelper]::GetParent($ancestor)
+        } else {
+            break
+        }
+    }
+    return [pscustomobject][ordered]@{
+        actual = ConvertTo-UiBoundsRecord -Bounds $actualBounds
+        visible = ConvertTo-UiBoundsRecord -Bounds $visibleBounds
+        fully_visible = (-not $actualBounds.IsEmpty -and -not $visibleBounds.IsEmpty -and
+            [Math]::Abs($actualBounds.X - $visibleBounds.X) -le 1.0 -and
+            [Math]::Abs($actualBounds.Y - $visibleBounds.Y) -le 1.0 -and
+            [Math]::Abs($actualBounds.Right - $visibleBounds.Right) -le 1.0 -and
+            [Math]::Abs($actualBounds.Bottom - $visibleBounds.Bottom) -le 1.0)
     }
 }
 
 function Get-WpfWindowLayoutInfo {
     param([Parameter(Mandatory=$true)][System.Windows.Window]$Window, [Parameter(Mandatory=$true)][string[]]$ControlNames)
     $visibility = [ordered]@{}
+    $bounds = [ordered]@{}
     foreach ($name in $ControlNames) {
         $control = $Window.FindName($name)
         $visibility[$name] = ($null -ne $control -and $control.IsVisible)
+        if ($control -is [System.Windows.FrameworkElement]) {
+            $bounds[$name] = Get-WpfElementLayoutEvidence -Window $Window -Element $control
+        }
     }
     $eventList = $Window.FindName('EventList')
     return [pscustomobject][ordered]@{
         width = [double]$Window.ActualWidth
         height = [double]$Window.ActualHeight
         controls_visible = [pscustomobject]$visibility
+        controls_bounds = [pscustomobject]$bounds
         event_list_height = if ($null -ne $eventList) { [double]$eventList.ActualHeight } else { $null }
     }
 }
@@ -274,6 +354,45 @@ function Format-ProfileTarget {
     return ('TG {0} · TS{1}' -f $connection.destination_id, $slot)
 }
 
+function Format-ProfileReceiveTarget {
+    param([object]$Profile)
+    if ($null -eq $Profile -or $null -eq $Profile.receive) { return '接收：尚未设置' }
+    $receive = $Profile.receive
+    $primary = if ($receive.call_kind -ceq 'private') {
+        ('接收：单呼 {0} · TS{1}' -f $receive.destination_id, $receive.slot)
+    } else {
+        ('接收：TG {0} · TS{1}' -f $receive.destination_id, $receive.slot)
+    }
+    $transmitAllowed = $null -eq $Profile.PSObject.Properties['transmit_enabled'] -or [bool]$Profile.transmit_enabled
+    $tx = $Profile.connection
+    if ($transmitAllowed -and $tx.call_kind -ceq 'private') {
+        $alreadyCovered = $receive.call_kind -ceq 'private' -and
+            [uint64]$receive.destination_id -eq [uint64]$Profile.connection.source_id -and
+            [uint64]$receive.slot -eq [uint64]$tx.slot
+        if (-not $alreadyCovered) {
+            $returnLabel = if ([uint64]$tx.destination_id -eq 460997) { '鹦鹉回声' } else { '发射目标私呼回话' }
+            $primary += ('；另收：{0} · TS{1}' -f $returnLabel, $tx.slot)
+        }
+    }
+    return $primary
+}
+
+function Format-ProfileTransmitPermission {
+    param([object]$Profile)
+    if ($null -eq $Profile -or ($null -ne $Profile.PSObject.Properties['transmit_enabled'] -and -not [bool]$Profile.transmit_enabled)) {
+        return '发射许可：关闭'
+    }
+    return '发射许可：开启（仍按核心呼叫策略限制）'
+}
+
+function Set-MainTargetSummary {
+    param([object]$Profile, [string]$OverallLabel)
+    Set-MainText -Name 'TargetValue' -Text $OverallLabel
+    Set-MainText -Name 'ReceiveTargetValue' -Text (Format-ProfileReceiveTarget -Profile $Profile)
+    Set-MainText -Name 'TransmitTargetValue' -Text ('发射：' + (Format-ProfileTarget -Profile $Profile))
+    Set-MainText -Name 'TransmitPermissionValue' -Text (Format-ProfileTransmitPermission -Profile $Profile)
+}
+
 function Get-SelectedTargetTag {
     $selector = Get-UiControl -Name 'TargetSelector'
     if ($null -eq $selector.SelectedItem) { return 'custom' }
@@ -293,13 +412,38 @@ function New-EffectiveTargetProfile {
         color_code = [uint64]$Profile.connection.color_code
         call_kind = [string]$Profile.connection.call_kind
     }
+    $receive = [pscustomobject][ordered]@{
+        destination_id = [uint64]$Profile.receive.destination_id
+        slot = [uint64]$Profile.receive.slot
+        call_kind = [string]$Profile.receive.call_kind
+    }
+    $transmitEnabled = if ($null -ne $Profile.PSObject.Properties['transmit_enabled']) { [bool]$Profile.transmit_enabled } else { $true }
     switch ($Target) {
-        'parrot-cn' { $connection.destination_id = [uint64]460997; $connection.slot = [uint64]2; $connection.call_kind = 'private' }
-        'listen-91' { $connection.destination_id = [uint64]91; $connection.slot = [uint64]2; $connection.call_kind = 'group' }
-        'listen-46001' { $connection.destination_id = [uint64]46001; $connection.slot = [uint64]2; $connection.call_kind = 'group' }
+        'parrot-cn' {
+            $connection.destination_id = [uint64]460997
+            $connection.slot = [uint64]2
+            $connection.call_kind = 'private'
+            $receive.destination_id = [uint64]$connection.source_id
+            $receive.slot = [uint64]2
+            $receive.call_kind = 'private'
+            $transmitEnabled = $true
+        }
+        'listen-91' {
+            $receive.destination_id = [uint64]91
+            $receive.slot = [uint64]2
+            $receive.call_kind = 'group'
+            $transmitEnabled = $false
+        }
+        'listen-46001' {
+            $receive.destination_id = [uint64]46001
+            $receive.slot = [uint64]2
+            $receive.call_kind = 'group'
+            $transmitEnabled = $false
+        }
         default { }
     }
-    return ConvertTo-BridgeUserConnectionProfile -Connection $connection -Devices $Profile.devices
+    return ConvertTo-BridgeUserConnectionProfile -Connection $connection -Devices $Profile.devices `
+        -Receive $receive -TransmitEnabled $transmitEnabled
 }
 
 function Test-UiSourceIdentityRecord {
@@ -675,6 +819,57 @@ function Test-UiPreparationRecord {
     $arguments = @($Record.arguments)
     if ($arguments.Count -lt 20 -or @($arguments | Where-Object { $_ -isnot [string] }).Count -ne 0) {
         throw '设备预检返回的启动参数不完整。'
+    }
+    $valueOptions = @(
+        '--port', '--body-file', '--input', '--output', '--status-file',
+        '--expected-wavein-endpoint', '--expected-waveout-endpoint',
+        '--radio-playback-gain', '--mic-transmit-gain', '--password-file',
+        '--profile-callsign', '--profile-gateway-id', '--profile-source-id',
+        '--profile-master', '--profile-master-port', '--profile-destination-id',
+        '--profile-slot', '--profile-color-code', '--profile-call-kind',
+        '--profile-receive-destination-id', '--profile-receive-slot', '--profile-receive-call-kind'
+    )
+    $switchOptions = @('--run', '--ui-pipe', '--listen-only')
+    $parsedArguments = @{}
+    for ($index = 0; $index -lt $arguments.Count; $index++) {
+        $name = [string]$arguments[$index]
+        if ($parsedArguments.ContainsKey($name) -or
+            (($valueOptions -cnotcontains $name) -and ($switchOptions -cnotcontains $name))) {
+            throw '设备预检返回了重复或不受支持的启动参数。'
+        }
+        if ($valueOptions -ccontains $name) {
+            if ($index + 1 -ge $arguments.Count -or [string]$arguments[$index + 1] -like '--*') {
+                throw '设备预检返回的启动参数缺少值。'
+            }
+            $parsedArguments[$name] = [string]$arguments[$index + 1]
+            $index++
+        } else {
+            $parsedArguments[$name] = $true
+        }
+    }
+    foreach ($requiredOption in @(
+        '--run', '--ui-pipe', '--port', '--body-file', '--input', '--output', '--status-file',
+        '--expected-wavein-endpoint', '--expected-waveout-endpoint', '--radio-playback-gain', '--mic-transmit-gain',
+        '--password-file', '--profile-callsign', '--profile-gateway-id', '--profile-source-id',
+        '--profile-master', '--profile-master-port', '--profile-destination-id', '--profile-slot',
+        '--profile-color-code', '--profile-call-kind', '--profile-receive-destination-id',
+        '--profile-receive-slot', '--profile-receive-call-kind'
+    )) {
+        if (-not $parsedArguments.ContainsKey($requiredOption)) { throw '设备预检返回的启动参数不完整。' }
+    }
+    $receiveDestination = [uint32]0
+    $receiveSlot = [uint32]0
+    if (-not [uint32]::TryParse($parsedArguments['--profile-receive-destination-id'],
+            [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture, [ref]$receiveDestination) -or
+        $receiveDestination -lt 1 -or $receiveDestination -gt 16777215 -or
+        -not [uint32]::TryParse($parsedArguments['--profile-receive-slot'],
+            [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture, [ref]$receiveSlot) -or
+        $receiveSlot -notin @(1, 2) -or
+        $parsedArguments['--profile-receive-call-kind'] -cnotin @('G', 'P')) {
+        throw '设备预检返回的接收目标字段无效。'
+    }
+    if ($parsedArguments['--profile-call-kind'] -cnotin @('G', 'P')) {
+        throw '设备预检返回的发射呼叫类型无效。'
     }
     $pipeCount = 0
     $statusValue = ''
@@ -1211,9 +1406,11 @@ function Set-SettingsWindowFields {
         MasterBox = if ($script:storedProfile) { $script:storedProfile.connection.master } else { '' }
         MasterPortBox = if ($script:storedProfile) { $script:storedProfile.connection.master_port } else { '' }
         DestinationBox = if ($script:storedProfile) { $script:storedProfile.connection.destination_id } else { '' }
+        ReceiveDestinationBox = if ($script:storedProfile) { $script:storedProfile.receive.destination_id } else { '' }
         ColorCodeBox = if ($script:storedProfile) { $script:storedProfile.connection.color_code } else { '' }
         PasswordPathBox = Read-CurrentPasswordPath
     }
+    $script:loadingSettings = $true
     foreach ($name in $fields.Keys) { (Get-SettingsControl $name).Text = [string]$fields[$name] }
     (Get-SettingsControl 'PlaybackGainSlider').Value = [double]$audio.RadioPlaybackGainMilli / 1000.0
     (Get-SettingsControl 'TransmitGainSlider').Value = [double]$audio.MicTransmitGainMilli / 1000.0
@@ -1226,6 +1423,22 @@ function Set-SettingsWindowFields {
     $kindBox = Get-SettingsControl 'CallKindBox'
     $kindValue = if ($script:storedProfile) { [string]$script:storedProfile.connection.call_kind } else { 'private' }
     $kindBox.SelectedItem = @($kindBox.Items | Where-Object { [string]$_.Tag -ceq $kindValue })[0]
+    $receiveSlotBox = Get-SettingsControl 'ReceiveSlotBox'
+    $receiveSlotValue = if ($script:storedProfile) { [string]$script:storedProfile.receive.slot } else { '2' }
+    $receiveSlotBox.SelectedItem = @($receiveSlotBox.Items | Where-Object { [string]$_.Tag -ceq $receiveSlotValue })[0]
+    $receiveKindBox = Get-SettingsControl 'ReceiveCallKindBox'
+    $receiveKindValue = if ($script:storedProfile) { [string]$script:storedProfile.receive.call_kind } else { 'private' }
+    $receiveKindBox.SelectedItem = @($receiveKindBox.Items | Where-Object { [string]$_.Tag -ceq $receiveKindValue })[0]
+    $transmitEnabled = if ($script:storedProfile -and $null -ne $script:storedProfile.PSObject.Properties['transmit_enabled']) {
+        [bool]$script:storedProfile.transmit_enabled
+    } else { $true }
+    (Get-SettingsControl 'TransmitEnabledBox').IsChecked = $transmitEnabled
+    $masterPreset = Get-SettingsControl 'MasterPresetBox'
+    $masterPresetTag = if ($script:storedProfile -and
+        [string]$script:storedProfile.connection.master -ceq '43.129.83.124' -and
+        [uint64]$script:storedProfile.connection.master_port -eq 62031) { 'bm-china-4602' } else { 'custom' }
+    $masterPreset.SelectedItem = @($masterPreset.Items | Where-Object { [string]$_.Tag -ceq $masterPresetTag })[0]
+    $script:loadingSettings = $false
     if ($profileError -or $audioError) {
         $readErrors = @($profileError, $audioError | Where-Object { $_ }) -join '；'
         (Get-SettingsControl 'SettingsErrorText').Text = ('有本机设置无法读取，请检查并重新保存。' + $readErrors)
@@ -1250,6 +1463,15 @@ function Initialize-SettingsWindow {
         if ($closedSettingsWindow) { Invalidate-UiDeviceDiscoveryForWindow -Window $closedSettingsWindow }
     })
     (Get-SettingsControl 'CancelSettingsButton').Add_Click({ $script:settingsWindow.Close() })
+    (Get-SettingsControl 'MasterPresetBox').Add_SelectionChanged({
+        if ($script:loadingSettings) { return }
+        $selected = (Get-SettingsControl 'MasterPresetBox').SelectedItem
+        if ($selected -isnot [System.Windows.Controls.ComboBoxItem]) { return }
+        if ([string]$selected.Tag -ceq 'bm-china-4602') {
+            (Get-SettingsControl 'MasterBox').Text = '43.129.83.124'
+            (Get-SettingsControl 'MasterPortBox').Text = '62031'
+        }
+    })
     (Get-SettingsControl 'BrowsePasswordButton').Add_Click({
         $dialog = New-Object Microsoft.Win32.OpenFileDialog
         $dialog.Title = '选择本机 BM 密码文件'
@@ -1290,6 +1512,8 @@ function Save-SettingsFromWindow {
     try {
         $slotItem = (Get-SettingsControl 'SlotBox').SelectedItem
         $kindItem = (Get-SettingsControl 'CallKindBox').SelectedItem
+        $receiveSlotItem = (Get-SettingsControl 'ReceiveSlotBox').SelectedItem
+        $receiveKindItem = (Get-SettingsControl 'ReceiveCallKindBox').SelectedItem
         $serialContainer = (Get-SettingsControl 'SerialBox').SelectedItem
         $waveInContainer = (Get-SettingsControl 'WaveInEndpointBox').SelectedItem
         $waveOutContainer = (Get-SettingsControl 'WaveOutEndpointBox').SelectedItem
@@ -1322,6 +1546,12 @@ function Save-SettingsFromWindow {
                 throw '电台音频输出有多个候选设备；请从下拉列表中选择稳定端点。'
             }
         }
+        if ($slotItem -isnot [System.Windows.Controls.ComboBoxItem] -or
+            $kindItem -isnot [System.Windows.Controls.ComboBoxItem] -or
+            $receiveSlotItem -isnot [System.Windows.Controls.ComboBoxItem] -or
+            $receiveKindItem -isnot [System.Windows.Controls.ComboBoxItem]) {
+            throw '请分别选择发射与接收的时隙和呼叫类型。'
+        }
         $connection = [pscustomobject]@{
             callsign = (Get-SettingsControl 'CallsignBox').Text
             gateway_id = (Get-SettingsControl 'GatewayBox').Text
@@ -1333,12 +1563,19 @@ function Save-SettingsFromWindow {
             color_code = (Get-SettingsControl 'ColorCodeBox').Text
             call_kind = [string]$kindItem.Tag
         }
+        $receive = [pscustomobject]@{
+            destination_id = (Get-SettingsControl 'ReceiveDestinationBox').Text
+            slot = [string]$receiveSlotItem.Tag
+            call_kind = [string]$receiveKindItem.Tag
+        }
         $devices = [pscustomobject]@{
             serial_port = [string]$serialItem.Value
             wave_in_endpoint_id = [string]$waveInItem.Value
             wave_out_endpoint_id = [string]$waveOutItem.Value
         }
-        $profile = ConvertTo-BridgeUserConnectionProfile -Connection $connection -Devices $devices -AllowTextNumbers
+        $transmitEnabled = ((Get-SettingsControl 'TransmitEnabledBox').IsChecked -eq $true)
+        $profile = ConvertTo-BridgeUserConnectionProfile -Connection $connection -Devices $devices `
+            -Receive $receive -TransmitEnabled $transmitEnabled -AllowTextNumbers
         $playbackValue = [double](Get-SettingsControl 'PlaybackGainSlider').Value
         $transmitValue = [double](Get-SettingsControl 'TransmitGainSlider').Value
         $playbackMilli = Convert-UiGainSliderToMilli -Value $playbackValue
@@ -1400,12 +1637,17 @@ function Save-SettingsFromWindow {
         (Get-SettingsControl 'SettingsErrorText').Text = '设置已保存。'
         $script:storedProfile = $profile
         $selectedTarget = Get-SelectedTargetTag
-        $script:targetLabel = Format-ProfileTarget -Profile (New-EffectiveTargetProfile -Profile $profile -Target $selectedTarget)
+        $pendingProfile = New-EffectiveTargetProfile -Profile $profile -Target $selectedTarget
+        $script:targetLabel = Format-ProfileTarget -Profile $pendingProfile
         $wasRunning = ($script:supervisor -and -not $script:supervisor.HasExited)
         if ($wasRunning) {
-            Set-MainText -Name 'TrafficDetail' -Text ('设置已保存；下一次连接将使用 {0}。' -f $script:targetLabel)
+            Set-MainText -Name 'TrafficDetail' -Text ('设置已保存；下一次连接将使用 {0}；发射：{1}；{2}。' -f `
+                (Format-ProfileReceiveTarget -Profile $pendingProfile),
+                (Format-ProfileTarget -Profile $pendingProfile),
+                (Format-ProfileTransmitPermission -Profile $pendingProfile))
+            Set-MainTargetSummary -Profile $script:activeProfile -OverallLabel $script:activeTargetLabel
         } else {
-            Set-MainText -Name 'TargetValue' -Text $script:targetLabel
+            Set-MainTargetSummary -Profile $pendingProfile -OverallLabel $script:targetLabel
         }
         $script:settingsWindow.Close()
         if ($script:startupNeedsSettings -and -not $wasRunning -and -not $OfflinePreview -and -not $NoAutoConnect) {
@@ -1441,7 +1683,7 @@ function Start-BridgeRun {
         $script:preparedTargetTag = $target
         $script:preparedTargetLabel = $script:targetLabel
         if (-not $script:supervisor -or $script:supervisor.HasExited) {
-            Set-MainText -Name 'TargetValue' -Text $script:targetLabel
+            Set-MainTargetSummary -Profile $script:effectiveProfile -OverallLabel $script:targetLabel
         }
         $audio = Get-BridgeAudioSettings -Path $script:audioSettingsPath
         $retention = Invoke-UiRunLogRetention -RunRoot (Join-Path $script:configDirectory 'ui-runs') `
@@ -1512,8 +1754,9 @@ function Complete-BridgePreparation {
         $script:supervisor.Start($validatedPreparation.Executable, $validatedPreparation.Arguments, $script:releaseDirectory)
         $script:activeTargetTag = $script:preparedTargetTag
         $script:activeTargetLabel = $script:preparedTargetLabel
+        $script:activeProfile = $script:effectiveProfile
         $script:targetLabel = $script:activeTargetLabel
-        Set-MainText -Name 'TargetValue' -Text $script:activeTargetLabel
+        Set-MainTargetSummary -Profile $script:activeProfile -OverallLabel $script:activeTargetLabel
         $script:statusOffset = 0
         $script:partialStatusLine = ''
         $script:currentRunId = ''
@@ -1881,6 +2124,7 @@ function Complete-BridgeStop {
         $script:closingAfterStop = $false
         $script:activeTargetLabel = ''
         $script:activeTargetTag = ''
+        $script:activeProfile = $null
         $script:lastUiBmState = ''
         $script:lastUiHriState = ''
         Set-OfflineDisplay -Reason '当前连接已停止，正在连接所选目标。'
@@ -1918,9 +2162,11 @@ function On-UiTimerTick {
             if (-not $script:stopTask) {
                 $script:activeTargetLabel = ''
                 $script:activeTargetTag = ''
+                $script:activeProfile = $null
                 $script:lastUiBmState = ''
                 $script:lastUiHriState = ''
-                Set-MainText -Name 'TargetValue' -Text $script:targetLabel
+                $selectedProfile = if ($script:storedProfile) { New-EffectiveTargetProfile -Profile $script:storedProfile -Target (Get-SelectedTargetTag) } else { $null }
+                Set-MainTargetSummary -Profile $selectedProfile -OverallLabel $script:targetLabel
                 Set-MainText -Name 'TrafficDetail' -Text '连接已停止；可按所选目标重新连接。'
                 Set-ConnectionButtonState
             }
@@ -1975,8 +2221,8 @@ function Get-UiVisualTextValues {
 
 function Get-UiComboRenderEvidence {
     param([Parameter(Mandatory=$true)][System.Windows.Controls.ComboBox]$Combo)
-    $Combo.ApplyTemplate()
-    $Combo.UpdateLayout()
+    [void]$Combo.ApplyTemplate()
+    [void]$Combo.UpdateLayout()
     $selectedContainer = $Combo.SelectedItem
     if ($selectedContainer -isnot [System.Windows.Controls.ComboBoxItem] -or $selectedContainer.Content -isnot [string]) {
         throw ('{0} 的选中项没有显示纯文本标签。' -f $Combo.Name)
@@ -1997,9 +2243,9 @@ function Get-UiComboRenderEvidence {
         throw ('{0} 选中框视觉树没有显示设备标签。' -f $Combo.Name)
     }
 
-    $Combo.IsDropDownOpen = $true
-    $Combo.UpdateLayout()
-    [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::Render)
+    [void]$Combo.SetCurrentValue([System.Windows.Controls.ComboBox]::IsDropDownOpenProperty, $true)
+    [void]$Combo.UpdateLayout()
+    [void][System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::Render)
     $popup = $Combo.Template.FindName('PART_Popup', $Combo)
     if ($null -eq $popup -or $null -eq $popup.Child) { throw ('{0} 下拉列表没有创建视觉树。' -f $Combo.Name) }
     $dropDownTexts = @(Get-UiVisualTextValues -Root $popup.Child)
@@ -2010,8 +2256,8 @@ function Get-UiComboRenderEvidence {
             throw ('{0} 下拉项视觉树没有显示纯文本标签。' -f $Combo.Name)
         }
     }
-    $Combo.IsDropDownOpen = $false
-    $Combo.UpdateLayout()
+    [void]$Combo.SetCurrentValue([System.Windows.Controls.ComboBox]::IsDropDownOpenProperty, $false)
+    [void]$Combo.UpdateLayout()
     $metadataText = @($selectedTexts + $dropDownTexts | Where-Object { $_ -match '@\{(Label|Value|IsAvailable|Kind)=' })
     if ($metadataText.Count -gt 0) { throw ('{0} 视觉树泄漏了 PowerShell 对象元数据。' -f $Combo.Name) }
     return [pscustomobject]@{
@@ -2037,11 +2283,14 @@ $script:mainWindow.FindName('OfflineBanner').Visibility = [Windows.Visibility]::
         $targetProfile = New-EffectiveTargetProfile -Profile $script:storedProfile -Target $selectedTarget
         $script:targetLabel = Format-ProfileTarget -Profile $targetProfile
         if ($script:supervisor -and -not $script:supervisor.HasExited) {
-            Set-MainText -Name 'TargetValue' -Text $script:activeTargetLabel
-            Set-MainText -Name 'TrafficDetail' -Text ('已选择 {0}；按“切换目标”后重新连接。' -f $script:targetLabel)
+            Set-MainTargetSummary -Profile $script:activeProfile -OverallLabel $script:activeTargetLabel
+            Set-MainText -Name 'TrafficDetail' -Text ('已选择下次连接配置：{0}；{1}；{2}。' -f `
+                (Format-ProfileReceiveTarget -Profile $targetProfile),
+                ('发射：' + (Format-ProfileTarget -Profile $targetProfile)),
+                (Format-ProfileTransmitPermission -Profile $targetProfile))
         } else {
-            Set-MainText -Name 'TargetValue' -Text $script:targetLabel
-            Set-MainText -Name 'TrafficDetail' -Text '所选目标将在连接时使用。'
+            Set-MainTargetSummary -Profile $targetProfile -OverallLabel $script:targetLabel
+            Set-MainText -Name 'TrafficDetail' -Text '所选收听与发射目标将在连接时使用。'
         }
         Set-ConnectionButtonState
     }
@@ -2141,8 +2390,8 @@ if ($RenderOnly) {
         max_window_width = $script:maxWindowWidth
         max_window_height = $script:maxWindowHeight
         device_combo_rendered_text = $deviceComboEvidence
-        main = Get-WpfWindowLayoutInfo -Window $script:mainWindow -ControlNames @('ConnectButton', 'SettingsButton', 'StopButton', 'FooterText', 'HriSourceIdentityValue', 'RadioDisplayValue', 'CurrentCallValue', 'CurrentCallDetail')
-        settings = Get-WpfWindowLayoutInfo -Window $script:settingsWindow -ControlNames @('CancelSettingsButton', 'SaveSettingsButton', 'SettingsErrorText', 'PasswordPathBox', 'BrowsePasswordButton', 'DeviceDiscoveryText', 'RefreshDevicesButton', 'SerialBox', 'WaveInEndpointBox', 'WaveOutEndpointBox', 'PlaybackGainSlider', 'PlaybackGainValueText', 'TransmitGainSlider', 'TransmitGainValueText')
+        main = Get-WpfWindowLayoutInfo -Window $script:mainWindow -ControlNames @('ConnectButton', 'SettingsButton', 'StopButton', 'FooterText', 'TargetSelector', 'ReceiveTargetValue', 'TransmitTargetValue', 'TransmitPermissionValue', 'CoreDetail', 'RadioDetail', 'AudioDetail', 'BmDetail', 'CoreStatusCard', 'RadioStatusCard', 'AudioStatusCard', 'BmStatusCard', 'HriSourceIdentityValue', 'RadioDisplayValue', 'CurrentCallLabel', 'CurrentCallValue', 'CurrentCallDetail', 'TrafficCard')
+        settings = Get-WpfWindowLayoutInfo -Window $script:settingsWindow -ControlNames @('CancelSettingsButton', 'SaveSettingsButton', 'SettingsErrorText', 'MasterPresetBox', 'PasswordPathBox', 'BrowsePasswordButton', 'DeviceDiscoveryText', 'RefreshDevicesButton', 'SerialBox', 'WaveInEndpointBox', 'WaveOutEndpointBox', 'DestinationBox', 'ReceiveDestinationBox', 'ReceiveSlotBox', 'ReceiveCallKindBox', 'TransmitEnabledBox', 'PlaybackGainSlider', 'PlaybackGainValueText', 'TransmitGainSlider', 'TransmitGainValueText')
         main_source_identity = [pscustomobject][ordered]@{
             value = (Get-UiControl 'HriSourceIdentityValue').Text
             radio_display = (Get-UiControl 'RadioDisplayValue').Text
@@ -2150,6 +2399,47 @@ if ($RenderOnly) {
         }
     }
     [System.IO.File]::WriteAllText((Join-Path $renderDirectory 'layout-info.json'), (ConvertTo-Json -InputObject $layoutInfo -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
+
+    $simulatedConnection = [pscustomobject][ordered]@{
+        callsign = 'TEST'; gateway_id = [uint64]1; source_id = [uint64]3149876
+        master = '43.129.83.124'; master_port = [uint64]62031; destination_id = [uint64]460997
+        slot = [uint64]2; color_code = [uint64]0; call_kind = 'private'
+    }
+    $simulatedDevices = [pscustomobject][ordered]@{
+        serial_port = 'auto'; wave_in_endpoint_id = 'auto'; wave_out_endpoint_id = 'auto'
+    }
+    $simulatedProfile = ConvertTo-BridgeUserConnectionProfile -Connection $simulatedConnection -Devices $simulatedDevices `
+        -Receive ([pscustomobject][ordered]@{ destination_id = [uint64]91; slot = [uint64]2; call_kind = 'group' }) `
+        -TransmitEnabled $false
+    $simulatedEffectiveProfile = New-EffectiveTargetProfile -Profile $simulatedProfile -Target 'listen-91'
+    Set-MainTargetSummary -Profile $simulatedEffectiveProfile -OverallLabel '离线模拟 · 全球收听 TG91'
+    Set-MainText -Name 'TrafficValue' -Text '离线模拟 · 正在接收'
+    Set-MainText -Name 'TrafficDetail' -Text '离线模拟：收听 TG91，未连接 BM。'
+    Set-MainText -Name 'RadioStateValue' -Text '电台状态：未知（离线模拟）'
+    Set-MainText -Name 'CurrentCallValue' -Text '离线模拟 · DMR ID 3149876'
+    Set-MainText -Name 'CurrentCallDetail' -Text '离线模拟：组呼 · 目标 91 · TS2 · CC 1 · LC 已验证 · 接收中'
+    $activeCallDirectory = Join-Path $renderDirectory 'configured-active-call'
+    [System.IO.Directory]::CreateDirectory($activeCallDirectory) | Out-Null
+    $script:mainWindow.UpdateLayout()
+    Save-RenderedWindow -Window $script:mainWindow -Path (Join-Path $activeCallDirectory 'main-window.png')
+    $activeCallLayout = [pscustomobject][ordered]@{
+        work_area_width = $script:workAreaWidth
+        work_area_height = $script:workAreaHeight
+        max_window_width = $script:maxWindowWidth
+        max_window_height = $script:maxWindowHeight
+        device_combo_rendered_text = $deviceComboEvidence
+        main = Get-WpfWindowLayoutInfo -Window $script:mainWindow -ControlNames @('ConnectButton', 'SettingsButton', 'StopButton', 'FooterText', 'TargetSelector', 'ReceiveTargetValue', 'TransmitTargetValue', 'TransmitPermissionValue', 'CoreDetail', 'RadioDetail', 'AudioDetail', 'BmDetail', 'CoreStatusCard', 'RadioStatusCard', 'AudioStatusCard', 'BmStatusCard', 'HriSourceIdentityValue', 'RadioDisplayValue', 'CurrentCallLabel', 'CurrentCallValue', 'CurrentCallDetail', 'TrafficCard')
+        settings = $layoutInfo.settings
+        main_source_identity = $layoutInfo.main_source_identity
+        configured_profile = $simulatedEffectiveProfile
+        active_call = [pscustomobject][ordered]@{
+            value = (Get-UiControl 'CurrentCallValue').Text
+            detail = (Get-UiControl 'CurrentCallDetail').Text
+            visual_text = @(Get-UiVisualTextValues -Root $script:mainWindow)
+        }
+    }
+    [System.IO.File]::WriteAllText((Join-Path $activeCallDirectory 'layout-info.json'),
+        (ConvertTo-Json -InputObject $activeCallLayout -Depth 7), (New-Object System.Text.UTF8Encoding($false)))
     $script:settingsWindow.Close()
     $script:mainWindow.Close()
     $script:uiTimer.Stop()

@@ -35,8 +35,10 @@ $arguments = [System.Collections.Generic.List[string]]::new()
 $arguments.AddRange([string[]]@('--run', '--port', 'COM5', '--body-file', 'fixture.bin', '--input', '1', '--output', '3',
     '--status-file', $statusPath, '--expected-wavein-endpoint', 'input-endpoint', '--expected-waveout-endpoint', 'output-endpoint',
     '--radio-playback-gain', '1', '--mic-transmit-gain', '16', '--profile-callsign', 'TEST', '--profile-gateway-id', '1',
+    '--password-file', 'local-password-fixture.txt',
     '--profile-source-id', '1', '--profile-master', 'localhost', '--profile-master-port', '62031',
-    '--profile-destination-id', '460997', '--profile-slot', '2', '--profile-color-code', '1', '--profile-call-kind', 'private', '--ui-pipe'))
+    '--profile-destination-id', '460997', '--profile-slot', '2', '--profile-color-code', '1', '--profile-call-kind', 'P',
+    '--profile-receive-destination-id', '1', '--profile-receive-slot', '2', '--profile-receive-call-kind', 'P', '--ui-pipe'))
 $record = [pscustomobject][ordered]@{
     schema_version = [int64]1
     executable = [System.IO.Path]::GetFullPath($expectedExe)
@@ -49,6 +51,41 @@ try {
     Assert-UiPreparation ([string]::Equals($validated.StatusPath, [System.IO.Path]::GetFullPath($statusPath), [System.StringComparison]::OrdinalIgnoreCase)) '有效预检记录未返回实际状态路径。'
     Assert-UiPreparation ($validated.Arguments.Count -eq $record.arguments.Count -and
         [string]::Join([char]0, $validated.Arguments) -ceq [string]::Join([char]0, $record.arguments)) '有效预检记录的完整启动参数没有保留。'
+
+    $listenOnlyRecord = $record.PSObject.Copy()
+    $listenOnlyRecord.arguments = [string[]]@($record.arguments) + [string[]]@('--listen-only')
+    [void](Test-UiPreparationRecord -Record $listenOnlyRecord -RunDirectory $runDirectory -RunRoot $runRoot -ExpectedExecutable $expectedExe)
+    $withoutReceive = [System.Collections.Generic.List[string]]::new()
+    for ($index = 0; $index -lt $record.arguments.Count; $index++) {
+        if ($record.arguments[$index] -ceq '--profile-receive-destination-id') { $index++; continue }
+        if ($record.arguments[$index] -ceq '--profile-receive-slot') { $index++; continue }
+        if ($record.arguments[$index] -ceq '--profile-receive-call-kind') { $index++; continue }
+        $withoutReceive.Add([string]$record.arguments[$index])
+    }
+    $invalid = $record.PSObject.Copy()
+    $invalid.arguments = [string[]]$withoutReceive.ToArray()
+    $rejected = $false
+    try { [void](Test-UiPreparationRecord -Record $invalid -RunDirectory $runDirectory -RunRoot $runRoot -ExpectedExecutable $expectedExe) }
+    catch { $rejected = $true }
+    Assert-UiPreparation $rejected '缺少接收目标三元组时没有拒绝启动参数。'
+
+    $invalid = $record.PSObject.Copy()
+    $badReceive = [System.Collections.Generic.List[string]]::new()
+    $badReceive.AddRange([string[]]$record.arguments)
+    $badIndex = $badReceive.IndexOf('--profile-receive-slot')
+    $badReceive[$badIndex + 1] = '3'
+    $invalid.arguments = [string[]]$badReceive.ToArray()
+    $rejected = $false
+    try { [void](Test-UiPreparationRecord -Record $invalid -RunDirectory $runDirectory -RunRoot $runRoot -ExpectedExecutable $expectedExe) }
+    catch { $rejected = $true }
+    Assert-UiPreparation $rejected '无效接收时隙没有拒绝启动参数。'
+
+    $invalid = $record.PSObject.Copy()
+    $invalid.arguments = [string[]]@($record.arguments) + [string[]]@('--unrecognized-option', '1')
+    $rejected = $false
+    try { [void](Test-UiPreparationRecord -Record $invalid -RunDirectory $runDirectory -RunRoot $runRoot -ExpectedExecutable $expectedExe) }
+    catch { $rejected = $true }
+    Assert-UiPreparation $rejected '不受支持的启动参数没有被拒绝。'
 
     $invalid = $record.PSObject.Copy()
     $invalid.status_path = Join-Path $testRoot ([System.IO.Path]::GetFileName($statusPath))

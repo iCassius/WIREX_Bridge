@@ -199,6 +199,33 @@ try {
     Write-ConnectionProfile -Path $connectionProfilePath -Profile $profile
     $loadedProfile = Read-ConnectionProfile -Path $connectionProfilePath
     Assert-True ($loadedProfile.connection.call_kind -ceq 'group' -and $loadedProfile.devices.serial_port -ceq 'auto') 'profile 写入后应准确恢复呼叫类型和自动设备选择'
+    Assert-True ($loadedProfile.receive.destination_id -eq $loadedProfile.connection.destination_id -and
+        $loadedProfile.receive.call_kind -ceq 'group' -and $loadedProfile.receive.slot -eq 2) `
+        '旧组呼 profile 缺少接收对象时仍按原发射目标接收'
+    $listenProfile = ConvertTo-ValidatedConnectionProfile -Connection $profileConnection -Devices $profileDevices `
+        -Receive ([pscustomobject]@{ destination_id = [uint64]91; slot = [uint64]2; call_kind = 'group' }) `
+        -TransmitEnabled $false
+    $listenArgs = @(Get-ProfileConnectionArgs -Profile $listenProfile)
+    Assert-True (($listenArgs -join ' ') -match '--profile-receive-destination-id 91 --profile-receive-slot 2 --profile-receive-call-kind G') `
+        '独立 TG91 接收目标必须写入 native 启动参数'
+    Assert-True ($listenArgs -ccontains '--listen-only') '只收配置必须向 native 传递 listen-only'
+    $legacyPrivateConnection = $profileConnection.PSObject.Copy()
+    $legacyPrivateConnection.call_kind = 'private'
+    $legacyPrivateConnection.destination_id = [uint64]460997
+    $legacyPrivateConnection.source_id = [uint64]4611355
+    $legacyPrivateProfile = ConvertTo-ValidatedConnectionProfile -Connection $legacyPrivateConnection -Devices $profileDevices
+    Assert-True ($legacyPrivateProfile.receive.destination_id -eq 4611355 -and
+        $legacyPrivateProfile.receive.call_kind -ceq 'private') '旧私呼 profile 的默认接收目标应为本机 Source ID'
+    $legacyPrivateArgs = @(Get-ProfileConnectionArgs -Profile $legacyPrivateProfile)
+    Assert-True (($legacyPrivateArgs -join ' ') -match '--profile-receive-destination-id 4611355 --profile-receive-slot 2 --profile-receive-call-kind P') `
+        '本机私呼回声接收目标必须进入 native 启动参数'
+    Assert-Throws {
+        ConvertTo-ValidatedConnectionProfile -Connection $profileConnection -Devices $profileDevices `
+            -Receive ([pscustomobject]@{ destination_id = [uint64]91; slot = [uint64]2 })
+    } '接收目标的三个字段必须同时存在'
+    Assert-Throws {
+        ConvertTo-ValidatedConnectionProfile -Connection $profileConnection -Devices $profileDevices -TransmitEnabled 'false'
+    } '发射许可只接受 JSON 布尔值'
     Assert-True (@(Get-ChildItem -LiteralPath $temporaryRoot | Where-Object { $_.Name -match '\.(tmp|bak)-' }).Count -eq 0) 'profile 原子保存后不应残留临时文件'
 
     $profileJson = [System.IO.File]::ReadAllText($connectionProfilePath, [System.Text.Encoding]::UTF8)

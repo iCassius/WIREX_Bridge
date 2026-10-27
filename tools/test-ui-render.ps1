@@ -21,8 +21,38 @@ function Test-RenderedLayout {
             Assert-UiRender ([bool]$property.Value) ("$windowName 窗口中的 $($property.Name) 未显示。")
         }
     }
+    foreach ($controlName in @('TargetSelector', 'ReceiveTargetValue', 'TransmitTargetValue', 'TransmitPermissionValue')) {
+        Assert-UiRender ([bool]$layout.main.controls_visible.$controlName) ("主窗口收发目标控件 $controlName 未显示。")
+        Assert-UiRender ([bool]$layout.main.controls_bounds.$controlName.fully_visible) ("主窗口收发目标控件 $controlName 被裁切。")
+    }
+    $statusCards = @(
+        @{ card = 'CoreStatusCard'; detail = 'CoreDetail' },
+        @{ card = 'RadioStatusCard'; detail = 'RadioDetail' },
+        @{ card = 'AudioStatusCard'; detail = 'AudioDetail' },
+        @{ card = 'BmStatusCard'; detail = 'BmDetail' }
+    )
+    foreach ($status in $statusCards) {
+        Assert-UiRender ([bool]$layout.main.controls_bounds.($status.card).fully_visible) ("状态卡 $($status.card) 没有完整显示。")
+        $cardBounds = $layout.main.controls_bounds.($status.card).actual
+        $detailBounds = $layout.main.controls_bounds.($status.detail)
+        Assert-UiRender ([bool]$detailBounds.fully_visible -and
+            $detailBounds.actual.x -ge $cardBounds.x -and $detailBounds.actual.y -ge $cardBounds.y -and
+            $detailBounds.actual.right -le $cardBounds.right -and $detailBounds.actual.bottom -le $cardBounds.bottom) `
+            ("状态详情 $($status.detail) 超出卡片或被裁切。")
+    }
+    foreach ($controlName in @('MasterPresetBox', 'DestinationBox', 'ReceiveDestinationBox', 'ReceiveSlotBox', 'ReceiveCallKindBox', 'TransmitEnabledBox', 'PlaybackGainSlider', 'TransmitGainSlider')) {
+        Assert-UiRender ([bool]$layout.settings.controls_visible.$controlName) ("设置窗口控件 $controlName 未显示。")
+    }
+    $trafficCard = $layout.main.controls_bounds.TrafficCard.actual
+    foreach ($controlName in @('CurrentCallLabel', 'CurrentCallValue', 'CurrentCallDetail')) {
+        $callBounds = $layout.main.controls_bounds.$controlName
+        Assert-UiRender ([bool]$callBounds.fully_visible) ("当前 BM 来话控件 $controlName 被裁切。")
+        Assert-UiRender ($callBounds.actual.x -ge $trafficCard.x -and $callBounds.actual.y -ge $trafficCard.y -and
+            $callBounds.actual.right -le $trafficCard.right -and $callBounds.actual.bottom -le $trafficCard.bottom) `
+            ("当前 BM 来话控件 $controlName 超出收发状态卡片范围。")
+    }
     if ($MaximumHeight -le 700) {
-        Assert-UiRender ($layout.main.event_list_height -ge 50 -and $layout.main.event_list_height -le 60) '小工作区没有压缩运行记录区域，来话状态可能被裁切。'
+        Assert-UiRender ($layout.main.event_list_height -ge 44 -and $layout.main.event_list_height -le 52) '小工作区运行记录区域高度不符合紧凑布局。'
     }
     $identity = $layout.main_source_identity
     Assert-UiRender ($identity.value -ceq '等待本次运行报告' -and
@@ -44,6 +74,27 @@ function Test-RenderedLayout {
             Assert-UiRender ($text -notmatch '@\{(Label|Value|IsAvailable|Kind)=') ("$comboName 显示了 PowerShell 对象元数据。")
         }
     }
+}
+
+function Test-ConfiguredActiveCallLayout {
+    param(
+        [string]$Directory,
+        [double]$MaximumWidth = [double]::PositiveInfinity,
+        [double]$MaximumHeight = [double]::PositiveInfinity
+    )
+    Test-RenderedLayout -Directory $Directory -MaximumWidth $MaximumWidth -MaximumHeight $MaximumHeight
+    $layoutPath = Join-Path $Directory 'layout-info.json'
+    $layout = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($layoutPath, [System.Text.Encoding]::UTF8)) -ErrorAction Stop
+    Assert-UiRender ($layout.configured_profile.receive.destination_id -eq 91 -and
+        $layout.configured_profile.receive.call_kind -ceq 'group' -and $layout.configured_profile.receive.slot -eq 2 -and
+        $layout.configured_profile.connection.destination_id -eq 460997 -and
+        $layout.configured_profile.connection.call_kind -ceq 'private' -and -not [bool]$layout.configured_profile.transmit_enabled) `
+        '配置与来话模拟场景没有保留 TG91 接收和禁发规则。'
+    Assert-UiRender ($layout.active_call.value -ceq '离线模拟 · DMR ID 3149876' -and
+        $layout.active_call.detail -ceq '离线模拟：组呼 · 目标 91 · TS2 · CC 1 · LC 已验证 · 接收中') `
+        '配置与来话模拟场景没有显示完整来话值和详情。'
+    Assert-UiRender (@($layout.active_call.visual_text) -ccontains $layout.active_call.value -and
+        @($layout.active_call.visual_text) -ccontains $layout.active_call.detail) '模拟来话文字没有进入 WPF 视觉树。'
 }
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -107,6 +158,7 @@ try {
         Assert-UiRender ($width -ge 700 -and $height -ge 450) ("渲染窗口尺寸异常：$name (${width}x${height})")
     }
     Test-RenderedLayout -Directory $renderDirectory
+    Test-ConfiguredActiveCallLayout -Directory (Join-Path $renderDirectory 'configured-active-call')
 
     $smallRenderDirectory = Join-Path $renderDirectory 'work-area-1024x728'
     [System.IO.Directory]::CreateDirectory($smallRenderDirectory) | Out-Null
@@ -116,6 +168,7 @@ try {
     $smallExitCode = [int]$LASTEXITCODE
     Assert-UiRender ($smallExitCode -eq 0) ("小工作区 WPF 渲染退出码为 $smallExitCode。")
     Test-RenderedLayout -Directory $smallRenderDirectory -MaximumWidth 972 -MaximumHeight 692
+    Test-ConfiguredActiveCallLayout -Directory (Join-Path $smallRenderDirectory 'configured-active-call') -MaximumWidth 972 -MaximumHeight 692
 
     $invalidPackage = Join-Path $testRoot 'invalid-package'
     [System.IO.Directory]::CreateDirectory($invalidPackage) | Out-Null
@@ -123,7 +176,7 @@ try {
     $errorExitCode = [int]$LASTEXITCODE
     Assert-UiRender ($errorExitCode -eq 2) ("损坏包目录应从启动器返回退出码 2，实际为 $errorExitCode。")
 
-    Write-Output ("通过：Windows PowerShell 5.1 的包根启动链渲染了主界面和设置窗口；1024x728 工作区内操作按钮均可见；错误包返回退出码 2；没有启动 native 核心或访问设备。结果：{0}" -f $renderDirectory)
+    Write-Output ("通过：Windows PowerShell 5.1 的包根启动链渲染了主界面和设置窗口；1024x728 工作区中的收发目标、当前来话值及详情均在卡片内可见；配置与来话模拟布局检查通过；错误包返回退出码 2；没有启动 native 核心或访问设备。结果：{0}" -f $renderDirectory)
 } finally {
     if ([System.IO.Directory]::Exists($testRoot)) { [System.IO.Directory]::Delete($testRoot, $true) }
 }
