@@ -1,5 +1,9 @@
 # WIREX Bridge 交接入口
 
+## R105 多目标改造状态（2026-10-27）
+
+R105 核心契约与纯内存路由模型已完成；12 个独立模型测试函数由本会话及 root 独立运行通过。BM API 静态请求 mock 的一次运行通过 99 条断言，Windows PowerShell 5.1 及 root 独立复跑均 exit 0。独立 HTML 交互原型模拟检查 40/40 通过、`failed=0`；root 检查了 RX 等待 T0 清理截图，UI agent 对 router 的只读交叉审查没有阻断项。这些结果不表示 WPF/Native 已运行。R105 尚未接入 Native pipeline、IPC、WPF 或 BM live transport，也没有真实设备/Quick call/RF 验证。实施顺序和复跑命令见[R105 执行交接与实施顺序](docs/R105_执行交接与实施顺序.md)。本轮工作以 `main` / `71a45c7` 为提交基点，当前发布继续保持 `v0.1.0-alpha.4`。
+
 ## 当前版本与本机入口
 
 - 当前私有预发布 [v0.1.0-alpha.4](https://github.com/iCassius/WIREX_Bridge/releases/tag/v0.1.0-alpha.4) 已发布，Release ID `425043325`；annotated tag object `28fb07f617366c678f74c4e588d5a576aa240ab9` 指向 source `6b9e9be28565250b3565bac2dee9911b9c6b1337`。Release 有 29 个 asset；本机包 `build/releases/v0.1.0-alpha.4` 有 28 个文件，manifest 列 27 项，manifest SHA-256 `60699cd05e8d250a1b202eb6c1247181df103f3ae50560f2818bcf66797d6c37`。clean build 通过 35 项 C++ 测试且 warning/error 为 0；普通下载 `build/_work/alpha4-published-download-6b9e9be` 的 28 个文件与本机包逐项哈希匹配。root 与 Native 子会话均完成独立包审查。

@@ -1,0 +1,1024 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="WIREX Bridge R105 多组与单呼离线 UI 原型；固定模拟数据，无网络和配置访问。">
+  <title>WIREX Bridge · R105 多组控制台（离线原型）</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --page: #111519;
+      --panel: #1a2025;
+      --panel-raised: #20282e;
+      --panel-inset: #14191d;
+      --line: #344149;
+      --line-soft: #2a353c;
+      --text: #edf2f3;
+      --muted: #9ba9b0;
+      --dim: #74848c;
+      --cyan: #72c8dc;
+      --cyan-dark: #183943;
+      --green: #83d3a5;
+      --green-dark: #18392a;
+      --amber: #f0bf62;
+      --amber-dark: #45351b;
+      --red: #ed8b7e;
+      --red-dark: #472725;
+      --shadow: 0 16px 42px rgba(0, 0, 0, .22);
+      font-family: "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+      background: var(--page);
+      color: var(--text);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      min-height: 100vh;
+      background:
+        radial-gradient(ellipse at 50% -20%, rgba(72, 126, 140, .14), transparent 48%),
+        var(--page);
+    }
+    button { font: inherit; }
+    .shell { width: min(1600px, calc(100% - 36px)); margin: 0 auto; padding: 20px 0 34px; }
+    .topbar { display: flex; align-items: center; gap: 15px; min-height: 64px; margin-bottom: 17px; }
+    .brand-mark {
+      display: grid; place-items: center; width: 48px; height: 48px; flex: 0 0 48px;
+      border: 1px solid #50717b; border-radius: 12px; background: linear-gradient(145deg, #263d44, #172226);
+      color: var(--cyan); font-size: 16px; font-weight: 900; letter-spacing: .05em;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
+    }
+    .brand-copy { min-width: 220px; flex: 1; }
+    .eyebrow { margin: 0; color: var(--muted); font-size: 10px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+    h1 { margin: 3px 0 0; font-size: clamp(20px, 2vw, 27px); line-height: 1.15; letter-spacing: -.025em; }
+    .status-chip {
+      display: flex; align-items: center; gap: 10px; min-width: 146px; padding: 9px 12px;
+      border: 1px solid var(--line); border-radius: 9px; background: rgba(26, 32, 37, .86);
+    }
+    .status-chip b { display: block; font-size: 11px; letter-spacing: .08em; }
+    .status-chip small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
+    .lamp { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 10px rgba(240,191,98,.35); }
+    .lamp.muted { background: #63737a; box-shadow: none; }
+    .demo-stamp {
+      display: inline-flex; align-items: center; gap: 7px; padding: 8px 10px; border-radius: 6px;
+      border: 1px solid #8a6930; background: var(--amber-dark); color: #ffe0a1; font-size: 11px; font-weight: 900;
+      letter-spacing: .08em; white-space: nowrap;
+    }
+    .button {
+      min-height: 36px; padding: 8px 11px; border: 1px solid #4a5b63; border-bottom-width: 3px;
+      border-radius: 7px; background: #29343a; color: var(--text); font-size: 12px; font-weight: 800;
+      cursor: pointer; transition: background .14s ease, border-color .14s ease, transform .14s ease;
+    }
+    .button:hover:not(:disabled) { background: #34444b; border-color: #6b8791; }
+    .button:active:not(:disabled) { transform: translateY(1px); border-bottom-width: 2px; }
+    .button:focus-visible, .mode-button:focus-visible, .target-button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+    .button:disabled { cursor: not-allowed; color: #839097; background: #20272b; border-color: #39454a; }
+    .button.cyan { background: #1d424b; border-color: #4b8592; color: #d9f7fc; }
+    .button.cyan:hover:not(:disabled) { background: #285560; }
+    .button.quiet { min-height: 30px; padding: 6px 9px; border-width: 1px; border-color: #3b4a51; background: #20292e; color: #c9d4d7; font-size: 11px; }
+    .button.warn { border-color: #8b7044; background: #3d321f; color: #f6dca6; }
+    .button.danger { border-color: #85514b; background: #392725; color: #ffc4ba; }
+    .demo-banner {
+      display: flex; align-items: center; gap: 11px; margin-bottom: 14px; padding: 11px 14px;
+      border: 1px solid #785e30; border-radius: 8px; background: linear-gradient(90deg, rgba(69,53,27,.86), rgba(40,34,23,.72));
+      color: #ffe0a1; font-size: 12px; line-height: 1.45;
+    }
+    .demo-banner strong { color: #fff0ce; }
+    .demo-banner .banner-copy { color: #e2c98f; }
+    .stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 14px; }
+    .stat-card, .panel { border: 1px solid var(--line); border-radius: 10px; background: rgba(26,32,37,.94); box-shadow: var(--shadow); }
+    .stat-card { min-height: 92px; padding: 13px 15px; }
+    .stat-value { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 17px; font-weight: 850; letter-spacing: -.02em; }
+    .stat-detail { margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.4; }
+    .main-grid { display: grid; grid-template-columns: minmax(0, 1.18fr) minmax(390px, .82fr); gap: 14px; align-items: start; }
+    .left-stack, .right-stack { display: grid; gap: 14px; min-width: 0; }
+    .panel { padding: 16px; }
+    .panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 13px; }
+    .panel-head h2 { margin: 3px 0 0; font-size: 16px; letter-spacing: -.01em; }
+    .panel-head p:not(.eyebrow) { max-width: 680px; margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+    .inline-meta { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+    .pill { display: inline-flex; align-items: center; gap: 5px; padding: 4px 7px; border: 1px solid #46565e; border-radius: 5px; background: #20292e; color: #cbd6d9; font-size: 10px; font-weight: 800; white-space: nowrap; }
+    .pill.green { border-color: #3c7053; background: var(--green-dark); color: #b9efcd; }
+    .pill.amber { border-color: #81652f; background: var(--amber-dark); color: #ffdda0; }
+    .pill.cyan { border-color: #39717e; background: var(--cyan-dark); color: #bcebf3; }
+    .pill.red { border-color: #754944; background: var(--red-dark); color: #ffc3b8; }
+    .mode-wrap { display: flex; flex-direction: column; gap: 7px; margin-bottom: 12px; padding: 10px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--panel-inset); }
+    .mode-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .mode-head strong { font-size: 12px; }
+    .mode-switch { display: inline-flex; gap: 4px; padding: 3px; border: 1px solid #38464d; border-radius: 7px; background: #101519; }
+    .mode-button { padding: 6px 9px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--muted); font-size: 10px; font-weight: 850; cursor: pointer; }
+    .mode-button[aria-pressed="true"] { border-color: #477c88; background: #203c43; color: #d8f6fa; }
+    .mode-description { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .table-head, .subscription-row { display: grid; grid-template-columns: minmax(150px, 1.12fr) minmax(155px, 1.1fr) minmax(150px, 1fr) minmax(185px, 1.22fr); gap: 10px; align-items: center; }
+    .table-head { padding: 4px 9px 7px; color: var(--dim); font-size: 9px; font-weight: 900; letter-spacing: .1em; text-transform: uppercase; }
+    .subscription-list { display: grid; gap: 7px; }
+    .subscription-row { min-height: 74px; padding: 10px 9px; border: 1px solid var(--line-soft); border-radius: 8px; background: linear-gradient(100deg, #1d252a, #192024); }
+    .channel-cell, .remote-cell, .local-cell { min-width: 0; }
+    .channel-title { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font-size: 13px; font-weight: 900; }
+    .channel-subtitle, .remote-detail, .local-detail { margin-top: 4px; color: var(--muted); font-size: 10px; line-height: 1.35; }
+    .remote-title { display: flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 800; }
+    .type-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--cyan); }
+    .type-dot.dynamic { background: var(--amber); }
+    .type-dot.unknown { background: #8d9aa0; }
+    .local-cell .button { width: 100%; }
+    .row-actions { display: flex; justify-content: flex-end; gap: 6px; flex-wrap: wrap; }
+    .channel-note { display: block; margin-top: 5px; color: var(--dim); font-size: 9px; text-align: right; }
+    .warning-strip { display: flex; gap: 9px; align-items: flex-start; margin-top: 11px; padding: 10px 11px; border: 1px solid #705a34; border-radius: 7px; background: rgba(69,53,27,.38); color: #e8cf9c; font-size: 10px; line-height: 1.45; }
+    .warning-mark { color: var(--amber); font-weight: 900; }
+    .section-divider { height: 1px; margin: 14px 0 12px; background: var(--line-soft); }
+    .subsection-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+    .subsection-head h3 { margin: 0; font-size: 12px; }
+    .subsection-head small { color: var(--muted); font-size: 10px; }
+    .subscription-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; color: var(--muted); font-size: 10px; }
+    .rx-card { position: relative; overflow: hidden; }
+    .rx-card::before { position: absolute; inset: 0 auto 0 0; width: 4px; background: linear-gradient(var(--cyan), #4f7380); content: ""; }
+    .rx-live-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .rx-channel { margin: 12px 0 13px; font-size: clamp(26px, 3vw, 38px); font-weight: 950; letter-spacing: -.04em; }
+    .rx-channel span { color: var(--cyan); }
+    .speaker-box { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; padding: 12px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--panel-inset); }
+    .speaker-id { color: #d9e2e5; font-size: 12px; font-weight: 900; letter-spacing: .03em; }
+    .speaker-name { margin-top: 4px; color: var(--muted); font-size: 11px; }
+    .speaker-name strong { color: #f2d895; }
+    .speaker-action { min-width: 126px; }
+    .speaker-action.blocked { border-color: #8b514a; background: var(--red-dark); color: #ffc4b9; }
+    .arbitration { margin-top: 10px; padding: 10px 11px; border: 1px solid #355a46; border-radius: 7px; background: rgba(24,57,42,.45); }
+    .arb-top { display: flex; align-items: center; justify-content: space-between; gap: 9px; }
+    .arb-top strong { font-size: 11px; }
+    .arb-text { margin-top: 5px; color: #b8c9c1; font-size: 10px; line-height: 1.45; }
+    .tx-panel { border-top: 3px solid #7999a3; }
+    .tx-lock { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 11px; padding: 9px 10px; border: 1px solid var(--line-soft); border-radius: 7px; background: var(--panel-inset); }
+    .tx-lock b { font-size: 11px; }
+    .tx-lock small { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
+    .target-current { margin: 10px 0 12px; padding: 13px; border: 1px solid #41626b; border-radius: 8px; background: linear-gradient(120deg, #1b3036, #1a252a); }
+    .target-current .target-value { margin-top: 6px; font-size: 22px; font-weight: 950; letter-spacing: .01em; }
+    .target-current .target-detail { margin-top: 4px; color: #b7c9cd; font-size: 10px; }
+    .target-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+    .target-button { min-height: 52px; padding: 8px 10px; border: 1px solid #394951; border-bottom-width: 3px; border-radius: 7px; background: #20292e; color: var(--text); text-align: left; cursor: pointer; }
+    .target-button b { display: block; font-size: 11px; }
+    .target-button small { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; }
+    .target-button.selected { border-color: #4e8997; background: #1e3c44; box-shadow: inset 0 0 0 1px rgba(114,200,220,.15); }
+    .target-button:disabled { cursor: not-allowed; color: #839097; background: #1a2023; border-color: #303b40; }
+    .target-button:disabled small { color: #79868b; }
+    .tx-footnote { margin: 10px 1px 0; color: var(--muted); font-size: 10px; line-height: 1.45; }
+    .recent-panel { padding-top: 13px; padding-bottom: 13px; }
+    .event-row { display: grid; grid-template-columns: 84px 1fr auto; gap: 9px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line-soft); }
+    .event-time { color: var(--dim); font-size: 10px; }
+    .event-copy { min-width: 0; font-size: 10px; }
+    .event-copy strong { color: #e5edef; }
+    .event-copy small { display: block; margin-top: 3px; color: var(--muted); }
+    .event-actions { display: flex; gap: 5px; }
+    .footer-note { margin: 14px 2px 0; color: var(--dim); font-size: 10px; line-height: 1.5; }
+    .toast {
+      position: fixed; z-index: 20; left: 50%; bottom: 20px; max-width: min(560px, calc(100vw - 28px));
+      padding: 11px 14px; border: 1px solid #52727b; border-radius: 8px; background: #1d3036; color: #e2f7fa;
+      box-shadow: var(--shadow); font-size: 12px; line-height: 1.4; transform: translate(-50%, 20px); opacity: 0; pointer-events: none;
+      transition: transform .18s ease, opacity .18s ease;
+    }
+    .toast.visible { transform: translate(-50%, 0); opacity: 1; }
+    .modal-backdrop { position: fixed; z-index: 30; inset: 0; display: grid; place-items: center; padding: 16px; background: rgba(4,8,10,.74); }
+    .modal-backdrop[hidden] { display: none; }
+    .modal { width: min(620px, 100%); max-height: min(82vh, 760px); overflow: auto; padding: 18px; border: 1px solid #50636b; border-radius: 11px; background: #1b2328; box-shadow: 0 24px 80px rgba(0,0,0,.55); }
+    .modal h2 { margin: 4px 0 8px; font-size: 18px; }
+    .modal p { color: #bcc8cc; font-size: 12px; line-height: 1.55; }
+    .diff-table { display: grid; gap: 7px; margin: 13px 0; }
+    .diff-item { display: grid; grid-template-columns: 110px 1fr; gap: 10px; padding: 9px 10px; border: 1px solid var(--line-soft); border-radius: 6px; background: #151b1f; font-size: 11px; }
+    .diff-item b { color: var(--muted); }
+    .diff-item.add span { color: #aee6c1; }
+    .diff-item.remove span { color: #f4b4a8; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 15px; }
+    .modal .callout { padding: 10px 11px; border: 1px solid #806331; border-radius: 7px; background: rgba(69,53,27,.42); color: #ffe1a5; }
+    @media (max-width: 1120px) {
+      .main-grid { grid-template-columns: minmax(0, 1fr) minmax(340px, .8fr); }
+      .table-head, .subscription-row { grid-template-columns: minmax(130px, .9fr) minmax(140px, 1fr) minmax(135px, .9fr); }
+      .table-head > :nth-child(4) { display: none; }
+      .row-actions { grid-column: 1 / -1; justify-content: flex-start; padding-left: 1px; }
+      .channel-note { text-align: left; }
+    }
+    @media (max-width: 850px) {
+      .shell { width: min(100% - 22px, 700px); padding-top: 12px; }
+      .topbar { flex-wrap: wrap; gap: 10px; }
+      .brand-copy { min-width: 180px; }
+      .status-chip { flex: 1; min-width: 130px; }
+      .demo-stamp { order: 3; }
+      .stats { grid-template-columns: 1fr; gap: 8px; }
+      .stat-card { min-height: 78px; }
+      .main-grid { grid-template-columns: 1fr; }
+      .right-stack { grid-row: 1; }
+      .left-stack { grid-row: 2; }
+      .table-head, .subscription-row { grid-template-columns: minmax(120px, .85fr) minmax(130px, 1fr) minmax(130px, .9fr); }
+    }
+    @media (max-width: 570px) {
+      .shell { width: calc(100% - 16px); }
+      .brand-mark { width: 40px; height: 40px; flex-basis: 40px; }
+      .brand-copy { min-width: calc(100% - 56px); }
+      .status-chip { min-width: calc(50% - 6px); }
+      .demo-stamp { flex: 1; justify-content: center; }
+      .panel { padding: 12px; }
+      .panel-head { flex-direction: column; align-items: stretch; }
+      .panel-head > .button { align-self: flex-start; }
+      .mode-head { align-items: flex-start; flex-direction: column; }
+      .mode-switch { width: 100%; }
+      .mode-button { flex: 1; }
+      .table-head { display: none; }
+      .subscription-row { grid-template-columns: 1fr 1fr; gap: 9px; padding: 10px; }
+      .channel-cell { grid-column: 1 / -1; }
+      .row-actions { grid-column: 1 / -1; }
+      .local-cell .button { min-height: 34px; }
+      .speaker-box { grid-template-columns: 1fr; }
+      .speaker-action { width: 100%; }
+      .target-grid { grid-template-columns: 1fr; }
+      .event-row { grid-template-columns: 64px 1fr; }
+      .event-actions { grid-column: 2; }
+      .subscription-foot { align-items: flex-start; flex-direction: column; }
+      .diff-item { grid-template-columns: 1fr; gap: 3px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand-mark" aria-hidden="true">WB</div>
+      <div class="brand-copy">
+        <p class="eyebrow">WIREX BRIDGE / R105</p>
+        <h1>组呼与单呼控制台</h1>
+      </div>
+      <div class="status-chip" aria-label="核心演示状态：未连接">
+        <span class="lamp"></span><div><b>CORE / 核心</b><small>未连接 · 模拟状态</small></div>
+      </div>
+      <div class="status-chip" aria-label="BrandMeister 演示状态：未连接">
+        <span class="lamp muted"></span><div><b>BRANDMEISTER</b><small>未连接 · 模拟状态</small></div>
+      </div>
+      <span class="demo-stamp">● 离线模拟</span>
+    </header>
+
+    <div class="demo-banner" role="note">
+      <strong>固定演示数据</strong>
+      <span class="banner-copy">此页面没有连接设备或 BrandMeister，不读取本机配置 / API Key。所有按钮只改变本页内存状态，不保存、不发网络请求，也不发射。</span>
+    </div>
+
+    <section class="stats" aria-label="运行概览">
+      <article class="stat-card">
+        <p class="eyebrow">RX MODE / 本机接收策略</p>
+        <div class="stat-value"><span class="pill cyan" id="modeBadge">SELECTED</span><span id="modeSummary">只收已选通道</span></div>
+        <div class="stat-detail" id="modeDetail">多个已选通道可同时允许；扬声器仍一次只播一路。</div>
+      </article>
+      <article class="stat-card">
+        <p class="eyebrow">CURRENT RX / 当前来话</p>
+        <div class="stat-value">TG 91 <span class="pill">TS2 · 组呼</span></div>
+        <div class="stat-detail">本次模拟来话头冻结 · 来源 ID 与组目标分开显示</div>
+      </article>
+      <article class="stat-card">
+        <p class="eyebrow">CURRENT TX / 当前发射租约</p>
+        <div class="stat-value"><span class="lamp muted" id="txStatusLamp"></span><span id="txStatusSummary">空闲 · 未按下 PTT</span></div>
+        <div class="stat-detail" id="txStatusDetail">活动目标只在 lease 开始时冻结；选择器用于下一次 PTT。</div>
+      </article>
+    </section>
+
+    <main class="main-grid">
+      <div class="left-stack">
+        <section class="panel" aria-labelledby="subscriptions-title">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">BM SUBSCRIPTIONS / LOCAL RECEIVE POLICY</p>
+              <h2 id="subscriptions-title">订阅来源与本机监听</h2>
+              <p>远端订阅状态与本机是否监听分别显示。收到新 TG 会生成通道卡；它不会替用户清除本机屏蔽或切换 TX。</p>
+            </div>
+            <button class="button quiet" type="button" data-action="preview-static">静态 API · 预览差异</button>
+          </div>
+
+          <div class="mode-wrap">
+            <div class="mode-head">
+              <strong>组呼接收模式</strong>
+              <div class="mode-switch" role="group" aria-label="选择组呼接收模式">
+                <button class="mode-button" type="button" data-mode="Selected" aria-pressed="true">Selected · 选中通道</button>
+                <button class="mode-button" type="button" data-mode="AllDelivered" aria-pressed="false">AllDelivered · 已送达</button>
+              </div>
+            </div>
+            <p class="mode-description" id="modeDescription">只播放本地 allow 列表中已选的 TG/TS。旧单目标配置迁移到此模式并保留一个通道。</p>
+          </div>
+
+          <div class="table-head" aria-hidden="true">
+            <span>频道键 / 来源</span><span>BM 订阅 / 远端证据</span><span>本机收听策略</span><span>远端操作 / TX 独立动作</span>
+          </div>
+          <div class="subscription-list" id="subscriptionList">
+            <article class="subscription-row" data-channel="91:2" data-kind="static" data-tg="91" data-slot="2">
+              <div class="channel-cell">
+                <div class="channel-title">TG 91 <span class="pill">TS2 · G</span></div>
+                <div class="channel-subtitle">组呼通道 · 本地固定示例</div>
+              </div>
+              <div class="remote-cell">
+                <div class="remote-title"><span class="type-dot"></span>静态 · API 读回</div>
+                <div class="remote-detail">模拟读回 · 2026-10-27 14:12</div>
+              </div>
+              <div class="local-cell">
+                <button class="button quiet listen-toggle" type="button" data-action="toggle-listen">本地收听中 · 停止</button>
+                <div class="local-detail">Selected allow · revision 示例 4</div>
+              </div>
+              <div class="row-actions">
+                <button class="button quiet" type="button" data-action="set-tx" data-target="TG 91 · G · TS2" disabled data-policy-disabled="true" title="只收预设禁止将 TG91 设为发射目标">设为发射</button>
+                <button class="button quiet" type="button" data-action="remote-static-remove" data-label="TG 91 / TS2">解除 BM 静态订阅…</button>
+              </div>
+              <span class="channel-note">只收策略 · TX 与动态加入禁用</span>
+            </article>
+
+            <article class="subscription-row" data-channel="46001:2" data-kind="static" data-tg="46001" data-slot="2">
+              <div class="channel-cell">
+                <div class="channel-title">TG 46001 <span class="pill">TS2 · G</span></div>
+                <div class="channel-subtitle">组呼通道 · 本地固定示例</div>
+              </div>
+              <div class="remote-cell">
+                <div class="remote-title"><span class="type-dot"></span>静态 · API 读回</div>
+                <div class="remote-detail">模拟读回 · 远端条目单独维护</div>
+              </div>
+              <div class="local-cell">
+                <button class="button quiet listen-toggle" type="button" data-action="toggle-listen">未监听 · 加入</button>
+                <div class="local-detail">当前示例未选入 Selected allow</div>
+              </div>
+              <div class="row-actions">
+                <button class="button quiet" type="button" data-action="set-tx" data-target="TG 46001 · G · TS2" disabled data-policy-disabled="true" title="只收预设禁止将 TG46001 设为发射目标">设为发射</button>
+                <button class="button quiet" type="button" data-action="remote-static-remove" data-label="TG 46001 / TS2">解除 BM 静态订阅…</button>
+              </div>
+              <span class="channel-note">只收策略 · TX 与动态加入禁用</span>
+            </article>
+
+            <article class="subscription-row" data-channel="3349:1" data-kind="dynamic" data-tg="3349" data-slot="1">
+              <div class="channel-cell">
+                <div class="channel-title">TG 3349 <span class="pill">TS1 · G</span></div>
+                <div class="channel-subtitle">组呼通道 · 新来源已形成卡片</div>
+              </div>
+              <div class="remote-cell">
+                <div class="remote-title"><span class="type-dot dynamic"></span>动态 · 已请求</div>
+                <div class="remote-detail">BM 尚未确认 · 远端状态待观察</div>
+              </div>
+              <div class="local-cell">
+                <button class="button quiet listen-toggle" type="button" data-action="toggle-listen">本地收听中 · 停止</button>
+                <div class="local-detail">本机允许与远端确认分开</div>
+              </div>
+              <div class="row-actions">
+                <button class="button quiet" type="button" data-action="set-tx" data-target="TG 3349 · G · TS1">设为发射</button>
+                <button class="button quiet" type="button" data-action="dynamic-clear" data-label="TG 3349 / TS1">清除动态订阅…</button>
+              </div>
+            </article>
+
+            <article class="subscription-row" data-channel="3100:2" data-kind="unknown" data-tg="3100" data-slot="2">
+              <div class="channel-cell">
+                <div class="channel-title">TG 3100 <span class="pill">TS2 · G</span></div>
+                <div class="channel-subtitle">已观察到来话 · 最近 14:10</div>
+              </div>
+              <div class="remote-cell">
+                <div class="remote-title"><span class="type-dot unknown"></span>订阅来源未知</div>
+                <div class="remote-detail">BM API 没有读回此条目</div>
+              </div>
+              <div class="local-cell">
+                <button class="button quiet listen-toggle" type="button" data-action="toggle-listen">未监听 · 加入</button>
+                <div class="local-detail">新来源卡不自动修改 Selected allow</div>
+              </div>
+              <div class="row-actions">
+                <button class="button quiet" type="button" data-action="set-tx" data-target="TG 3100 · G · TS2">设为发射</button>
+                <button class="button warn" type="button" data-action="quick-call" data-label="TG 3100 / TS2">呼叫加入动态组…</button>
+              </div>
+              <span class="channel-note">动态加入会向网络发送一次短组呼</span>
+            </article>
+          </div>
+
+          <div class="warning-strip" role="note">
+            <span class="warning-mark">!</span>
+            <span>本机停止监听 TG 91 只改变本地策略，不会让 BM 立刻改送另一组。同一 TS 的 Master 转发安排可能仍由 TG 91 占用；原型不承诺其他 TG 会马上出现。</span>
+          </div>
+          <div class="subscription-foot">
+            <span>BM 静态 API 凭据与热点设备密码是两种独立凭据。</span>
+            <span class="pill amber">API 读回状态：模拟</span>
+          </div>
+        </section>
+
+        <section class="panel recent-panel" aria-labelledby="observed-title">
+          <div class="subsection-head">
+            <h3 id="observed-title">已观察来源 / 通道候选</h3>
+            <div class="inline-meta"><small>按 TG+TS 合并组呼；speaker 单独处理</small><button class="button quiet" type="button" data-action="simulate-new-group">模拟发现 TG 6500 / TS1</button><button class="button quiet" type="button" data-action="simulate-same-tg-slot">模拟收到 TG 91 / TS1</button></div>
+          </div>
+          <div class="event-row">
+            <span class="event-time">14:10 · 示例</span>
+            <div class="event-copy"><strong>TG 3100 / TS2</strong><small>新组目标只生成通道卡；是否播放由当前 RX mode 决定。</small></div>
+            <div class="event-actions"><button class="button quiet" type="button" data-action="set-tx" data-target="TG 3100 · G · TS2">设为发射</button></div>
+          </div>
+          <div class="event-row">
+            <span class="event-time">13:52 · 示例</span>
+            <div class="event-copy"><strong>私呼 peer ID 800001 / TS2</strong><small>peer ID 是远端目标；不是已核实的呼号。</small></div>
+            <div class="event-actions"><button class="button quiet" type="button" data-action="set-tx" data-target="ID 800001 · P · TS2">选作私呼</button></div>
+          </div>
+        </section>
+      </div>
+
+      <div class="right-stack">
+        <section class="panel rx-card" aria-labelledby="current-rx-title">
+          <div class="rx-live-head">
+            <div><p class="eyebrow">CURRENT RX / 来话身份</p><h2 id="current-rx-title" style="margin:3px 0 0;font-size:16px">本次来话快照</h2></div>
+            <span class="pill green" id="currentCallBadge">本机播放中 · 模拟</span>
+          </div>
+          <div class="rx-channel"><span>TG 91</span> / TS2</div>
+          <div class="speaker-box">
+            <div>
+              <div class="speaker-id" id="speakerId">SOURCE ID · DEMO 3141592</div>
+              <div class="speaker-name">呼号：<strong>未知 / 未提供</strong></div>
+            </div>
+            <button class="button quiet speaker-action" type="button" data-action="toggle-source">本地屏蔽此来源</button>
+          </div>
+          <div class="subsection-head" style="margin-top:9px;margin-bottom:0"><small>同一 TG 的新发话人仍使用 TG 91 通道卡。</small><button class="button quiet" type="button" data-action="simulate-speaker">模拟同 TG 换 source ID</button></div>
+          <div class="arbitration">
+            <div class="arb-top"><strong>扬声器单流仲裁</strong><span class="pill green" id="currentMediaPill">1 playing · RX owner active</span></div>
+            <div class="arb-text" id="currentArbitrationDetail">本机策略允许当前 TG/TS 且 speaker 未屏蔽。扬声器同一时刻只播放一路，并丢弃未获仲裁的语音帧。</div>
+          </div>
+          <div class="inline-meta" style="margin-top:10px">
+            <span class="pill green" id="rxOwnerPill">RX owner active</span>
+            <button class="button quiet" type="button" data-action="simulate-rx-cleanup" disabled>模拟 HRI T0 清理完成</button>
+          </div>
+          <p class="footer-note" id="sourceBlockNote">speaker ID 屏蔽跨所有 TG/TS 接收路由生效；TG 91 的其他 source 仍按原策略。</p>
+        </section>
+
+        <section class="panel tx-panel" aria-labelledby="tx-title">
+          <div class="panel-head">
+            <div><p class="eyebrow">TRANSMIT TARGET / 快速切换</p><h2 id="tx-title">发射目标</h2><p>选中的目标只用于下一次 PTT lease；RX 监听策略保持独立。</p></div>
+            <span class="pill green">发射 lease：空闲</span>
+          </div>
+          <div class="tx-lock">
+            <div><b id="leaseLabel">活动发射 lease：空闲</b><small id="leaseDescription">PTT 未按下；当前下一目标可供下次 lease 使用。</small></div>
+            <span class="pill" id="leasePill">未锁定</span>
+          </div>
+          <div class="inline-meta" style="margin:0 0 11px">
+            <button class="button quiet" type="button" data-action="simulate-ptt-down">模拟 PTT 按下</button>
+            <button class="button quiet" type="button" data-action="simulate-ptt-release" disabled>模拟松开</button>
+            <button class="button quiet" type="button" data-action="simulate-eot" disabled>模拟 EOT 完成</button>
+          </div>
+          <div class="target-current" aria-live="polite">
+            <p class="eyebrow">NEXT PTT TARGET / 示例目标</p>
+            <div class="target-value" id="currentTxTarget">ID 800001</div>
+            <div class="target-detail" id="currentTxDetail">私呼 · TS2 · 呼号未知 · 本地备注“测试联系人”</div>
+          </div>
+          <div class="subsection-head"><h3>快捷目标</h3><small>点击只改本页预览</small></div>
+          <div class="target-grid" role="group" aria-label="发射目标快捷键">
+            <button class="target-button" type="button" data-action="set-target" data-target="TG 3100" data-detail="组呼 · TS2 · 来源订阅未知，目标选择不创建 BM 订阅"><b>TG 3100</b><small>G · TS2 · 示例组</small></button>
+            <button class="target-button" type="button" data-action="set-target" data-target="ID 800001" data-detail="私呼 · TS2 · 呼号未知 · 本地备注“测试联系人”"><b>ID 800001</b><small>P · TS2 · 测试联系人备注</small></button>
+            <button class="target-button" type="button" data-action="set-target" data-target="TG 50500" data-detail="组呼 · TS1 · 示例收藏目标，不代表已订阅"><b>TG 50500</b><small>G · TS1 · 示例收藏</small></button>
+            <button class="target-button" type="button" data-action="set-target" data-target="TG 91" data-detail="TG91 只收预设" data-policy-disabled="true" disabled title="TG91 当前配置为只收">TG 91 / TS2<small>只收预设 · 发射禁用</small></button>
+            <button class="target-button" type="button" data-action="set-target" data-target="TG 46001" data-detail="TG46001 只收预设" data-policy-disabled="true" disabled title="TG46001 当前配置为只收">TG 46001 / TS2<small>只收预设 · 发射禁用</small></button>
+          </div>
+          <p class="tx-footnote" id="txFeedback">当 PTT lease 活动、松开发送未确认或 EOT 待处理时，真实界面会冻结活动目标并暂时禁用切换；核心确认后才更新下一次目标。</p>
+        </section>
+
+        <section class="panel" aria-labelledby="private-title">
+          <div class="panel-head">
+            <div><p class="eyebrow">PRIVATE PEERS / 私呼联系人</p><h2 id="private-title">最近私呼 peer</h2><p>联系人备注来自用户本地命名；没有映射来源时仍显示 DMR ID。</p></div>
+          </div>
+          <div class="mode-wrap" style="margin-bottom:9px">
+            <div class="mode-head">
+              <strong>私呼接收模式</strong>
+              <div class="mode-switch" role="group" aria-label="选择私呼接收模式">
+                <button class="mode-button" type="button" data-private-mode="disabled" aria-pressed="false">关闭</button>
+                <button class="mode-button" type="button" data-private-mode="selected_peers" aria-pressed="true">仅选定 peer</button>
+                <button class="mode-button" type="button" data-private-mode="all_peers_to_local" aria-pressed="false">本机全部</button>
+              </div>
+            </div>
+            <p class="mode-description" id="privateModeDescription">仅收所选远端 peer 发往本机 ID 4611355、TS2 的私呼。组呼模式与 TX 目标分别维护。</p>
+          </div>
+          <div class="subscription-row" style="grid-template-columns:minmax(100px,.8fr) minmax(110px,1fr) minmax(150px,1fr) minmax(110px,.9fr)" data-peer="800001:4611355:2">
+            <div class="channel-cell"><div class="channel-title">peer ID 800001 <span class="pill">TS2 · P</span></div><div class="channel-subtitle">发往本机 ID 4611355 · 测试联系人</div></div>
+            <div class="remote-cell"><div class="remote-title"><span class="type-dot unknown"></span>呼号未知</div><div class="remote-detail">来源映射未提供</div></div>
+            <div class="local-cell"><button class="button quiet" type="button" data-action="toggle-private-listen">私呼已选 · 停止</button><div class="local-detail">Selected private peer allow</div></div>
+            <div class="row-actions"><button class="button quiet" type="button" data-action="set-target" data-target="ID 800001" data-detail="私呼 · TS2 · 呼号未知 · 本地备注“测试联系人”">设为 TX 私呼</button></div>
+          </div>
+        </section>
+      </div>
+    </main>
+    <p class="footer-note">R105 离线评审稿 · 固定示例数据不会写入正式配置。运行状态、订阅确认、API 差异和真实收发必须由后续核心与设备证据提供。</p>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <div class="modal-backdrop" id="modalBackdrop" hidden>
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle" aria-describedby="modalBody">
+      <p class="eyebrow" id="modalEyebrow">ACTION PREVIEW / 离线原型</p>
+      <h2 id="modalTitle">操作预览</h2>
+      <div id="modalBody"></div>
+      <div class="modal-actions" id="modalActions"></div>
+    </section>
+  </div>
+
+  <script>
+    // This prototype deliberately uses fixed in-file fixtures only. It has no fetch, storage, or config access.
+    const state = {
+      mode: "Selected",
+      allowGroups: new Set(["91:2", "3349:1"]),
+      blockedGroups: new Set(),
+      blockedSources: new Set(),
+      privateMode: "selected_peers",
+      allowPrivatePeers: new Set(["800001:4611355:2"]),
+      currentCallKey: "91:2",
+      currentCallPlaying: true,
+      rxCleanupPending: false,
+      currentSpeaker: "3141592",
+      alternateSpeaker: "3141593",
+      discoveredNewGroup: false,
+      discoveredOtherSlot: false,
+      lease: { phase: "idle", target: null },
+      txTarget: "ID 800001",
+      txDetail: "私呼 · TS2 · 呼号未知 · 本地备注“测试联系人”",
+      toastTimer: null
+    };
+
+    const toast = document.getElementById("toast");
+    const modeDescription = document.getElementById("modeDescription");
+    const modeBadge = document.getElementById("modeBadge");
+    const modeSummary = document.getElementById("modeSummary");
+    const modeDetail = document.getElementById("modeDetail");
+    const modalBackdrop = document.getElementById("modalBackdrop");
+    const modalTitle = document.getElementById("modalTitle");
+    const modalBody = document.getElementById("modalBody");
+    const modalActions = document.getElementById("modalActions");
+
+    function showToast(message) {
+      toast.textContent = message;
+      toast.classList.add("visible");
+      clearTimeout(state.toastTimer);
+      state.toastTimer = setTimeout(() => toast.classList.remove("visible"), 3200);
+    }
+
+    function isListening(key) {
+      if (state.blockedGroups.has(key)) return false;
+      return state.mode === "AllDelivered" || state.allowGroups.has(key);
+    }
+
+    function isReceiveOnlyTarget(target) {
+      return /^TG\s+(?:91|46001)(?=$|[^0-9])/.test(String(target));
+    }
+
+    function renderCurrentCall() {
+      const groupBlocked = state.blockedGroups.has(state.currentCallKey);
+      const groupAllowed = state.mode === "AllDelivered" || state.allowGroups.has(state.currentCallKey);
+      const speakerBlocked = state.blockedSources.has(state.currentSpeaker);
+      if (state.currentCallPlaying && (!groupAllowed || groupBlocked || speakerBlocked)) {
+        state.currentCallPlaying = false;
+        state.rxCleanupPending = true;
+      }
+      const pill = document.getElementById("currentCallBadge");
+      const media = document.getElementById("currentMediaPill");
+      const detail = document.getElementById("currentArbitrationDetail");
+      const owner = document.getElementById("rxOwnerPill");
+      const cleanupButton = document.querySelector("[data-action='simulate-rx-cleanup']");
+      if (state.currentCallPlaying) {
+        pill.textContent = "本机播放中 · 模拟";
+        pill.className = "pill green";
+        media.textContent = "1 playing · RX owner active";
+        media.className = "pill green";
+        owner.textContent = "RX owner active";
+        owner.className = "pill green";
+        cleanupButton.disabled = true;
+        detail.textContent = "本机策略允许当前 TG/TS 且 speaker 未屏蔽。扬声器同一时刻只播放一路，并丢弃未获仲裁的语音帧。";
+      } else if (state.rxCleanupPending) {
+        pill.textContent = "已停听 · RX 收尾中";
+        pill.className = "pill amber";
+        media.textContent = "0 playing · RX owner busy";
+        media.className = "pill amber";
+        owner.textContent = "RX owner: rx_stopping";
+        owner.className = "pill amber";
+        cleanupButton.disabled = false;
+        const reason = speakerBlocked ? "speaker ID 被本机屏蔽" : groupBlocked ? "TG/TS 通道被本机屏蔽" : "当前 RX policy 不再允许此通道";
+        detail.textContent = `已立即停止本机播放并拒绝后续帧；${reason}。媒体 owner 保持忙，等待模拟 HRI T0 清理确认后才可开始 PTT。`;
+      } else {
+        pill.textContent = "本机播放已停";
+        pill.className = "pill amber";
+        media.textContent = "0 playing · RX owner idle";
+        media.className = "pill amber";
+        owner.textContent = "RX owner idle";
+        owner.className = "pill";
+        cleanupButton.disabled = true;
+        const reason = speakerBlocked ? "speaker ID 被本机屏蔽" : groupBlocked ? "TG/TS 通道被本机屏蔽" : "当前 RX policy 不再允许此通道";
+        detail.textContent = `当前通话头仍保留用于展示；${reason}后已停止播放并丢弃剩余帧，不会排队或恢复回放。新 allow 规则等待下一通 call start。`;
+      }
+    }
+
+    function renderPrivate() {
+      document.querySelectorAll("[data-private-mode]").forEach(button => {
+        button.setAttribute("aria-pressed", String(button.dataset.privateMode === state.privateMode));
+      });
+      const description = {
+        disabled: "私呼关闭；组呼 RX 策略和 TX 目标不受影响。",
+        selected_peers: "仅收所选远端 peer 发往本机 ID 4611355、TS2 的私呼。组呼模式与 TX 目标分别维护。",
+        all_peers_to_local: "允许发往本机 ID 4611355 的合法私呼；speaker 屏蔽仍跨所有 RX 路由生效。"
+      }[state.privateMode];
+      document.getElementById("privateModeDescription").textContent = description;
+      const button = document.querySelector("[data-action='toggle-private-listen']");
+      const note = button.parentElement.querySelector(".local-detail");
+      const peerBlocked = state.blockedSources.has("800001");
+      const selected = state.allowPrivatePeers.has("800001:4611355:2");
+      if (peerBlocked) {
+        button.textContent = "peer 已全路由屏蔽";
+        button.classList.add("warn");
+        button.disabled = true;
+        note.textContent = "blocked_source_ids 优先于私呼 allow";
+      } else if (state.privateMode === "all_peers_to_local") {
+        button.textContent = "所有发往本机的 peer 已允许";
+        button.classList.remove("warn");
+        button.disabled = true;
+        note.textContent = "源 ID 屏蔽仍作用于所有路由";
+      } else if (state.privateMode === "disabled") {
+        button.textContent = "私呼监听关闭 · 加入 peer";
+        button.classList.remove("warn");
+        button.disabled = false;
+        note.textContent = selected ? "peer 保存在列表中；当前关闭私呼 RX" : "加入后切到 Selected peers";
+      } else if (selected) {
+        button.textContent = "私呼 peer 已选 · 停止";
+        button.classList.remove("warn");
+        button.disabled = false;
+        note.textContent = "Selected private peer allow";
+      } else {
+        button.textContent = "私呼 peer 未选 · 加入";
+        button.classList.remove("warn");
+        button.disabled = false;
+        note.textContent = "此 peer 不在本地 allow 列表";
+      }
+    }
+
+    function txBusy() {
+      return state.lease.phase !== "idle";
+    }
+
+    function renderTx() {
+      const busy = txBusy();
+      const rxOwnerBusy = state.currentCallPlaying || state.rxCleanupPending;
+      const label = document.getElementById("leaseLabel");
+      const description = document.getElementById("leaseDescription");
+      const pill = document.getElementById("leasePill");
+      const txLamp = document.getElementById("txStatusLamp");
+      const txSummary = document.getElementById("txStatusSummary");
+      const txStatusDetail = document.getElementById("txStatusDetail");
+      const downButton = document.querySelector("[data-action='simulate-ptt-down']");
+      const releaseButton = document.querySelector("[data-action='simulate-ptt-release']");
+      const eotButton = document.querySelector("[data-action='simulate-eot']");
+      if (state.lease.phase === "ptt_down") {
+        label.textContent = `活动 lease 锁定：${state.lease.target}`;
+        description.textContent = "PTT 按下期间使用 lease 开始时的 TX 目标；可选择下一次通话的待用目标。";
+        pill.textContent = "PTT DOWN · FROZEN";
+        pill.className = "pill amber";
+        txLamp.className = "lamp";
+        txSummary.textContent = `占用 · PTT DOWN · ${state.lease.target}`;
+        txStatusDetail.textContent = `活动 lease 锁定 ${state.lease.target}；下一目标 ${state.txTarget} 可待用。`;
+      } else if (state.lease.phase === "eot_pending") {
+        label.textContent = `EOT 待确认：${state.lease.target}`;
+        description.textContent = "松开已模拟；核心仍需完成 EOT。所选下一目标会等 lease 结束后生效。";
+        pill.textContent = "EOT PENDING · FROZEN";
+        pill.className = "pill amber";
+        txLamp.className = "lamp";
+        txSummary.textContent = `收尾 · EOT 待确认 · ${state.lease.target}`;
+        txStatusDetail.textContent = `当前 lease 仍锁定 ${state.lease.target}；待用目标 ${state.txTarget} 等待结束确认。`;
+      } else {
+        label.textContent = "活动发射 lease：空闲";
+        if (rxOwnerBusy) {
+          description.textContent = state.rxCleanupPending ? "RX 播放已停，但 HRI T0 收尾尚未确认；完成清理前 PTT 保持忙。" : "RX 正在占用单流媒体 owner；停止并确认清理后才能按下 PTT。";
+          pill.textContent = state.rxCleanupPending ? "RX STOPPING · BUSY" : "RX ACTIVE · BUSY";
+          pill.className = "pill amber";
+          txLamp.className = "lamp";
+          txSummary.textContent = state.rxCleanupPending ? "忙 · RX 收尾中" : "忙 · RX 正在播放";
+          txStatusDetail.textContent = state.rxCleanupPending ? "RX owner 等待 HRI T0 清理确认；PTT 不会排队。" : "RX 占用单流媒体 owner；PTT 不会排队。";
+        } else {
+          description.textContent = "PTT 未按下；当前下一目标可供下次 lease 使用。";
+          pill.textContent = "未锁定";
+          pill.className = "pill";
+          txLamp.className = "lamp muted";
+          txSummary.textContent = "空闲 · 未按下 PTT";
+          txStatusDetail.textContent = `下一次 PTT 将使用 ${state.txTarget}；活动 RX 与 BM 订阅保持独立。`;
+        }
+      }
+      downButton.disabled = state.lease.phase !== "idle" || rxOwnerBusy;
+      releaseButton.disabled = state.lease.phase !== "ptt_down";
+      eotButton.disabled = state.lease.phase !== "eot_pending";
+      document.querySelectorAll("[data-action='set-target'], [data-action='set-tx']").forEach(button => {
+        button.disabled = button.dataset.policyDisabled === "true";
+      });
+      document.getElementById("txFeedback").textContent = busy
+        ? `活动 lease 目标 ${state.lease.target} 保持冻结；当前下一目标 ${state.txTarget} 可继续修改，EOT 完成后才用于下一次 PTT。`
+        : rxOwnerBusy
+          ? "RX 媒体 owner 仍忙；目标可先选择，PTT 不会排队，需等 RX 清理确认后才能开始。"
+          : "当前 lease 已结束；下一次 PTT 将使用上方目标。RX 监听与 BM 订阅不随目标变化。";
+    }
+
+    function renderMode() {
+      const allDelivered = state.mode === "AllDelivered";
+      document.querySelectorAll("[data-mode]").forEach(button => {
+        button.setAttribute("aria-pressed", String(button.dataset.mode === state.mode));
+      });
+      modeBadge.textContent = allDelivered ? "ALL DELIVERED" : "SELECTED";
+      modeSummary.textContent = allDelivered ? "收 BM 已送达组呼" : "只收已选通道";
+      modeDetail.textContent = allDelivered
+        ? "播放通过校验且由 BM 送达的组呼，再排除本机屏蔽的 TG/TS 通道。"
+        : `本地已允许 ${state.allowGroups.size} 个组通道；扬声器同一时刻只播一路。`;
+      modeDescription.textContent = allDelivered
+        ? "接收 BM 已送达且通过校验的组呼，再减本机屏蔽项。新 TG 会出现在列表；已有屏蔽不会被清除。"
+        : "只播放本地 allow 列表中已选的 TG/TS。旧单目标配置迁移到此模式并保留一个通道。";
+
+      document.querySelectorAll(".subscription-row[data-channel]").forEach(row => {
+        const key = row.dataset.channel;
+        const listening = isListening(key);
+        const blocked = state.blockedGroups.has(key);
+        const button = row.querySelector("[data-action='toggle-listen']");
+        const localDetail = row.querySelector(".local-detail");
+        if (blocked) {
+          button.textContent = "本机已排除 · 恢复收听";
+          button.classList.add("warn");
+          localDetail.textContent = "本地 block 按 TG+TS；收听会先解除此通道屏蔽";
+        } else if (listening) {
+          button.textContent = allDelivered ? "BM 送达即收 · 排除此通道" : "本地收听中 · 停止";
+          button.classList.remove("warn");
+          localDetail.textContent = allDelivered ? "AllDelivered · 除非显式屏蔽" : "Selected allow · 本机策略";
+        } else {
+          button.textContent = "未监听 · 加入";
+          button.classList.remove("warn");
+          localDetail.textContent = "此通道尚未列入本地监听";
+        }
+      });
+      renderCurrentCall();
+      renderTx();
+    }
+
+    function setTxTarget(target, detail) {
+      if (isReceiveOnlyTarget(target)) {
+        showToast(`${target} 属于只收预设；核心拒绝本机发射目标更改。`);
+        return false;
+      }
+      state.txTarget = target;
+      state.txDetail = detail || "目标细节来自本地模拟数据。";
+      document.getElementById("currentTxTarget").textContent = target;
+      document.getElementById("currentTxDetail").textContent = state.txDetail;
+      document.querySelectorAll(".target-button[data-action='set-target']").forEach(button => {
+        button.classList.toggle("selected", button.dataset.target === target);
+      });
+      const frozen = txBusy() ? `；活动 lease 仍固定在 ${state.lease.target}` : "";
+      showToast(`本地模拟：下一目标为 ${target}${frozen}。没有提交给核心或 BM。`);
+      if (txBusy()) {
+        document.getElementById("txFeedback").textContent = `活动 lease 目标 ${state.lease.target} 保持冻结；当前下一目标 ${target} 可继续修改，EOT 完成后才用于下一次 PTT。`;
+      }
+      return true;
+    }
+
+    function setModal(title, bodyHtml, actions) {
+      modalTitle.textContent = title;
+      modalBody.innerHTML = bodyHtml;
+      modalActions.replaceChildren();
+      actions.forEach(action => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = `button ${action.className || "quiet"}`;
+        button.textContent = action.label;
+        button.addEventListener("click", action.onClick, { once: true });
+        modalActions.append(button);
+      });
+      modalBackdrop.hidden = false;
+      const firstButton = modalActions.querySelector("button");
+      if (firstButton) firstButton.focus();
+    }
+
+    function closeModal(message) {
+      modalBackdrop.hidden = true;
+      if (message) showToast(message);
+    }
+
+    function previewStaticDiff() {
+      setModal("BM 静态订阅 API · 差异预览", `
+        <p>以下列表是内嵌示例快照。真实界面先用独立 BM API Key 只读当前静态列表，再展示差异；本页面没有读取任何 API。</p>
+        <div class="diff-table">
+          <div class="diff-item"><b>API 读回</b><span>TG 91 / TS2 · TG 46001 / TS2</span></div>
+          <div class="diff-item"><b>本地期望</b><span>TG 91 / TS2 · TG 3100 / TS2</span></div>
+          <div class="diff-item add"><b>待添加</b><span>TG 3100 / TS2</span></div>
+          <div class="diff-item remove"><b>待移除</b><span>TG 46001 / TS2</span></div>
+        </div>
+        <p class="callout">预览不会修改 BM。本地停止监听与远端静态组删除是两个独立动作；真正应用差异需额外确认。</p>
+      `, [
+        { label: "关闭预览", className: "quiet", onClick: () => closeModal("静态 API 差异预览已关闭；没有向 BM 发送请求。") },
+        { label: "应用静态变更（原型禁用）", className: "warn", onClick: () => closeModal("离线原型没有应用静态 API 变更的能力。") }
+      ]);
+      modalActions.lastElementChild.disabled = true;
+      modalActions.lastElementChild.title = "离线原型不连接 BM API";
+    }
+
+    function remoteAction(kind, label) {
+      if (kind === "quick-call") {
+        if (isReceiveOnlyTarget(label)) {
+          showToast(`${label} 属于只收预设；拒绝动态 Quick call，不会发送组呼。`);
+          return;
+        }
+        setModal("确认动态组呼加入", `
+          <p>目标：<strong>${label}</strong></p>
+          <p class="callout">真实 Quick call 会向网络发送一次短 DMR 组呼。来源发现、切换本地监听和启动程序都不会触发加入；请求也不会自动续期。</p>
+          <p>确认远端状态前，界面应保留“已请求 / BM 尚未确认”；本机是否允许播放仍由 RX policy 单独控制。</p>
+          <p><strong>离线模拟：</strong>下方确认不会发出实际组呼。</p>
+        `, [
+          { label: "取消", className: "quiet", onClick: () => closeModal("已取消；没有发出 Quick call。") },
+          { label: "确认请求（仅演示）", className: "warn", onClick: () => closeModal("模拟确认完成；真实网络请求没有发送。") }
+        ]);
+        return;
+      }
+      const isStatic = kind === "remote-static-remove";
+      const actionName = isStatic ? "解除 BM 静态订阅" : "清除动态订阅";
+      const source = isStatic ? "BM 静态订阅 API" : "远端动态订阅状态";
+      setModal(`确认${actionName}`, `
+        <p>目标：<strong>${label}</strong></p>
+        <p class="callout">此动作会改变${source}。它与“停止本地收听”分开；本页不会连接 BM，也不会执行远端变更。</p>
+        <p>真实界面只在核心声明对应能力且远端条目来源已确认时启用此动作。移除请求与后续远端读回状态分别显示。</p>
+      `, [
+        { label: "取消", className: "quiet", onClick: () => closeModal("已取消远端操作；本地与 BM 状态未改变。") },
+        { label: "确认（仅演示）", className: "danger", onClick: () => closeModal("模拟确认完成；没有调用 BM API 或删除远端订阅。") }
+      ]);
+    }
+
+    document.addEventListener("click", event => {
+      const modeButton = event.target.closest("[data-mode]");
+      if (modeButton) {
+        state.mode = modeButton.dataset.mode;
+        renderMode();
+        showToast(`本页 RX 模式已切换为 ${state.mode}。此演示不保存配置。`);
+        return;
+      }
+
+      const privateModeButton = event.target.closest("[data-private-mode]");
+      if (privateModeButton) {
+        state.privateMode = privateModeButton.dataset.privateMode;
+        renderPrivate();
+        showToast(`本页私呼接收模式已切换为 ${state.privateMode}；TX 与组呼 RX 保持不变。`);
+        return;
+      }
+
+      const button = event.target.closest("[data-action]");
+      if (!button || button.disabled) return;
+      const action = button.dataset.action;
+
+      if (action === "toggle-listen") {
+        const row = button.closest(".subscription-row[data-channel]");
+        const key = row.dataset.channel;
+        if (isListening(key)) {
+          if (state.mode === "Selected") state.allowGroups.delete(key);
+          else state.blockedGroups.add(key);
+          showToast(state.mode === "Selected"
+            ? "本地 Selected allow 已移除；BM 静态/动态订阅没有改变。"
+            : "本机已排除此 TG；BM 订阅没有改变，也不会触发 BM 改送其他组。");
+        } else {
+          state.blockedGroups.delete(key);
+          if (state.mode === "Selected") state.allowGroups.add(key);
+          showToast(state.mode === "Selected"
+            ? "本地 Selected allow 已加入；BM 订阅没有改变。"
+            : "本机屏蔽已解除；AllDelivered 将接收 BM 实际送达的合法组呼。");
+        }
+        renderMode();
+        return;
+      }
+
+      if (action === "toggle-private-listen") {
+        const key = "800001:4611355:2";
+        state.privateMode = "selected_peers";
+        if (state.allowPrivatePeers.has(key)) {
+          state.allowPrivatePeers.delete(key);
+          showToast("本地私呼 peer allow 已移除；组呼监听、TX 目标和 BM 订阅没有改变。");
+        } else {
+          state.allowPrivatePeers.add(key);
+          showToast("本地私呼 peer allow 已加入；组呼监听、TX 目标和 BM 订阅没有改变。");
+        }
+        renderPrivate();
+        return;
+      }
+
+      if (action === "toggle-source") {
+        const id = state.currentSpeaker;
+        const sourceButton = button;
+        if (state.blockedSources.has(id)) {
+          state.blockedSources.delete(id);
+          sourceButton.textContent = "本地屏蔽此来源";
+          sourceButton.classList.remove("blocked");
+          document.getElementById("sourceBlockNote").textContent = "speaker ID 屏蔽跨所有 TG/TS 接收路由生效；它不会删除 BM 订阅。";
+          showToast(`本机来源屏蔽 ${id} 已撤销；BM 订阅和 TG 监听策略未改变。`);
+        } else {
+          state.blockedSources.add(id);
+          sourceButton.textContent = "已屏蔽 · 撤销";
+          sourceButton.classList.add("blocked");
+          document.getElementById("sourceBlockNote").textContent = `source ID ${id} 已加入全路由本地屏蔽；TG 91 通道与其他 source 仍按原策略。`;
+          showToast(`已在本页模拟屏蔽 source ID ${id}；没有屏蔽 TG 91。`);
+        }
+        renderCurrentCall();
+        renderTx();
+        renderPrivate();
+        return;
+      }
+
+      if (action === "simulate-speaker") {
+        state.currentSpeaker = state.currentSpeaker === "3141592" ? state.alternateSpeaker : "3141592";
+        document.getElementById("speakerId").textContent = `SOURCE ID · DEMO ${state.currentSpeaker}`;
+        const sourceButton = document.querySelector("[data-action='toggle-source']");
+        const blocked = state.blockedSources.has(state.currentSpeaker);
+        sourceButton.textContent = blocked ? "已屏蔽 · 撤销" : "本地屏蔽此来源";
+        sourceButton.classList.toggle("blocked", blocked);
+        document.getElementById("sourceBlockNote").textContent = `speaker ID 屏蔽跨所有 TG/TS 接收路由生效；TG 91 的其他 source 仍按原策略。当前 source ${state.currentSpeaker} ${blocked ? "已屏蔽" : "未屏蔽"}。`;
+        renderCurrentCall();
+        renderTx();
+        showToast(`发话人 source 已切换为 ${state.currentSpeaker}；TG/TS 通道数量没有变化。`);
+        return;
+      }
+
+      if (action === "simulate-new-group" || action === "simulate-same-tg-slot") {
+        const sameTgOtherSlot = action === "simulate-same-tg-slot";
+        const alreadyAdded = sameTgOtherSlot ? state.discoveredOtherSlot : state.discoveredNewGroup;
+        if (alreadyAdded) {
+          showToast("该通道候选卡已存在；没有重复创建，也没有清除屏蔽。");
+          return;
+        }
+        if (sameTgOtherSlot) state.discoveredOtherSlot = true;
+        else state.discoveredNewGroup = true;
+        const destinationId = sameTgOtherSlot ? "91" : "6500";
+        const slot = sameTgOtherSlot ? "1" : "1";
+        const key = `${destinationId}:${slot}`;
+        const row = document.createElement("article");
+        row.className = "subscription-row";
+        row.dataset.channel = key;
+        row.dataset.kind = "unknown";
+        row.dataset.tg = destinationId;
+        row.dataset.slot = slot;
+        const receiveOnly = destinationId === "91" || destinationId === "46001";
+        row.innerHTML = `
+          <div class="channel-cell"><div class="channel-title">TG ${destinationId} <span class="pill">TS${slot} · G</span></div><div class="channel-subtitle">刚观察到 · 新增演示候选</div></div>
+          <div class="remote-cell"><div class="remote-title"><span class="type-dot unknown"></span>订阅来源未知</div><div class="remote-detail">发现通道没有修改 BM 列表</div></div>
+          <div class="local-cell"><button class="button quiet listen-toggle" type="button" data-action="toggle-listen">未监听 · 加入</button><div class="local-detail">由当前 RX mode 决定是否播放</div></div>
+          <div class="row-actions"><button class="button quiet" type="button" data-action="set-tx" data-target="TG ${destinationId} · G · TS${slot}" ${receiveOnly ? 'disabled title="只收预设禁止发射" data-policy-disabled="true"' : ""}>设为发射</button><button class="button warn" type="button" data-action="quick-call" data-label="TG ${destinationId} / TS${slot}" ${receiveOnly ? 'disabled title="只收预设禁止动态加入"' : ""}>呼叫加入动态组…</button></div>
+          <span class="channel-note">新通道不清除既有屏蔽</span>`;
+        document.getElementById("subscriptionList").append(row);
+        renderMode();
+        showToast(`发现 TG ${destinationId} / TS${slot} 候选卡；频道屏蔽按 TG+TS 精确匹配，已有屏蔽保持不变。`);
+        return;
+      }
+
+      if (action === "simulate-ptt-down") {
+        if (state.lease.phase !== "idle") return;
+        if (state.currentCallPlaying || state.rxCleanupPending) {
+          showToast("RX 媒体 owner 仍忙；PTT 不会排队，请等待清理确认。");
+          return;
+        }
+        state.lease = { phase: "ptt_down", target: state.txTarget };
+        renderTx();
+        showToast(`模拟 lease 锁定在 ${state.lease.target}；切换目标已冻结。`);
+        return;
+      }
+
+      if (action === "simulate-rx-cleanup") {
+        if (!state.rxCleanupPending) return;
+        state.rxCleanupPending = false;
+        renderCurrentCall();
+        renderTx();
+        showToast("模拟 HRI T0 清理确认完成；RX owner 现为空闲，旧流不会回放。");
+        return;
+      }
+
+      if (action === "simulate-ptt-release") {
+        if (state.lease.phase !== "ptt_down") return;
+        state.lease.phase = "eot_pending";
+        renderTx();
+        showToast(`已模拟松开；${state.lease.target} 仍冻结，等待 EOT 完成。`);
+        return;
+      }
+
+      if (action === "simulate-eot") {
+        if (state.lease.phase !== "eot_pending") return;
+        const ended = state.lease.target;
+        state.lease = { phase: "idle", target: null };
+        renderTx();
+        showToast(`${ended} lease 的 EOT 已模拟完成；现在可选下一目标。`);
+        return;
+      }
+
+      if (action === "set-tx") {
+        const target = button.dataset.target;
+        setTxTarget(target, `${target} · 本页预览；RX 和订阅状态不变`);
+        return;
+      }
+      if (action === "set-target") {
+        setTxTarget(button.dataset.target, button.dataset.detail);
+        return;
+      }
+      if (action === "preview-static") {
+        previewStaticDiff();
+        return;
+      }
+      if (["quick-call", "remote-static-remove", "dynamic-clear"].includes(action)) {
+        remoteAction(action, button.dataset.label);
+      }
+    });
+
+    modalBackdrop.addEventListener("click", event => {
+      if (event.target === modalBackdrop) closeModal("预览已关闭；没有远端操作。");
+    });
+    document.addEventListener("keydown", event => {
+      if (event.key === "Escape" && !modalBackdrop.hidden) closeModal("预览已关闭；没有远端操作。");
+    });
+
+    renderMode();
+    renderPrivate();
+  </script>
+</body>
+</html>
