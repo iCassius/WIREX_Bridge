@@ -78,7 +78,7 @@ Assert-True ($alpha2Tests[14] -ceq 'bounded_pipe_writer_test' -and
 $builderTestLines = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'build-bm-bridge.ps1') -Encoding UTF8 |
     Where-Object { $_ -match "^\s*@\{\s*Name='[^']+';\s*Source='tests\\" })
 $builderTestNames = @($builderTestLines | ForEach-Object { [regex]::Match($_, "Name='([^']+)'").Groups[1].Value })
-$builderHistoricalTestNames = @($builderTestNames | Where-Object { $_ -cne 'ui_control_protocol_v2_test' })
+$builderAlpha3Prefix = @($builderTestNames | Select-Object -First 35)
 Assert-True ($alpha2Tests.Count -eq 28 -and $alpha2Tests[15] -ceq 'ui_pipe_test') `
     'alpha.2 retains its historical 28-test manifest independently of the current builder'
 Assert-True ($alpha2Files -ccontains 'start-ui.cmd' -and $alpha2Files -ccontains 'start-ui.ps1' -and
@@ -113,9 +113,10 @@ Assert-True ([string]$alpha3ReadmeMap[0].Source -ceq 'docs\releases\v0.1.0-alpha
 Assert-True ($alpha3Profile.ReleaseScope -match 'per-accepted-call DMR Source ID label' -and
     @($alpha3Profile.NotIncluded | Where-Object { $_ -match 'RF node operation is not implemented' }).Count -eq 1) `
     'alpha.3 package scope states identity behavior and RF omission explicitly'
-Assert-Equal $builderHistoricalTestNames.Count $alpha3Tests.Count 'alpha.3 historical test list count remains separate from the new alpha.5 test'
+Assert-True ($builderTestNames.Count -ge $alpha3Tests.Count) '当前 builder 保留 alpha.3 的固定历史测试前缀'
+Assert-Equal $builderAlpha3Prefix.Count $alpha3Tests.Count 'alpha.3 固定测试列表与当前 builder 的首 35 项分开比较'
 for ($testIndex = 0; $testIndex -lt $alpha3Tests.Count; $testIndex++) {
-    Assert-True ($builderHistoricalTestNames[$testIndex] -ceq $alpha3Tests[$testIndex]) `
+    Assert-True ($builderAlpha3Prefix[$testIndex] -ceq $alpha3Tests[$testIndex]) `
         "alpha.3 fixed test list matches builder source order at index $testIndex"
 }
 $alpha4Profile = Get-ReleaseProfile -Version 'v0.1.0-alpha.4'
@@ -158,7 +159,7 @@ $alpha5Files = @(Get-ExpectedReleasePackageFiles)
 $alpha5Tests = @(Get-ExpectedReleaseTests)
 Assert-Equal $alpha5Files.Count ($alpha4Files.Count + 6) 'alpha.5 在 alpha.4 运行文件上增加两份迁移/协议文档和四个测试入口文件'
 Assert-Equal $alpha5Tests.Count 36 'alpha.5 包记录原35项测试和IPC v2新测试'
-Assert-Equal $builderTestNames.Count $alpha5Tests.Count 'alpha.5 固定测试清单与当前 builder 数量一致'
+Assert-True ($builderTestNames.Count -ge $alpha5Tests.Count) '当前 builder 保留 alpha.5 的固定测试前缀'
 $expectedAlpha5Tests = @($alpha4Tests + 'ui_control_protocol_v2_test')
 for ($testIndex = 0; $testIndex -lt $alpha5Tests.Count; $testIndex++) {
     Assert-True ($alpha5Tests[$testIndex] -ceq $expectedAlpha5Tests[$testIndex]) `
@@ -266,6 +267,77 @@ Assert-True ($controlScriptText.Contains('$ExecutablePath = Join-Path $PSScriptR
 Assert-True (([System.IO.File]::ReadAllText((Join-Path $repositoryRoot 'tools\start-step1-test.ps1'), [System.Text.Encoding]::UTF8)).Contains('private\r106-step1-test-config') -and
     ([System.IO.File]::ReadAllText((Join-Path $repositoryRoot 'tools\start-step1-test.ps1'), [System.Text.Encoding]::UTF8)).Contains('-UserConfigDirectory $resolvedUserConfigDirectory')) `
     'step-one UI entry uses the dedicated test configuration directory explicitly'
+
+$alpha6Profile = Get-ReleaseProfile -Version 'v0.1.0-alpha.6'
+[void](Set-ReleaseVersion -Version 'v0.1.0-alpha.6')
+$alpha6Files = @(Get-ExpectedReleasePackageFiles)
+$alpha6Tests = @(Get-ExpectedReleaseTests)
+Assert-Equal $alpha6Files.Count ($alpha5Files.Count + 3) 'alpha.6 在 alpha.5 固定清单上只增加 R108 文档和两个合并入口文件'
+Assert-Equal $alpha6Tests.Count 39 'alpha.6 固定记录 39 项 C++ 离线测试'
+Assert-Equal $builderTestNames.Count $alpha6Tests.Count 'alpha.6 profile 与 builder 固定测试数量一致'
+$alpha6AddedTests = @('talkgroup_routing_test', 'bm_routing_lifecycle_test', 'routing_state_test')
+for ($testIndex = 0; $testIndex -lt $alpha5Tests.Count; $testIndex++) {
+    Assert-True ($alpha6Tests[$testIndex] -ceq $alpha5Tests[$testIndex]) `
+        "alpha.6 keeps alpha.5's fixed test prefix at index $testIndex"
+}
+for ($testIndex = 0; $testIndex -lt $alpha6AddedTests.Count; $testIndex++) {
+    $index = $alpha5Tests.Count + $testIndex
+    Assert-True ($alpha6Tests[$index] -ceq $alpha6AddedTests[$testIndex] -and
+        $builderTestNames[$index] -ceq $alpha6AddedTests[$testIndex]) `
+        "alpha.6 appends the fixed R108 test $($alpha6AddedTests[$testIndex])"
+}
+Assert-True ((Get-ReleaseProfile -Version 'v0.1.0-alpha.5').TestNames.Count -eq 36 -and
+    (Get-ReleaseProfile -Version 'v0.1.0-alpha.5').PackageFiles.Count -eq 34) `
+    'alpha.6 additions do not change alpha.5 test or package inventories'
+foreach ($mapping in @(
+    @{ Source='docs\releases\v0.1.0-alpha.6-package-README.md'; Destination='README.md' },
+    @{ Source='docs\R108_收发路由状态与alpha6验收.md'; Destination='docs\R108_收发路由状态与alpha6验收.md' },
+    @{ Source='tools\start-merged-test.cmd'; Destination='start-merged-test.cmd' },
+    @{ Source='tools\start-merged-test.ps1'; Destination='start-merged-test.ps1' }
+)) {
+    Assert-True (@($alpha6Profile.SourceFiles | Where-Object {
+        [string]$_.Source -ceq $mapping.Source -and [string]$_.Destination -ceq $mapping.Destination
+    }).Count -eq 1) "alpha.6 source mapping is fixed: $($mapping.Source)"
+}
+Assert-True ((Get-ReleaseAssetName -RelativePath 'docs/R108_收发路由状态与alpha6验收.md') -ceq 'docs__r108-routing-state-alpha6.md') `
+    'alpha.6 R108 guide has a stable ASCII asset name'
+Assert-True ($alpha6Profile.ReleaseScope -match 'full schema-2 receive-policy runtime routing' -and
+    @($alpha6Profile.NotIncluded | Where-Object { $_ -match 'hardware acceptance record' }).Count -eq 1) `
+    'alpha.6 profile describes full runtime policy scope and its hardware evidence boundary'
+$alpha6ReadmeMap = @($alpha6Profile.SourceFiles | Where-Object { [string]$_.Destination -ceq 'README.md' })
+Assert-Equal $alpha6ReadmeMap.Count 1 'alpha.6 has exactly one package README'
+Assert-True ([string]$alpha6ReadmeMap[0].Source -ceq 'docs\releases\v0.1.0-alpha.6-package-README.md') `
+    'alpha.6 package copies its own versioned README'
+$alpha6ReadmeText = [System.IO.File]::ReadAllText(
+    (Join-Path $repositoryRoot $alpha6ReadmeMap[0].Source), [System.Text.Encoding]::UTF8)
+Assert-True ($alpha6ReadmeText.Contains('routing-state.json') -and
+    $alpha6ReadmeText.Contains('private/r108-merged-test-config') -and
+    $alpha6ReadmeText.Contains('test-control.cmd') -and
+    $alpha6ReadmeText.Contains('password-file-path.txt')) `
+    'alpha.6 README documents the routing file, isolated local test entry, and standalone control diagnostic'
+$alpha6LauncherText = [System.IO.File]::ReadAllText(
+    (Join-Path $repositoryRoot 'tools\start-merged-test.ps1'), [System.Text.Encoding]::UTF8)
+Assert-True ($alpha6LauncherText.Contains('private\r108-merged-test-config') -and
+    $alpha6LauncherText.Contains('UserConfigDirectory = $userConfigDirectory') -and
+    -not $alpha6LauncherText.Contains('NoAutoConnect')) `
+    'alpha.6 merged entry uses its dedicated config directory and standard UI startup behavior'
+$alpha6CommandPath = Join-Path $repositoryRoot 'tools\start-merged-test.cmd'
+$alpha6CommandBytes = [System.IO.File]::ReadAllBytes($alpha6CommandPath)
+Assert-True (@($alpha6CommandBytes | Where-Object { $_ -gt 127 }).Count -eq 0) 'start-merged-test.cmd is ASCII-only'
+$alpha6CommandText = [System.Text.Encoding]::ASCII.GetString($alpha6CommandBytes)
+Assert-True ($alpha6CommandText.Contains("`r`n") -and -not $alpha6CommandText.Replace("`r`n", '').Contains("`n")) `
+    'start-merged-test.cmd uses Windows CRLF line endings'
+$alpha6LauncherPath = Join-Path $repositoryRoot 'tools\start-merged-test.ps1'
+$alpha6Tokens = $null
+$alpha6ParseErrors = $null
+$alpha6Ast = [System.Management.Automation.Language.Parser]::ParseFile(
+    $alpha6LauncherPath, [ref]$alpha6Tokens, [ref]$alpha6ParseErrors)
+$alpha6EntryDirectory = @($alpha6Ast.ParamBlock.Parameters | Where-Object {
+    [string]$_.Name.VariablePath.UserPath -ceq 'UserConfigDirectory'
+})
+Assert-True ($alpha6ParseErrors.Count -eq 0 -and $alpha6EntryDirectory.Count -eq 0) `
+    ('alpha.6 launcher parses on Windows PowerShell and fixes its isolated config path; parse errors={0}, mutable config parameters={1}' -f
+        $alpha6ParseErrors.Count, $alpha6EntryDirectory.Count)
 [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.1')
 Assert-Throws { Get-ReleaseAssetName -RelativePath 'start-ui.cmd' } 'alpha.1 不接受 alpha.2 UI asset'
 Assert-True ((Get-ReleaseAssetName -RelativePath 'docs/连接配置.md') -ceq 'docs__connection-profile.md') `
@@ -514,6 +586,38 @@ try {
     Write-Utf8NoBom -Path $alpha5ManifestPath -Text ((ConvertTo-Json -InputObject $alpha5Manifest -Depth 8) + "`n")
     Assert-True ((Assert-ReleasePackageInventory -PackageRoot $alpha5PackageRoot -Version 'v0.1.0-alpha.5') -eq $null) `
         'alpha.5 synthetic folder and the six new package records match the alpha.5 profile'
+
+    $alpha6PackageRoot = Join-Path $testRoot 'package-alpha6'
+    Copy-Item -LiteralPath $alpha5PackageRoot -Destination $alpha6PackageRoot -Recurse
+    [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.6')
+    $alpha6ManifestPath = Join-Path $alpha6PackageRoot 'manifest.json'
+    $alpha6Manifest = [System.IO.File]::ReadAllText($alpha6ManifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $alpha6ReadmePath = Join-Path $alpha6PackageRoot 'README.md'
+    Write-Utf8NoBom -Path $alpha6ReadmePath -Text '# WIREX Bridge v0.1.0-alpha.6 synthetic test package'
+    foreach ($relativePath in @('docs/R108_收发路由状态与alpha6验收.md', 'start-merged-test.cmd', 'start-merged-test.ps1')) {
+        $fullPath = Join-Path $alpha6PackageRoot $relativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+        $parent = Split-Path -Parent $fullPath
+        if (-not (Test-Path -LiteralPath $parent -PathType Container)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+        Write-Utf8NoBom -Path $fullPath -Text ('synthetic alpha.6 inventory fixture: ' + $relativePath)
+        $item = Get-Item -LiteralPath $fullPath
+        $alpha6Manifest.files += ,([pscustomobject]@{
+            path = $relativePath
+            asset_name = (Get-ReleaseAssetName -RelativePath $relativePath)
+            length_bytes = [long]$item.Length
+            sha256 = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            source = 'synthetic alpha.6 test fixture'
+        })
+    }
+    $alpha6ReadmeItem = Get-Item -LiteralPath $alpha6ReadmePath
+    $alpha6ReadmeRecord = @($alpha6Manifest.files | Where-Object { [string]$_.path -ceq 'README.md' })
+    if ($alpha6ReadmeRecord.Count -ne 1) { throw 'Synthetic alpha.6 manifest must contain one README record.' }
+    $alpha6ReadmeRecord[0].length_bytes = [long]$alpha6ReadmeItem.Length
+    $alpha6ReadmeRecord[0].sha256 = (Get-FileHash -LiteralPath $alpha6ReadmePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $alpha6Manifest.version = 'v0.1.0-alpha.6'
+    $alpha6Manifest.tag_candidate = 'v0.1.0-alpha.6'
+    Write-Utf8NoBom -Path $alpha6ManifestPath -Text ((ConvertTo-Json -InputObject $alpha6Manifest -Depth 8) + "`n")
+    Assert-True ((Assert-ReleasePackageInventory -PackageRoot $alpha6PackageRoot -Version 'v0.1.0-alpha.6') -eq $null) `
+        'alpha.6 synthetic folder and three additive package records match the alpha.6 profile'
     [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.1')
 
     $readmeFixture = Join-Path $packageRoot 'README.md'
@@ -553,10 +657,16 @@ finally {
 }
 
 if (-not [string]::IsNullOrWhiteSpace($ControlPackageDirectory)) {
-    $expectedPackageRoot = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot 'build\releases\v0.1.0-alpha.5'))
     $controlPackageRoot = [System.IO.Path]::GetFullPath($ControlPackageDirectory)
-    if (-not $controlPackageRoot.Equals($expectedPackageRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "默认入口集成测试只接受本地 alpha.5 包目录：$expectedPackageRoot"
+    $alpha5PackageRoot = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot 'build\releases\v0.1.0-alpha.5'))
+    $alpha6PackageRoot = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot 'build\releases\v0.1.0-alpha.6'))
+    $controlPackageVersion = if ($controlPackageRoot.Equals($alpha5PackageRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        'alpha.5'
+    } elseif ($controlPackageRoot.Equals($alpha6PackageRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        'alpha.6'
+    } else { '' }
+    if (-not $controlPackageVersion) {
+        throw "默认入口集成测试只接受本地 alpha.5 或 alpha.6 包目录：$alpha6PackageRoot"
     }
     $packagedControlScript = Join-Path $controlPackageRoot 'test-control.ps1'
     if (-not [System.IO.File]::Exists((Join-Path $controlPackageRoot 'wirex_bridge.exe')) -or
@@ -567,6 +677,6 @@ if (-not [string]::IsNullOrWhiteSpace($ControlPackageDirectory)) {
     $controlOutput = @(& $powershellExe.Source -NoLogo -NoProfile -ExecutionPolicy Bypass -File $packagedControlScript 2>&1)
     $controlExitCode = $LASTEXITCODE
     Assert-True ($controlExitCode -eq 0) `
-        ('alpha.5 test-control.ps1 must use its same-directory executable without -ExecutablePath; output: ' + ($controlOutput -join ' | '))
-    Write-Output 'Packaged test-control default-path integration passed: same-directory wirex_bridge.exe completed ready/hello/status/shutdown/exit0 without an executable argument.'
+        ("$controlPackageVersion test-control.ps1 must use its same-directory executable without -ExecutablePath; output: " + ($controlOutput -join ' | '))
+    Write-Output ("Packaged test-control default-path integration passed for ${controlPackageVersion}: same-directory wirex_bridge.exe completed ready/hello/status/shutdown/exit0 without an executable argument.")
 }

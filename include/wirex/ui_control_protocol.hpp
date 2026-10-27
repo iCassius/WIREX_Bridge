@@ -1,7 +1,11 @@
 #pragma once
 
+#include "wirex/talkgroup_routing.hpp"
+#include "wirex/strict_json.hpp"
+
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -116,14 +120,27 @@ struct DispatchResult {
     bool protocol_error{false};
 };
 
-// 只分派第一阶段的 hello/status/shutdown。其他合法命令名返回 unsupported。
+struct RoutingCallbacks {
+    std::uint32_t local_source_id{};
+    std::function<talkgroup_routing::PolicyUpdateResult(
+        std::uint64_t, const talkgroup_routing::RxPolicy&)> replace_rx_policy{};
+    std::function<talkgroup_routing::PolicyUpdateResult(
+        std::uint64_t, const talkgroup_routing::TxTarget&, bool)> replace_tx_policy{};
+    std::function<std::string()> snapshot_json{};
+};
+
+// v2 控制分派；未提供 RoutingCallbacks 时保留协议诊断的只读首阶段能力。
 class Dispatcher final {
 public:
-    explicit Dispatcher(std::string run_id, bool diagnostic = false);
+    explicit Dispatcher(std::string run_id, bool diagnostic = false,
+                        RoutingCallbacks routing = {});
 
     [[nodiscard]] std::string ready_line(std::uint32_t process_id);
     [[nodiscard]] DispatchResult handle(std::string_view json_line, const StatusSnapshot& snapshot);
     [[nodiscard]] DispatchResult reject(std::string_view error_code);
+    [[nodiscard]] std::string routing_state_line();
+    [[nodiscard]] bool hello_seen() const noexcept { return hello_seen_; }
+    [[nodiscard]] bool supports_routing() const noexcept { return routing_enabled_; }
     [[nodiscard]] std::uint64_t control_seq() const noexcept { return control_seq_; }
     [[nodiscard]] std::size_t cached_result_count() const noexcept
     {
@@ -151,6 +168,8 @@ private:
 
     std::string run_id_{};
     bool diagnostic_{false};
+    bool routing_enabled_{false};
+    RoutingCallbacks routing_{};
     bool ready_emitted_{false};
     bool hello_seen_{false};
     bool shutdown_requested_{false};

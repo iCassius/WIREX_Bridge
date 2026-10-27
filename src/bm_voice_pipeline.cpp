@@ -129,7 +129,7 @@ talkgroup_routing::PolicyUpdateResult BmVoicePipeline::replace_tx_policy(
                 0U, std::nullopt, std::nullopt};
     }
     auto result = router_->replace_tx_policy(expected_revision, policy);
-    if (result && result.stop_tx_lease_id && tx_state_ == TxState::active && has_last_now_) {
+    if (result && result.stop_tx_lease_id && tx_state_ != TxState::idle && has_last_now_) {
         (void)stop_tx(last_now_);
     }
     return result;
@@ -142,6 +142,28 @@ RoutedSnapshot BmVoicePipeline::routing_snapshot() const noexcept
     result.active_rx_mapping = active_rx_mapping_;
     result.stopping_rx_mapping = stopping_rx_mapping_;
     return result;
+}
+
+std::uint32_t BmVoicePipeline::routed_local_source_id() const noexcept
+{
+    return router_ ? router_->local_source_id() : 0U;
+}
+
+const talkgroup_routing::RxPolicy* BmVoicePipeline::routed_rx_policy() const noexcept
+{
+    return router_ ? &router_->rx_policy() : nullptr;
+}
+
+const talkgroup_routing::TxPolicy* BmVoicePipeline::routed_tx_policy() const noexcept
+{
+    return router_ ? &router_->tx_policy() : nullptr;
+}
+
+bool BmVoicePipeline::routed_tx_voice_permitted() const noexcept
+{
+    if (!router_ || !router_->tx_policy().transmit_enabled) return false;
+    const auto state = router_->snapshot();
+    return state.active_tx_lease.has_value() && !state.active_tx_lease->admission_revoked;
 }
 
 Error BmVoicePipeline::begin_routed_tx(const dmr_call::CallConfig& identity_template,
@@ -306,6 +328,10 @@ TxPushResult BmVoicePipeline::push_tx_audio(const std::int16_t* samples,
         return result;
     }
     if (tx_state_ != TxState::active) {
+        result.error = Error::not_active;
+        return result;
+    }
+    if (router_ && !routed_tx_voice_permitted()) {
         result.error = Error::not_active;
         return result;
     }
@@ -1034,6 +1060,12 @@ void BmVoicePipeline::try_finalize_tx()
 Error BmVoicePipeline::tick_tx(TimePoint now)
 {
     if (tx_state_ == TxState::idle) {
+        return Error::none;
+    }
+    if (router_ && routed_tx_lease_id_ && tx_state_ != TxState::idle &&
+        !routed_tx_voice_permitted()) {
+        // Permission撤销只清尚未发送的语音，并通过正常stop_tx路径保留租约EOT。
+        (void)stop_tx(now);
         return Error::none;
     }
     if (tx_state_ == TxState::draining) {

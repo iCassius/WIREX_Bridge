@@ -24,6 +24,19 @@ std::string request(std::string_view run_id, std::string_view request_id,
         std::string(request_id) + "\",\"command\":\"" + std::string(command) + "\"}";
 }
 
+std::string request_with_parameters(std::string_view run_id, std::string_view request_id,
+                                    std::string_view command, std::string_view parameters)
+{
+    return "{\"schema_version\":2,\"run_id\":\"" + std::string(run_id) +
+        "\",\"request_id\":\"" + std::string(request_id) + "\",\"command\":\"" +
+        std::string(command) + "\",\"parameters\":" + std::string(parameters) + "}";
+}
+
+constexpr std::string_view empty_rx_policy =
+    "{\"group_mode\":\"selected\",\"private_mode\":\"disabled\",\"allow_groups\":[],"
+    "\"allow_private_peers\":[],\"local_private_routes\":[],\"blocked_groups\":[],"
+    "\"blocked_source_ids\":[]}";
+
 void test_v1_compatibility()
 {
     using wirex::ui_control::Parser;
@@ -192,7 +205,7 @@ void test_dispatch_isolation_and_replay()
           !conflict.shutdown_requested,
           "same request ID with a different body is rejected without executing shutdown");
 
-    const auto future = dispatcher.handle(request("run-1", "future", "rx_policy.replace"), snapshot);
+    const auto future = dispatcher.handle(request("run-1", "future", "future.operation"), snapshot);
     check(future.json_line.find("\"result\":\"unsupported\"") != std::string::npos &&
           !future.shutdown_requested,
           "future policy changes are explicitly unsupported");
@@ -252,6 +265,165 @@ void test_strict_json_envelope()
           "invalid UTF-8 bytes are rejected");
 }
 
+void test_routing_commands_use_typed_backend_and_live_snapshots()
+{
+    using namespace wirex::talkgroup_routing;
+    using wirex::ui_control::Dispatcher;
+    using wirex::ui_control::RoutingCallbacks;
+    using wirex::ui_control::StatusSnapshot;
+    std::uint64_t rx_revision = 1U;
+    std::uint64_t tx_revision = 1U;
+    unsigned rx_calls = 0U;
+    unsigned tx_calls = 0U;
+    RxPolicy current_rx{};
+    TxTarget current_target{91U, wirex::dmr_call::CallKind::group, wirex::dmr_call::Slot::ts2};
+    bool current_tx_enabled = false;
+    RoutingCallbacks callbacks{};
+    callbacks.local_source_id = 1U;
+    callbacks.replace_rx_policy = [&](std::uint64_t expected, const RxPolicy& policy) {
+        ++rx_calls;
+        if (expected != rx_revision) {
+            return PolicyUpdateResult{PolicyUpdateStatus::revision_conflict, rx_revision,
+                                      std::nullopt, std::nullopt};
+        }
+        current_rx = policy;
+        ++rx_revision;
+        return PolicyUpdateResult{PolicyUpdateStatus::applied, rx_revision, std::nullopt, std::nullopt};
+    };
+    callbacks.replace_tx_policy = [&](std::uint64_t expected, const TxTarget& target, bool enabled) {
+        ++tx_calls;
+        if (expected != tx_revision) {
+            return PolicyUpdateResult{PolicyUpdateStatus::revision_conflict, tx_revision,
+                                      std::nullopt, std::nullopt};
+        }
+        current_target = target;
+        current_tx_enabled = enabled;
+        ++tx_revision;
+        return PolicyUpdateResult{PolicyUpdateStatus::applied, tx_revision, std::nullopt, std::nullopt};
+    };
+    callbacks.snapshot_json = [&]() {
+        return "{\"local_source_id\":1,\"rx_policy_revision\":" + std::to_string(rx_revision) +
+            ",\"tx_policy_revision\":" + std::to_string(tx_revision) +
+            ",\"transmit_enabled\":" + (current_tx_enabled ? "true" : "false") + "}";
+    };
+    Dispatcher dispatcher("route-run", false, std::move(callbacks));
+    const auto ready = dispatcher.ready_line(2U);
+    check(ready.find("\"routing.status\"") != std::string::npos &&
+          ready.find("\"rx_policy.replace\"") != std::string::npos &&
+          ready.find("\"tx_policy.replace\"") != std::string::npos,
+          "routing-enabled control_ready advertises read and both replace commands");
+    StatusSnapshot snapshot{};
+    const auto hello = dispatcher.handle(request("route-run", "hello", "hello"), snapshot);
+    check(hello.json_line.find("\"result\":\"ok\"") != std::string::npos &&
+          hello.json_line.find("\"routing.status\"") != std::string::npos,
+          "hello advertises routing support on the real routing backend");
+    const auto initial_push = dispatcher.routing_state_line();
+    check(initial_push.find("\"type\":\"routing_state\"") != std::string::npos &&
+          initial_push.find("\"rx_policy_revision\":1") != std::string::npos,
+          "initial routing push contains the current policy revision");
+
+    const auto status = dispatcher.handle(request("route-run", "route-status", "routing.status"), snapshot);
+    check(status.json_line.find("\"result\":\"ok\"") != std::string::npos &&
+          status.json_line.find("\"routing\":{\"local_source_id\":1") != std::string::npos,
+          "routing.status returns the typed current snapshot in its control_result");
+
+    const auto rx_body = request_with_parameters("route-run", "rx-one", "rx_policy.replace",
+        "{\"expected_revision\":1,\"rx_policy\":" + std::string(empty_rx_policy) + "}");
+    const auto rx_result = dispatcher.handle(rx_body, snapshot);
+    check(rx_result.json_line.find("\"result\":\"ok\"") != std::string::npos &&
+          rx_result.json_line.find("\"rx_policy_revision\":2") != std::string::npos &&
+          rx_calls == 1U && rx_revision == 2U,
+          "rx_policy.replace invokes the typed backend and reports its applied snapshot");
+
+    const auto protected_tx = request_with_parameters("route-run", "tx-protected", "tx_policy.replace",
+        "{\"expected_revision\":1,\"tx_target\":{\"destination_id\":91,\"kind\":\"group\",\"slot\":2},\"transmit_enabled\":true}");
+    const auto protected_result = dispatcher.handle(protected_tx, snapshot);
+    check(protected_result.json_line.find("\"result\":\"rejected\"") != std::string::npos &&
+          protected_result.json_line.find("\"error\":\"invalid_parameters\"") != std::string::npos &&
+          tx_calls == 0U && tx_revision == 1U,
+          "TG91 transmit permission is rejected before the typed backend is called");
+
+    const auto tx_body = request_with_parameters("route-run", "tx-one", "tx_policy.replace",
+        "{\"expected_revision\":1,\"tx_target\":{\"destination_id\":1452,\"kind\":\"group\",\"slot\":1},\"transmit_enabled\":true}");
+    const auto tx_result = dispatcher.handle(tx_body, snapshot);
+    check(tx_result.json_line.find("\"result\":\"ok\"") != std::string::npos &&
+          tx_result.json_line.find("\"tx_policy_revision\":2") != std::string::npos &&
+          tx_calls == 1U && tx_revision == 2U && current_target.destination_id == 1452U && current_tx_enabled,
+          "tx_policy.replace applies the next target and live permission through the backend");
+
+    const auto conflict = dispatcher.handle(request_with_parameters("route-run", "rx-stale", "rx_policy.replace",
+        "{\"expected_revision\":1,\"rx_policy\":" + std::string(empty_rx_policy) + "}"), snapshot);
+    check(conflict.json_line.find("\"result\":\"rejected\"") != std::string::npos &&
+          conflict.json_line.find("\"error\":\"revision_conflict\"") != std::string::npos &&
+          conflict.json_line.find("\"routing\":") == std::string::npos,
+          "stale CAS is rejected without an extra routing snapshot");
+
+    const auto replay = dispatcher.handle(rx_body, snapshot);
+    check(replay.json_line.find("\"replayed\":true") != std::string::npos &&
+          replay.json_line.find("\"rx_policy_revision\":2") != std::string::npos &&
+          rx_calls == 2U,
+          "a replay preserves the original cached routing result and never re-runs mutation");
+    const auto current_push = dispatcher.routing_state_line();
+    check(current_push.find("\"rx_policy_revision\":2") != std::string::npos &&
+          current_push.find("\"tx_policy_revision\":2") != std::string::npos,
+          "a separate routing_state push reports current revisions after replay");
+
+    const auto missing_parameters = dispatcher.handle(request("route-run", "missing", "rx_policy.replace"), snapshot);
+    check(missing_parameters.json_line.find("\"error\":\"invalid_request\"") != std::string::npos &&
+          rx_calls == 2U,
+          "rx_policy.replace without its exact parameters object is rejected before backend dispatch");
+}
+
+void test_cache_full_sentinel_precedes_routing_mutation()
+{
+    using namespace wirex::talkgroup_routing;
+    using wirex::ui_control::Dispatcher;
+    using wirex::ui_control::RoutingCallbacks;
+    using wirex::ui_control::StatusSnapshot;
+    using wirex::ui_control::max_cached_requests;
+    std::uint64_t rx_revision = 1U;
+    unsigned callback_count = 0U;
+    RoutingCallbacks callbacks{};
+    callbacks.local_source_id = 1U;
+    callbacks.replace_rx_policy = [&](std::uint64_t expected, const RxPolicy&) {
+        ++callback_count;
+        if (expected != rx_revision) {
+            return PolicyUpdateResult{PolicyUpdateStatus::revision_conflict, rx_revision,
+                                      std::nullopt, std::nullopt};
+        }
+        ++rx_revision;
+        return PolicyUpdateResult{PolicyUpdateStatus::applied, rx_revision, std::nullopt, std::nullopt};
+    };
+    callbacks.replace_tx_policy = [](std::uint64_t expected, const TxTarget&, bool) {
+        return PolicyUpdateResult{PolicyUpdateStatus::applied, expected + 1U, std::nullopt, std::nullopt};
+    };
+    callbacks.snapshot_json = [&]() { return "{\"rx_policy_revision\":" + std::to_string(rx_revision) + "}"; };
+    Dispatcher dispatcher("capacity-run", false, std::move(callbacks));
+    (void)dispatcher.ready_line(1U);
+    StatusSnapshot snapshot{};
+    (void)dispatcher.handle(request("capacity-run", "hello", "hello"), snapshot);
+    const auto ordinary_count = max_cached_requests - 3U;
+    for (std::size_t index = 0U; index < ordinary_count; ++index) {
+        const auto body = request("capacity-run", "ordinary-" + std::to_string(index), "future.operation");
+        const auto result = dispatcher.handle(body, snapshot);
+        check(result.json_line.find("\"result\":\"unsupported\"") != std::string::npos,
+              "ordinary unsupported request fills cache without invoking routing callbacks");
+    }
+    check(dispatcher.cached_result_count() == max_cached_requests - 2U && callback_count == 0U && rx_revision == 1U,
+          "510 ordinary request results leave policy revision unchanged and reserve cache slots");
+    const auto mutation = request_with_parameters("capacity-run", "last-rx", "rx_policy.replace",
+        "{\"expected_revision\":1,\"rx_policy\":" + std::string(empty_rx_policy) + "}");
+    const auto sentinel = dispatcher.handle(mutation, snapshot);
+    check(sentinel.json_line.find("\"error\":\"cache_full\"") != std::string::npos &&
+          !sentinel.shutdown_requested && callback_count == 0U && rx_revision == 1U,
+          "the 511th ordinary ID binds cache_full before any policy callback runs");
+    const auto sentinel_replay = dispatcher.handle(mutation, snapshot);
+    check(sentinel_replay.json_line.find("\"replayed\":true") != std::string::npos &&
+          sentinel_replay.json_line.find("\"error\":\"cache_full\"") != std::string::npos &&
+          callback_count == 0U && rx_revision == 1U,
+          "the policy-command cache-full sentinel safely replays without mutation");
+}
+
 void test_cache_capacity_reserves_shutdown()
 {
     using wirex::ui_control::Dispatcher;
@@ -261,8 +433,8 @@ void test_cache_capacity_reserves_shutdown()
 
     Dispatcher early_shutdown("run-1", false);
     (void)early_shutdown.ready_line(1U);
-    const auto early_one = early_shutdown.handle(request("run-1", "early-ordinary-1", "rx_policy.replace"), snapshot);
-    const auto early_two = early_shutdown.handle(request("run-1", "early-ordinary-2", "rx_policy.replace"), snapshot);
+    const auto early_one = early_shutdown.handle(request("run-1", "early-ordinary-1", "future.operation"), snapshot);
+    const auto early_two = early_shutdown.handle(request("run-1", "early-ordinary-2", "future.operation"), snapshot);
     check(early_one.json_line.find("\"result\":\"unsupported\"") != std::string::npos &&
           early_two.json_line.find("\"result\":\"unsupported\"") != std::string::npos &&
           early_shutdown.cached_result_count() == 2U,
@@ -287,7 +459,7 @@ void test_cache_capacity_reserves_shutdown()
     (void)dispatcher.ready_line(1U);
     std::string first_body;
     for (std::size_t index = 0U; index < max_cached_requests - 2U; ++index) {
-        const auto body = request("run-1", "ordinary-" + std::to_string(index), "rx_policy.replace");
+        const auto body = request("run-1", "ordinary-" + std::to_string(index), "future.operation");
         if (index == 0U) first_body = body;
         const auto result = dispatcher.handle(body, snapshot);
         check(result.json_line.find("\"result\":\"unsupported\"") != std::string::npos &&
@@ -351,6 +523,8 @@ int main()
     test_ready_and_handshake();
     test_dispatch_isolation_and_replay();
     test_strict_json_envelope();
+    test_routing_commands_use_typed_backend_and_live_snapshots();
+    test_cache_full_sentinel_precedes_routing_mutation();
     test_cache_capacity_reserves_shutdown();
     if (failures != 0) return 1;
     std::cout << "ui_control_protocol_v2_test: all assertions passed\n";

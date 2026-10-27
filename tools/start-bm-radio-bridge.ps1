@@ -390,6 +390,161 @@ function ConvertTo-ValidatedConnectionProfile {
         -Receive $Receive -TransmitEnabled $TransmitEnabled -AllowTextNumbers:$AllowTextNumbers
 }
 
+function ConvertTo-RoutingStatePolicy {
+    param(
+        [Parameter(Mandatory=$true)][object]$Profile,
+        [Parameter(Mandatory=$true)][uint64]$LocalSourceId
+    )
+    $policy = $Profile.rx_policy
+    $expectedNames = @('group_mode', 'private_mode', 'allow_groups', 'blocked_groups',
+        'allow_private_peers', 'local_private_routes', 'blocked_source_ids')
+    Assert-ExactJsonObject -Value $policy -ExpectedNames $expectedNames -Label 'rx_policy'
+    if (@('disabled', 'selected_peers', 'all_peers_to_local') -cnotcontains [string]$policy.private_mode) {
+        throw 'rx_policy.private_mode 值无效。'
+    }
+    if ($policy.private_mode -ceq 'disabled' -and
+        (@($policy.allow_private_peers).Count -gt 0 -or @($policy.local_private_routes).Count -gt 0)) {
+        throw 'rx_policy.private_mode=disabled 时私呼路由列表必须为空。'
+    }
+    if ($policy.private_mode -ceq 'selected_peers' -and @($policy.local_private_routes).Count -gt 0) {
+        throw 'rx_policy.private_mode=selected_peers 时 local_private_routes 必须为空。'
+    }
+    if (@('selected', 'all_delivered') -cnotcontains [string]$policy.group_mode) {
+        throw 'rx_policy.group_mode 只能是 selected 或 all_delivered。'
+    }
+    foreach ($name in @('allow_groups', 'blocked_groups', 'allow_private_peers',
+            'local_private_routes', 'blocked_source_ids')) {
+        $value = $policy.PSObject.Properties[$name].Value
+        if ($null -eq $value -or $value -isnot [array]) { throw "rx_policy.$name 必须是 JSON 数组。" }
+    }
+
+    $groups = New-Object 'System.Collections.Generic.List[object]'
+    $blockedGroups = New-Object 'System.Collections.Generic.List[object]'
+    $peers = New-Object 'System.Collections.Generic.List[object]'
+    $localRoutes = New-Object 'System.Collections.Generic.List[object]'
+    $blockedSources = New-Object 'System.Collections.Generic.List[uint64]'
+    $groupKeys = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    $blockedGroupKeys = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    $peerKeys = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    $localRouteKeys = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    $blockedSourceKeys = New-Object 'System.Collections.Generic.HashSet[uint64]'
+
+    foreach ($entry in @($policy.allow_groups)) {
+        Assert-ExactJsonObject -Value $entry -ExpectedNames @('destination_id', 'slot') -Label 'rx_policy.allow_groups 项'
+        $id = ConvertTo-ProfileUnsigned -Value $entry.destination_id -Label 'rx_policy.allow_groups.destination_id' -Maximum 16777215
+        $slot = ConvertTo-ProfileUnsigned -Value $entry.slot -Label 'rx_policy.allow_groups.slot' -Maximum 2
+        if ($id -eq 0 -or $slot -lt 1) { throw 'rx_policy.allow_groups 中的 ID 或时隙超出允许范围。' }
+        $key = "$id/$slot"
+        if (-not $groupKeys.Add($key)) { throw "rx_policy.allow_groups 重复项：$key" }
+        $groups.Add([pscustomobject][ordered]@{ destination_id=[uint64]$id; slot=[uint64]$slot })
+    }
+    foreach ($entry in @($policy.blocked_groups)) {
+        Assert-ExactJsonObject -Value $entry -ExpectedNames @('destination_id', 'slot') -Label 'rx_policy.blocked_groups 项'
+        $id = ConvertTo-ProfileUnsigned -Value $entry.destination_id -Label 'rx_policy.blocked_groups.destination_id' -Maximum 16777215
+        $slot = ConvertTo-ProfileUnsigned -Value $entry.slot -Label 'rx_policy.blocked_groups.slot' -Maximum 2
+        if ($id -eq 0 -or $slot -lt 1) { throw 'rx_policy.blocked_groups 中的 ID 或时隙超出允许范围。' }
+        $key = "$id/$slot"
+        if (-not $blockedGroupKeys.Add($key)) { throw "rx_policy.blocked_groups 重复项：$key" }
+        $blockedGroups.Add([pscustomobject][ordered]@{ destination_id=[uint64]$id; slot=[uint64]$slot })
+    }
+    foreach ($entry in @($policy.allow_private_peers)) {
+        Assert-ExactJsonObject -Value $entry -ExpectedNames @('source_id', 'local_destination_id', 'slot') -Label 'rx_policy.allow_private_peers 项'
+        $peerId = ConvertTo-ProfileUnsigned -Value $entry.source_id -Label 'rx_policy.allow_private_peers.source_id' -Maximum 16777215
+        $localId = ConvertTo-ProfileUnsigned -Value $entry.local_destination_id -Label 'rx_policy.allow_private_peers.local_destination_id' -Maximum 16777215
+        $slot = ConvertTo-ProfileUnsigned -Value $entry.slot -Label 'rx_policy.allow_private_peers.slot' -Maximum 2
+        if ($peerId -eq 0 -or $localId -eq 0 -or $slot -lt 1) { throw 'rx_policy.allow_private_peers 中的 ID 或时隙超出允许范围。' }
+        if ($localId -ne $LocalSourceId) { throw 'rx_policy.allow_private_peers.local_destination_id 必须等于 connection.source_id。' }
+        $key = "$peerId/$localId/$slot"
+        if (-not $peerKeys.Add($key)) { throw "rx_policy.allow_private_peers 重复项：$key" }
+        $peers.Add([pscustomobject][ordered]@{ source_id=[uint64]$peerId; local_destination_id=[uint64]$localId; slot=[uint64]$slot })
+    }
+    foreach ($entry in @($policy.local_private_routes)) {
+        Assert-ExactJsonObject -Value $entry -ExpectedNames @('local_destination_id', 'slot') -Label 'rx_policy.local_private_routes 项'
+        $localId = ConvertTo-ProfileUnsigned -Value $entry.local_destination_id -Label 'rx_policy.local_private_routes.local_destination_id' -Maximum 16777215
+        $slot = ConvertTo-ProfileUnsigned -Value $entry.slot -Label 'rx_policy.local_private_routes.slot' -Maximum 2
+        if ($localId -eq 0 -or $slot -lt 1) { throw 'rx_policy.local_private_routes 中的 ID 或时隙超出允许范围。' }
+        if ($localId -ne $LocalSourceId) { throw 'rx_policy.local_private_routes.local_destination_id 必须等于 connection.source_id。' }
+        $key = "$localId/$slot"
+        if (-not $localRouteKeys.Add($key)) { throw "rx_policy.local_private_routes 重复项：$key" }
+        $localRoutes.Add([pscustomobject][ordered]@{ local_destination_id=[uint64]$localId; slot=[uint64]$slot })
+    }
+    foreach ($value in @($policy.blocked_source_ids)) {
+        $id = ConvertTo-ProfileUnsigned -Value $value -Label 'rx_policy.blocked_source_ids 项' -Maximum 16777215
+        if ($id -eq 0 -or -not $blockedSourceKeys.Add([uint64]$id)) { throw 'rx_policy.blocked_source_ids 含零值或重复 ID。' }
+        $blockedSources.Add([uint64]$id)
+    }
+    foreach ($key in $groupKeys) {
+        if ($blockedGroupKeys.Contains($key)) { throw "组呼频道同时位于 allow 和 block：$key" }
+    }
+    if ($policy.private_mode -ceq 'disabled' -and ($peers.Count -gt 0 -or $localRoutes.Count -gt 0)) {
+        throw 'rx_policy.private_mode=disabled 时私呼路由列表必须为空。'
+    }
+    if ($policy.private_mode -ceq 'selected_peers' -and $localRoutes.Count -gt 0) {
+        throw 'rx_policy.private_mode=selected_peers 时 local_private_routes 必须为空。'
+    }
+    return [pscustomobject][ordered]@{
+        group_mode = [string]$policy.group_mode
+        private_mode = [string]$policy.private_mode
+        allow_groups = [object[]]$groups.ToArray()
+        blocked_groups = [object[]]$blockedGroups.ToArray()
+        allow_private_peers = [object[]]$peers.ToArray()
+        local_private_routes = [object[]]$localRoutes.ToArray()
+        blocked_source_ids = [uint64[]]$blockedSources.ToArray()
+    }
+}
+
+function New-RoutingStateDocument {
+    param([Parameter(Mandatory=$true)][object]$Profile)
+    if ($null -eq $Profile.connection -or $null -eq $Profile.tx_target -or
+        $null -eq $Profile.rx_policy -or $Profile.transmit_enabled -isnot [bool]) {
+        throw '手工连接配置没有完整迁移为 schema 2。'
+    }
+    $sourceId = ConvertTo-ProfileUnsigned -Value $Profile.connection.source_id -Label 'connection.source_id' -Maximum 16777215
+    if ($sourceId -eq 0) { throw 'connection.source_id 必须大于零。' }
+    Assert-ExactJsonObject -Value $Profile.tx_target -ExpectedNames @('destination_id', 'kind', 'slot') -Label 'tx_target'
+    $destinationId = ConvertTo-ProfileUnsigned -Value $Profile.tx_target.destination_id -Label 'tx_target.destination_id' -Maximum 16777215
+    $slot = ConvertTo-ProfileUnsigned -Value $Profile.tx_target.slot -Label 'tx_target.slot' -Maximum 2
+    if ($destinationId -eq 0 -or $slot -lt 1 -or $Profile.tx_target.kind -isnot [string] -or
+        @('group', 'private') -cnotcontains [string]$Profile.tx_target.kind) {
+        throw 'tx_target 中的目标、呼叫类型或时隙超出允许范围。'
+    }
+    return [pscustomobject][ordered]@{
+        schema_version = 1
+        local_source_id = [uint64]$sourceId
+        rx_policy = ConvertTo-RoutingStatePolicy -Profile $Profile -LocalSourceId $sourceId
+        tx_target = [pscustomobject][ordered]@{
+            destination_id = [uint64]$destinationId
+            kind = [string]$Profile.tx_target.kind
+            slot = [uint64]$slot
+        }
+        transmit_enabled = [bool]$Profile.transmit_enabled
+    }
+}
+
+function Write-RoutingStateFile {
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [Parameter(Mandatory=$true)][object]$Profile
+    )
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $directory = [System.IO.Path]::GetDirectoryName($fullPath)
+    if (-not [System.IO.Directory]::Exists($directory)) { throw "routing-state.json 目录不存在：$directory" }
+    if ([System.IO.File]::Exists($fullPath)) { throw "本次运行的 routing-state.json 已存在：$fullPath" }
+    $document = New-RoutingStateDocument -Profile $Profile
+    $json = (ConvertTo-Json -InputObject $document -Depth 8) + "`n"
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    $bytes = $encoding.GetBytes($json)
+    if ($bytes.Length -gt 65536) { throw 'routing-state.json 超过 64 KiB 上限。' }
+    $temporaryPath = $fullPath + '.tmp-' + [guid]::NewGuid().ToString('N')
+    try {
+        [System.IO.File]::WriteAllBytes($temporaryPath, $bytes)
+        [System.IO.File]::Move($temporaryPath, $fullPath)
+    } finally {
+        if ([System.IO.File]::Exists($temporaryPath)) { [System.IO.File]::Delete($temporaryPath) }
+    }
+    return $fullPath
+}
+
 function Read-ConnectionProfile {
     param([Parameter(Mandatory=$true)][string]$Path)
     return Read-BridgeUserConnectionProfile -Path $Path
@@ -805,24 +960,26 @@ function Find-WaveEndpointById {
 }
 
 function Get-ProfileConnectionArgs {
-    param([Parameter(Mandatory=$true)][object]$Profile)
+    param(
+        [Parameter(Mandatory=$true)][object]$Profile,
+        [Parameter(Mandatory=$true)][string]$RoutingStatePath
+    )
     $connection = $Profile.connection
-    $receive = $Profile.receive
+    $txTarget = $Profile.tx_target
+    if ([string]::IsNullOrWhiteSpace($RoutingStatePath)) { throw '手工连接启动必须指定 routing-state.json。' }
     $arguments = @(
         '--profile-callsign', [string]$connection.callsign,
         '--profile-gateway-id', ([uint64]$connection.gateway_id).ToString([Globalization.CultureInfo]::InvariantCulture),
         '--profile-source-id', ([uint64]$connection.source_id).ToString([Globalization.CultureInfo]::InvariantCulture),
         '--profile-master', [string]$connection.master,
         '--profile-master-port', ([uint64]$connection.master_port).ToString([Globalization.CultureInfo]::InvariantCulture),
-        '--profile-destination-id', ([uint64]$connection.destination_id).ToString([Globalization.CultureInfo]::InvariantCulture),
-        '--profile-slot', ([uint64]$connection.slot).ToString([Globalization.CultureInfo]::InvariantCulture),
+        '--profile-destination-id', ([uint64]$txTarget.destination_id).ToString([Globalization.CultureInfo]::InvariantCulture),
+        '--profile-slot', ([uint64]$txTarget.slot).ToString([Globalization.CultureInfo]::InvariantCulture),
         '--profile-color-code', ([uint64]$connection.color_code).ToString([Globalization.CultureInfo]::InvariantCulture),
-        '--profile-call-kind', $(if ($connection.call_kind -ceq 'group') { 'G' } else { 'P' }),
-        '--profile-receive-destination-id', ([uint64]$receive.destination_id).ToString([Globalization.CultureInfo]::InvariantCulture),
-        '--profile-receive-slot', ([uint64]$receive.slot).ToString([Globalization.CultureInfo]::InvariantCulture),
-        '--profile-receive-call-kind', $(if ($receive.call_kind -ceq 'group') { 'G' } else { 'P' })
+        '--profile-call-kind', $(if ($txTarget.kind -ceq 'group') { 'G' } else { 'P' }),
+        '--routing-state-file', [System.IO.Path]::GetFullPath($RoutingStatePath)
     )
-    if ($null -ne $Profile.PSObject.Properties['transmit_enabled'] -and -not [bool]$Profile.transmit_enabled) {
+    if (-not [bool]$Profile.transmit_enabled) {
         $arguments += '--listen-only'
     }
     return $arguments
@@ -864,7 +1021,6 @@ try {
     if ($BodyFile) { $bodySource = $BodyFile } else { $bodySource = Join-Path $script:packageRoot 'private\device-y.bin' }
     $body = Test-ApprovedBody -Path $bodySource
     $manualProfile = $null
-    $manualRuntimeProfile = $null
     $manualProfilePath = ''
     $manualProfileWasCreated = $false
     if ($selectedPreset -eq 'manual') {
@@ -875,7 +1031,6 @@ try {
             $manualProfile = Read-ManualConnectionProfile
             $manualProfileWasCreated = $true
         }
-        $manualRuntimeProfile = Get-BridgeLegacyRuntimeProfile -Profile $manualProfile
     }
     $audioSettingsPath = Resolve-AudioSettingsPath -Path $AudioSettingsPath
     $radioPlaybackGainWasBound = $PSBoundParameters.ContainsKey('RadioPlaybackGain')
@@ -956,9 +1111,28 @@ try {
     if ($StatusDirectory) { $statusDirectoryPath = $StatusDirectory }
     else { $statusDirectoryPath = Join-Path $script:packageRoot 'logs' }
     $statusDirectory = Test-StatusDirectory -Path $statusDirectoryPath
+    if ($selectedPreset -eq 'manual' -and -not $PrepareOnly) {
+        $manualRunDirectoryName = 'bm-run-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff') + '-' +
+            [guid]::NewGuid().ToString('N').Substring(0, 8)
+        $statusDirectory = Test-StatusDirectory -Path (Join-Path $statusDirectory $manualRunDirectoryName)
+    }
     $statusPath = Join-Path $statusDirectory ('bm-bridge-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff') + '-' +
         [guid]::NewGuid().ToString('N').Substring(0, 8) + '.jsonl')
     $script:statusPath = $statusPath
+    $preparationPath = ''
+    if ($PrepareOnly) {
+        $preparationPath = [System.IO.Path]::GetFullPath($PreparationOutputPath)
+        $preparationDirectory = [System.IO.Path]::GetDirectoryName($preparationPath)
+        if (-not [System.IO.Directory]::Exists($preparationDirectory)) { throw '启动参数输出目录不存在。' }
+        if ([System.IO.File]::Exists($preparationPath)) {
+            throw '启动参数输出文件已存在；请为每次启动创建独立 run 目录。'
+        }
+    }
+    $routingStatePath = ''
+    if ($selectedPreset -eq 'manual') {
+        $routingStatePath = Join-Path $statusDirectory 'routing-state.json'
+        $routingStatePath = Write-RoutingStateFile -Path $routingStatePath -Profile $manualProfile
+    }
 
     Write-Host ''
     $audioSummary = if ($audioPair) { 'USB Audio' } else { '已选择音频输入和输出' }
@@ -980,11 +1154,12 @@ try {
         Write-Host '连接后在电台扬声器收听 BM 组呼，按 Q 停止并退出。'
     } elseif ($selectedPreset -eq 'parrot-cn' -or $selectedPreset -eq 'parrot-global') {
         Write-Host '连接后按住手咪讲话；松开后等待 BM 回声。按 Q 停止并退出。'
-    } elseif ($manualRuntimeProfile.connection.call_kind -ceq 'group' -and
-              $manualRuntimeProfile.connection.destination_id -in @(91, 46001)) {
-        Write-Host '连接后在电台扬声器收听 BM 组呼，按 Q 停止并退出。'
     } else {
-        Write-Host '连接后按住手咪讲话；松开结束本次讲话。按 Q 停止并退出。'
+        $txSummary = if ($manualProfile.tx_target.kind -ceq 'group') { '组呼' } else { '私呼' }
+        $receiveGroupCount = @($manualProfile.rx_policy.allow_groups).Count
+        $receivePrivateRouteCount = @($manualProfile.rx_policy.allow_private_peers).Count + @($manualProfile.rx_policy.local_private_routes).Count
+        Write-Host ("TX: {0} {1} · RX策略：{2}个组呼允许项、{3}个私呼路由项；按 Q 停止并退出。" -f `
+            $txSummary, $manualProfile.tx_target.destination_id, $receiveGroupCount, $receivePrivateRouteCount)
     }
     Write-Host ("COM: {0} · Radio WaveIn: ID {1} · {2}" -f $portName, $radioInput.id, $radioInput.name)
     Write-Host ("Radio WaveOut: ID {0} · {1}" -f $radioOutput.id, $radioOutput.name)
@@ -992,6 +1167,7 @@ try {
         Write-Host '诊断模式已启用：按 T 开始或结束 BM 上行。'
     }
     Write-Host ("状态报告：{0}" -f $statusPath)
+    if ($routingStatePath) { Write-Host ("接收策略文件：{0}" -f $routingStatePath) }
     Write-Host ''
     $arguments = @('--run', '--port', $portName, '--body-file', $body,
         '--input', [string]$radioInput.id, '--output', [string]$radioOutput.id,
@@ -1003,26 +1179,19 @@ try {
     if ($selectedPreset -ne 'manual') {
         $arguments += @('--test-preset', $selectedPreset, '--password-file', $passwordPath)
     } else {
-        $arguments += Get-ProfileConnectionArgs -Profile $manualRuntimeProfile
+        $arguments += Get-ProfileConnectionArgs -Profile $manualProfile -RoutingStatePath $routingStatePath
         if ($passwordPath) { $arguments += @('--password-file', $passwordPath) }
     }
     if ($ManualPtt) { $arguments += '--manual-ptt' }
     if ($PrepareOnly) {
         if ($selectedPreset -ne 'manual') { throw '桌面 UI 只接受完整手工连接配置，不使用固定测试预设。' }
         $arguments += @('--ui-pipe', '--ui-control-version', '2')
-        $preparationPath = [System.IO.Path]::GetFullPath($PreparationOutputPath)
-        $preparationDirectory = [System.IO.Path]::GetDirectoryName($preparationPath)
-        if (-not [System.IO.Directory]::Exists($preparationDirectory)) {
-            throw '启动参数输出目录不存在。'
-        }
-        if ([System.IO.File]::Exists($preparationPath)) {
-            throw '启动参数输出文件已存在；请为每次启动创建独立 run 目录。'
-        }
         $preparation = [ordered]@{
             schema_version = 1
             executable = [System.IO.Path]::GetFullPath($executable)
             arguments = @($arguments)
             status_path = $statusPath
+            routing_state_path = $routingStatePath
             port = $portName
             wavein_id = [int]$radioInput.id
             waveout_id = [int]$radioOutput.id

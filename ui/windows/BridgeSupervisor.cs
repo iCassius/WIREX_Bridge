@@ -21,7 +21,9 @@ namespace WirexBridge.Ui
         private const uint Infinite = 0xffffffff;
         private const int DiagnosticLimit = 16 * 1024;
         private const int ControlQueueLimit = 64;
-        private const int ControlLineLimit = 16 * 1024;
+        private const int ControlLineLimit = 128 * 1024;
+        private const int ControlJsonLimitBytes = 4096;
+        private const int ControlOutputLineLimitBytes = 128 * 1024;
 
         private readonly object gate = new object();
         private readonly object lifecycleGate = new object();
@@ -66,25 +68,50 @@ namespace WirexBridge.Ui
 
         public bool SendControlCommand(string requestId, string command)
         {
+            return SendControlCommand(requestId, command, null);
+        }
+
+        public bool SendControlCommand(string requestId, string command, string parametersJson)
+        {
             if (String.IsNullOrWhiteSpace(requestId) || requestId.Length > 128) return false;
-            if (command != "hello" && command != "status" && command != "shutdown") return false;
+            bool needsParameters = command == "rx_policy.replace" || command == "tx_policy.replace";
+            if (command != "hello" && command != "status" && command != "shutdown" &&
+                command != "routing.status" && !needsParameters) return false;
+            if (needsParameters)
+            {
+                if (String.IsNullOrWhiteSpace(parametersJson) || parametersJson[0] != '{' ||
+                    parametersJson[parametersJson.Length - 1] != '}' ||
+                    parametersJson.IndexOf('\r') >= 0 || parametersJson.IndexOf('\n') >= 0) return false;
+            }
+            else if (parametersJson != null) return false;
             lock (lifecycleGate)
             {
                 IntPtr input;
                 IntPtr process;
                 string runId;
+                byte[] requestBytes;
                 lock (gate)
                 {
                     if (disposed || controlVersion != 2 || processHandle == IntPtr.Zero || standardInputWrite == IntPtr.Zero) return false;
                     input = standardInputWrite;
                     process = processHandle;
                     runId = controlRunId;
+                    if (runId.Length == 0 || WaitForSingleObject(process, 0U) == WaitObject0) return false;
+                    requestBytes = BuildControlRequest(runId, requestId, command, parametersJson);
+                    if (requestBytes == null) return false;
                 }
-                if (runId.Length == 0 || WaitForSingleObject(process, 0U) == WaitObject0) return false;
-                bool sent = WriteControlRequest(input, runId, requestId, command);
+                bool sent = WriteControlRequest(input, requestBytes);
                 if (!sent) CloseInputAfterWriteFailure(input);
                 return sent;
             }
+        }
+
+        public static int GetControlRequestBodyByteCount(string runId, string requestId, string command, string parametersJson)
+        {
+            string body = "{\"schema_version\":2,\"run_id\":" + EscapeJson(runId ?? String.Empty) +
+                ",\"request_id\":" + EscapeJson(requestId ?? String.Empty) + ",\"command\":" + EscapeJson(command ?? String.Empty) +
+                (parametersJson == null ? String.Empty : ",\"parameters\":" + parametersJson) + "}";
+            return Encoding.UTF8.GetByteCount(body);
         }
 
         public string[] DrainControlEvents(int maximumCount)
@@ -135,7 +162,7 @@ namespace WirexBridge.Ui
                 security.nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES));
                 security.bInheritHandle = true;
 
-                if (!CreatePipe(out childInputRead, out parentInputWrite, ref security, 0)) ThrowLastError("CreatePipe(stdin)");
+                if (!CreatePipe(out childInputRead, out parentInputWrite, ref security, 8192)) ThrowLastError("CreatePipe(stdin)");
                 if (!SetHandleInformation(parentInputWrite, HandleFlagInherit, 0)) ThrowLastError("SetHandleInformation(stdin)");
                 uint inputPipeMode = PipeNowait;
                 if (!SetNamedPipeHandleState(parentInputWrite, ref inputPipeMode, IntPtr.Zero, IntPtr.Zero))
@@ -340,7 +367,11 @@ namespace WirexBridge.Ui
                     {
                         if (version == 2)
                         {
-                            if (runId.Length != 0) WriteControlRequest(input, runId, Guid.NewGuid().ToString("D"), "shutdown");
+                            if (runId.Length != 0)
+                            {
+                                byte[] shutdown = BuildControlRequest(runId, Guid.NewGuid().ToString("D"), "shutdown", null);
+                                if (shutdown != null) WriteControlRequest(input, shutdown);
+                            }
                         }
                         else
                         {
@@ -469,10 +500,33 @@ namespace WirexBridge.Ui
 
         private void QueueControlLine(string line)
         {
-            if (line.IndexOf("\"type\":\"control_ready\"", StringComparison.Ordinal) < 0 &&
-                line.IndexOf("\"type\":\"control_result\"", StringComparison.Ordinal) < 0) return;
+            bool routingPush = System.Text.RegularExpressions.Regex.IsMatch(line,
+                "\"type\"\\s*:\\s*\"routing_state\"", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+            bool controlFrame = routingPush ||
+                System.Text.RegularExpressions.Regex.IsMatch(line,
+                    "\"type\"\\s*:\\s*\"control_(ready|result)\"", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+            if (!controlFrame) return;
+            if (Encoding.UTF8.GetByteCount(line) > ControlOutputLineLimitBytes)
+            {
+                lock (gate) controlEventOverflow = true;
+                return;
+            }
             lock (gate)
             {
+                // Routing state is a replaceable snapshot. Keep only its newest copy so
+                // bounded native pushes cannot crowd out command acknowledgements.
+                if (routingPush && controlEvents.Count != 0)
+                {
+                    Queue<string> retained = new Queue<string>();
+                    while (controlEvents.Count != 0)
+                    {
+                        string queued = controlEvents.Dequeue();
+                        bool queuedRouting = System.Text.RegularExpressions.Regex.IsMatch(queued,
+                            "\"type\"\\s*:\\s*\"routing_state\"", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+                        if (!queuedRouting) retained.Enqueue(queued);
+                    }
+                    while (retained.Count != 0) controlEvents.Enqueue(retained.Dequeue());
+                }
                 if (controlEvents.Count >= ControlQueueLimit)
                 {
                     controlEventOverflow = true;
@@ -482,11 +536,21 @@ namespace WirexBridge.Ui
             }
         }
 
-        private static bool WriteControlRequest(IntPtr input, string runId, string requestId, string command)
+        private static byte[] BuildControlRequest(string runId, string requestId, string command, string parametersJson)
         {
-            string json = "{\"schema_version\":2,\"run_id\":" + EscapeJson(runId) +
-                ",\"request_id\":" + EscapeJson(requestId) + ",\"command\":" + EscapeJson(command) + "}\n";
-            byte[] bytes = Encoding.UTF8.GetBytes(json);
+            string body = "{\"schema_version\":2,\"run_id\":" + EscapeJson(runId) +
+                ",\"request_id\":" + EscapeJson(requestId) + ",\"command\":" + EscapeJson(command) +
+                (parametersJson == null ? String.Empty : ",\"parameters\":" + parametersJson) + "}";
+            byte[] bodyBytes = Encoding.UTF8.GetBytes(body);
+            if (bodyBytes.Length > ControlJsonLimitBytes) return null;
+            byte[] bytes = new byte[bodyBytes.Length + 1];
+            Buffer.BlockCopy(bodyBytes, 0, bytes, 0, bodyBytes.Length);
+            bytes[bytes.Length - 1] = (byte)'\n';
+            return bytes;
+        }
+
+        private static bool WriteControlRequest(IntPtr input, byte[] bytes)
+        {
             uint written;
             return WriteFile(input, bytes, (uint)bytes.Length, out written, IntPtr.Zero) && written == bytes.Length;
         }

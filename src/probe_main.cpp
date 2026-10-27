@@ -37,6 +37,7 @@
 #include "wirex/hri_ptt_gate.hpp"
 #include "wirex/talkgroup_routing.hpp"
 #include "wirex/ui_control_protocol.hpp"
+#include "wirex/routing_state.hpp"
 #endif
 
 #include <algorithm>
@@ -4509,8 +4510,10 @@ void print_bm_bridge_help()
         L"Master 支持 IPv4 字面量或主机名；手工密码在控制台隐藏输入，预设从私有 UTF-8 文件读取。\n"
         L"两种密码入口只接受可打印 ASCII；手工隐藏输入允许空格。\n"
         L"--ui-pipe 仅供桌面 UI 使用；必须提供完整配置或预设、显式密码文件、状态文件与匿名 stdin 管道。默认控制版本 1，只接受 Q 换行或 EOF 停止。\n"
-        L"--ui-control-version 2 必须与 --ui-pipe 一起使用，采用 schema_version=2 的有界 JSONL；首阶段支持 hello/status/shutdown。\n"
-        L"--control-diagnostic --ui-pipe --ui-control-version 2 仅测试控制协议；只接匿名 stdin/stdout 管道，不访问 BM、串口或音频设备。\n"
+        L"--ui-control-version 2 必须与 --ui-pipe 一起使用，采用 schema_version=2 的有界 JSONL；支持 hello/status/routing.status/rx_policy.replace/tx_policy.replace/shutdown。\n"
+        L"--routing-state-file ABS 使用严格 schema_version=1 的完整本地路由策略；在打开设备前校验。\n"
+        L"--control-diagnostic --ui-pipe --ui-control-version 2 保留原三条控制诊断命令。\n"
+        L"--routing-diagnostic --ui-pipe --ui-control-version 2 使用合成本机ID=1测试真实 Native pipeline 路由策略，不访问网络或设备。\n"
         L"  --hri-lcd-identity-candidate --port COMn --body-file ABS --file WAV --report-file ABS --field destination|source|local --callsign ASCII\n"
         L"                               单次本地WAV实验，仅替换一个呼号字段；1..8个无空格可见ASCII字符且含英文字母。\n"
         L"                               不连接BM；报告中的电台LCD显示状态保持 unknown。\n");
@@ -4754,7 +4757,7 @@ UiPipeInspection inspect_ui_pipe(HANDLE handle, std::uint32_t control_version) n
     return UiPipeInspection::waiting;
 }
 
-int run_control_diagnostic()
+int run_control_diagnostic(bool routing_diagnostic)
 {
     const HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
     const HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -4771,7 +4774,43 @@ int run_control_diagnostic()
     }
 
     const std::string run_id = make_bridge_run_id();
-    wirex::ui_control::Dispatcher dispatcher(run_id, true);
+    std::unique_ptr<wirex::bm_voice::BmVoicePipeline> pipeline;
+    wirex::routing_state::ObservedSources observed_sources;
+    wirex::ui_control::RoutingCallbacks routing_callbacks{};
+    if (routing_diagnostic) {
+        try { pipeline = std::make_unique<wirex::bm_voice::BmVoicePipeline>(); }
+        catch (...) { return 2; }
+        wirex::talkgroup_routing::RxPolicy rx_policy{};
+        wirex::talkgroup_routing::TxPolicy tx_policy{};
+        tx_policy.target = {91U, wirex::dmr_call::CallKind::group, wirex::dmr_call::Slot::ts2};
+        tx_policy.transmit_enabled = false;
+        if (pipeline->enable_routing(1U, rx_policy, tx_policy) != wirex::bm_voice::Error::none) return 2;
+        routing_callbacks.local_source_id = 1U;
+        routing_callbacks.replace_rx_policy = [&](std::uint64_t revision,
+                                                   const wirex::talkgroup_routing::RxPolicy& policy) {
+            return pipeline->replace_rx_policy(revision, policy);
+        };
+        routing_callbacks.replace_tx_policy = [&](std::uint64_t revision,
+                                                    const wirex::talkgroup_routing::TxTarget& target,
+                                                    bool enabled) {
+            const auto* current = pipeline->routed_tx_policy();
+            if (current == nullptr) {
+                return wirex::talkgroup_routing::PolicyUpdateResult{
+                    wirex::talkgroup_routing::PolicyUpdateStatus::invalid_policy, 0U, std::nullopt, std::nullopt};
+            }
+            auto candidate = *current;
+            candidate.target = target;
+            candidate.transmit_enabled = enabled;
+            return pipeline->replace_tx_policy(revision, candidate);
+        };
+        routing_callbacks.snapshot_json = [&]() {
+            const auto* rx = pipeline->routed_rx_policy();
+            const auto* tx = pipeline->routed_tx_policy();
+            if (rx == nullptr || tx == nullptr) return std::string{};
+            return wirex::routing_state::routing_json(pipeline->routing_snapshot(), 1U, *rx, *tx, observed_sources);
+        };
+    }
+    wirex::ui_control::Dispatcher dispatcher(run_id, true, std::move(routing_callbacks));
     if (!writer.write_line(dispatcher.ready_line(GetCurrentProcessId()))) return 2;
 
     wirex::ui_control::JsonLineParser parser;
@@ -4786,6 +4825,15 @@ int run_control_diagnostic()
 
     const ULONGLONG deadline = GetTickCount64() + 10000U;
     std::array<char, 4096U> bytes{};
+    bool initial_routing_state_sent = false;
+    std::string last_routing_json;
+    auto current_routing_json = [&]() {
+        if (!pipeline) return std::string{};
+        const auto* rx = pipeline->routed_rx_policy();
+        const auto* tx = pipeline->routed_tx_policy();
+        if (rx == nullptr || tx == nullptr) return std::string{};
+        return wirex::routing_state::routing_json(pipeline->routing_snapshot(), 1U, *rx, *tx, observed_sources);
+    };
     while (GetTickCount64() < deadline) {
         DWORD available = 0U;
         if (PeekNamedPipe(input, nullptr, 0U, nullptr, &available, nullptr) == FALSE) {
@@ -4827,6 +4875,15 @@ int run_control_diagnostic()
         for (const auto& line : lines) {
             const auto response = dispatcher.handle(line, snapshot);
             if (!writer.write_line(response.json_line)) return 2;
+            if (routing_diagnostic && dispatcher.hello_seen()) {
+                const auto current = current_routing_json();
+                if (!initial_routing_state_sent || current != last_routing_json) {
+                    const auto state_line = dispatcher.routing_state_line();
+                    if (!state_line.empty() && !writer.write_line(state_line)) return 2;
+                    initial_routing_state_sent = true;
+                    last_routing_json = current;
+                }
+            }
             if (response.shutdown_requested) return 0;
         }
     }
@@ -4977,6 +5034,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                   wirex::bm::Profile profile, wirex::dmr_call::CallConfig call_template,
                   wirex::bm_voice::ReceiveFilter receive_filter,
                   wirex::bm_test_profile::TxPolicy tx_policy,
+                  std::optional<wirex::routing_state::StartupConfig> routing_config,
                   bool manual_ptt,
                   bool ui_pipe,
                   std::uint32_t ui_control_version,
@@ -4987,13 +5045,17 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
 
 int bm_bridge_main(int argc, wchar_t* argv[])
 {
-    if (argc > 1 && std::wstring_view(argv[1]) == L"--control-diagnostic") {
+    if (argc > 1 && (std::wstring_view(argv[1]) == L"--control-diagnostic" ||
+                     std::wstring_view(argv[1]) == L"--routing-diagnostic")) {
+        const bool routing_diagnostic = std::wstring_view(argv[1]) == L"--routing-diagnostic";
         if (argc == 5 && std::wstring_view(argv[2]) == L"--ui-pipe" &&
             std::wstring_view(argv[3]) == L"--ui-control-version" &&
             std::wstring_view(argv[4]) == L"2") {
-            return run_control_diagnostic();
+            return run_control_diagnostic(routing_diagnostic);
         }
-        (void)bm_stderr(L"用法：--control-diagnostic --ui-pipe --ui-control-version 2；只使用匿名 stdin/stdout 管道，不读取配置，不连接网络或设备。\n");
+        (void)bm_stderr(routing_diagnostic
+            ? L"用法：--routing-diagnostic --ui-pipe --ui-control-version 2；只使用匿名管道和合成本机ID，不读取配置，不连接网络或设备。\n"
+            : L"用法：--control-diagnostic --ui-pipe --ui-control-version 2；只使用匿名 stdin/stdout 管道，不读取配置，不连接网络或设备。\n");
         return 2;
     }
     if (argc == 2 && std::wstring_view(argv[1]) == L"--help") {
@@ -5026,6 +5088,8 @@ int bm_bridge_main(int argc, wchar_t* argv[])
     bool ui_pipe_seen = false;
     bool ui_control_version_seen = false;
     std::uint32_t ui_control_version = 1U;
+    bool routing_state_file_seen = false;
+    std::filesystem::path routing_state_file;
     bool preset_seen = false;
     bool password_file_seen = false;
     bool wavein_endpoint_seen = false;
@@ -5086,7 +5150,14 @@ int bm_bridge_main(int argc, wchar_t* argv[])
             return 2;
         }
         const std::wstring_view value(argv[index + 1]);
-        if (option == L"--test-preset") {
+        if (option == L"--routing-state-file") {
+            if (routing_state_file_seen || value.empty()) {
+                (void)bm_stderr(L"--routing-state-file 不可重复或留空。\n");
+                return 2;
+            }
+            routing_state_file = std::filesystem::path(std::wstring(value));
+            routing_state_file_seen = true;
+        } else if (option == L"--test-preset") {
             if (preset_seen || value.empty()) {
                 (void)bm_stderr(L"--test-preset 不可重复或留空。\n");
                 return 2;
@@ -5290,21 +5361,6 @@ int bm_bridge_main(int argc, wchar_t* argv[])
         }
         return true;
     };
-    const auto resolve_connection_and_read_password = [&]() -> bool {
-        const bool resolved = selected_preset
-            ? parse_ipv4_literal(host_text, endpoint.address)
-            : resolve_master_ipv4(host_text, endpoint.address);
-        if (!resolved) {
-            (void)bm_stderr(L"Master IPv4 地址解析失败或超出 3.5 秒有界等待；没有打开设备。\n");
-            return false;
-        }
-        endpoint.port = static_cast<std::uint16_t>(master_port);
-        if (password_file_seen && !read_profile_password_file(password_file_path, profile.password)) {
-            (void)bm_stderr(L"本机 BM 私有密码文件缺失或格式无效；要求 1–128 字节的可打印 ASCII，至多一个行尾；尚未打开设备。\n");
-            return false;
-        }
-        return true;
-    };
     if (selected_preset) {
         callsign.assign(selected_preset->callsign);
         host_text.assign(selected_preset->master_ipv4);
@@ -5339,6 +5395,58 @@ int bm_bridge_main(int argc, wchar_t* argv[])
         connection_ready = finish_connection();
         if (!connection_ready) return 2;
     }
+
+    std::optional<wirex::routing_state::StartupConfig> routing_config;
+    if (routing_state_file_seen) {
+        if (!routing_state_file.is_absolute() || !connection_ready) {
+            (void)bm_stderr(L"--routing-state-file 需要绝对路径及完整 preset/CLI 连接配置；尚未打开资源。\n");
+            return 2;
+        }
+        std::ifstream state_input(routing_state_file, std::ios::binary);
+        if (!state_input) {
+            (void)bm_stderr(L"无法读取 --routing-state-file；尚未打开资源。\n");
+            return 2;
+        }
+        state_input.seekg(0, std::ios::end);
+        const auto state_size = state_input.tellg();
+        if (state_size < 0 || static_cast<std::uint64_t>(state_size) > wirex::strict_json::max_input_bytes) {
+            (void)bm_stderr(L"--routing-state-file 必须是最多 65536 字节的 JSON；尚未打开资源。\n");
+            return 2;
+        }
+        std::string state_text(static_cast<std::size_t>(state_size), '\0');
+        state_input.seekg(0, std::ios::beg);
+        if ((!state_text.empty() && !state_input.read(state_text.data(), static_cast<std::streamsize>(state_text.size()))) ||
+            state_input.peek() != std::char_traits<char>::eof()) {
+            (void)bm_stderr(L"读取 --routing-state-file 时文件长度变化或 I/O 失败；尚未打开资源。\n");
+            return 2;
+        }
+        wirex::routing_state::StartupConfig parsed{};
+        const wirex::talkgroup_routing::TxTarget cli_target{
+            call_template.destination_id, call_template.kind, call_template.slot};
+        if (!wirex::routing_state::parse_startup_config(state_text, source_id, cli_target,
+                wirex::bm_test_profile::permits_transmit(tx_policy), parsed)) {
+            (void)bm_stderr(L"--routing-state-file schema、local_source_id、RX策略、TX目标或发送许可无效；尚未打开资源。\n");
+            return 2;
+        }
+        routing_config = std::move(parsed);
+    }
+
+    // 必须先完成本地路由文件、CLI source/target/permission及完整策略校验，之后才允许 DNS 或读取密码。
+    const auto resolve_connection_and_read_password = [&]() -> bool {
+        const bool resolved = selected_preset
+            ? parse_ipv4_literal(host_text, endpoint.address)
+            : resolve_master_ipv4(host_text, endpoint.address);
+        if (!resolved) {
+            (void)bm_stderr(L"Master IPv4 地址解析失败或超出 3.5 秒有界等待；没有打开设备。\n");
+            return false;
+        }
+        endpoint.port = static_cast<std::uint16_t>(master_port);
+        if (password_file_seen && !read_profile_password_file(password_file_path, profile.password)) {
+            (void)bm_stderr(L"本机 BM 私有密码文件缺失或格式无效；要求 1–128 字节的可打印 ASCII，至多一个行尾；尚未打开设备。\n");
+            return false;
+        }
+        return true;
+    };
 
     std::wstring device_path;
     if (!parse_port(argv[3], device_path)) {
@@ -5455,7 +5563,8 @@ int bm_bridge_main(int argc, wchar_t* argv[])
     }
     return run_bm_bridge(argv[3], body_path, input_id, output_id,
                          expected_wavein_endpoint_id, expected_waveout_endpoint_id, endpoint,
-                         std::move(profile), call_template, receive_filter, tx_policy, manual_ptt,
+                         std::move(profile), call_template, receive_filter, tx_policy,
+                         std::move(routing_config), manual_ptt,
                          ui_pipe, ui_control_version,
                          radio_playback_gain_milli, mic_transmit_gain_milli,
                          std::move(counters), status_file, control_scope);
@@ -5469,6 +5578,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                   wirex::bm::Profile profile, wirex::dmr_call::CallConfig call_template,
                   wirex::bm_voice::ReceiveFilter receive_filter,
                   wirex::bm_test_profile::TxPolicy tx_policy,
+                  std::optional<wirex::routing_state::StartupConfig> routing_config,
                   bool manual_ptt,
                   bool ui_pipe,
                   std::uint32_t ui_control_version,
@@ -5494,15 +5604,8 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
     const HANDLE ui_pipe_handle = ui_pipe ? GetStdHandle(STD_INPUT_HANDLE) : INVALID_HANDLE_VALUE;
     wirex::ui_control::Parser ui_control_parser;
     wirex::ui_control::JsonLineParser ui_control_json_parser;
-    wirex::ui_control::Dispatcher ui_control_dispatcher(counters.run_id, false);
+    std::unique_ptr<wirex::ui_control::Dispatcher> ui_control_dispatcher;
     wirex::bounded_pipe_writer::Writer ui_control_writer(GetStdHandle(STD_OUTPUT_HANDLE));
-    if (ui_pipe && ui_control_version == 2U) {
-        if (!ui_control_writer.enable_nonblocking() ||
-            !ui_control_writer.write_line(ui_control_dispatcher.ready_line(GetCurrentProcessId()))) {
-            (void)bm_stderr(L"无法发出 v2 control_ready；未打开 HRI、音频或BM传输。\n");
-            return 2;
-        }
-    }
     PttGate ptt_gate;
     std::function<void(PttAction, std::string_view)> handle_ptt_gate_action;
     std::function<void()> synchronize_ptt_gate;
@@ -5552,6 +5655,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
 
     std::unique_ptr<Pipeline> pipeline;
     std::unique_ptr<StreamSession> stream_session;
+    wirex::routing_state::ObservedSources observed_sources;
     try {
         pipeline = std::make_unique<Pipeline>();
         stream_session = std::make_unique<StreamSession>(start_frame_result.bytes, stop_frame_result.bytes,
@@ -5578,9 +5682,12 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
     wirex::talkgroup_routing::RxPolicy routed_receive_policy{};
     wirex::talkgroup_routing::TxPolicy routed_transmit_policy{};
     try {
-        if (!make_routed_policies(call_template.source_id, receive_filter, parrot_return_filter,
-                                  tx_policy, call_template,
-                                  routed_receive_policy, routed_transmit_policy)) {
+    if (routing_config) {
+        routed_receive_policy = std::move(routing_config->rx_policy);
+        routed_transmit_policy = std::move(routing_config->tx_policy);
+    } else if (!make_routed_policies(call_template.source_id, receive_filter, parrot_return_filter,
+                                     tx_policy, call_template,
+                                     routed_receive_policy, routed_transmit_policy)) {
             (void)bm_stderr(L"The selected legacy receive filters cannot be represented without widening their routing policy.\n");
             return 2;
         }
@@ -5594,6 +5701,79 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         return 2;
     }
     counters.media_owner = "idle";
+    auto live_tx_permission = [&]() {
+        const auto* current = pipeline->routed_tx_policy();
+        return current != nullptr
+            ? current->transmit_enabled : wirex::bm_test_profile::permits_transmit(tx_policy);
+    };
+    auto live_routed_voice_permission = [&]() {
+        return live_tx_permission() && pipeline->routed_tx_voice_permitted();
+    };
+
+    if (ui_pipe && ui_control_version == 2U) {
+        wirex::ui_control::RoutingCallbacks callbacks{};
+        callbacks.local_source_id = call_template.source_id;
+        callbacks.replace_rx_policy = [&](std::uint64_t revision,
+                                           const wirex::talkgroup_routing::RxPolicy& policy) {
+            return pipeline->replace_rx_policy(revision, policy);
+        };
+        callbacks.replace_tx_policy = [&](std::uint64_t revision,
+                                            const wirex::talkgroup_routing::TxTarget& target,
+                                            bool enabled) {
+            const auto* current = pipeline->routed_tx_policy();
+            if (current == nullptr) {
+                return wirex::talkgroup_routing::PolicyUpdateResult{
+                    wirex::talkgroup_routing::PolicyUpdateStatus::invalid_policy, 0U, std::nullopt, std::nullopt};
+            }
+            auto candidate = *current;
+            candidate.target = target;
+            candidate.transmit_enabled = enabled;
+            return pipeline->replace_tx_policy(revision, candidate);
+        };
+        callbacks.snapshot_json = [&]() {
+            const auto* rx = pipeline->routed_rx_policy();
+            const auto* tx = pipeline->routed_tx_policy();
+            if (rx == nullptr || tx == nullptr) return std::string{};
+            return wirex::routing_state::routing_json(
+                pipeline->routing_snapshot(), call_template.source_id, *rx, *tx, observed_sources);
+        };
+        try { ui_control_dispatcher = std::make_unique<wirex::ui_control::Dispatcher>(
+            counters.run_id, false, std::move(callbacks)); }
+        catch (...) { return 2; }
+        if (!ui_control_writer.enable_nonblocking() ||
+            !ui_control_writer.write_line(ui_control_dispatcher->ready_line(GetCurrentProcessId()))) {
+            (void)bm_stderr(L"无法发出 v2 control_ready；未打开 HRI、音频或BM传输。\n");
+            return 2;
+        }
+    }
+
+    bool initial_routing_state_sent = false;
+    std::string last_routing_payload;
+    ULONGLONG last_routing_check_tick = 0U;
+    auto current_routing_payload = [&]() {
+        if (!ui_control_dispatcher) return std::string{};
+        const auto* rx = pipeline->routed_rx_policy();
+        const auto* tx = pipeline->routed_tx_policy();
+        if (rx == nullptr || tx == nullptr) return std::string{};
+        return wirex::routing_state::routing_json(
+            pipeline->routing_snapshot(), call_template.source_id, *rx, *tx, observed_sources);
+    };
+    auto emit_routing_state_if_changed = [&]() {
+        if (!ui_control_dispatcher || !ui_control_dispatcher->hello_seen() || shutdown_requested) return;
+        const auto now = GetTickCount64();
+        if (initial_routing_state_sent && now - last_routing_check_tick < 250U) return;
+        last_routing_check_tick = now;
+        const auto current = current_routing_payload();
+        if (current.empty() || (initial_routing_state_sent && current == last_routing_payload)) return;
+        const auto line = ui_control_dispatcher->routing_state_line();
+        if (line.empty()) return;
+        if (!ui_control_writer.write_line(line)) {
+            set_failure("ui_routing_state_stdout_write_failed");
+            return;
+        }
+        initial_routing_state_sent = true;
+        last_routing_payload = current;
+    };
 
     if (ui_pipe) {
         const auto inspection = inspect_ui_pipe(ui_pipe_handle, ui_control_version);
@@ -5821,11 +6001,16 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
             return;
         }
         operator_ready_instructions_shown = true;
-        if (wirex::bm_test_profile::permits_transmit(tx_policy)) {
+        if (live_tx_permission()) {
+            const auto* configured_tx = pipeline->routed_tx_policy();
+            const auto configured_target = configured_tx != nullptr
+                ? configured_tx->target
+                : wirex::talkgroup_routing::TxTarget{
+                    call_template.destination_id, call_template.kind, call_template.slot};
             if (!manual_ptt) {
                 (void)bm_stdout(u8"已连接并就绪。先松开一次手咪 PTT，再按住手咪讲话；松开后等待 BM 回声。按 Q 停止并退出。\n");
-            } else if (call_template.kind == wirex::dmr_call::CallKind::private_call &&
-                (call_template.destination_id == 460997U || call_template.destination_id == 9990U)) {
+            } else if (configured_target.kind == wirex::dmr_call::CallKind::private_call &&
+                (configured_target.destination_id == 460997U || configured_target.destination_id == 9990U)) {
                 (void)bm_stdout(u8"已连接并就绪。按 T 开始 BM 上行，按住手咪讲话；松开后按 T 结束本次上行并等待回声。按 Q 退出。\n");
             } else {
                 (void)bm_stdout(u8"已连接并就绪。按 T 开始 BM 上行，按住手咪讲话；松开后按 T 结束本次上行。按 Q 退出。\n");
@@ -5848,7 +6033,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         return closed;
     };
     auto tx_start_permitted = [&]() {
-        if (!wirex::bm_test_profile::permits_transmit(tx_policy) || shutdown_requested || failed ||
+        if (!live_tx_permission() || shutdown_requested || failed ||
             !network_ready_seen || bm_session.snapshot().state != wirex::bm::State::ready ||
             !hri_ready || !hri_state.y_zero_acknowledged || hri_state.phase == HriPhase::stopped ||
             downlink_blocked || radio_input_open) {
@@ -5896,7 +6081,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                         ? "tx_start_rejected_bm_not_ready"
                         : (begin_result == wirex::bm_voice::Error::hri_not_ready
                             ? "tx_start_rejected_hri_not_ready"
-                            : (wirex::bm_test_profile::permits_transmit(tx_policy)
+                            : (live_tx_permission()
                                 ? "tx_start_rejected_by_router_or_pipeline"
                                 : "tx_start_rejected_receive_only_policy")));
                 status(rejection_event);
@@ -6026,8 +6211,13 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         if (action == PttAction::end_tx) {
             if (end_tx_call()) {
                 ++counters.ptt_tx_ends;
-                if (call_template.kind == wirex::dmr_call::CallKind::private_call &&
-                    (call_template.destination_id == 460997U || call_template.destination_id == 9990U)) {
+                const auto routing = pipeline->routing_snapshot().router;
+                const auto completed_target = routing.active_tx_lease
+                    ? routing.active_tx_lease->target
+                    : wirex::talkgroup_routing::TxTarget{
+                        call_template.destination_id, call_template.kind, call_template.slot};
+                if (completed_target.kind == wirex::dmr_call::CallKind::private_call &&
+                    (completed_target.destination_id == 460997U || completed_target.destination_id == 9990U)) {
                     (void)bm_stdout(u8"上行已结束，请等待 BM 回声。\n");
                 } else {
                     (void)bm_stdout(u8"上行已结束，可继续收听。\n");
@@ -6079,7 +6269,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
     synchronize_ptt_gate = [&]() {
         if (manual_ptt) return;
         const bool ready = !shutdown_requested && !failed && !status_report_failed &&
-            wirex::bm_test_profile::permits_transmit(tx_policy) && network_ready_seen &&
+            live_tx_permission() && network_ready_seen &&
             bm_session.snapshot().state == wirex::bm::State::ready && hri_ready &&
             hri_state.y_zero_acknowledged && hri_state.phase != HriPhase::stopped;
         handle_ptt_gate_action(ptt_gate.set_ready(ready), "ptt_aborted_endpoint_not_ready");
@@ -6572,7 +6762,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
 
     status("started");
     if (!status_report_failed) {
-        if (wirex::bm_test_profile::permits_transmit(tx_policy)) {
+        if (live_tx_permission()) {
             if (manual_ptt) {
                 (void)bm_stdout(u8"诊断模式：按 T 开始或结束 BM 上行。按 Q 停止并退出。\n");
             } else {
@@ -6648,12 +6838,6 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
     auto drain_bm_outbound = [&]() {
         for (auto& packet : bm_session.take_outbound()) {
             if (packet.kind == wirex::bm::PacketKind::control) ++counters.control_tx_attempted;
-            if (packet.kind == wirex::bm::PacketKind::application &&
-                !wirex::bm_test_profile::permits_transmit(tx_policy)) {
-                ++counters.rejected_calls;
-                status("bm_dmrd_packet_rejected_receive_only_policy");
-                continue;
-            }
             wirex::dmrd::DecodeResult routed_decoded{};
             bool is_routed_tx_terminator = false;
             if (packet.kind == wirex::bm::PacketKind::application) {
@@ -6672,7 +6856,14 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                     handle_network_loss("routed_tx_udp_packet_rejected_before_send");
                     return false;
                 }
-                is_routed_tx_terminator = (routed_decoded.datagram.flags & 0x3FU) == 0x22U;
+                const auto packet_type = static_cast<std::uint8_t>(routed_decoded.datagram.flags & 0x3FU);
+                is_routed_tx_terminator = packet_type == 0x22U;
+                const bool is_active_lease_header = packet_type == 0x21U;
+                if (!live_routed_voice_permission() && !is_routed_tx_terminator && !is_active_lease_header) {
+                    ++counters.rejected_calls;
+                    status("bm_queued_voice_dropped_after_tx_permission_revoked");
+                    continue;
+                }
             }
             const bool is_rptcl = packet.kind == wirex::bm::PacketKind::control &&
                 packet.bytes.size() == 9U && packet.bytes[0U] == 'R' && packet.bytes[1U] == 'P' &&
@@ -6719,14 +6910,13 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 status("routed_tx_packet_rejected_target_or_lease_changed");
                 return;
             }
-            if (!wirex::bm_test_profile::permits_transmit(tx_policy)) {
-                pipeline->cancel_tx();
-                (void)stop_tx_input();
-                report_routed_tx_eot(false);
-                ptt_gate.disarm_until_release();
+            const auto packet_type = static_cast<std::uint8_t>(packet->datagram.flags & 0x3FU);
+            const bool is_lease_header = packet_type == 0x21U;
+            const bool is_lease_terminator = packet_type == 0x22U;
+            if (!live_routed_voice_permission() && !is_lease_header && !is_lease_terminator) {
                 ++counters.rejected_calls;
-                status("tx_datagram_rejected_receive_only_policy");
-                return;
+                status("tx_datagram_dropped_after_permission_revoked");
+                continue;
             }
             if (bm_session.snapshot().state != wirex::bm::State::ready) {
                 if (is_shutdown_terminator(*packet)) {
@@ -6756,7 +6946,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
     };
 
     auto process_t_key = [&]() {
-        if (!wirex::bm_test_profile::permits_transmit(tx_policy)) {
+        if (!live_tx_permission()) {
             ++counters.rejected_calls;
             status("tx_start_rejected_receive_only_policy");
             return;
@@ -6833,7 +7023,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                         error == ERROR_PIPE_NOT_CONNECTED) {
                         if (ui_control_version == 2U && !ui_control_json_parser.eof_at_frame_boundary()) {
                             (void)ui_control_writer.write_line(
-                                ui_control_dispatcher.reject("partial_frame_at_eof").json_line);
+                                ui_control_dispatcher->reject("partial_frame_at_eof").json_line);
                             set_failure("ui_control_partial_frame_at_eof");
                             begin_shutdown("ui_control_partial_frame_at_eof");
                         } else {
@@ -6852,7 +7042,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                     if (read_succeeded != FALSE && actual == 0U) {
                         if (ui_control_version == 2U && !ui_control_json_parser.eof_at_frame_boundary()) {
                             (void)ui_control_writer.write_line(
-                                ui_control_dispatcher.reject("partial_frame_at_eof").json_line);
+                                ui_control_dispatcher->reject("partial_frame_at_eof").json_line);
                             set_failure("ui_control_partial_frame_at_eof");
                             begin_shutdown("ui_control_partial_frame_at_eof");
                         } else {
@@ -6865,7 +7055,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                             error == ERROR_PIPE_NOT_CONNECTED) {
                             if (ui_control_version == 2U && !ui_control_json_parser.eof_at_frame_boundary()) {
                                 (void)ui_control_writer.write_line(
-                                    ui_control_dispatcher.reject("partial_frame_at_eof").json_line);
+                                    ui_control_dispatcher->reject("partial_frame_at_eof").json_line);
                                 set_failure("ui_control_partial_frame_at_eof");
                                 begin_shutdown("ui_control_partial_frame_at_eof");
                             } else {
@@ -6890,7 +7080,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                             std::string_view(command_bytes.data(), actual), control_lines);
                         if (feed == wirex::ui_control::JsonLineStatus::invalid) {
                             (void)ui_control_writer.write_line(
-                                ui_control_dispatcher.reject("invalid_or_oversized_frame").json_line);
+                                ui_control_dispatcher->reject("invalid_or_oversized_frame").json_line);
                             set_failure("ui_control_frame_invalid");
                             begin_shutdown("ui_control_frame_invalid");
                         } else {
@@ -6906,12 +7096,18 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                                 snapshot.serial_open = port.valid();
                                 snapshot.wavein_open = radio_input_open;
                                 snapshot.waveout_open = radio_output_open;
-                                const auto response = ui_control_dispatcher.handle(control_line, snapshot);
+                                const auto response = ui_control_dispatcher->handle(control_line, snapshot);
                                 if (!ui_control_writer.write_line(response.json_line)) {
                                     set_failure("ui_control_stdout_write_failed");
                                     begin_shutdown("ui_control_stdout_write_failed");
                                     break;
                                 }
+                                if (!live_tx_permission()) {
+                                    (void)ptt_gate.set_ready(false);
+                                    ptt_gate.disarm_until_release();
+                                    if (radio_input_open) (void)stop_tx_input();
+                                }
+                                emit_routing_state_if_changed();
                                 if (response.shutdown_requested) {
                                     begin_shutdown("ui_shutdown_requested");
                                     break;
@@ -7053,6 +7249,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                     constexpr std::uint8_t dmr_flag_ts2 = 0x80U;
                     constexpr std::uint8_t dmr_flag_private_call = 0x40U;
                     const auto& datagram = decoded.datagram;
+                    observed_sources.observe(datagram, call_template.source_id);
                     const auto received_slot = (datagram.flags & dmr_flag_ts2) != 0U
                         ? wirex::dmr_call::Slot::ts2 : wirex::dmr_call::Slot::ts1;
                     const auto received_call_kind = (datagram.flags & dmr_flag_private_call) != 0U
@@ -7241,6 +7438,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 shutdown_media_cleanup_complete()) {
                 break;
             }
+            emit_routing_state_if_changed();
             Sleep(5U);
         }
     } catch (...) {

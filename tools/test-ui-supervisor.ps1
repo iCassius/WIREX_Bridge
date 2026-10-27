@@ -200,7 +200,8 @@ exit 17
 '@
     [IO.File]::WriteAllText($unicodeFixturePath, $unicodeText, (New-Object System.Text.UTF8Encoding($false)))
 
-    $powershell = Join-Path $PSHOME 'powershell.exe'
+    $powershell = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $powershell -PathType Leaf)) { $powershell = Join-Path $PSHOME 'powershell.exe' }
     if (-not (Test-Path -LiteralPath $powershell -PathType Leaf)) { throw "Missing Windows PowerShell executable: $powershell" }
     $fixtureArgs = @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $fixturePath)
     $hangArgs = @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $hangFixturePath)

@@ -5,11 +5,17 @@ param(
     [switch]$OfflinePreview,
     [switch]$NoAutoConnect,
     [switch]$RenderOnly,
+    [switch]$RoutingDiagnostic,
+    [switch]$RoutingDiagnosticAutoTest,
     [string]$RenderOutputDirectory,
     [string]$RenderWorkArea
 )
 
 $ErrorActionPreference = 'Stop'
+if ($RoutingDiagnosticAutoTest -and -not $RoutingDiagnostic) { throw '-RoutingDiagnosticAutoTest 必须与 -RoutingDiagnostic 一起使用。' }
+if ($RoutingDiagnostic -and (-not $PSBoundParameters.ContainsKey('UserConfigDirectory') -or [string]::IsNullOrWhiteSpace($UserConfigDirectory))) {
+    throw '路由诊断必须指定独立的 -UserConfigDirectory。'
+}
 $script:uiRoot = [System.IO.Path]::GetFullPath($PSScriptRoot)
 $script:packageDirectoryWasExplicit = $PSBoundParameters.ContainsKey('PackageDirectory') -and
     -not [string]::IsNullOrWhiteSpace($PackageDirectory)
@@ -34,6 +40,39 @@ function Resolve-UiRuntimeDirectory {
     return $resolvedPackageRoot
 }
 
+function Test-UiRoutingDiagnosticConfigDirectory {
+    param([string]$Directory,[string]$PackageRoot,[switch]$RequireFixture)
+    if ([string]::IsNullOrWhiteSpace($Directory)) { throw '路由诊断必须指定独立的用户配置目录。' }
+    try {
+        $resolvedDirectory = [System.IO.Path]::GetFullPath($Directory)
+        $canonicalDirectory = [System.IO.Path]::GetFullPath((Join-Path $PackageRoot 'private\user-config'))
+    } catch { throw '路由诊断配置目录路径无效。' }
+    if ([string]::Equals($resolvedDirectory.TrimEnd('\'),$canonicalDirectory.TrimEnd('\'),[System.StringComparison]::OrdinalIgnoreCase)) {
+        throw '路由诊断不能使用便携目录的默认个人配置目录；请传入隔离的 -UserConfigDirectory。'
+    }
+    if ($RequireFixture) {
+        $markerPath = Join-Path $resolvedDirectory 'routing-diagnostic-fixture.json'
+        if (-not [System.IO.File]::Exists($markerPath) -or (New-Object System.IO.FileInfo($markerPath)).Length -gt 4096) {
+            throw '自动路由验收需要测试脚本在隔离目录中创建routing-diagnostic-fixture.json。'
+        }
+        try { $marker = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($markerPath,[System.Text.Encoding]::UTF8)) -ErrorAction Stop }
+        catch { throw '自动路由验收标识文件无效。' }
+        $names = @($marker.PSObject.Properties | ForEach-Object { [string]$_.Name })
+        $expected = @('schema_version','purpose','fixture_id','source_id')
+        $id = [guid]::Empty
+        if ($marker -isnot [System.Management.Automation.PSCustomObject] -or $names.Count -ne $expected.Count -or
+            @($names | Where-Object { $expected -cnotcontains $_ }).Count -gt 0 -or
+            @($expected | Where-Object { $names -cnotcontains $_ }).Count -gt 0 -or
+            $marker.schema_version -is [bool] -or [int]$marker.schema_version -ne 1 -or
+            $marker.purpose -cne 'wirex-routing-diagnostic-test' -or
+            -not [guid]::TryParseExact([string]$marker.fixture_id,'N',[ref]$id) -or
+            $marker.source_id -is [bool] -or [uint64]$marker.source_id -ne 1) {
+            throw '自动路由验收标识必须匹配隔离测试、schema 1 和 Source ID 1。'
+        }
+    }
+    return $resolvedDirectory
+}
+
 $script:modulePath = Join-Path $script:packageRoot 'bridge-user-config.psm1'
 if (-not [System.IO.File]::Exists($script:modulePath)) {
     $script:modulePath = Join-Path $script:packageRoot 'tools\bridge-user-config.psm1'
@@ -50,6 +89,9 @@ foreach ($path in @($script:supervisorSource, $script:mainXamlPath, $script:sett
 }
 
 Import-Module -Name $script:modulePath -Force
+$validatedDiagnosticDirectory = if ($RoutingDiagnostic) {
+    Test-UiRoutingDiagnosticConfigDirectory -Directory $UserConfigDirectory -PackageRoot $script:packageRoot -RequireFixture:$RoutingDiagnosticAutoTest
+} else { $UserConfigDirectory }
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 if (-not ('WirexBridge.Ui.BridgeSupervisor' -as [type])) { Add-Type -Path $script:supervisorSource }
 $script:workAreaWidth = [double][System.Windows.SystemParameters]::WorkArea.Width
@@ -64,7 +106,7 @@ if (-not [string]::IsNullOrWhiteSpace($RenderWorkArea)) {
 $script:maxWindowWidth = [Math]::Max(1, [Math]::Floor($script:workAreaWidth * 0.95))
 $script:maxWindowHeight = [Math]::Max(1, [Math]::Floor($script:workAreaHeight * 0.95))
 
-$script:configDirectory = Get-BridgeUserConfigDirectory -UserConfigDirectory $UserConfigDirectory -ScriptRoot $script:packageRoot
+$script:configDirectory = Get-BridgeUserConfigDirectory -UserConfigDirectory $validatedDiagnosticDirectory -ScriptRoot $script:packageRoot
 $script:profilePath = Join-Path $script:configDirectory 'connection-profile.json'
 $script:audioSettingsPath = Join-Path $script:configDirectory 'audio-settings.json'
 $script:passwordPointerPath = Join-Path $script:configDirectory 'password-file-path.txt'
@@ -113,10 +155,30 @@ $script:lastSequence = [uint64]0
 $script:controlRunId = ''
 $script:controlLastSequence = [uint64]0
 $script:controlConfirmed = $false
+$script:controlCapabilities = ''
 $script:controlDiagnostic = $false
 $script:controlOverflowHandled = $false
 $script:pendingControlRequests = @{}
+$script:resolvedTimedOutRoutingRequests = @{}
 $script:pendingStatusRequestId = ''
+$script:pendingRoutingStatusRequestId = ''
+$script:routingCapabilities = $false
+$script:activeRouting = $null
+$script:editRxPolicy = $null
+$script:editTxTarget = $null
+$script:editTransmitEnabled = $true
+$script:txEditorDirty = $false
+$script:pendingRoutingMutation = $null
+$script:timedOutRoutingMutations = @{}
+$script:routingDraftPreservedAfterTimeout = $false
+$script:routingDraftAfterTimeout = $null
+$script:routingMutationFence = $false
+$script:routingLastUpdateUtc = [DateTime]::MinValue
+$script:routingDiagnosticAutoTestStarted = $false
+$script:routingDiagnosticAutoTestPhase = 0
+$script:routingDiagnosticOfflineCancelVerified = $false
+$script:routingDiagnosticFenceProbeWaiting = $false
+$script:routingDiagnosticFenceProbeVerified = $false
 $script:profileEditable = $true
 $script:profileWriteAllowed = $true
 $script:receiveEditorState = $null
@@ -423,7 +485,7 @@ function Set-MainTargetSummary {
     param([object]$Profile, [string]$OverallLabel)
     Set-MainText -Name 'TargetValue' -Text $OverallLabel
     Set-MainText -Name 'ReceiveTargetValue' -Text (Format-ProfileReceiveTarget -Profile $Profile)
-    Set-MainText -Name 'TransmitTargetValue' -Text ('发射：' + (Format-ProfileTarget -Profile $Profile))
+    Set-MainText -Name 'TransmitTargetValue' -Text ('下一发射目标：' + (Format-ProfileTarget -Profile $Profile))
     Set-MainText -Name 'TransmitPermissionValue' -Text (Format-ProfileTransmitPermission -Profile $Profile)
 }
 
@@ -480,6 +542,7 @@ function New-EffectiveTargetProfile {
         'listen-91' {
             $rxPolicy.group_mode = 'selected'
             $rxPolicy.allow_groups = @([pscustomobject][ordered]@{ destination_id=[uint64]91; slot=[uint64]2 })
+            $rxPolicy.blocked_groups = @($rxPolicy.blocked_groups | Where-Object { -not ([uint64]$_.destination_id -eq 91 -and [uint64]$_.slot -eq 2) })
             $rxPolicy.private_mode = 'disabled'
             $rxPolicy.allow_private_peers = @()
             $rxPolicy.local_private_routes = @()
@@ -488,6 +551,7 @@ function New-EffectiveTargetProfile {
         'listen-46001' {
             $rxPolicy.group_mode = 'selected'
             $rxPolicy.allow_groups = @([pscustomobject][ordered]@{ destination_id=[uint64]46001; slot=[uint64]2 })
+            $rxPolicy.blocked_groups = @($rxPolicy.blocked_groups | Where-Object { -not ([uint64]$_.destination_id -eq 46001 -and [uint64]$_.slot -eq 2) })
             $rxPolicy.private_mode = 'disabled'
             $rxPolicy.allow_private_peers = @()
             $rxPolicy.local_private_routes = @()
@@ -846,6 +910,114 @@ function Test-UiControlUnsigned {
     return ($parsed -ge $Minimum -and $parsed -le $Maximum)
 }
 
+function Test-UiRxPolicy {
+    param([object]$Policy, [uint64]$LocalSourceId)
+    $fields = @('group_mode','private_mode','allow_groups','allow_private_peers','local_private_routes','blocked_groups','blocked_source_ids')
+    if (-not (Test-UiExactControlFields -Record $Policy -Required $fields) -or
+        $Policy.group_mode -isnot [string] -or @('selected','all_delivered') -cnotcontains [string]$Policy.group_mode -or
+        $Policy.private_mode -isnot [string] -or @('disabled','selected_peers','all_peers_to_local') -cnotcontains [string]$Policy.private_mode) { return $false }
+    foreach ($name in @('allow_groups','allow_private_peers','local_private_routes','blocked_groups','blocked_source_ids')) {
+        if ($Policy.$name -isnot [System.Array]) { return $false }
+    }
+    $groupAllow = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    $groupBlock = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    $peerKeys = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    $localKeys = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    $sourceBlocks = New-Object 'System.Collections.Generic.HashSet[uint64]'
+    foreach ($route in @($Policy.allow_groups)) {
+        if (-not (Test-UiExactControlFields -Record $route -Required @('destination_id','slot')) -or
+            -not (Test-UiControlUnsigned -Value $route.destination_id -Minimum 1 -Maximum 16777215) -or
+            -not (Test-UiControlUnsigned -Value $route.slot -Minimum 1 -Maximum 2) -or
+            -not $groupAllow.Add(([string]$route.destination_id + '/' + [string]$route.slot))) { return $false }
+    }
+    foreach ($route in @($Policy.blocked_groups)) {
+        if (-not (Test-UiExactControlFields -Record $route -Required @('destination_id','slot')) -or
+            -not (Test-UiControlUnsigned -Value $route.destination_id -Minimum 1 -Maximum 16777215) -or
+            -not (Test-UiControlUnsigned -Value $route.slot -Minimum 1 -Maximum 2)) { return $false }
+        $key = [string]$route.destination_id + '/' + [string]$route.slot
+        if (-not $groupBlock.Add($key) -or $groupAllow.Contains($key)) { return $false }
+    }
+    foreach ($route in @($Policy.allow_private_peers)) {
+        if (-not (Test-UiExactControlFields -Record $route -Required @('source_id','local_destination_id','slot')) -or
+            -not (Test-UiControlUnsigned -Value $route.source_id -Minimum 1 -Maximum 16777215) -or
+            -not (Test-UiControlUnsigned -Value $route.local_destination_id -Minimum 1 -Maximum 16777215) -or
+            [uint64]$route.local_destination_id -ne $LocalSourceId -or
+            -not (Test-UiControlUnsigned -Value $route.slot -Minimum 1 -Maximum 2)) { return $false }
+        if (-not $peerKeys.Add(([string]$route.source_id + '/' + [string]$route.local_destination_id + '/' + [string]$route.slot))) { return $false }
+    }
+    foreach ($route in @($Policy.local_private_routes)) {
+        if (-not (Test-UiExactControlFields -Record $route -Required @('local_destination_id','slot')) -or
+            -not (Test-UiControlUnsigned -Value $route.local_destination_id -Minimum 1 -Maximum 16777215) -or
+            [uint64]$route.local_destination_id -ne $LocalSourceId -or
+            -not (Test-UiControlUnsigned -Value $route.slot -Minimum 1 -Maximum 2) -or
+            -not $localKeys.Add(([string]$route.local_destination_id + '/' + [string]$route.slot))) { return $false }
+    }
+    foreach ($sourceId in @($Policy.blocked_source_ids)) {
+        if (-not (Test-UiControlUnsigned -Value $sourceId -Minimum 1 -Maximum 16777215) -or
+            -not $sourceBlocks.Add([uint64]$sourceId)) { return $false }
+    }
+    if ($Policy.private_mode -ceq 'disabled' -and ($peerKeys.Count -gt 0 -or $localKeys.Count -gt 0)) { return $false }
+    if ($Policy.private_mode -ceq 'selected_peers' -and $localKeys.Count -gt 0) { return $false }
+    return $true
+}
+
+function Test-UiRoutingSnapshot {
+    param([object]$Routing)
+    $names = @('local_source_id','rx_policy_revision','tx_policy_revision','rx_policy','tx_target','transmit_enabled',
+        'media_owner','active_rx','active_tx_lease','observed_sources')
+    if (-not (Test-UiExactControlFields -Record $Routing -Required $names) -or
+        -not (Test-UiControlUnsigned -Value $Routing.local_source_id -Minimum 1 -Maximum 16777215) -or
+        -not (Test-UiControlUnsigned -Value $Routing.rx_policy_revision) -or
+        -not (Test-UiControlUnsigned -Value $Routing.tx_policy_revision) -or
+        -not (Test-UiRxPolicy -Policy $Routing.rx_policy -LocalSourceId ([uint64]$Routing.local_source_id)) -or
+        $Routing.transmit_enabled -isnot [bool] -or
+        $Routing.media_owner -isnot [string] -or @('idle','rx_active','rx_draining','rx_stopping','tx_active','tx_draining','fault') -cnotcontains [string]$Routing.media_owner) { return $false }
+    $target = $Routing.tx_target
+    if (-not (Test-UiExactControlFields -Record $target -Required @('destination_id','kind','slot')) -or
+        -not (Test-UiControlUnsigned -Value $target.destination_id -Minimum 1 -Maximum 16777215) -or
+        -not (Test-UiControlUnsigned -Value $target.slot -Minimum 1 -Maximum 2) -or
+        $target.kind -isnot [string] -or @('group','private') -cnotcontains [string]$target.kind) { return $false }
+    if ($null -ne $Routing.active_rx) {
+        $rx = $Routing.active_rx
+        if (-not (Test-UiExactControlFields -Record $rx -Required @('source_id','destination_id','slot','kind','generation')) -or
+            -not (Test-UiControlUnsigned -Value $rx.source_id -Minimum 1 -Maximum 16777215) -or
+            -not (Test-UiControlUnsigned -Value $rx.destination_id -Minimum 1 -Maximum 16777215) -or
+            -not (Test-UiControlUnsigned -Value $rx.slot -Minimum 1 -Maximum 2) -or
+            $rx.kind -isnot [string] -or @('group','private') -cnotcontains [string]$rx.kind -or
+            -not (Test-UiControlUnsigned -Value $rx.generation -Minimum 1)) { return $false }
+    }
+    if ($null -ne $Routing.active_tx_lease) {
+        $lease = $Routing.active_tx_lease
+        if (-not (Test-UiExactControlFields -Record $lease -Required @('lease_id','destination_id','slot','kind')) -or
+            -not (Test-UiControlUnsigned -Value $lease.lease_id -Minimum 1) -or
+            -not (Test-UiControlUnsigned -Value $lease.destination_id -Minimum 1 -Maximum 16777215) -or
+            -not (Test-UiControlUnsigned -Value $lease.slot -Minimum 1 -Maximum 2) -or
+            $lease.kind -isnot [string] -or @('group','private') -cnotcontains [string]$lease.kind) { return $false }
+    }
+    if ($Routing.observed_sources -isnot [System.Array] -or @($Routing.observed_sources).Count -gt 64) { return $false }
+    $observedKeys = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    foreach ($source in @($Routing.observed_sources)) {
+        if (-not (Test-UiExactControlFields -Record $source -Required @('source_id','destination_id','slot','kind','observation_level')) -or
+            -not (Test-UiControlUnsigned -Value $source.source_id -Minimum 1 -Maximum 16777215) -or
+            -not (Test-UiControlUnsigned -Value $source.destination_id -Minimum 1 -Maximum 16777215) -or
+            -not (Test-UiControlUnsigned -Value $source.slot -Minimum 1 -Maximum 2) -or
+            $source.kind -isnot [string] -or @('group','private') -cnotcontains [string]$source.kind -or
+            $source.observation_level -isnot [string] -or
+            @('outer_header_seen','link_control_validated','router_reserved','playback_started') -cnotcontains [string]$source.observation_level) { return $false }
+        $key = if ($source.kind -ceq 'group') { 'group/' + [string]$source.destination_id + '/' + [string]$source.slot } else { 'private/' + [string]$source.source_id + '/' + [string]$source.destination_id + '/' + [string]$source.slot }
+        if (-not $observedKeys.Add($key)) { return $false }
+    }
+    return $true
+}
+
+function Test-UiRoutingCapabilityList {
+    param([object]$Commands)
+    if ($Commands -isnot [System.Array] -or @($Commands | Where-Object { $_ -isnot [string] }).Count -gt 0) { return $false }
+    $joined = @($Commands) -join ','
+    return ($joined -ceq 'hello,status,shutdown' -or
+        $joined -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace')
+}
+
 function Test-UiControlSnapshot {
     param([object]$Snapshot)
     $names = @('mode','status','phase','media_seq','diagnostic','bm_state','hri_phase','hri_ready',
@@ -869,11 +1041,21 @@ function Test-UiControlSnapshot {
 function ConvertFrom-UiControlFrame {
     param([Parameter(Mandatory=$true)][string]$Json, [string]$LockedRunId = '',
         [uint64]$LastControlSequence = 0, [int]$ExpectedProcessId = 0)
+    if ([System.Text.Encoding]::UTF8.GetByteCount($Json) -gt 131072) { throw '核心返回的控制消息超过 128 KiB 限制。' }
     try { $record = ConvertFrom-Json -InputObject $Json -ErrorAction Stop }
     catch { throw '控制协议 v2 JSON 无法解析。' }
     if ($record -isnot [System.Management.Automation.PSCustomObject] -or
         -not (Test-UiControlUnsigned -Value $record.schema_version -Minimum 2 -Maximum 2) -or
         $record.type -isnot [string]) { throw '控制协议 v2 帧头无效。' }
+    if ($record.type -ceq 'routing_state') {
+        $names = @('schema_version','type','run_id','control_seq','routing')
+        if (-not (Test-UiExactControlFields -Record $record -Required $names) -or
+            $record.run_id -isnot [string] -or $record.run_id -cne $LockedRunId -or
+            -not (Test-UiControlUnsigned -Value $record.control_seq -Minimum 1) -or
+            [uint64]$record.control_seq -le $LastControlSequence -or
+            -not (Test-UiRoutingSnapshot -Routing $record.routing)) { throw 'routing_state 字段、run_id、control_seq 或 routing snapshot 无效。' }
+        return $record
+    }
     if ($record.type -ceq 'control_ready') {
         $names = @('schema_version','type','run_id','control_seq','process_id','control_version','supported_commands','diagnostic')
         if (-not (Test-UiExactControlFields -Record $record -Required $names) -or
@@ -882,8 +1064,7 @@ function ConvertFrom-UiControlFrame {
             -not (Test-UiControlUnsigned -Value $record.process_id -Minimum 1 -Maximum ([uint32]::MaxValue)) -or
             -not (Test-UiControlUnsigned -Value $record.control_version -Minimum 2 -Maximum 2) -or
             $record.diagnostic -isnot [bool] -or -not ($record.supported_commands -is [System.Array]) -or
-            (@($record.supported_commands | Where-Object { $_ -isnot [string] }).Count -gt 0) -or
-            ((@($record.supported_commands) -join ',') -cne 'hello,status,shutdown')) { throw 'control_ready 字段或支持命令列表无效。' }
+            -not (Test-UiRoutingCapabilityList -Commands $record.supported_commands)) { throw 'control_ready 字段或支持命令列表无效。' }
         if ([string]$record.run_id -cnotmatch '^[0-9]{1,10}-[0-9]{1,20}$' -or
             ($ExpectedProcessId -gt 0 -and [uint32]$record.process_id -ne [uint32]$ExpectedProcessId) -or
             [uint64]$record.control_seq -le $LastControlSequence -or ($LockedRunId -and $record.run_id -cne $LockedRunId)) {
@@ -898,11 +1079,15 @@ function ConvertFrom-UiControlFrame {
     }
     if ($record.type -cne 'control_result') { throw '控制协议 v2 只接受 control_ready 或 control_result。' }
     $common = @('schema_version','type','run_id','control_seq','request_id','command','result','replayed')
-    if ($record.command -isnot [string] -or @('hello','status','shutdown') -cnotcontains $record.command) { throw 'control_result.command 无效。' }
+    $validCommands = @('hello','status','shutdown','routing.status','rx_policy.replace','tx_policy.replace')
+    if ($record.command -isnot [string] -or $validCommands -cnotcontains $record.command) { throw 'control_result.command 无效。' }
     $specific = switch -CaseSensitive ([string]$record.command) {
         'hello' { @('supported_commands') }
         'status' { @('snapshot') }
         'shutdown' { @('shutdown_requested') }
+        'routing.status' { @('routing') }
+        'rx_policy.replace' { @('routing') }
+        'tx_policy.replace' { @('routing') }
     }
     if ($record.result -isnot [string] -or @('ok','unsupported','rejected') -cnotcontains $record.result) { throw 'control_result.result 无效。' }
     $requiredResultFields = if ($record.result -ceq 'ok') { $common + $specific } else { $common + @('error') }
@@ -919,29 +1104,40 @@ function ConvertFrom-UiControlFrame {
     if ($record.result -ceq 'ok') {
         switch -CaseSensitive ([string]$record.command) {
             'hello' {
-                if (-not ($record.supported_commands -is [System.Array]) -or
-                    (@($record.supported_commands | Where-Object { $_ -isnot [string] }).Count -gt 0) -or
-                    ((@($record.supported_commands) -join ',') -cne 'hello,status,shutdown')) { throw 'hello ACK 命令列表无效。' }
+                if (-not (Test-UiRoutingCapabilityList -Commands $record.supported_commands)) { throw '初始确认返回的命令列表无效。' }
             }
-            'status' { if (-not (Test-UiControlSnapshot -Snapshot $record.snapshot)) { throw 'status ACK snapshot 无效。' } }
-            'shutdown' { if ($record.shutdown_requested -isnot [bool] -or -not $record.shutdown_requested) { throw 'shutdown ACK 未确认请求。' } }
+            'status' { if (-not (Test-UiControlSnapshot -Snapshot $record.snapshot)) { throw '状态查询结果无效。' } }
+            'shutdown' { if ($record.shutdown_requested -isnot [bool] -or -not $record.shutdown_requested) { throw '停止请求没有得到确认。' } }
+            { $_ -in @('routing.status','rx_policy.replace','tx_policy.replace') } {
+                if (-not (Test-UiRoutingSnapshot -Routing $record.routing)) { throw '路由设置结果无效。' }
+            }
         }
     } elseif ($record.PSObject.Properties['error'] -and $record.error -isnot [string]) { throw '拒绝响应的 error 字段无效。' }
     return $record
 }
 
 function Reset-UiControlState {
-    param([string]$Text = '控制协议：等待')
+    param([string]$Text = '本机控制：等待')
     $script:controlRunId = ''
     $script:controlLastSequence = [uint64]0
     $script:controlConfirmed = $false
+    $script:controlCapabilities = ''
+    $script:routingCapabilities = $false
     $script:controlDiagnostic = $false
     $script:controlOverflowHandled = $false
     $script:pendingControlRequests = @{}
+    $script:resolvedTimedOutRoutingRequests = @{}
     $script:pendingStatusRequestId = ''
+    $script:pendingRoutingStatusRequestId = ''
+    $script:pendingRoutingMutation = $null
+    $script:timedOutRoutingMutations = @{}
+    $script:routingDraftPreservedAfterTimeout = $false
+    $script:routingMutationFence = $false
+    $script:activeRouting = $null
     if ($script:mainWindow) {
         Set-MainText -Name 'ControlProtocolValue' -Text $Text
         (Get-UiControl 'ControlStatusButton').IsEnabled = $false
+        Update-RoutingDisplays
     }
 }
 
@@ -963,7 +1159,7 @@ function Request-UiControlStatus {
     if (-not $script:supervisor.SendControlCommand($requestId, 'status')) {
         [void]$script:pendingControlRequests.Remove($requestId)
         $script:pendingStatusRequestId = ''
-        Set-UiControlStatus -Text '控制协议 v2 状态查询发送失败' -Confirmed $false
+        Set-UiControlStatus -Text '核心状态查询失败；请检查连接状态。' -Confirmed $false
     }
 }
 
@@ -973,7 +1169,7 @@ function Process-UiControlEvents {
         $script:controlOverflowHandled = $true
         $script:controlConfirmed = $false
         (Get-UiControl 'ControlStatusButton').IsEnabled = $false
-        Set-UiControlStatus -Text '控制协议 v2 事件队列溢出，未确认连接' -Confirmed $false
+        Set-UiControlStatus -Text '核心返回过多控制消息；当前状态尚未确认。' -Confirmed $false
         Add-UiEvent '控制协议事件队列溢出'
         return
     }
@@ -984,58 +1180,120 @@ function Process-UiControlEvents {
         } catch {
             $script:controlConfirmed = $false
             (Get-UiControl 'ControlStatusButton').IsEnabled = $false
-            Set-UiControlStatus -Text ('控制协议 v2 验证失败：' + $_.Exception.Message) -Confirmed $false
+            Set-UiControlStatus -Text ('核心控制状态校验失败：' + $_.Exception.Message) -Confirmed $false
             Add-UiEvent '控制协议帧校验失败'
             continue
         }
         $script:controlLastSequence = [uint64]$record.control_seq
+        if ($record.type -ceq 'routing_state') {
+            if (-not $script:routingCapabilities -or -not $script:controlConfirmed) {
+                Set-UiControlStatus -Text '核心在确认设置能力前发送了状态；请重新连接。' -Confirmed $false
+                continue
+            }
+            try {
+                $firstRoutingSnapshot = ($null -eq $script:activeRouting -and -not $script:routingDraftPreservedAfterTimeout)
+                [void](Set-ActiveRoutingSnapshot -Routing $record.routing -SyncAllEditor:$firstRoutingSnapshot)
+                if ($RoutingDiagnosticAutoTest -and -not $script:routingDiagnosticAutoTestStarted) { Start-UiRoutingDiagnosticAutoTest }
+            Write-UiRoutingDiagnosticProgress -Message 'routing-state-processed'
+            } catch {
+                Set-UiControlStatus -Text ('核心设置状态无效：' + $_.Exception.Message) -Confirmed $false
+                Add-UiEvent '核心设置状态校验失败'
+            }
+            continue
+        }
         if ($record.type -ceq 'control_ready') {
             if ($script:controlRunId -or -not $script:supervisor.SetControlRunId([string]$record.run_id)) {
                 $script:controlConfirmed = $false
-                Set-UiControlStatus -Text '控制协议 v2 run_id 锁定失败' -Confirmed $false
+                Set-UiControlStatus -Text '无法确认本次核心运行身份' -Confirmed $false
                 continue
             }
             $script:controlRunId = [string]$record.run_id
             $script:controlDiagnostic = [bool]$record.diagnostic
+            $script:controlCapabilities = @($record.supported_commands) -join ','
+            $script:routingCapabilities = ($script:controlCapabilities -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace')
+            if ($RoutingDiagnosticAutoTest) {
+                if ($null -eq $script:settingsWindow) { Initialize-SettingsWindow }
+                (Get-SettingsControl 'DestinationBox').Text = '53000'
+                $draftSlot = Get-SettingsControl 'SlotBox'
+                $draftSlot.SelectedItem = @($draftSlot.Items | Where-Object { [string]$_.Tag -ceq '2' })[0]
+                $draftKind = Get-SettingsControl 'CallKindBox'
+                $draftKind.SelectedItem = @($draftKind.Items | Where-Object { [string]$_.Tag -ceq 'group' })[0]
+                (Get-SettingsControl 'TransmitEnabledBox').IsChecked = $true
+                Update-TxTargetButtonState
+                $script:settingsWindow.Show()
+                Write-UiRoutingDiagnosticProgress -Message 'control-ready-tx-draft-open'
+            }
             $requestId = [guid]::NewGuid().ToString('D')
             $script:pendingControlRequests[$requestId] = 'hello'
-            Set-UiControlStatus -Text '控制协议 v2 已收到 ready，等待 hello 确认' -Confirmed $false
+            Set-UiControlStatus -Text '核心已启动，正在确认本机控制通道' -Confirmed $false
             if (-not $script:supervisor.SendControlCommand($requestId, 'hello')) {
                 [void]$script:pendingControlRequests.Remove($requestId)
-                Set-UiControlStatus -Text '控制协议 v2 hello 发送失败' -Confirmed $false
+                Set-UiControlStatus -Text '无法与核心确认设置；请检查连接状态。' -Confirmed $false
             }
+            Write-UiRoutingDiagnosticProgress -Message 'hello-sent'
             continue
         }
         if ($record.command -ceq 'shutdown' -and ($script:stopTask -or $script:closingAfterStop)) { continue }
         if (-not $script:pendingControlRequests.ContainsKey([string]$record.request_id) -or
             $script:pendingControlRequests[[string]$record.request_id] -cne [string]$record.command) {
-            Set-UiControlStatus -Text '控制协议 v2 收到未请求的响应' -Confirmed $false
+            if ($script:resolvedTimedOutRoutingRequests.ContainsKey([string]$record.request_id) -and
+                $script:resolvedTimedOutRoutingRequests[[string]$record.request_id] -ceq [string]$record.command) {
+                [void]$script:resolvedTimedOutRoutingRequests.Remove([string]$record.request_id)
+                continue
+            }
+            Set-UiControlStatus -Text '核心返回了未知的控制结果' -Confirmed $false
             continue
         }
         [void]$script:pendingControlRequests.Remove([string]$record.request_id)
         if ($record.command -ceq 'status' -and $script:pendingStatusRequestId -ceq [string]$record.request_id) {
             $script:pendingStatusRequestId = ''
         }
+        if ($record.command -ceq 'routing.status' -and $script:pendingRoutingStatusRequestId -ceq [string]$record.request_id) {
+            $script:pendingRoutingStatusRequestId = ''
+        }
         if ($record.result -cne 'ok') {
             $detail = if ($record.PSObject.Properties['error']) { [string]$record.error } else { [string]$record.result }
-            Set-UiControlStatus -Text ('控制协议 v2 请求失败：' + $detail) -Confirmed $script:controlConfirmed
+            Set-UiControlStatus -Text ('设置操作失败：' + $detail) -Confirmed $script:controlConfirmed
+            if ($record.command -in @('rx_policy.replace','tx_policy.replace')) {
+                $failedMutation = $null
+                if ($script:pendingRoutingMutation -and $script:pendingRoutingMutation.request_id -ceq [string]$record.request_id) {
+                    $failedMutation = $script:pendingRoutingMutation
+                    $script:pendingRoutingMutation = $null
+                } elseif ($script:timedOutRoutingMutations.ContainsKey([string]$record.request_id)) {
+                    $failedMutation = $script:timedOutRoutingMutations[[string]$record.request_id]
+                    [void]$script:timedOutRoutingMutations.Remove([string]$record.request_id)
+                }
+                if ($failedMutation) {
+                    $script:routingMutationFence = $true
+                    Set-RoutingMutationPendingState -Pending ([bool]$script:pendingRoutingMutation)
+                    Set-RoutingEditorStatus -Text ('核心拒绝了这项设置；正在读取当前运行设置。' + $detail) -Failed $true
+                    Add-UiEvent '核心拒绝接收路由设置'
+                    Request-UiRoutingStatus
+                }
+            } elseif ($record.command -ceq 'routing.status' -and $script:routingMutationFence) {
+                Set-UiControlStatus -Text '当前运行设置无法刷新；路由修改保持锁定，请重新连接。' -Confirmed $false
+                Set-RoutingEditorStatus -Text ('当前设置读取失败；没有自动重发任何更改。' + $detail) -Failed $true
+            }
             continue
         }
         switch -CaseSensitive ([string]$record.command) {
             'hello' {
-                if ($record.supported_commands -join ',' -cne 'hello,status,shutdown') {
-                    Set-UiControlStatus -Text '控制协议 v2 ACK 命令列表不匹配' -Confirmed $false
+                if ((@($record.supported_commands) -join ',') -cne $script:controlCapabilities) {
+                    Set-UiControlStatus -Text '核心控制能力与确认结果不一致' -Confirmed $false
                     continue
                 }
                 $script:controlConfirmed = $true
-                $diagLabel = if ($script:controlDiagnostic) { ' · 无设备诊断进程' } else { '' }
-                Set-UiControlStatus -Text ('控制协议 v2 已确认' + $diagLabel) -Confirmed $true
-                Add-UiEvent '控制协议 v2 已确认'
+                Write-UiRoutingDiagnosticProgress -Message 'hello-confirmed'
+                $diagLabel = if ($script:controlDiagnostic) { ' · 仅本地诊断' } else { '' }
+                if ($script:routingCapabilities) { $diagLabel += ' · 本机路由设置可用' }
+                Set-UiControlStatus -Text ('本机控制已确认' + $diagLabel) -Confirmed $true
+                Add-UiEvent '本机控制已确认'
+                if ($script:routingCapabilities) { Request-UiRoutingStatus }
             }
             'status' {
                 $snapshot = $record.snapshot
                 if ([bool]$snapshot.diagnostic) {
-                    $statusText = '控制状态已收到：无设备诊断 · BM未启动 · HRI未连接 · RF未知'
+                    $statusText = '仅本机诊断：未连接 BM、HRI 或音频设备'
                 } else {
                     $replayText = if ($record.replayed) { '重放摘要' } else { '状态摘要' }
                     $statusText = ('{0}：{1} / {2} · media_seq {3}' -f $replayText, $snapshot.status, $snapshot.phase, $snapshot.media_seq)
@@ -1043,8 +1301,108 @@ function Process-UiControlEvents {
                 # This control snapshot never refreshes the v1 media cards or their freshness clock.
                 Set-UiControlStatus -Text $statusText -Confirmed $true
             }
+            { $_ -in @('routing.status','rx_policy.replace','tx_policy.replace') } {
+                if (-not $script:routingCapabilities) {
+                    Set-UiControlStatus -Text '核心未提供本机多路由设置' -Confirmed $false
+                    continue
+                }
+                $mutation = $null
+                if ($record.command -in @('rx_policy.replace','tx_policy.replace')) {
+                    if ($script:pendingRoutingMutation -and $script:pendingRoutingMutation.request_id -ceq [string]$record.request_id -and
+                        $script:pendingRoutingMutation.command -ceq [string]$record.command) {
+                        $mutation = $script:pendingRoutingMutation
+                    } elseif ($script:timedOutRoutingMutations.ContainsKey([string]$record.request_id) -and
+                        $script:timedOutRoutingMutations[[string]$record.request_id].command -ceq [string]$record.command) {
+                        $mutation = $script:timedOutRoutingMutations[[string]$record.request_id]
+                    } else {
+                        $script:routingMutationFence = $true
+                        Set-RoutingMutationPendingState -Pending ([bool]$script:pendingRoutingMutation)
+                        Set-UiControlStatus -Text '收到的设置结果不属于当前请求；正在读取当前设置。' -Confirmed $false
+                        Request-UiRoutingStatus
+                        continue
+                    }
+                }
+                if ($record.replayed) {
+                    if ($mutation) {
+                        if ($script:pendingRoutingMutation -and $script:pendingRoutingMutation.request_id -ceq [string]$record.request_id) { $script:pendingRoutingMutation = $null }
+                        [void]$script:timedOutRoutingMutations.Remove([string]$record.request_id)
+                        $script:routingDraftPreservedAfterTimeout = ($script:timedOutRoutingMutations.Count -gt 0)
+                        $script:routingMutationFence = $true
+                        Set-RoutingMutationPendingState -Pending ([bool]$script:pendingRoutingMutation)
+                        Set-RoutingEditorStatus -Text '该设置请求已处理过；没有再次保存，正在读取当前设置。' -Failed $true
+                    }
+                    $script:routingMutationFence = $true
+                    Request-UiRoutingStatus
+                    continue
+                }
+                try {
+                    $matchingPending = ($script:pendingRoutingMutation -and
+                        $script:pendingRoutingMutation.request_id -ceq [string]$record.request_id)
+                    $syncRxEditor = ($matchingPending -and $record.command -ceq 'rx_policy.replace')
+                    $syncTxEditor = ($matchingPending -and $record.command -ceq 'tx_policy.replace')
+                    $snapshotAccepted = Set-ActiveRoutingSnapshot -Routing $record.routing -SyncRxEditor:$syncRxEditor -SyncTxEditor:$syncTxEditor
+                } catch {
+                    Set-UiControlStatus -Text ('核心返回的设置状态无效：' + $_.Exception.Message) -Confirmed $false
+                    Request-UiRoutingStatus
+                    continue
+                }
+                if (-not $snapshotAccepted) {
+                    $script:routingMutationFence = $true
+                    Request-UiRoutingStatus
+                    continue
+                }
+                if ($record.command -ceq 'routing.status') {
+                    $wasFenced = $script:routingMutationFence
+                    foreach ($timedOutRequestId in @($script:timedOutRoutingMutations.Keys)) {
+                        $script:resolvedTimedOutRoutingRequests[$timedOutRequestId] = [string]$script:timedOutRoutingMutations[$timedOutRequestId].command
+                        [void]$script:pendingControlRequests.Remove([string]$timedOutRequestId)
+                        [void]$script:timedOutRoutingMutations.Remove([string]$timedOutRequestId)
+                    }
+                    $script:routingDraftPreservedAfterTimeout = $false
+                    $script:routingMutationFence = $false
+                    Set-RoutingMutationPendingState -Pending ([bool]$script:pendingRoutingMutation)
+                    if ($wasFenced) {
+                        $script:routingDraftPreservedAfterTimeout = $true
+                        Set-RoutingEditorStatus -Text '当前运行设置已刷新；未确认的草稿仍在设置中保留，未自动重发。' -Failed $true
+                        Set-UiControlStatus -Text '当前运行设置已刷新，草稿已保留' -Confirmed $true
+                    } else { Set-UiControlStatus -Text '当前运行设置已刷新' -Confirmed $true }
+                    if ($script:routingDiagnosticFenceProbeWaiting) { Continue-UiRoutingDiagnosticAutoTestAfterFenceRefresh }
+                    continue
+                }
+                if ($script:pendingRoutingMutation -and $script:pendingRoutingMutation.request_id -ceq [string]$record.request_id) { $script:pendingRoutingMutation = $null }
+                [void]$script:timedOutRoutingMutations.Remove([string]$record.request_id)
+                $script:routingDraftPreservedAfterTimeout = ($script:timedOutRoutingMutations.Count -gt 0)
+                if ($script:routingMutationFence -and $script:timedOutRoutingMutations.Count -eq 0) { $script:routingMutationFence = $false }
+                Set-RoutingMutationPendingState -Pending ([bool]$script:pendingRoutingMutation)
+                Save-UiRoutingMutationAfterAck -Mutation $mutation -Routing $record.routing
+                Set-UiControlStatus -Text '设置已应用' -Confirmed $true
+                if ($RoutingDiagnosticAutoTest) { Complete-UiRoutingDiagnosticAutoTest -Mutation $mutation -Routing $record.routing }
+            }
         }
     }
+}
+
+function Test-UiRoutingStateFile {
+    param([string]$Path,[string]$ExpectedSourceId,[string]$ExpectedDestinationId,[string]$ExpectedSlot,[string]$ExpectedKind)
+    if (-not [System.IO.File]::Exists($Path) -or (New-Object System.IO.FileInfo($Path)).Length -gt 65536) { throw '预检 routing-state.json 缺失或超过 64 KiB。' }
+    try { $state = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($Path,[System.Text.Encoding]::UTF8)) -ErrorAction Stop }
+    catch { throw '预检 routing-state.json JSON 无效。' }
+    if (-not (Test-UiExactControlFields -Record $state -Required @('schema_version','local_source_id','rx_policy','tx_target','transmit_enabled')) -or
+        -not (Test-UiControlUnsigned -Value $state.schema_version -Minimum 1 -Maximum 1) -or
+        -not (Test-UiControlUnsigned -Value $state.local_source_id -Minimum 1 -Maximum 16777215) -or
+        [string]$state.local_source_id -cne $ExpectedSourceId -or
+        $state.transmit_enabled -isnot [bool] -or
+        -not (Test-UiRxPolicy -Policy $state.rx_policy -LocalSourceId ([uint64]$state.local_source_id))) { throw '预检 routing-state.json schema 1 或 RX 策略无效。' }
+    if (-not (Test-UiExactControlFields -Record $state.tx_target -Required @('destination_id','kind','slot')) -or
+        -not (Test-UiControlUnsigned -Value $state.tx_target.destination_id -Minimum 1 -Maximum 16777215) -or
+        -not (Test-UiControlUnsigned -Value $state.tx_target.slot -Minimum 1 -Maximum 2) -or
+        $state.tx_target.kind -isnot [string] -or @('group','private') -cnotcontains [string]$state.tx_target.kind -or
+        [string]$state.tx_target.destination_id -cne $ExpectedDestinationId -or
+        [string]$state.tx_target.slot -cne $ExpectedSlot -or
+        [string]$state.tx_target.kind -cne $(if ($ExpectedKind -ceq 'G') { 'group' } else { 'private' })) {
+        throw '预检 routing-state.json 的 TX 目标与本次连接配置不一致。'
+    }
+    return $state
 }
 
 function Test-UiPreparationRecord {
@@ -1060,6 +1418,7 @@ function Test-UiPreparationRecord {
         $Record.schema_version -ne 1 -or
         $Record.executable -isnot [string] -or
         $Record.status_path -isnot [string] -or
+        $Record.routing_state_path -isnot [string] -or
         $Record.arguments -isnot [System.Array]) {
         throw '设备预检返回的启动参数结构无效。'
     }
@@ -1089,6 +1448,11 @@ function Test-UiPreparationRecord {
         -not [string]::Equals([System.IO.Path]::GetExtension($statusName), '.jsonl', [System.StringComparison]::OrdinalIgnoreCase)) {
         throw '设备预检返回的状态文件不属于本次启动目录。'
     }
+    $routingStatePath = [System.IO.Path]::GetFullPath($Record.routing_state_path)
+    if (-not [string]::Equals([System.IO.Path]::GetDirectoryName($routingStatePath).TrimEnd('\'),$runPath.TrimEnd('\'),[System.StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([System.IO.Path]::GetFileName($routingStatePath),'routing-state.json',[System.StringComparison]::OrdinalIgnoreCase)) {
+        throw 'routing-state.json 必须位于本次 GUID 运行目录中。'
+    }
 
     $arguments = @($Record.arguments)
     if ($arguments.Count -lt 20 -or @($arguments | Where-Object { $_ -isnot [string] }).Count -ne 0) {
@@ -1098,11 +1462,11 @@ function Test-UiPreparationRecord {
         '--port', '--body-file', '--input', '--output', '--status-file',
         '--expected-wavein-endpoint', '--expected-waveout-endpoint',
         '--radio-playback-gain', '--mic-transmit-gain', '--password-file',
+        '--routing-state-file',
         '--ui-control-version',
         '--profile-callsign', '--profile-gateway-id', '--profile-source-id',
         '--profile-master', '--profile-master-port', '--profile-destination-id',
-        '--profile-slot', '--profile-color-code', '--profile-call-kind',
-        '--profile-receive-destination-id', '--profile-receive-slot', '--profile-receive-call-kind'
+        '--profile-slot', '--profile-color-code', '--profile-call-kind'
     )
     $switchOptions = @('--run', '--ui-pipe', '--listen-only')
     $parsedArguments = @{}
@@ -1127,21 +1491,9 @@ function Test-UiPreparationRecord {
         '--expected-wavein-endpoint', '--expected-waveout-endpoint', '--radio-playback-gain', '--mic-transmit-gain',
         '--password-file', '--ui-control-version', '--profile-callsign', '--profile-gateway-id', '--profile-source-id',
         '--profile-master', '--profile-master-port', '--profile-destination-id', '--profile-slot',
-        '--profile-color-code', '--profile-call-kind', '--profile-receive-destination-id',
-        '--profile-receive-slot', '--profile-receive-call-kind'
+        '--profile-color-code', '--profile-call-kind', '--routing-state-file'
     )) {
         if (-not $parsedArguments.ContainsKey($requiredOption)) { throw '设备预检返回的启动参数不完整。' }
-    }
-    $receiveDestination = [uint32]0
-    $receiveSlot = [uint32]0
-    if (-not [uint32]::TryParse($parsedArguments['--profile-receive-destination-id'],
-            [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture, [ref]$receiveDestination) -or
-        $receiveDestination -lt 1 -or $receiveDestination -gt 16777215 -or
-        -not [uint32]::TryParse($parsedArguments['--profile-receive-slot'],
-            [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture, [ref]$receiveSlot) -or
-        $receiveSlot -notin @(1, 2) -or
-        $parsedArguments['--profile-receive-call-kind'] -cnotin @('G', 'P')) {
-        throw '设备预检返回的接收目标字段无效。'
     }
     if ($parsedArguments['--profile-call-kind'] -cnotin @('G', 'P')) {
         throw '设备预检返回的发射呼叫类型无效。'
@@ -1150,6 +1502,8 @@ function Test-UiPreparationRecord {
     $pipeCount = 0
     $statusValue = ''
     $statusCount = 0
+    $routingStateValue = ''
+    $routingStateCount = 0
     for ($index = 0; $index -lt $arguments.Count; $index++) {
         if ($arguments[$index] -ceq '--ui-pipe') { $pipeCount++ }
         if ($arguments[$index] -ceq '--status-file') {
@@ -1157,16 +1511,26 @@ function Test-UiPreparationRecord {
             if ($index + 1 -ge $arguments.Count) { throw '设备预检返回的状态参数缺少路径。' }
             $statusValue = [string]$arguments[$index + 1]
         }
+        if ($arguments[$index] -ceq '--routing-state-file') {
+            $routingStateCount++
+            if ($index + 1 -ge $arguments.Count) { throw '设备预检返回的 routing-state-file 参数缺少路径。' }
+            $routingStateValue = [string]$arguments[$index + 1]
+        }
     }
-    if ($pipeCount -ne 1 -or $statusCount -ne 1 -or
+    if ($pipeCount -ne 1 -or $statusCount -ne 1 -or $routingStateCount -ne 1 -or
         -not [string]::Equals([System.IO.Path]::GetFullPath($statusValue), $statusPath,
-            [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw '设备预检返回的启动参数与状态文件路径不一致。'
+            [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([System.IO.Path]::GetFullPath($routingStateValue),$routingStatePath,[System.StringComparison]::OrdinalIgnoreCase)) {
+        throw '设备预检返回的启动参数与状态或 routing-state 文件路径不一致。'
     }
+    [void](Test-UiRoutingStateFile -Path $routingStatePath -ExpectedSourceId $parsedArguments['--profile-source-id'] `
+        -ExpectedDestinationId $parsedArguments['--profile-destination-id'] -ExpectedSlot $parsedArguments['--profile-slot'] `
+        -ExpectedKind $parsedArguments['--profile-call-kind'])
     return [pscustomobject]@{
         Executable = $expectedExe
         Arguments = [string[]]$arguments
         StatusPath = $statusPath
+        RoutingStatePath = $routingStatePath
     }
 }
 
@@ -1260,6 +1624,16 @@ function Test-UiDiscoveryResultOwner {
 }
 
 function Start-UiDeviceDiscovery {
+    if ($RoutingDiagnostic) {
+        $script:deviceDiscoveryState = 'diagnostic'
+        $script:deviceCatalog = [pscustomobject]@{ serial_ports=@(); hri_ports=@(); wave_inputs=@(); wave_outputs=@() }
+        Set-SettingsDeviceControls
+        if ($script:settingsWindow) {
+            (Get-SettingsControl 'DeviceDiscoveryText').Text = '本地协议测试：设备列表为空（模拟），未查询真实设备。'
+            (Get-SettingsControl 'RefreshDevicesButton').IsEnabled = $false
+        }
+        return
+    }
     if ($OfflinePreview -or $RenderOnly) {
         $script:deviceDiscoveryState = 'offline'
         Set-SettingsDeviceControls
@@ -1665,23 +2039,13 @@ function Get-UiReceiveEditorState {
         return [pscustomobject]@{ CanEdit=$true; Destination=''; Slot='2'; Kind='group'; Reason='新配置' }
     }
     $policy = $Profile.rx_policy
-    if (@($policy.blocked_groups).Count -gt 0 -or @($policy.blocked_source_ids).Count -gt 0 -or
-        @($policy.allow_private_peers).Count -gt 0 -or $policy.group_mode -cne 'selected') {
-        return [pscustomobject]@{ CanEdit=$false; Destination=''; Slot='2'; Kind='group'; Reason='接收策略包含当前单路由编辑器不能编辑的组、来源屏蔽或精确 peer。' }
-    }
-    try { $legacy = Get-BridgeLegacyRuntimeProfile -Profile $Profile }
-    catch {
-        return [pscustomobject]@{ CanEdit=$false; Destination=''; Slot='2'; Kind='group'; Reason=$_.Exception.Message }
-    }
-    if ($policy.allow_groups.Count -eq 1 -and $policy.private_mode -ceq 'disabled' -and
-        $policy.local_private_routes.Count -eq 0) {
-        return [pscustomobject]@{ CanEdit=$true; Destination=[string]$legacy.receive.destination_id; Slot=[string]$legacy.receive.slot; Kind='group'; Reason='' }
-    }
-    if ($policy.allow_groups.Count -eq 0 -and $policy.private_mode -ceq 'all_peers_to_local' -and
-        $policy.local_private_routes.Count -eq 1) {
-        return [pscustomobject]@{ CanEdit=$true; Destination=[string]$legacy.receive.destination_id; Slot=[string]$legacy.receive.slot; Kind='private'; Reason='' }
-    }
-    return [pscustomobject]@{ CanEdit=$false; Destination=''; Slot='2'; Kind='group'; Reason='接收策略不是一个 Selected 组呼或本机私呼路由。' }
+    $firstGroup = @($policy.allow_groups | Select-Object -First 1)
+    $firstLocal = @($policy.local_private_routes | Select-Object -First 1)
+    $firstPeer = @($policy.allow_private_peers | Select-Object -First 1)
+    $destination = if ($firstGroup.Count) { [string]$firstGroup[0].destination_id } elseif ($firstLocal.Count) { [string]$firstLocal[0].local_destination_id } elseif ($firstPeer.Count) { [string]$firstPeer[0].source_id } else { '' }
+    $slot = if ($firstGroup.Count) { [string]$firstGroup[0].slot } elseif ($firstLocal.Count) { [string]$firstLocal[0].slot } elseif ($firstPeer.Count) { [string]$firstPeer[0].slot } else { '2' }
+    $kind = if ($firstGroup.Count) { 'group' } elseif ($firstLocal.Count -or $firstPeer.Count) { 'private' } else { 'group' }
+    return [pscustomobject]@{ CanEdit=$true; Destination=$destination; Slot=$slot; Kind=$kind; Reason='完整 schema 2 多路由策略可编辑。' }
 }
 
 function New-UiSimpleReceivePolicy {
@@ -1737,6 +2101,499 @@ function Convert-UiGainSliderToMilli {
     return [uint32][Math]::Round($Value * 1000.0, [MidpointRounding]::AwayFromZero)
 }
 
+function Copy-UiRxPolicy {
+    param([object]$Policy)
+    return [pscustomobject][ordered]@{
+        group_mode=[string]$Policy.group_mode
+        private_mode=[string]$Policy.private_mode
+        allow_groups=[object[]]@($Policy.allow_groups | ForEach-Object { [pscustomobject][ordered]@{ destination_id=[uint64]$_.destination_id; slot=[uint64]$_.slot } })
+        allow_private_peers=[object[]]@($Policy.allow_private_peers | ForEach-Object { [pscustomobject][ordered]@{ source_id=[uint64]$_.source_id; local_destination_id=[uint64]$_.local_destination_id; slot=[uint64]$_.slot } })
+        local_private_routes=[object[]]@($Policy.local_private_routes | ForEach-Object { [pscustomobject][ordered]@{ local_destination_id=[uint64]$_.local_destination_id; slot=[uint64]$_.slot } })
+        blocked_groups=[object[]]@($Policy.blocked_groups | ForEach-Object { [pscustomobject][ordered]@{ destination_id=[uint64]$_.destination_id; slot=[uint64]$_.slot } })
+        blocked_source_ids=[uint64[]]@($Policy.blocked_source_ids | ForEach-Object { [uint64]$_ })
+    }
+}
+
+function Get-UiComboTag {
+    param([System.Windows.Controls.ComboBox]$Combo)
+    if ($null -eq $Combo.SelectedItem -or $Combo.SelectedItem -isnot [System.Windows.Controls.ComboBoxItem]) { return '' }
+    return [string]$Combo.SelectedItem.Tag
+}
+
+function Get-UiPolicyLocalSourceId {
+    if ($script:activeRouting -and $script:supervisor -and -not $script:supervisor.HasExited) { return [uint64]$script:activeRouting.local_source_id }
+    if ($script:storedProfile) { return [uint64]$script:storedProfile.connection.source_id }
+    if ($script:settingsWindow) {
+        $id = [uint64]0
+        if ([uint64]::TryParse([string](Get-SettingsControl 'SourceBox').Text, [Globalization.NumberStyles]::None,
+                [Globalization.CultureInfo]::InvariantCulture, [ref]$id)) { return $id }
+    }
+    return [uint64]0
+}
+
+function Set-SettingsPolicyLists {
+    if (-not $script:settingsWindow -or -not $script:editRxPolicy) { return }
+    $wasLoading = $script:loadingSettings
+    $script:loadingSettings = $true
+    foreach ($name in @('GroupRoutesList','PeerRoutesList','LocalPrivateRoutesList','BlockedGroupsList','BlockedSourcesList')) {
+        (Get-SettingsControl $name).Items.Clear()
+    }
+    foreach ($route in @($script:editRxPolicy.allow_groups)) { [void](Get-SettingsControl 'GroupRoutesList').Items.Add(('TG {0} · TS{1}' -f $route.destination_id,$route.slot)) }
+    foreach ($route in @($script:editRxPolicy.allow_private_peers)) { [void](Get-SettingsControl 'PeerRoutesList').Items.Add(('peer {0} → 本机 {1} · TS{2}' -f $route.source_id,$route.local_destination_id,$route.slot)) }
+    foreach ($route in @($script:editRxPolicy.local_private_routes)) { [void](Get-SettingsControl 'LocalPrivateRoutesList').Items.Add(('发往本机 {0} · TS{1}' -f $route.local_destination_id,$route.slot)) }
+    foreach ($route in @($script:editRxPolicy.blocked_groups)) { [void](Get-SettingsControl 'BlockedGroupsList').Items.Add(('TG {0} · TS{1}' -f $route.destination_id,$route.slot)) }
+    foreach ($sourceId in @($script:editRxPolicy.blocked_source_ids)) { [void](Get-SettingsControl 'BlockedSourcesList').Items.Add(('DMR ID {0}' -f $sourceId)) }
+    $groupMode = Get-SettingsControl 'GroupModeBox'
+    $privateMode = Get-SettingsControl 'PrivateModeBox'
+    $groupMode.SelectedItem = @($groupMode.Items | Where-Object { [string]$_.Tag -ceq [string]$script:editRxPolicy.group_mode })[0]
+    $privateMode.SelectedItem = @($privateMode.Items | Where-Object { [string]$_.Tag -ceq [string]$script:editRxPolicy.private_mode })[0]
+    (Get-SettingsControl 'ReceivePolicyPreviewText').Text = Format-ProfileReceiveTarget -Profile ([pscustomobject]@{ rx_policy=$script:editRxPolicy })
+    $script:loadingSettings = $wasLoading
+}
+
+function Set-RoutingMutationControls {
+    param([bool]$Enabled)
+    if (-not $script:settingsWindow) { return }
+    foreach ($name in @('GroupModeBox','PrivateModeBox','GroupRouteIdBox','GroupRouteSlotBox','BlockedGroupIdBox','BlockedGroupSlotBox',
+            'PeerSourceIdBox','PeerLocalDestinationBox','PeerSlotBox','LocalPrivateDestinationBox','LocalPrivateSlotBox','BlockedSourceIdBox',
+            'DestinationBox','SlotBox','CallKindBox','TransmitEnabledBox','GroupRoutesList','PeerRoutesList','LocalPrivateRoutesList',
+            'BlockedGroupsList','BlockedSourcesList','SaveSettingsButton','AddGroupRouteButton','RemoveGroupRouteButton',
+            'AddBlockedGroupButton','RemoveBlockedGroupButton','AddPeerRouteButton','RemovePeerRouteButton',
+            'AddLocalPrivateRouteButton','RemoveLocalPrivateRouteButton','AddBlockedSourceButton','RemoveBlockedSourceButton',
+            'ApplyNextTxTargetButton')) {
+        $control = $script:settingsWindow.FindName($name)
+        if ($null -ne $control) { $control.IsEnabled = $Enabled }
+    }
+    Update-TxTargetButtonState
+    if ($script:mainWindow) {
+        $panel = $script:mainWindow.FindName('ObservedSourcesPanel')
+        foreach ($card in $panel.Children) {
+            if ($card -isnot [System.Windows.Controls.Border] -or $card.Child -isnot [System.Windows.Controls.StackPanel]) { continue }
+            foreach ($bodyChild in $card.Child.Children) {
+                if ($bodyChild -isnot [System.Windows.Controls.Primitives.UniformGrid]) { continue }
+                foreach ($button in $bodyChild.Children) {
+                    if ($button -is [System.Windows.Controls.Button]) { $button.IsEnabled = $Enabled }
+                }
+            }
+        }
+        $callButton = $script:mainWindow.FindName('BlockCurrentSourceButton')
+        if ($callButton) { $callButton.IsEnabled = ($Enabled -and $script:activeRouting -and $script:latestStatus -and $script:latestStatus.current_call_valid) }
+    }
+}
+
+function Update-TxTargetButtonState {
+    if (-not $script:settingsWindow) { return }
+    $button = $script:settingsWindow.FindName('ApplyNextTxTargetButton')
+    $destination = [uint64]0
+    $validId = [uint64]::TryParse([string](Get-SettingsControl 'DestinationBox').Text,[Globalization.NumberStyles]::None,
+        [Globalization.CultureInfo]::InvariantCulture,[ref]$destination)
+    $isForbidden = $validId -and (Get-UiComboTag -Combo (Get-SettingsControl 'CallKindBox')) -ceq 'group' -and $destination -in @(91,46001)
+    $liveReady = (-not ($script:supervisor -and -not $script:supervisor.HasExited)) -or ($script:controlConfirmed -and $script:routingCapabilities -and $script:activeRouting)
+    $button.IsEnabled = (-not $script:pendingRoutingMutation -and $liveReady -and -not $isForbidden)
+    $button.ToolTip = if ($isForbidden) { 'TG91 与 TG46001 是只收通道，不能发射。' } elseif (-not $liveReady) { '连接准备好后，可立即应用下一发射目标。' } else { '立即更新下一发射目标，不改变接收策略。' }
+}
+
+function Set-RoutingEditorStatus {
+    param([string]$Text, [bool]$Failed=$false)
+    if ($script:settingsWindow) {
+        $label = Get-SettingsControl 'RoutingEditorStatus'
+        $label.Text = $Text
+        $label.Foreground = if ($Failed) { [Windows.Media.Brushes]::IndianRed } else { [Windows.Media.Brushes]::LightGreen }
+    }
+}
+
+function Format-UiRouteTarget {
+    param([object]$Target)
+    if ($null -eq $Target) { return '无' }
+    if ([string]$Target.kind -ceq 'private') { return ('私呼 {0} · TS{1}' -f $Target.destination_id,$Target.slot) }
+    return ('TG {0} · TS{1}' -f $Target.destination_id,$Target.slot)
+}
+
+function Set-ActiveRoutingSnapshot {
+    param([object]$Routing, [switch]$Force, [switch]$SyncAllEditor, [switch]$SyncRxEditor, [switch]$SyncTxEditor)
+    if (-not (Test-UiRoutingSnapshot -Routing $Routing)) { throw '核心返回的路由设置格式无效。' }
+    if ($script:storedProfile -and [uint64]$Routing.local_source_id -ne [uint64]$script:storedProfile.connection.source_id) {
+        throw '核心返回的本机 ID 与已保存配置不一致。'
+    }
+    if (-not $Force -and $script:activeRouting -and
+        ([uint64]$Routing.rx_policy_revision -lt [uint64]$script:activeRouting.rx_policy_revision -or
+         [uint64]$Routing.tx_policy_revision -lt [uint64]$script:activeRouting.tx_policy_revision)) {
+        Add-UiEvent '已忽略会回退策略版本的路由快照'
+        return $false
+    }
+    $script:activeRouting = $Routing
+    $script:routingLastUpdateUtc = [DateTime]::UtcNow
+    Update-RoutingDisplays
+    if ($script:settingsWindow -and -not $script:pendingRoutingMutation -and -not $script:loadingSettings) {
+        if ($SyncAllEditor -or $SyncRxEditor) { $script:editRxPolicy = Copy-UiRxPolicy -Policy $Routing.rx_policy; Set-SettingsPolicyLists }
+        $syncTxEditorNow = ($SyncTxEditor -or ($SyncAllEditor -and -not $script:txEditorDirty))
+        if ($syncTxEditorNow) {
+            $wasLoading = $script:loadingSettings
+            $script:loadingSettings = $true
+            $target = $Routing.tx_target
+            (Get-SettingsControl 'DestinationBox').Text = [string]$target.destination_id
+            $slotBox = Get-SettingsControl 'SlotBox'
+            $slotBox.SelectedItem = @($slotBox.Items | Where-Object { [string]$_.Tag -ceq [string]$target.slot })[0]
+            $kindBox = Get-SettingsControl 'CallKindBox'
+            $kindBox.SelectedItem = @($kindBox.Items | Where-Object { [string]$_.Tag -ceq [string]$target.kind })[0]
+            (Get-SettingsControl 'TransmitEnabledBox').IsChecked = [bool]$Routing.transmit_enabled
+            $script:loadingSettings = $wasLoading
+            $script:txEditorDirty = $false
+        }
+    }
+    return $true
+}
+
+function New-UiSmallTextBlock {
+    param([string]$Text, [double]$FontSize=11)
+    $block = New-Object System.Windows.Controls.TextBlock
+    $block.Text = $Text
+    $block.FontSize = $FontSize
+    $block.TextWrapping = [Windows.TextWrapping]::Wrap
+    $block.Margin = [Windows.Thickness]::new(2.0,2.0,2.0,2.0)
+    return $block
+}
+
+function New-UiActionButton {
+    param([string]$Text, [object]$Data)
+    $button = New-Object System.Windows.Controls.Button
+    $button.Content = $Text
+    $button.Tag = $Data
+    $button.Padding = [Windows.Thickness]::new(4.0,2.0,4.0,2.0)
+    $button.Margin = [Windows.Thickness]::new(2.0)
+    $button.FontSize = 10
+    $button.Add_Click({ param($sender,$eventArgs) Invoke-ObservedRoutingAction -Action ([string]$sender.Tag.Action) -Source $sender.Tag.Source })
+    return $button
+}
+
+function Update-RoutingDisplays {
+    if (-not $script:mainWindow) { return }
+    $routing = $script:activeRouting
+    if ($routing) {
+        $profileView = [pscustomobject]@{ rx_policy=$routing.rx_policy; tx_target=$routing.tx_target; transmit_enabled=$routing.transmit_enabled }
+        Set-MainTargetSummary -Profile $profileView -OverallLabel (Format-ProfileTarget -Profile $profileView)
+        $ownerText = switch -CaseSensitive ([string]$routing.media_owner) {
+            'idle' { '空闲' } 'rx_active' { '正在接收' } 'rx_draining' { '接收尾音处理中' }
+            'rx_stopping' { '正在停止接收' } 'tx_active' { '正在发射' } 'tx_draining' { '发射收尾处理中' }
+            default { '媒体状态需要检查' }
+        }
+        Set-MainText -Name 'RoutingRevisionValue' -Text ('本机媒体状态：' + $ownerText)
+        $leaseText = if ($routing.active_tx_lease) { '本次发射目标（固定）：{0}' -f (Format-UiRouteTarget $routing.active_tx_lease) } else { '当前发射目标：无' }
+        Set-MainText -Name 'ActiveLeaseValue' -Text $leaseText
+    } else {
+        $profileView = if ($script:activeProfile) { $script:activeProfile } elseif ($script:storedProfile) { $script:storedProfile } else { $null }
+        if ($profileView) {
+            Set-MainTargetSummary -Profile $profileView -OverallLabel (Format-ProfileTarget -Profile $profileView)
+            $leaseText = '当前发射目标：等待本次连接状态'
+        } else { $leaseText = '当前发射目标：无' }
+        Set-MainText -Name 'ActiveLeaseValue' -Text $leaseText
+        Set-MainText -Name 'RoutingRevisionValue' -Text '本机媒体状态：等待本次连接'
+    }
+    $configured = $script:mainWindow.FindName('ConfiguredRoutesPanel')
+    $configured.Children.Clear()
+    $policy = if ($routing) { $routing.rx_policy } elseif ($script:activeProfile) { $script:activeProfile.rx_policy } elseif ($script:storedProfile) { $script:storedProfile.rx_policy } else { $null }
+    if ($policy) {
+        $groupListLabel = if ($policy.group_mode -ceq 'selected') { 'Selected · TG' } else { 'AllDelivered 附带列表 · TG' }
+        foreach ($route in @($policy.allow_groups)) { [void]$configured.Children.Add((New-UiSmallTextBlock -Text ('{0} {1} · TS{2}' -f $groupListLabel,$route.destination_id,$route.slot))) }
+        foreach ($route in @($policy.local_private_routes)) { [void]$configured.Children.Add((New-UiSmallTextBlock -Text ('本机私呼路由 · {0} · TS{1}' -f $route.local_destination_id,$route.slot))) }
+        foreach ($route in @($policy.allow_private_peers)) { [void]$configured.Children.Add((New-UiSmallTextBlock -Text ('私呼 peer {0} → {1} · TS{2}' -f $route.source_id,$route.local_destination_id,$route.slot))) }
+        foreach ($route in @($policy.blocked_groups)) { [void]$configured.Children.Add((New-UiSmallTextBlock -Text ('本地屏蔽 · TG {0} · TS{1}' -f $route.destination_id,$route.slot))) }
+        foreach ($sourceId in @($policy.blocked_source_ids)) { [void]$configured.Children.Add((New-UiSmallTextBlock -Text ('跨组屏蔽 · DMR ID {0}' -f $sourceId))) }
+        if (-not $policy.allow_groups.Count -and -not $policy.local_private_routes.Count -and -not $policy.allow_private_peers.Count) {
+            [void]$configured.Children.Add((New-UiSmallTextBlock -Text ('{0} · 暂无显式路由' -f $policy.group_mode)))
+        }
+    } else { [void]$configured.Children.Add((New-UiSmallTextBlock -Text '读取本地配置后显示。')) }
+    $observedPanel = $script:mainWindow.FindName('ObservedSourcesPanel')
+    $observedPanel.Children.Clear()
+    if (-not $routing -or @($routing.observed_sources).Count -eq 0) {
+        [void]$observedPanel.Children.Add((New-UiSmallTextBlock -Text '本次运行尚未观察到有效来源。呼号未知时只显示数字 ID。'))
+    } else {
+        foreach ($source in @($routing.observed_sources)) {
+            $card = New-Object System.Windows.Controls.Border
+            $card.Background = [Windows.Media.BrushConverter]::new().ConvertFromString('#20252A')
+            $card.BorderBrush = [Windows.Media.BrushConverter]::new().ConvertFromString('#3A4248')
+            $card.BorderThickness = [Windows.Thickness]::new(1.0)
+            $card.Padding = [Windows.Thickness]::new(5.0)
+            $card.Margin = [Windows.Thickness]::new(0.0,0.0,0.0,4.0)
+            $body = New-Object System.Windows.Controls.StackPanel
+            $callKind = if ($source.kind -ceq 'private') { '私呼 peer' } else { '组呼' }
+            [void]$body.Children.Add((New-UiSmallTextBlock -Text ('{0} · 来源 DMR ID {1}' -f $callKind,$source.source_id)))
+            $evidenceText = switch -CaseSensitive ([string]$source.observation_level) {
+                'outer_header_seen' { '只看到 DMRD 头部' }
+                'link_control_validated' { '呼叫信息已验证' }
+                'router_reserved' { '核心已为本机分配接收' }
+                'playback_started' { '本机播放已开始' }
+                default { '观察来源未知' }
+            }
+            [void]$body.Children.Add((New-UiSmallTextBlock -Text ('目标 {0} · TS{1} · {2}' -f $source.destination_id,$source.slot,$evidenceText) -FontSize 10))
+            $actions = New-Object System.Windows.Controls.Primitives.UniformGrid
+            $actions.Columns = 2
+            $routeState = Get-UiObservedCardActionState -Source $source -Policy $routing.rx_policy
+            if ($routeState.source_blocked) { [void]$body.Children.Add((New-UiSmallTextBlock -Text '此发话来源已单独屏蔽；调整频道接收规则不会解除该屏蔽。' -FontSize 10)) }
+            $localButton = New-UiActionButton -Text $routeState.local_text -Data ([pscustomobject]@{ Action='toggle'; Source=$source })
+            $localButton.IsEnabled = [bool]$routeState.local_action_enabled
+            $localButton.ToolTip = [string]$routeState.local_tooltip
+            [void]$actions.Children.Add($localButton)
+            $blockText = if ($routeState.source_blocked) { '恢复来源' } else { '屏蔽此来源' }
+            [void]$actions.Children.Add((New-UiActionButton -Text $blockText -Data ([pscustomobject]@{ Action='block'; Source=$source })))
+            $txDisabled = ($source.kind -ceq 'group' -and [uint64]$source.destination_id -in @(91,46001))
+            $txButton = New-UiActionButton -Text '设为下一发射' -Data ([pscustomobject]@{ Action='tx'; Source=$source })
+            if ($txDisabled) { $txButton.IsEnabled = $false; $txButton.ToolTip = 'TG91 与 TG46001 只收，不能设为发射目标。' }
+            [void]$actions.Children.Add($txButton)
+            [void]$body.Children.Add($actions)
+            $card.Child = $body
+            [void]$observedPanel.Children.Add($card)
+        }
+    }
+    $currentCall = $script:latestStatus
+    $blockButton = $script:mainWindow.FindName('BlockCurrentSourceButton')
+    $blockButton.IsEnabled = ($currentCall -and $currentCall.PSObject.Properties['current_call_valid'] -and [bool]$currentCall.current_call_valid -and $routing)
+    if ($script:settingsWindow) {
+        Update-TxTargetButtonState
+        if ($script:pendingRoutingMutation) { Set-RoutingMutationControls -Enabled $false }
+    }
+}
+
+function Get-UiObservedRouteAllowed {
+    param([object]$Source,[object]$Policy)
+    if ($Source.kind -ceq 'group') {
+        $blocked = @($Policy.blocked_groups | Where-Object { [uint64]$_.destination_id -eq [uint64]$Source.destination_id -and [uint64]$_.slot -eq [uint64]$Source.slot }).Count -gt 0
+        if ($blocked) { return $false }
+        if ($Policy.group_mode -ceq 'all_delivered') { return $true }
+        return (@($Policy.allow_groups | Where-Object { [uint64]$_.destination_id -eq [uint64]$Source.destination_id -and [uint64]$_.slot -eq [uint64]$Source.slot }).Count -gt 0)
+    }
+    if ($Policy.private_mode -ceq 'disabled') { return $false }
+    if ($Policy.private_mode -ceq 'all_peers_to_local' -and @($Policy.local_private_routes | Where-Object { [uint64]$_.local_destination_id -eq [uint64]$Source.destination_id -and [uint64]$_.slot -eq [uint64]$Source.slot }).Count -gt 0) { return $true }
+    return (@($Policy.allow_private_peers | Where-Object { [uint64]$_.source_id -eq [uint64]$Source.source_id -and [uint64]$_.local_destination_id -eq [uint64]$Source.destination_id -and [uint64]$_.slot -eq [uint64]$Source.slot }).Count -gt 0)
+}
+
+function Test-UiLocalPrivateRouteCoversSource {
+    param([object]$Source,[object]$Policy)
+    if ($Source.kind -cne 'private' -or $Policy.private_mode -cne 'all_peers_to_local') { return $false }
+    return (@($Policy.local_private_routes | Where-Object {
+        [uint64]$_.local_destination_id -eq [uint64]$Source.destination_id -and [uint64]$_.slot -eq [uint64]$Source.slot
+    }).Count -gt 0)
+}
+
+function Get-UiObservedCardActionState {
+    param([object]$Source,[object]$Policy)
+    $routeAllowed = Get-UiObservedRouteAllowed -Source $Source -Policy $Policy
+    $sourceBlocked = @($Policy.blocked_source_ids | Where-Object { [uint64]$_ -eq [uint64]$Source.source_id }).Count -gt 0
+    $localCovered = Test-UiLocalPrivateRouteCoversSource -Source $Source -Policy $Policy
+    $tooltip = if ($localCovered) { '本机已接收此时隙的所有私呼；如需只屏蔽该联系人，请使用“屏蔽此来源”，或在设置中改为精确联系人列表。' } else { '只修改这一频道或这一私呼联系人，不修改发话来源屏蔽。' }
+    return [pscustomobject]@{
+        local_text=if ($localCovered) { '整时隙私呼已接收' } elseif ($routeAllowed) { '停止本地收听' } else { '恢复本地收听' }
+        local_action_enabled=(-not $localCovered)
+        local_tooltip=$tooltip
+        source_blocked=$sourceBlocked
+        source_action_text=if ($sourceBlocked) { '恢复来源' } else { '屏蔽此来源' }
+    }
+}
+
+function Request-UiRoutingStatus {
+    if (-not $script:supervisor -or $script:supervisor.HasExited -or -not $script:controlConfirmed -or -not $script:routingCapabilities) { return }
+    if ($script:pendingRoutingStatusRequestId) { return }
+    $requestId = [guid]::NewGuid().ToString('D')
+    $script:pendingControlRequests[$requestId] = 'routing.status'
+    $script:pendingRoutingStatusRequestId = $requestId
+    if (-not $script:supervisor.SendControlCommand($requestId,'routing.status')) {
+        [void]$script:pendingControlRequests.Remove($requestId)
+        $script:pendingRoutingStatusRequestId = ''
+        Set-UiControlStatus -Text '当前运行设置无法刷新；路由修改已锁定，请重新连接后再试。' -Confirmed $false
+        if ($script:routingMutationFence) { Set-RoutingEditorStatus -Text '当前设置未能刷新；为避免覆盖运行状态，路由修改已锁定。请重新连接。' -Failed $true }
+    }
+}
+
+function Set-RoutingMutationPendingState {
+    param([bool]$Pending)
+    $locked = ($Pending -or $script:routingMutationFence)
+    if ($script:settingsWindow) { Set-RoutingMutationControls -Enabled (-not $locked) }
+    if ($script:mainWindow) {
+        $settings = Get-UiControl 'SettingsButton'
+        $settings.IsEnabled = (-not $script:preparationStarted -and -not $locked)
+    }
+}
+
+function Invoke-UiRoutingMutation {
+    param([ValidateSet('rx_policy.replace','tx_policy.replace')][string]$Command,
+        [Parameter(Mandatory=$true)][object]$PolicyOrTarget, [bool]$TransmitEnabled=$false)
+    if ($script:pendingRoutingMutation) { throw '正在等待应用接收上一项设置；请等它完成或超时后再操作。' }
+    if ($script:routingMutationFence) { throw '正在刷新当前运行设置；刷新完成前不能再提交路由更改。' }
+    if ($Command -ceq 'rx_policy.replace') {
+        $localSource = Get-UiPolicyLocalSourceId
+        if ($localSource -eq 0 -or -not (Test-UiRxPolicy -Policy $PolicyOrTarget -LocalSourceId $localSource)) {
+            throw 'RX 策略字段、时隙、重复项或本机目的 ID 无效。'
+        }
+        $script:editRxPolicy = Copy-UiRxPolicy -Policy $PolicyOrTarget
+        $script:routingDraftAfterTimeout = [pscustomobject]@{ command=$Command; policy=(Copy-UiRxPolicy -Policy $PolicyOrTarget); target=$null; transmit_enabled=$null }
+        $script:routingDraftPreservedAfterTimeout = $true
+        if ($script:settingsWindow) { Set-SettingsPolicyLists }
+        $payload = [ordered]@{ expected_revision=[uint64]$(if ($script:activeRouting) { $script:activeRouting.rx_policy_revision } else { 0 }); rx_policy=(Copy-UiRxPolicy -Policy $PolicyOrTarget) }
+    } else {
+        if (-not (Test-UiControlUnsigned -Value $PolicyOrTarget.destination_id -Minimum 1 -Maximum 16777215) -or
+            [string]$PolicyOrTarget.kind -cnotin @('group','private') -or
+            -not (Test-UiControlUnsigned -Value $PolicyOrTarget.slot -Minimum 1 -Maximum 2)) { throw '下一发射目标 ID、类型或时隙无效。' }
+        if ([string]$PolicyOrTarget.kind -ceq 'group' -and [uint64]$PolicyOrTarget.destination_id -in @(91,46001)) {
+            throw 'TG91 和 TG46001 只收，不能作为下一发射目标。'
+        }
+        if ($TransmitEnabled -and [string]$PolicyOrTarget.kind -ceq 'group' -and [uint64]$PolicyOrTarget.destination_id -in @(91,46001)) {
+            throw '发射许可不能对 TG91 或 TG46001 开启。'
+        }
+        $target = [pscustomobject][ordered]@{ destination_id=[uint64]$PolicyOrTarget.destination_id; kind=[string]$PolicyOrTarget.kind; slot=[uint64]$PolicyOrTarget.slot }
+        $script:editTxTarget = $target
+        $script:editTransmitEnabled = [bool]$TransmitEnabled
+        $script:routingDraftAfterTimeout = [pscustomobject]@{ command=$Command; policy=$null; target=$target; transmit_enabled=[bool]$TransmitEnabled }
+        $script:routingDraftPreservedAfterTimeout = $true
+        $payload = [ordered]@{ expected_revision=[uint64]$(if ($script:activeRouting) { $script:activeRouting.tx_policy_revision } else { 0 }); tx_target=$target; transmit_enabled=[bool]$TransmitEnabled }
+    }
+    if ($script:supervisor -and -not $script:supervisor.HasExited) {
+        if (-not $script:controlConfirmed -or -not $script:routingCapabilities -or -not $script:activeRouting) {
+            throw '当前连接尚未准备好接收路由设置；请稍后再试。'
+        }
+        $expectedRevision = [uint64]$payload.expected_revision
+        $parametersJson = ConvertTo-Json -InputObject $payload -Depth 8 -Compress
+        $requestId = [guid]::NewGuid().ToString('D')
+        $mutation = [pscustomobject]@{
+            request_id=$requestId; command=$Command; expected_revision=$expectedRevision
+            policy=if ($Command -ceq 'rx_policy.replace') { Copy-UiRxPolicy -Policy $PolicyOrTarget } else { $null }
+            target=if ($Command -ceq 'tx_policy.replace') { $payload.tx_target } else { $null }
+            transmit_enabled=if ($Command -ceq 'tx_policy.replace') { [bool]$TransmitEnabled } else { $null }
+            started_utc=[DateTime]::UtcNow
+        }
+        $script:pendingRoutingMutation = $mutation
+        $script:pendingControlRequests[$requestId] = $Command
+        Set-RoutingMutationPendingState -Pending $true
+        Write-UiRoutingDiagnosticProgress -Message ('mutation-send-' + $Command + '-bytes-' + [WirexBridge.Ui.BridgeSupervisor]::GetControlRequestBodyByteCount($script:controlRunId,$requestId,$Command,$parametersJson))
+        Set-RoutingEditorStatus -Text ('等待应用接收{0}；状态卡仍显示本次连接最近确认的实际设置。' -f $(if ($Command -ceq 'rx_policy.replace') { '接收策略' } else { '下一发射目标' }))
+        Set-UiControlStatus -Text '等待应用接收设置' -Confirmed $true
+        if (-not $script:supervisor.SendControlCommand($requestId,$Command,$parametersJson)) {
+            Write-UiRoutingDiagnosticProgress -Message ('mutation-send-failed-' + $Command)
+            [void]$script:pendingControlRequests.Remove($requestId)
+            $script:pendingRoutingMutation = $null
+            Set-RoutingMutationPendingState -Pending $false
+            $bodyBytes = [WirexBridge.Ui.BridgeSupervisor]::GetControlRequestBodyByteCount($script:controlRunId,$requestId,$Command,$parametersJson)
+            if ($bodyBytes -gt 4096) {
+                throw '路由列表太长，本次设置未发送；草稿已保留，请减少项目后再试。'
+            }
+            throw '命令发送失败，请检查连接状态。'
+        }
+        return
+    }
+    if ($Command -ceq 'rx_policy.replace') {
+        $script:editRxPolicy = Copy-UiRxPolicy -Policy $PolicyOrTarget
+        Set-SettingsPolicyLists
+        Update-RoutingDisplays
+        Set-RoutingEditorStatus -Text '本机策略已修改；点击“保存设置”后，下次启动会使用它。'
+    } else {
+        $script:editTxTarget = [pscustomobject][ordered]@{ destination_id=[uint64]$PolicyOrTarget.destination_id; kind=[string]$PolicyOrTarget.kind; slot=[uint64]$PolicyOrTarget.slot }
+        $script:editTransmitEnabled = [bool]$TransmitEnabled
+        Update-RoutingDisplays
+        Set-RoutingEditorStatus -Text '下一发射目标草稿已修改；点击“保存设置”后，下次启动会使用它。'
+    }
+}
+
+function Save-UiRoutingMutationAfterAck {
+    param([object]$Mutation, [object]$Routing)
+    if (-not $Mutation -or -not $script:profilePath) { return }
+    $script:routingDraftAfterTimeout = $null
+    $script:routingDraftPreservedAfterTimeout = $false
+    try {
+        $profile = Read-BridgeUserConnectionProfile -Path $script:profilePath
+        if (-not $profile) { throw '本机连接配置文件不存在。' }
+        if ($Mutation.command -ceq 'rx_policy.replace') {
+            $profile.rx_policy = Copy-UiRxPolicy -Policy $Routing.rx_policy
+        } else {
+            $profile.tx_target = [pscustomobject][ordered]@{ destination_id=[uint64]$Routing.tx_target.destination_id; kind=[string]$Routing.tx_target.kind; slot=[uint64]$Routing.tx_target.slot }
+            $profile.transmit_enabled = [bool]$Routing.transmit_enabled
+        }
+        Write-BridgeUserConnectionProfile -Path $script:profilePath -Profile $profile
+        $script:storedProfile = Read-BridgeUserConnectionProfile -Path $script:profilePath
+        if ($script:activeProfile) {
+            if ($Mutation.command -ceq 'rx_policy.replace') { $script:activeProfile.rx_policy = Copy-UiRxPolicy -Policy $Routing.rx_policy }
+            else { $script:activeProfile.tx_target = $script:storedProfile.tx_target; $script:activeProfile.transmit_enabled = [bool]$Routing.transmit_enabled }
+        }
+        if ($Mutation.command -ceq 'rx_policy.replace') {
+            $script:editRxPolicy = Copy-UiRxPolicy -Policy $Routing.rx_policy
+        } else {
+            $script:editTxTarget = $script:storedProfile.tx_target
+            $script:editTransmitEnabled = [bool]$Routing.transmit_enabled
+        }
+        Set-RoutingEditorStatus -Text '设置已在当前运行生效，并已保存到本机配置。'
+        Add-UiEvent '设置已生效并保存到本机配置'
+    } catch {
+        # The runtime ACK remains authoritative even when disk persistence fails.
+        if ($Mutation.command -ceq 'rx_policy.replace') { $script:editRxPolicy = Copy-UiRxPolicy -Policy $Routing.rx_policy }
+        else { $script:editTxTarget = $Routing.tx_target; $script:editTransmitEnabled = [bool]$Routing.transmit_enabled }
+        $message = '已在当前运行生效，但本机保存失败；停止后重启会沿用磁盘上的旧值。' + $_.Exception.Message
+        Set-RoutingEditorStatus -Text $message -Failed $true
+        Set-MainText -Name 'TrafficDetail' -Text $message
+        Add-UiEvent '运行时路由已生效，但本机配置保存失败'
+    }
+    if ($script:settingsWindow) { Set-SettingsPolicyLists }
+    Update-RoutingDisplays
+}
+
+function Invoke-ObservedRoutingAction {
+    param([string]$Action,[object]$Source)
+    if (-not $Source) { return }
+    if ($script:pendingRoutingMutation) { Set-RoutingEditorStatus -Text '正在等待应用接收上一项设置。' -Failed $true; return }
+    $policy = if ($script:activeRouting) { Copy-UiRxPolicy -Policy $script:activeRouting.rx_policy } elseif ($script:editRxPolicy) { Copy-UiRxPolicy -Policy $script:editRxPolicy } else { return }
+    switch -CaseSensitive ($Action) {
+        'toggle' {
+            if ($Source.kind -ceq 'group') {
+                $isAllowed = Get-UiObservedRouteAllowed -Source $Source -Policy $policy
+                if ($isAllowed) {
+                    $policy.allow_groups = @($policy.allow_groups | Where-Object { -not ([uint64]$_.destination_id -eq [uint64]$Source.destination_id -and [uint64]$_.slot -eq [uint64]$Source.slot) })
+                    if (@($policy.blocked_groups | Where-Object { [uint64]$_.destination_id -eq [uint64]$Source.destination_id -and [uint64]$_.slot -eq [uint64]$Source.slot }).Count -eq 0) {
+                        $policy.blocked_groups += [pscustomobject][ordered]@{ destination_id=[uint64]$Source.destination_id; slot=[uint64]$Source.slot }
+                    }
+                } else {
+                    $policy.blocked_groups = @($policy.blocked_groups | Where-Object { -not ([uint64]$_.destination_id -eq [uint64]$Source.destination_id -and [uint64]$_.slot -eq [uint64]$Source.slot) })
+                    if ($policy.group_mode -ceq 'selected' -and @($policy.allow_groups | Where-Object { [uint64]$_.destination_id -eq [uint64]$Source.destination_id -and [uint64]$_.slot -eq [uint64]$Source.slot }).Count -eq 0) {
+                        $policy.allow_groups += [pscustomobject][ordered]@{ destination_id=[uint64]$Source.destination_id; slot=[uint64]$Source.slot }
+                    }
+                }
+            } else {
+                if (Test-UiLocalPrivateRouteCoversSource -Source $Source -Policy $policy) {
+                    Set-RoutingEditorStatus -Text '该时隙已接收所有私呼；请用“屏蔽此来源”，或在设置中选择精确联系人模式。' -Failed $true
+                    return
+                }
+                $isAllowed = @($policy.allow_private_peers | Where-Object {
+                    [uint64]$_.source_id -eq [uint64]$Source.source_id -and
+                    [uint64]$_.local_destination_id -eq [uint64]$Source.destination_id -and
+                    [uint64]$_.slot -eq [uint64]$Source.slot
+                }).Count -gt 0
+                if ($isAllowed) {
+                    $policy.allow_private_peers = @($policy.allow_private_peers | Where-Object {
+                        -not ([uint64]$_.source_id -eq [uint64]$Source.source_id -and
+                            [uint64]$_.local_destination_id -eq [uint64]$Source.destination_id -and
+                            [uint64]$_.slot -eq [uint64]$Source.slot)
+                    })
+                } else {
+                    if ($policy.private_mode -ceq 'disabled') { $policy.private_mode = 'selected_peers' }
+                    $policy.allow_private_peers += [pscustomobject][ordered]@{
+                        source_id=[uint64]$Source.source_id; local_destination_id=[uint64]$Source.destination_id; slot=[uint64]$Source.slot
+                    }
+                }
+            }
+            Invoke-UiRoutingMutation -Command 'rx_policy.replace' -PolicyOrTarget $policy
+        }
+        'block' {
+            if (@($policy.blocked_source_ids | Where-Object { [uint64]$_ -eq [uint64]$Source.source_id }).Count -gt 0) {
+                $policy.blocked_source_ids = @($policy.blocked_source_ids | Where-Object { [uint64]$_ -ne [uint64]$Source.source_id })
+            } else { $policy.blocked_source_ids += [uint64]$Source.source_id }
+            Invoke-UiRoutingMutation -Command 'rx_policy.replace' -PolicyOrTarget $policy
+        }
+        'tx' {
+            $txKind = if ($Source.kind -ceq 'private') { 'private' } else { 'group' }
+            $txDestination = if ($Source.kind -ceq 'private') { [uint64]$Source.source_id } else { [uint64]$Source.destination_id }
+            $target = [pscustomobject][ordered]@{ destination_id=$txDestination; kind=$txKind; slot=[uint64]$Source.slot }
+            $allow = if ($script:activeRouting) { [bool]$script:activeRouting.transmit_enabled } else { [bool]$script:editTransmitEnabled }
+            Invoke-UiRoutingMutation -Command 'tx_policy.replace' -PolicyOrTarget $target -TransmitEnabled $allow
+        }
+    }
+}
+
 function Set-SettingsWindowFields {
     $profileError = ''
     $audioError = ''
@@ -1747,10 +2604,17 @@ function Set-SettingsWindowFields {
     if ($null -eq $audio) { $audio = [pscustomobject]@{ RadioPlaybackGainMilli = [uint32]1000; MicTransmitGainMilli = [uint32]16000 } }
     $receiveState = Get-UiReceiveEditorState -Profile $script:storedProfile
     $script:receiveEditorState = $receiveState
-    $script:profileEditable = ($null -eq $script:storedProfile -or $receiveState.CanEdit)
+    $script:profileEditable = $true
     $sourceSchema = Get-UiProfileMigrationSourceSchema -Profile $script:storedProfile
-    $script:profileWriteAllowed = ($null -eq $script:storedProfile -or $receiveState.CanEdit -or $sourceSchema -eq 1)
-    $txTarget = if ($script:storedProfile) { $script:storedProfile.tx_target } else { $null }
+    $script:profileWriteAllowed = $true
+    $liveRouting = ($script:activeRouting -and $script:supervisor -and -not $script:supervisor.HasExited)
+    $txTarget = if ($script:routingDraftPreservedAfterTimeout -and $script:routingDraftAfterTimeout -and $script:routingDraftAfterTimeout.target) { $script:routingDraftAfterTimeout.target } elseif ($liveRouting) { $script:activeRouting.tx_target } elseif ($script:storedProfile) { $script:storedProfile.tx_target } else { $null }
+    $policy = if ($script:routingDraftPreservedAfterTimeout -and $script:routingDraftAfterTimeout -and $script:routingDraftAfterTimeout.policy) { $script:routingDraftAfterTimeout.policy } elseif ($liveRouting) { $script:activeRouting.rx_policy } elseif ($script:storedProfile) { $script:storedProfile.rx_policy } else {
+        [pscustomobject][ordered]@{ group_mode='selected'; private_mode='disabled'; allow_groups=@(); allow_private_peers=@(); local_private_routes=@(); blocked_groups=@(); blocked_source_ids=@() }
+    }
+    $script:editRxPolicy = Copy-UiRxPolicy -Policy $policy
+    $script:editTxTarget = if ($txTarget) { [pscustomobject][ordered]@{ destination_id=[uint64]$txTarget.destination_id; kind=[string]$txTarget.kind; slot=[uint64]$txTarget.slot } } else { [pscustomobject][ordered]@{ destination_id=[uint64]91; kind='group'; slot=[uint64]2 } }
+    $script:txEditorDirty = $false
     $migrationText = if (-not $script:storedProfile) {
         '新配置将保存为 schema 2。'
     } elseif ($sourceSchema -eq 1) {
@@ -1758,15 +2622,8 @@ function Set-SettingsWindowFields {
     } else {
         '配置文件 schema 2；读取不会写回原文件。'
     }
-    $receivePreview = if ($script:storedProfile) { Format-ProfileReceiveTarget -Profile $script:storedProfile } else { '接收策略：新配置' }
-    if (-not $script:profileEditable -and $script:storedProfile) {
-        if ($sourceSchema -eq 1) {
-            $migrationText += (' 接收策略只读：' + $receiveState.Reason + ' 点击保存会完整保留策略并备份原 schema 1 文件。')
-        } else {
-            $migrationText += (' 连接策略只读：' + $receiveState.Reason + ' 保存仅更新音量和密码路径。')
-        }
-        $receivePreview += '（当前单路由编辑器只读；完整策略会保留。）'
-    }
+    $receivePreview = Format-ProfileReceiveTarget -Profile ([pscustomobject]@{ rx_policy=$script:editRxPolicy })
+    if ($liveRouting) { $migrationText += ' 当前页面显示本次连接正在使用的策略；每项接收设置生效后会单独保存到本机配置。' }
     $fields = @{
         CallsignBox = if ($script:storedProfile) { $script:storedProfile.connection.callsign } else { '' }
         GatewayBox = if ($script:storedProfile) { $script:storedProfile.connection.gateway_id } else { '' }
@@ -1774,7 +2631,6 @@ function Set-SettingsWindowFields {
         MasterBox = if ($script:storedProfile) { $script:storedProfile.connection.master } else { '' }
         MasterPortBox = if ($script:storedProfile) { $script:storedProfile.connection.master_port } else { '' }
         DestinationBox = if ($script:storedProfile) { $txTarget.destination_id } else { '' }
-        ReceiveDestinationBox = if ($script:storedProfile) { $receiveState.Destination } else { '' }
         ColorCodeBox = if ($script:storedProfile) { $script:storedProfile.connection.color_code } else { '' }
         PasswordPathBox = Read-CurrentPasswordPath
     }
@@ -1793,26 +2649,25 @@ function Set-SettingsWindowFields {
     $kindBox = Get-SettingsControl 'CallKindBox'
     $kindValue = if ($script:storedProfile) { [string]$txTarget.kind } else { 'private' }
     $kindBox.SelectedItem = @($kindBox.Items | Where-Object { [string]$_.Tag -ceq $kindValue })[0]
-    $receiveSlotBox = Get-SettingsControl 'ReceiveSlotBox'
-    $receiveSlotValue = [string]$receiveState.Slot
-    $receiveSlotBox.SelectedItem = @($receiveSlotBox.Items | Where-Object { [string]$_.Tag -ceq $receiveSlotValue })[0]
-    $receiveKindBox = Get-SettingsControl 'ReceiveCallKindBox'
-    $receiveKindValue = [string]$receiveState.Kind
-    $receiveKindBox.SelectedItem = @($receiveKindBox.Items | Where-Object { [string]$_.Tag -ceq $receiveKindValue })[0]
-    $transmitEnabled = if ($script:storedProfile -and $null -ne $script:storedProfile.PSObject.Properties['transmit_enabled']) {
+    $transmitEnabled = if ($script:routingDraftPreservedAfterTimeout -and $script:routingDraftAfterTimeout -and $null -ne $script:routingDraftAfterTimeout.transmit_enabled) { [bool]$script:routingDraftAfterTimeout.transmit_enabled } elseif ($liveRouting) { [bool]$script:activeRouting.transmit_enabled } elseif ($script:storedProfile -and $null -ne $script:storedProfile.PSObject.Properties['transmit_enabled']) {
         [bool]$script:storedProfile.transmit_enabled
     } else { $true }
+    $script:editTransmitEnabled = [bool]$transmitEnabled
     (Get-SettingsControl 'TransmitEnabledBox').IsChecked = $transmitEnabled
+    $localSourceText = if ($liveRouting) { [string]$script:activeRouting.local_source_id } elseif ($script:storedProfile) { [string]$script:storedProfile.connection.source_id } else { [string](Get-SettingsControl 'SourceBox').Text }
+    foreach ($name in @('PeerLocalDestinationBox','LocalPrivateDestinationBox')) { (Get-SettingsControl $name).Text = $localSourceText }
+    Set-SettingsPolicyLists
     $masterPreset = Get-SettingsControl 'MasterPresetBox'
     $masterPresetTag = if ($script:storedProfile -and
         [string]$script:storedProfile.connection.master -ceq '43.129.83.124' -and
         [uint64]$script:storedProfile.connection.master_port -eq 62031) { 'bm-china-4602' } else { 'custom' }
     $masterPreset.SelectedItem = @($masterPreset.Items | Where-Object { [string]$_.Tag -ceq $masterPresetTag })[0]
     foreach ($name in @('CallsignBox','GatewayBox','SourceBox','MasterBox','MasterPortBox','DestinationBox','ColorCodeBox',
-            'SlotBox','CallKindBox','ReceiveDestinationBox','ReceiveSlotBox','ReceiveCallKindBox','TransmitEnabledBox','MasterPresetBox',
+            'SlotBox','CallKindBox','TransmitEnabledBox','MasterPresetBox',
             'SerialBox','WaveInEndpointBox','WaveOutEndpointBox')) {
         (Get-SettingsControl $name).IsEnabled = [bool]$script:profileEditable
     }
+    if ($liveRouting) { (Get-SettingsControl 'SourceBox').IsEnabled = $false }
     (Get-SettingsControl 'RefreshDevicesButton').IsEnabled = [bool]$script:profileEditable
     $script:loadingSettings = $false
     if ($profileError -or $audioError) {
@@ -1820,10 +2675,124 @@ function Set-SettingsWindowFields {
         (Get-SettingsControl 'SettingsErrorText').Text = ('有本机设置无法读取，请检查并重新保存。' + $readErrors)
         (Get-SettingsControl 'SettingsErrorText').Foreground = [Windows.Media.Brushes]::IndianRed
     } elseif ($script:storedProfile) {
-        (Get-SettingsControl 'SettingsErrorText').Text = if ($script:profileEditable) { '保存后，下次连接时使用新设置。' } else { '连接配置为只读；此窗口只会保存音量和密码路径。' }
+        (Get-SettingsControl 'SettingsErrorText').Text = if ($liveRouting) { '接收策略与下一发射目标会立即应用；服务器、设备与音量在下次连接时使用。' } else { '接收策略、下一发射目标和连接设置会在保存后用于下次连接。' }
     } else {
         (Get-SettingsControl 'SettingsErrorText').Text = '请填写连接信息后保存。'
     }
+}
+
+function Read-SettingsUnsignedField {
+    param([string]$ControlName,[uint64]$Minimum=1,[uint64]$Maximum=16777215)
+    $control = Get-SettingsControl $ControlName
+    $text = if ($control -is [System.Windows.Controls.ComboBox]) { Get-UiComboTag -Combo $control } else { [string]$control.Text }
+    $value = [uint64]0
+    if (-not [uint64]::TryParse($text,[Globalization.NumberStyles]::None,[Globalization.CultureInfo]::InvariantCulture,[ref]$value) -or
+        $value -lt $Minimum -or $value -gt $Maximum) { throw ('{0} 需要填写 {1} 到 {2} 的整数。' -f $ControlName,$Minimum,$Maximum) }
+    return $value
+}
+
+function Invoke-SettingsPolicyEditorAction {
+    param([string]$Action)
+    try {
+        if ($script:pendingRoutingMutation) { throw '正在等待应用接收上一项设置。' }
+        $policy = Copy-UiRxPolicy -Policy $script:editRxPolicy
+        $local = Get-UiPolicyLocalSourceId
+        switch -CaseSensitive ($Action) {
+            'group-mode' {
+                $mode = Get-UiComboTag -Combo (Get-SettingsControl 'GroupModeBox')
+                if ($mode -cnotin @('selected','all_delivered')) { throw '请选择有效的组呼接收模式。' }
+                $policy.group_mode = $mode
+            }
+            'private-mode' {
+                $mode = Get-UiComboTag -Combo (Get-SettingsControl 'PrivateModeBox')
+                if ($mode -cnotin @('disabled','selected_peers','all_peers_to_local')) { throw '请选择有效的私呼接收模式。' }
+                $policy.private_mode = $mode
+                if ($mode -ceq 'disabled') { $policy.allow_private_peers=@(); $policy.local_private_routes=@() }
+                elseif ($mode -ceq 'selected_peers') { $policy.local_private_routes=@() }
+            }
+            'add-group' {
+                $id = Read-SettingsUnsignedField -ControlName 'GroupRouteIdBox'
+                $slot = Read-SettingsUnsignedField -ControlName 'GroupRouteSlotBox' -Minimum 1 -Maximum 2
+                $policy.blocked_groups = @($policy.blocked_groups | Where-Object { -not ([uint64]$_.destination_id -eq $id -and [uint64]$_.slot -eq $slot) })
+                if (@($policy.allow_groups | Where-Object { [uint64]$_.destination_id -eq $id -and [uint64]$_.slot -eq $slot }).Count -eq 0) {
+                    $policy.allow_groups += [pscustomobject][ordered]@{ destination_id=$id; slot=$slot }
+                }
+            }
+            'remove-group' {
+                $list = Get-SettingsControl 'GroupRoutesList'; $index = [int]$list.SelectedIndex
+                if ($index -lt 0 -or $index -ge $policy.allow_groups.Count) { throw '请先选择要停止的 Selected 组呼项。' }
+                $route = $policy.allow_groups[$index]
+                $policy.allow_groups = @($policy.allow_groups | Where-Object { -not ([uint64]$_.destination_id -eq [uint64]$route.destination_id -and [uint64]$_.slot -eq [uint64]$route.slot) })
+                if (@($policy.blocked_groups | Where-Object { [uint64]$_.destination_id -eq [uint64]$route.destination_id -and [uint64]$_.slot -eq [uint64]$route.slot }).Count -eq 0) { $policy.blocked_groups += [pscustomobject][ordered]@{ destination_id=[uint64]$route.destination_id; slot=[uint64]$route.slot } }
+            }
+            'block-group' {
+                $id = Read-SettingsUnsignedField -ControlName 'BlockedGroupIdBox'
+                $slot = Read-SettingsUnsignedField -ControlName 'BlockedGroupSlotBox' -Minimum 1 -Maximum 2
+                $policy.allow_groups = @($policy.allow_groups | Where-Object { -not ([uint64]$_.destination_id -eq $id -and [uint64]$_.slot -eq $slot) })
+                if (@($policy.blocked_groups | Where-Object { [uint64]$_.destination_id -eq $id -and [uint64]$_.slot -eq $slot }).Count -eq 0) { $policy.blocked_groups += [pscustomobject][ordered]@{ destination_id=$id; slot=$slot } }
+            }
+            'restore-group' {
+                $list = Get-SettingsControl 'BlockedGroupsList'; $index = [int]$list.SelectedIndex
+                if ($index -lt 0 -or $index -ge $policy.blocked_groups.Count) { throw '请先选择要恢复的 TG/TS。' }
+                $route = $policy.blocked_groups[$index]
+                $policy.blocked_groups = @($policy.blocked_groups | Where-Object { -not ([uint64]$_.destination_id -eq [uint64]$route.destination_id -and [uint64]$_.slot -eq [uint64]$route.slot) })
+                if ($policy.group_mode -ceq 'selected' -and @($policy.allow_groups | Where-Object { [uint64]$_.destination_id -eq [uint64]$route.destination_id -and [uint64]$_.slot -eq [uint64]$route.slot }).Count -eq 0) { $policy.allow_groups += [pscustomobject][ordered]@{ destination_id=[uint64]$route.destination_id; slot=[uint64]$route.slot } }
+            }
+            'add-peer' {
+                $peer = Read-SettingsUnsignedField -ControlName 'PeerSourceIdBox'
+                $localDest = Read-SettingsUnsignedField -ControlName 'PeerLocalDestinationBox'
+                $slot = Read-SettingsUnsignedField -ControlName 'PeerSlotBox' -Minimum 1 -Maximum 2
+                if ($localDest -ne $local) { throw '精确私呼的本机目的 ID 必须等于本机 Source ID。' }
+                if ($policy.private_mode -ceq 'disabled') { $policy.private_mode='selected_peers' }
+                if (@($policy.allow_private_peers | Where-Object { [uint64]$_.source_id -eq $peer -and [uint64]$_.local_destination_id -eq $localDest -and [uint64]$_.slot -eq $slot }).Count -eq 0) { $policy.allow_private_peers += [pscustomobject][ordered]@{ source_id=$peer; local_destination_id=$localDest; slot=$slot } }
+            }
+            'remove-peer' {
+                $list = Get-SettingsControl 'PeerRoutesList'; $index = [int]$list.SelectedIndex
+                if ($index -lt 0 -or $index -ge $policy.allow_private_peers.Count) { throw '请先选择要移除的精确 peer。' }
+                $route = $policy.allow_private_peers[$index]
+                $policy.allow_private_peers = @($policy.allow_private_peers | Where-Object { -not ([uint64]$_.source_id -eq [uint64]$route.source_id -and [uint64]$_.local_destination_id -eq [uint64]$route.local_destination_id -and [uint64]$_.slot -eq [uint64]$route.slot) })
+            }
+            'add-local' {
+                $localDest = Read-SettingsUnsignedField -ControlName 'LocalPrivateDestinationBox'
+                $slot = Read-SettingsUnsignedField -ControlName 'LocalPrivateSlotBox' -Minimum 1 -Maximum 2
+                if ($localDest -ne $local) { throw '本机私呼目的 ID 必须等于本机 Source ID。' }
+                if ($policy.private_mode -ne 'all_peers_to_local') { $policy.private_mode='all_peers_to_local' }
+                if (@($policy.local_private_routes | Where-Object { [uint64]$_.local_destination_id -eq $localDest -and [uint64]$_.slot -eq $slot }).Count -eq 0) { $policy.local_private_routes += [pscustomobject][ordered]@{ local_destination_id=$localDest; slot=$slot } }
+            }
+            'remove-local' {
+                $list = Get-SettingsControl 'LocalPrivateRoutesList'; $index = [int]$list.SelectedIndex
+                if ($index -lt 0 -or $index -ge $policy.local_private_routes.Count) { throw '请先选择要移除的本机私呼路由。' }
+                $route = $policy.local_private_routes[$index]
+                $policy.local_private_routes = @($policy.local_private_routes | Where-Object { -not ([uint64]$_.local_destination_id -eq [uint64]$route.local_destination_id -and [uint64]$_.slot -eq [uint64]$route.slot) })
+            }
+            'block-source' {
+                $sourceId = Read-SettingsUnsignedField -ControlName 'BlockedSourceIdBox'
+                if (@($policy.blocked_source_ids | Where-Object { [uint64]$_ -eq $sourceId }).Count -eq 0) { $policy.blocked_source_ids += $sourceId }
+            }
+            'restore-source' {
+                $list = Get-SettingsControl 'BlockedSourcesList'; $index = [int]$list.SelectedIndex
+                if ($index -lt 0 -or $index -ge $policy.blocked_source_ids.Count) { throw '请先选择要恢复的发话来源。' }
+                $sourceId = [uint64]$policy.blocked_source_ids[$index]
+                $policy.blocked_source_ids = @($policy.blocked_source_ids | Where-Object { [uint64]$_ -ne $sourceId })
+            }
+        }
+        Invoke-UiRoutingMutation -Command 'rx_policy.replace' -PolicyOrTarget $policy
+    } catch {
+        Write-UiRoutingDiagnosticProgress -Message ('settings-action-failed-' + $Action + '-' + $_.Exception.Message)
+        Set-RoutingEditorStatus -Text $_.Exception.Message -Failed $true
+    }
+}
+
+function Submit-SettingsNextTxTarget {
+    try {
+        if ($script:pendingRoutingMutation) { throw '正在等待应用接收上一项设置。' }
+        $kind = Get-UiComboTag -Combo (Get-SettingsControl 'CallKindBox')
+        $slot = Get-UiComboTag -Combo (Get-SettingsControl 'SlotBox')
+        if ($kind -cnotin @('group','private') -or $slot -cnotin @('1','2')) { throw '请选择有效的下一发射类型和时隙。' }
+        $target = [pscustomobject][ordered]@{ destination_id=(Read-SettingsUnsignedField -ControlName 'DestinationBox'); kind=$kind; slot=[uint64]$slot }
+        $transmitEnabled = ((Get-SettingsControl 'TransmitEnabledBox').IsChecked -eq $true)
+        Invoke-UiRoutingMutation -Command 'tx_policy.replace' -PolicyOrTarget $target -TransmitEnabled $transmitEnabled
+    } catch { Set-RoutingEditorStatus -Text $_.Exception.Message -Failed $true }
 }
 
 function Initialize-SettingsWindow {
@@ -1838,7 +2807,7 @@ function Initialize-SettingsWindow {
         $script:settingsWindow = $null
         if ($closedSettingsWindow) { Invalidate-UiDeviceDiscoveryForWindow -Window $closedSettingsWindow }
     })
-    (Get-SettingsControl 'CancelSettingsButton').Add_Click({ $script:settingsWindow.Close() })
+    (Get-SettingsControl 'CancelSettingsButton').Add_Click({ Cancel-SettingsWindow })
     (Get-SettingsControl 'MasterPresetBox').Add_SelectionChanged({
         if ($script:loadingSettings) { return }
         $selected = (Get-SettingsControl 'MasterPresetBox').SelectedItem
@@ -1860,19 +2829,65 @@ function Initialize-SettingsWindow {
     (Get-SettingsControl 'PlaybackGainSlider').Add_ValueChanged({ Set-GainValueLabel -SliderName 'PlaybackGainSlider' -LabelName 'PlaybackGainValueText' })
     (Get-SettingsControl 'TransmitGainSlider').Add_ValueChanged({ Set-GainValueLabel -SliderName 'TransmitGainSlider' -LabelName 'TransmitGainValueText' })
     (Get-SettingsControl 'RefreshDevicesButton').Add_Click({
+        if ($RoutingDiagnostic) { Start-UiDeviceDiscovery; return }
         if ($script:deviceDiscoveryPowerShell -or $script:deviceAudioQuery) { return }
         $script:deviceCatalog = $null
         Start-UiDeviceDiscovery
     })
+    (Get-SettingsControl 'GroupModeBox').Add_SelectionChanged({ if (-not $script:loadingSettings) { Invoke-SettingsPolicyEditorAction -Action 'group-mode' } })
+    (Get-SettingsControl 'PrivateModeBox').Add_SelectionChanged({ if (-not $script:loadingSettings) { Invoke-SettingsPolicyEditorAction -Action 'private-mode' } })
+    foreach ($buttonAction in @(
+        @{ Name='AddGroupRouteButton'; Action='add-group' }, @{ Name='RemoveGroupRouteButton'; Action='remove-group' },
+        @{ Name='AddBlockedGroupButton'; Action='block-group' }, @{ Name='RemoveBlockedGroupButton'; Action='restore-group' },
+        @{ Name='AddPeerRouteButton'; Action='add-peer' }, @{ Name='RemovePeerRouteButton'; Action='remove-peer' },
+        @{ Name='AddLocalPrivateRouteButton'; Action='add-local' }, @{ Name='RemoveLocalPrivateRouteButton'; Action='remove-local' },
+        @{ Name='AddBlockedSourceButton'; Action='block-source' }, @{ Name='RemoveBlockedSourceButton'; Action='restore-source' }
+    )) {
+        $capturedAction = [string]$buttonAction.Action
+        (Get-SettingsControl ([string]$buttonAction.Name)).Add_Click({ Invoke-SettingsPolicyEditorAction -Action $capturedAction }.GetNewClosure())
+    }
+    (Get-SettingsControl 'ApplyNextTxTargetButton').Add_Click({ Submit-SettingsNextTxTarget })
+    (Get-SettingsControl 'DestinationBox').Add_TextChanged({
+        if (-not $script:loadingSettings) { $script:txEditorDirty = $true }
+        Update-TxTargetButtonState
+    })
+    (Get-SettingsControl 'SlotBox').Add_SelectionChanged({ if (-not $script:loadingSettings) { $script:txEditorDirty = $true; Update-TxTargetButtonState } })
+    (Get-SettingsControl 'CallKindBox').Add_SelectionChanged({ if (-not $script:loadingSettings) { $script:txEditorDirty = $true; Update-TxTargetButtonState } })
+    (Get-SettingsControl 'TransmitEnabledBox').Add_Checked({ if (-not $script:loadingSettings) { $script:txEditorDirty = $true } })
+    (Get-SettingsControl 'TransmitEnabledBox').Add_Unchecked({ if (-not $script:loadingSettings) { $script:txEditorDirty = $true } })
     (Get-SettingsControl 'SaveSettingsButton').Add_Click({ Save-SettingsFromWindow })
     Set-SettingsWindowFields
-    if ($RenderOnly) { (Get-SettingsControl 'DeviceDiscoveryText').Text = '离线渲染；未读取本机设备。' }
+    if ($RoutingDiagnostic) {
+        Start-UiDeviceDiscovery
+        foreach ($name in @('SerialBox','WaveInEndpointBox','WaveOutEndpointBox','RefreshDevicesButton','SaveSettingsButton')) {
+            (Get-SettingsControl $name).IsEnabled = $false
+        }
+    }
+    elseif ($RenderOnly) { (Get-SettingsControl 'DeviceDiscoveryText').Text = '离线渲染；未读取本机设备。' }
     else { Start-UiDeviceDiscovery }
 }
 
 function Show-SettingsWindow {
     if ($null -eq $script:settingsWindow) { Initialize-SettingsWindow }
     [void]$script:settingsWindow.ShowDialog()
+}
+
+function Cancel-SettingsWindow {
+    $script:txEditorDirty = $false
+    if (-not $script:pendingRoutingMutation) {
+        $script:routingDraftAfterTimeout = $null
+        $script:routingDraftPreservedAfterTimeout = $false
+        if ($script:activeRouting) {
+            $script:editRxPolicy = Copy-UiRxPolicy -Policy $script:activeRouting.rx_policy
+            $script:editTxTarget = [pscustomobject][ordered]@{ destination_id=[uint64]$script:activeRouting.tx_target.destination_id; kind=[string]$script:activeRouting.tx_target.kind; slot=[uint64]$script:activeRouting.tx_target.slot }
+            $script:editTransmitEnabled = [bool]$script:activeRouting.transmit_enabled
+        } elseif ($script:storedProfile) {
+            $script:editRxPolicy = Copy-UiRxPolicy -Policy $script:storedProfile.rx_policy
+            $script:editTxTarget = [pscustomobject][ordered]@{ destination_id=[uint64]$script:storedProfile.tx_target.destination_id; kind=[string]$script:storedProfile.tx_target.kind; slot=[uint64]$script:storedProfile.tx_target.slot }
+            $script:editTransmitEnabled = [bool]$script:storedProfile.transmit_enabled
+        }
+    }
+    if ($script:settingsWindow) { $script:settingsWindow.Close() }
 }
 
 function Test-UiAutoEndpointResolvable {
@@ -1892,8 +2907,6 @@ function Save-SettingsFromWindow {
         if ($script:profileEditable) {
             $slotItem = (Get-SettingsControl 'SlotBox').SelectedItem
             $kindItem = (Get-SettingsControl 'CallKindBox').SelectedItem
-            $receiveSlotItem = (Get-SettingsControl 'ReceiveSlotBox').SelectedItem
-            $receiveKindItem = (Get-SettingsControl 'ReceiveCallKindBox').SelectedItem
             $serialContainer = (Get-SettingsControl 'SerialBox').SelectedItem
             $waveInContainer = (Get-SettingsControl 'WaveInEndpointBox').SelectedItem
             $waveOutContainer = (Get-SettingsControl 'WaveOutEndpointBox').SelectedItem
@@ -1913,10 +2926,7 @@ function Save-SettingsFromWindow {
                 if ([string]$waveInItem.Value -ceq 'auto' -and -not (Test-UiAutoEndpointResolvable -Devices @($script:deviceCatalog.wave_inputs))) { throw '电台音频输入有多个候选设备；请从下拉列表中选择稳定端点。' }
                 if ([string]$waveOutItem.Value -ceq 'auto' -and -not (Test-UiAutoEndpointResolvable -Devices @($script:deviceCatalog.wave_outputs))) { throw '电台音频输出有多个候选设备；请从下拉列表中选择稳定端点。' }
             }
-            if ($slotItem -isnot [System.Windows.Controls.ComboBoxItem] -or $kindItem -isnot [System.Windows.Controls.ComboBoxItem] -or
-                $receiveSlotItem -isnot [System.Windows.Controls.ComboBoxItem] -or $receiveKindItem -isnot [System.Windows.Controls.ComboBoxItem]) {
-                throw '请分别选择发射与接收的时隙和呼叫类型。'
-            }
+            if ($slotItem -isnot [System.Windows.Controls.ComboBoxItem] -or $kindItem -isnot [System.Windows.Controls.ComboBoxItem]) { throw '请选择下一发射目标的时隙和呼叫类型。' }
             $connection = [pscustomobject][ordered]@{
                 callsign=(Get-SettingsControl 'CallsignBox').Text; gateway_id=(Get-SettingsControl 'GatewayBox').Text
                 source_id=(Get-SettingsControl 'SourceBox').Text; master=(Get-SettingsControl 'MasterBox').Text
@@ -1930,20 +2940,28 @@ function Save-SettingsFromWindow {
                 serial_port=[string]$serialItem.Value; wave_in_endpoint_id=[string]$waveInItem.Value
                 wave_out_endpoint_id=[string]$waveOutItem.Value
             }
-            $receiveDestination = [uint64]::Parse([string](Get-SettingsControl 'ReceiveDestinationBox').Text,
-                [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture)
-            $receiveSlot = [uint64]::Parse([string]$receiveSlotItem.Tag,
-                [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture)
-            $transmitEnabled = ((Get-SettingsControl 'TransmitEnabledBox').IsChecked -eq $true)
-            $rxPolicy = New-UiSimpleReceivePolicy -Connection ([pscustomobject]@{source_id=[uint64]::Parse([string]$connection.source_id,
-                    [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture)}) -TxTarget $txTarget `
-                -ReceiveDestination ([string]$receiveDestination) -ReceiveSlot $receiveSlot -ReceiveKind ([string]$receiveKindItem.Tag) `
-                -TransmitEnabled $transmitEnabled
+            $liveRouting = ($script:activeRouting -and $script:supervisor -and -not $script:supervisor.HasExited)
+            if ($liveRouting) {
+                if ($script:pendingRoutingMutation) { throw '请等待当前设置完成或超时后再保存。' }
+                $transmitEnabledForm = ((Get-SettingsControl 'TransmitEnabledBox').IsChecked -eq $true)
+                if ([uint64]$txTarget.destination_id -ne [uint64]$script:activeRouting.tx_target.destination_id -or
+                    [string]$txTarget.kind -cne [string]$script:activeRouting.tx_target.kind -or
+                    [uint64]$txTarget.slot -ne [uint64]$script:activeRouting.tx_target.slot -or
+                    $transmitEnabledForm -ne [bool]$script:activeRouting.transmit_enabled) {
+                    throw '请先应用下一发射目标并等待设置生效。'
+                }
+                $txTarget = [pscustomobject][ordered]@{ destination_id=[uint64]$script:activeRouting.tx_target.destination_id; kind=[string]$script:activeRouting.tx_target.kind; slot=[uint64]$script:activeRouting.tx_target.slot }
+                $rxPolicy = Copy-UiRxPolicy -Policy $script:activeRouting.rx_policy
+                $transmitEnabled = [bool]$script:activeRouting.transmit_enabled
+            } else {
+                $rxPolicy = Copy-UiRxPolicy -Policy $script:editRxPolicy
+                $transmitEnabled = ((Get-SettingsControl 'TransmitEnabledBox').IsChecked -eq $true)
+            }
             $profile = ConvertTo-BridgeUserConnectionProfile -Connection $connection -TxTarget $txTarget -Devices $devices `
                 -RxPolicy $rxPolicy -TransmitEnabled $transmitEnabled -AllowTextNumbers
             $writeProfile = $true
         } elseif (-not $writeProfile) {
-            if ($null -eq $profile) { throw '连接配置处于只读状态，当前没有可保存的 schema 2 配置。' }
+            if ($null -eq $profile) { throw '当前没有可保存的连接配置。' }
         }
         $playbackValue = [double](Get-SettingsControl 'PlaybackGainSlider').Value
         $transmitValue = [double](Get-SettingsControl 'TransmitGainSlider').Value
@@ -2036,6 +3054,184 @@ function Save-SettingsFromWindow {
     }
 }
 
+function Raise-UiButtonClick {
+    param([string]$ControlName)
+    $button = Get-SettingsControl $ControlName
+    $args = [System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)
+    $button.RaiseEvent($args)
+}
+
+function Invoke-UiRoutingDiagnosticObservedGroupToggle {
+    param([uint64]$DestinationId,[uint64]$Slot)
+    if (-not $script:activeRouting -or -not $RoutingDiagnosticAutoTest) { throw '观察来源卡片自动动作仅用于本机路由诊断验收。' }
+    $script:activeRouting.observed_sources = @([pscustomobject][ordered]@{
+        source_id=[uint64]777; destination_id=$DestinationId; slot=$Slot; kind='group'; observation_level='outer_header_seen'
+    })
+    Update-RoutingDisplays
+    $panel = $script:mainWindow.FindName('ObservedSourcesPanel')
+    foreach ($card in @($panel.Children)) {
+        if ($card -isnot [System.Windows.Controls.Border] -or $card.Child -isnot [System.Windows.Controls.StackPanel]) { continue }
+        $actions = @($card.Child.Children | Where-Object { $_ -is [System.Windows.Controls.Primitives.UniformGrid] }) | Select-Object -First 1
+        if (-not $actions -or $actions.Children.Count -lt 1) { continue }
+        $button = $actions.Children[0]
+        $source = if ($button.Tag) { $button.Tag.Source } else { $null }
+        if ($source -and [uint64]$source.destination_id -eq $DestinationId -and [uint64]$source.slot -eq $Slot) {
+            if (-not $button.IsEnabled) { throw '观察来源卡片的组呼动作被禁用。' }
+            $eventArgs = [System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)
+            $button.RaiseEvent($eventArgs)
+            return
+        }
+    }
+    throw '没有找到诊断用观察来源卡片的实际界面按钮。'
+}
+
+function Start-UiRoutingDiagnosticAutoTest {
+    if ($script:routingDiagnosticAutoTestStarted -or -not $RoutingDiagnosticAutoTest -or -not $script:activeRouting) { return }
+    $script:routingDiagnosticAutoTestStarted = $true
+    Write-UiRoutingDiagnosticProgress -Message 'initial-routing-state-received'
+    if (-not $script:storedProfile -or [uint64]$script:storedProfile.connection.source_id -ne 1) {
+        Set-MainText -Name 'TrafficDetail' -Text '路由诊断自动验收需要本地测试配置 Source ID 1。'
+        Request-StopAndExit
+        return
+    }
+    if ($null -eq $script:settingsWindow) { Initialize-SettingsWindow }
+    (Get-SettingsControl 'GroupRouteIdBox').Text = '12345'
+    $slot = Get-SettingsControl 'GroupRouteSlotBox'
+    $slot.SelectedItem = @($slot.Items | Where-Object { [string]$_.Tag -ceq '1' })[0]
+    $script:routingDiagnosticAutoTestPhase = 1
+    Raise-UiButtonClick -ControlName 'AddGroupRouteButton'
+    Write-UiRoutingDiagnosticProgress -Message 'rx-add-group-button-clicked'
+    [void]$script:settingsWindow.ShowDialog()
+}
+
+function Invoke-UiRoutingDiagnosticTimeoutFenceProbe {
+    if (-not $RoutingDiagnosticAutoTest -or -not $script:settingsWindow -or -not $script:supervisor -or $script:supervisor.HasExited) {
+        throw '无法执行本机超时锁定验收。'
+    }
+    $requestId = [guid]::NewGuid().ToString('D')
+    $script:pendingRoutingMutation = [pscustomobject]@{
+        request_id=$requestId; command='rx_policy.replace'; expected_revision=[uint64]$script:activeRouting.rx_policy_revision
+        policy=(Copy-UiRxPolicy -Policy $script:activeRouting.rx_policy); target=$null; transmit_enabled=$null
+        started_utc=[DateTime]::UtcNow.AddSeconds(-9)
+    }
+    $script:pendingControlRequests[$requestId] = 'rx_policy.replace'
+    Set-RoutingMutationPendingState -Pending $true
+    On-UiTimerTick
+    if (-not $script:routingMutationFence -or $script:pendingRoutingMutation -or
+        (Get-SettingsControl 'AddGroupRouteButton').IsEnabled) { throw '等待超时后路由控件没有保持锁定。' }
+    $secondMutationWasBlocked = $false
+    try { Invoke-UiRoutingMutation -Command 'rx_policy.replace' -PolicyOrTarget $script:activeRouting.rx_policy }
+    catch { $secondMutationWasBlocked = ($_.Exception.Message -match '刷新') }
+    if (-not $secondMutationWasBlocked -or $script:pendingRoutingMutation) { throw '当前设置刷新完成前仍能提交第二项路由修改。' }
+    $script:routingDiagnosticFenceProbeWaiting = $true
+}
+
+function Continue-UiRoutingDiagnosticAutoTestAfterFenceRefresh {
+    $script:routingDiagnosticFenceProbeWaiting = $false
+    if ($script:routingMutationFence -or (Get-SettingsControl 'AddBlockedSourceButton').IsEnabled -ne $true) {
+        Write-UiRoutingDiagnosticResult -Passed $false -Message '超时后读取当前设置成功，但路由控件没有解锁。'
+        if ($script:settingsWindow) { $script:settingsWindow.Close() }
+        Request-StopAndExit
+        return
+    }
+    $script:routingDiagnosticFenceProbeVerified = $true
+    (Get-SettingsControl 'BlockedSourceIdBox').Text = '777'
+    $script:routingDiagnosticAutoTestPhase = 2
+    Raise-UiButtonClick -ControlName 'AddBlockedSourceButton'
+}
+
+function Complete-UiRoutingDiagnosticAutoTest {
+    param([object]$Mutation,[object]$Routing)
+    if ($Mutation.command -ceq 'rx_policy.replace') {
+        try {
+            Write-UiRoutingDiagnosticProgress -Message ('rx-ack-phase-' + $script:routingDiagnosticAutoTestPhase)
+            $saved = Read-BridgeUserConnectionProfile -Path $script:profilePath
+            if ($script:routingDiagnosticAutoTestPhase -eq 1) {
+                if (-not $saved -or @($saved.rx_policy.allow_groups | Where-Object { [uint64]$_.destination_id -eq 12345 -and [uint64]$_.slot -eq 1 }).Count -ne 1) { throw 'RX 路由 ACK 后没有写入独立配置。' }
+                if ((Get-SettingsControl 'DestinationBox').Text -cne '53000' -or (Get-SettingsControl 'CallKindBox').SelectedItem.Tag -cne 'group' -or
+                    (Get-SettingsControl 'SlotBox').SelectedItem.Tag -cne '2' -or (Get-SettingsControl 'TransmitEnabledBox').IsChecked -ne $true) {
+                    throw '初始状态推送或 RX 确认覆盖了用户正在编辑的下一发射草稿。'
+                }
+                Invoke-UiRoutingDiagnosticTimeoutFenceProbe
+                return
+            }
+            if ($script:routingDiagnosticAutoTestPhase -eq 2) {
+                if (-not $saved -or @($saved.rx_policy.blocked_source_ids | Where-Object { [uint64]$_ -eq 777 }).Count -ne 1 -or
+                    @($saved.rx_policy.allow_groups | Where-Object { [uint64]$_.destination_id -eq 12345 -and [uint64]$_.slot -eq 1 }).Count -ne 1) { throw '发话来源屏蔽没有独立保存，或覆盖了已允许的频道。' }
+                $script:routingDiagnosticAutoTestPhase = 3
+                Invoke-UiRoutingDiagnosticObservedGroupToggle -DestinationId 12345 -Slot 1
+                return
+            }
+            if ($script:routingDiagnosticAutoTestPhase -eq 3) {
+                if (-not $saved -or @($saved.rx_policy.blocked_source_ids | Where-Object { [uint64]$_ -eq 777 }).Count -ne 1 -or
+                    @($saved.rx_policy.blocked_groups | Where-Object { [uint64]$_.destination_id -eq 12345 -and [uint64]$_.slot -eq 1 }).Count -ne 1 -or
+                    @($saved.rx_policy.allow_groups | Where-Object { [uint64]$_.destination_id -eq 12345 -and [uint64]$_.slot -eq 1 }).Count -ne 0) { throw '观察来源卡片屏蔽没有原子切换频道规则，或误改了独立发话来源屏蔽。' }
+                $script:routingDiagnosticAutoTestPhase = 4
+                Invoke-UiRoutingDiagnosticObservedGroupToggle -DestinationId 12345 -Slot 1
+                return
+            }
+            if ($script:routingDiagnosticAutoTestPhase -eq 4) {
+                if (-not $saved -or @($saved.rx_policy.blocked_source_ids | Where-Object { [uint64]$_ -eq 777 }).Count -ne 1 -or
+                    @($saved.rx_policy.blocked_groups | Where-Object { [uint64]$_.destination_id -eq 12345 -and [uint64]$_.slot -eq 1 }).Count -ne 0 -or
+                    @($saved.rx_policy.allow_groups | Where-Object { [uint64]$_.destination_id -eq 12345 -and [uint64]$_.slot -eq 1 }).Count -ne 1) { throw '观察来源卡片恢复频道时没有保留独立发话来源屏蔽。' }
+                if ((Get-SettingsControl 'DestinationBox').Text -cne '53000') { throw 'RX 卡片动作覆盖了下一发射草稿。' }
+                $script:routingDiagnosticAutoTestPhase = 5
+                Raise-UiButtonClick -ControlName 'ApplyNextTxTargetButton'
+                return
+            }
+            throw '自动路由验收收到了阶段外的 RX 确认。'
+        } catch {
+            Write-UiRoutingDiagnosticResult -Passed $false -Message $_.Exception.Message
+            if ($script:settingsWindow) { $script:settingsWindow.Close() }
+            Request-StopAndExit
+            return
+        }
+    }
+    if ($Mutation.command -ceq 'tx_policy.replace') {
+        try {
+            Write-UiRoutingDiagnosticProgress -Message 'tx-ack-received'
+            $saved = Read-BridgeUserConnectionProfile -Path $script:profilePath
+            if (-not $saved -or [uint64]$saved.tx_target.destination_id -ne 53000 -or
+                $saved.tx_target.kind -cne 'group' -or [uint64]$saved.tx_target.slot -ne 2 -or -not $saved.transmit_enabled) {
+                throw 'TX 目标 ACK 后没有写入独立配置。'
+            }
+            $beforeCancelHash = (Get-FileHash -LiteralPath $script:profilePath -Algorithm SHA256).Hash
+            Raise-UiButtonClick -ControlName 'CancelSettingsButton'
+            $afterCancelHash = (Get-FileHash -LiteralPath $script:profilePath -Algorithm SHA256).Hash
+            if ($beforeCancelHash -cne $afterCancelHash) { throw '运行设置已确认保存后，取消设置窗口又改写了配置。' }
+            Write-UiRoutingDiagnosticResult -Passed $true -Message 'WPF 设置与观察来源卡片经匿名管道更新核心；频道屏蔽和恢复保留了独立来源屏蔽，RX/TX 确认后配置已保存，取消窗口未回滚。' -Routing $Routing
+        } catch {
+            Write-UiRoutingDiagnosticResult -Passed $false -Message $_.Exception.Message -Routing $Routing
+        }
+        if ($script:settingsWindow) { $script:settingsWindow.Close() }
+        Request-StopAndExit
+    }
+}
+
+function Write-UiRoutingDiagnosticResult {
+    param([bool]$Passed,[string]$Message,[object]$Routing)
+    if (-not $script:configDirectory) { return }
+    $result = [pscustomobject][ordered]@{
+        schema_version=1; passed=$Passed; message=$Message
+        offline_cancel_verified=[bool]$script:routingDiagnosticOfflineCancelVerified
+        timeout_fence_verified=[bool]$script:routingDiagnosticFenceProbeVerified
+        rx_policy=if ($Routing) { $Routing.rx_policy } else { $null }
+        tx_target=if ($Routing) { $Routing.tx_target } else { $null }
+        transmit_enabled=if ($Routing) { [bool]$Routing.transmit_enabled } else { $false }
+        rx_policy_revision=if ($Routing) { [uint64]$Routing.rx_policy_revision } else { [uint64]0 }
+        tx_policy_revision=if ($Routing) { [uint64]$Routing.tx_policy_revision } else { [uint64]0 }
+    }
+    $path = Join-Path $script:configDirectory 'routing-diagnostic-result.json'
+    [System.IO.File]::WriteAllText($path,(ConvertTo-Json -InputObject $result -Depth 8),(New-Object System.Text.UTF8Encoding($false)))
+}
+
+function Write-UiRoutingDiagnosticProgress {
+    param([string]$Message)
+    if (-not $RoutingDiagnosticAutoTest -or -not $script:configDirectory) { return }
+    $path = Join-Path $script:configDirectory 'routing-diagnostic-progress.txt'
+    [System.IO.File]::AppendAllText($path,([DateTime]::UtcNow.ToString('o') + ' ' + $Message + "`n"),(New-Object System.Text.UTF8Encoding($false)))
+}
+
 function Start-BridgeRun {
     if ($script:preparationStarted -or ($script:supervisor -and -not $script:supervisor.HasExited)) { return }
     Set-OfflineDisplay -Reason '正在检查本次连接配置和设备。'
@@ -2050,16 +3246,38 @@ function Start-BridgeRun {
         $script:lastStatusUtc = [DateTime]::MinValue
         $script:storedProfile = Read-BridgeUserConnectionProfile -Path $script:profilePath
         if ($null -eq $script:storedProfile) { $script:startupNeedsSettings = $true; Show-SettingsWindow; return }
-        $script:passwordPath = Get-BridgePasswordFile -UserConfigDirectory $script:configDirectory
-        if ([string]::IsNullOrWhiteSpace($script:passwordPath)) { $script:startupNeedsSettings = $true; Show-SettingsWindow; return }
         $target = Get-SelectedTargetTag
-        $script:effectiveProfile = New-EffectiveTargetProfile -Profile $script:storedProfile -Target $target
+        $script:effectiveProfile = if ($RoutingDiagnostic) { $script:storedProfile } else { New-EffectiveTargetProfile -Profile $script:storedProfile -Target $target }
         $script:targetLabel = Format-ProfileTarget -Profile $script:effectiveProfile
         $script:preparedTargetTag = $target
         $script:preparedTargetLabel = $script:targetLabel
         if (-not $script:supervisor -or $script:supervisor.HasExited) {
             Set-MainTargetSummary -Profile $script:effectiveProfile -OverallLabel $script:targetLabel
         }
+        if ($RoutingDiagnostic) {
+            if ([uint64]$script:storedProfile.connection.source_id -ne 1) { throw '本地路由诊断只接受隔离测试配置 Source ID 1。' }
+            $script:supervisor = New-Object WirexBridge.Ui.BridgeSupervisor
+            Write-UiRoutingDiagnosticProgress -Message 'native-start-requested'
+            $script:supervisor.Start($script:nativeExecutable,[string[]]@('--routing-diagnostic','--ui-pipe','--ui-control-version','2'),$script:releaseDirectory,2)
+            $script:activeProfile = $script:effectiveProfile
+            $script:activeTargetLabel = '本机路由诊断（未连接电台或 BM）'
+            $script:activeTargetTag = 'routing-diagnostic'
+            $banner = Get-UiControl 'OfflineBanner'
+            $banner.Visibility = [Windows.Visibility]::Visible
+            (Get-UiControl 'OfflineBannerText').Text = '路由诊断：未连接电台、BM、音频或 RF；以下状态只来自本机核心。'
+            Set-MainText -Name 'CoreValue' -Text '本机诊断'
+            Set-MainText -Name 'CoreDetail' -Text '正在测试本机路由控制管道。'
+            Set-MainText -Name 'BmValue' -Text '未连接'
+            Set-MainText -Name 'BmDetail' -Text '本地协议诊断未启动 BrandMeister。'
+            Set-MainText -Name 'RadioValue' -Text '未连接'
+            Set-MainText -Name 'RadioDetail' -Text '本地协议诊断未打开 HRI 或音频设备。'
+            Set-MainText -Name 'FooterText' -Text '路由诊断模式；没有打开串口、音频、BM 或 RF。'
+            Set-UiControlStatus -Text '等待本机核心确认' -Confirmed $false
+            Set-ConnectionButtonState
+            return
+        }
+        $script:passwordPath = Get-BridgePasswordFile -UserConfigDirectory $script:configDirectory
+        if ([string]::IsNullOrWhiteSpace($script:passwordPath)) { $script:startupNeedsSettings = $true; Show-SettingsWindow; return }
         $audio = Get-BridgeAudioSettings -Path $script:audioSettingsPath
         $retention = Invoke-UiRunLogRetention -RunRoot (Join-Path $script:configDirectory 'ui-runs') `
             -ConfigRoot $script:configDirectory
@@ -2550,6 +3768,18 @@ function On-UiTimerTick {
             if ($script:statusStream) { $script:statusStream.Dispose(); $script:statusStream = $null }
         } else {
             Process-UiControlEvents
+            if ($script:pendingRoutingMutation -and
+                ([DateTime]::UtcNow - [DateTime]$script:pendingRoutingMutation.started_utc).TotalSeconds -ge 8) {
+                $timedOutMutation = $script:pendingRoutingMutation
+                $script:timedOutRoutingMutations[[string]$timedOutMutation.request_id] = $timedOutMutation
+                $script:pendingRoutingMutation = $null
+                $script:routingMutationFence = $true
+                Set-RoutingMutationPendingState -Pending $false
+                Set-RoutingEditorStatus -Text '等待应用设置超时；正在刷新当前运行设置，不会自动重发。未确认的草稿已保留。' -Failed $true
+                Set-UiControlStatus -Text '等待设置超时，正在刷新当前状态' -Confirmed $false
+                Add-UiEvent '路由设置等待超时；未自动重发'
+                Request-UiRoutingStatus
+            }
             Read-StatusUpdates
             Set-StaleDisplay
         }
@@ -2656,6 +3886,12 @@ $script:mainWindow.FindName('OfflineBanner').Visibility = [Windows.Visibility]::
 (Get-UiControl 'ConnectButton').Add_Click({ Request-Reconnect })
 (Get-UiControl 'StopButton').Add_Click({ Request-StopAndExit })
 (Get-UiControl 'ControlStatusButton').Add_Click({ Request-UiControlStatus })
+(Get-UiControl 'BlockCurrentSourceButton').Add_Click({
+    if (-not $script:latestStatus -or -not [bool]$script:latestStatus.current_call_valid -or -not $script:activeRouting) { return }
+    $call = $script:latestStatus
+    $source = [pscustomobject]@{ source_id=[uint64]$call.current_call_source_id; destination_id=[uint64]$call.current_call_destination_id; slot=[uint64]$call.current_call_slot; kind=$(if ([string]$call.current_call_kind -ceq 'P') { 'private' } else { 'group' }) }
+    Invoke-ObservedRoutingAction -Action 'block' -Source $source
+})
 (Get-UiControl 'TargetSelector').Add_SelectionChanged({
     $selectedTarget = Get-SelectedTargetTag
     if ($script:storedProfile) {
@@ -2716,7 +3952,7 @@ $script:mainWindow.Add_Loaded({
     if ($OfflinePreview -or $NoAutoConnect) {
         $banner = Get-UiControl 'OfflineBanner'
         $banner.Visibility = [Windows.Visibility]::Visible
-        (Get-UiControl 'OfflineBannerText').Text = if ($OfflinePreview) { '离线预览：没有连接设备或网络。' } else { '连接已关闭：当前窗口未启动核心。' }
+        (Get-UiControl 'OfflineBannerText').Text = if ($RenderOnly) { '离线渲染样例：以下接收路由与观察来源是模拟数据；没有连接设备或网络。' } elseif ($OfflinePreview) { '离线预览：没有连接设备或网络。' } else { '连接已关闭：当前窗口未启动核心。' }
         Set-OfflineDisplay -Reason '当前窗口没有连接核心。'
         Set-MainText -Name 'FooterText' -Text '打开设置可查看本机配置；此窗口没有启动设备或网络连接。'
         (Get-UiControl 'ConnectButton').IsEnabled = $false
@@ -2726,6 +3962,18 @@ $script:mainWindow.Add_Loaded({
         $script:storedProfile = Read-BridgeUserConnectionProfile -Path $script:profilePath
         if ($script:storedProfile) {
             Set-MainText -Name 'TargetValue' -Text (Format-ProfileTarget -Profile $script:storedProfile)
+            if ($RoutingDiagnosticAutoTest) {
+                Initialize-SettingsWindow
+                $beforeCancelHash = (Get-FileHash -LiteralPath $script:profilePath -Algorithm SHA256).Hash
+                (Get-SettingsControl 'DestinationBox').Text = '44444'
+                Raise-UiButtonClick -ControlName 'CancelSettingsButton'
+                $afterCancelHash = (Get-FileHash -LiteralPath $script:profilePath -Algorithm SHA256).Hash
+                if ($beforeCancelHash -cne $afterCancelHash -or
+                    [uint64]$script:editTxTarget.destination_id -ne [uint64]$script:storedProfile.tx_target.destination_id) {
+                    throw '离线编辑后取消没有丢弃草稿，或改写了本机配置。'
+                }
+                $script:routingDiagnosticOfflineCancelVerified = $true
+            }
             Start-BridgeRun
         } else {
             $script:startupNeedsSettings = $true
@@ -2750,7 +3998,7 @@ if ($RenderOnly) {
     [System.IO.Directory]::CreateDirectory($renderDirectory) | Out-Null
     $banner = Get-UiControl 'OfflineBanner'
     $banner.Visibility = [Windows.Visibility]::Visible
-    (Get-UiControl 'OfflineBannerText').Text = '离线预览：没有连接设备或网络。'
+    (Get-UiControl 'OfflineBannerText').Text = '离线预览样例：以下接收路由与观察来源是模拟数据；没有连接设备或网络。'
     Set-OfflineDisplay -Reason '离线预览，没有连接设备。'
     $script:mainWindow.Show()
     [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::ApplicationIdle)
@@ -2783,7 +4031,7 @@ if ($RenderOnly) {
         max_window_height = $script:maxWindowHeight
         device_combo_rendered_text = $deviceComboEvidence
         main = Get-WpfWindowLayoutInfo -Window $script:mainWindow -ControlNames @('ConnectButton', 'SettingsButton', 'StopButton', 'ControlProtocolValue', 'ControlStatusButton', 'FooterText', 'TargetSelector', 'ReceiveTargetValue', 'TransmitTargetValue', 'TransmitPermissionValue', 'CoreDetail', 'RadioDetail', 'AudioDetail', 'BmDetail', 'CoreStatusCard', 'RadioStatusCard', 'AudioStatusCard', 'BmStatusCard', 'HriSourceIdentityValue', 'RadioDisplayValue', 'CurrentCallLabel', 'CurrentCallValue', 'CurrentCallDetail', 'TrafficCard')
-        settings = Get-WpfWindowLayoutInfo -Window $script:settingsWindow -ControlNames @('CancelSettingsButton', 'SaveSettingsButton', 'SettingsErrorText', 'ProfileMigrationText', 'ReceivePolicyPreviewText', 'MasterPresetBox', 'PasswordPathBox', 'BrowsePasswordButton', 'DeviceDiscoveryText', 'RefreshDevicesButton', 'SerialBox', 'WaveInEndpointBox', 'WaveOutEndpointBox', 'DestinationBox', 'ReceiveDestinationBox', 'ReceiveSlotBox', 'ReceiveCallKindBox', 'TransmitEnabledBox', 'PlaybackGainSlider', 'PlaybackGainValueText', 'TransmitGainSlider', 'TransmitGainValueText')
+        settings = Get-WpfWindowLayoutInfo -Window $script:settingsWindow -ControlNames @('CancelSettingsButton', 'SaveSettingsButton', 'SettingsErrorText', 'ProfileMigrationText', 'ReceivePolicyPreviewText', 'MasterPresetBox', 'PasswordPathBox', 'BrowsePasswordButton', 'DeviceDiscoveryText', 'RefreshDevicesButton', 'SerialBox', 'WaveInEndpointBox', 'WaveOutEndpointBox', 'DestinationBox', 'SlotBox', 'CallKindBox', 'TransmitEnabledBox', 'ApplyNextTxTargetButton', 'GroupModeBox', 'PrivateModeBox', 'GroupRouteIdBox', 'GroupRouteSlotBox', 'GroupRoutesList', 'BlockedGroupIdBox', 'BlockedGroupSlotBox', 'BlockedGroupsList', 'PeerSourceIdBox', 'PeerLocalDestinationBox', 'PeerSlotBox', 'PeerRoutesList', 'LocalPrivateDestinationBox', 'LocalPrivateSlotBox', 'LocalPrivateRoutesList', 'BlockedSourceIdBox', 'BlockedSourcesList', 'PlaybackGainSlider', 'PlaybackGainValueText', 'TransmitGainSlider', 'TransmitGainValueText')
         main_source_identity = [pscustomobject][ordered]@{
             value = (Get-UiControl 'HriSourceIdentityValue').Text
             radio_display = (Get-UiControl 'RadioDisplayValue').Text
@@ -2803,13 +4051,82 @@ if ($RenderOnly) {
     $simulatedProfile = ConvertTo-BridgeUserConnectionProfile -Connection $simulatedConnection -Devices $simulatedDevices `
         -Receive ([pscustomobject][ordered]@{ destination_id = [uint64]91; slot = [uint64]2; call_kind = 'group' }) `
         -TransmitEnabled $false
+    $renderRxPolicy = [pscustomobject][ordered]@{
+        group_mode='selected'; private_mode='all_peers_to_local'
+        allow_groups=@([pscustomobject][ordered]@{ destination_id=[uint64]91; slot=[uint64]2 })
+        allow_private_peers=@([pscustomobject][ordered]@{ source_id=[uint64]460997; local_destination_id=[uint64]3149876; slot=[uint64]2 })
+        local_private_routes=@([pscustomobject][ordered]@{ local_destination_id=[uint64]3149876; slot=[uint64]1 })
+        blocked_groups=@([pscustomobject][ordered]@{ destination_id=[uint64]46001; slot=[uint64]2 })
+        blocked_source_ids=[uint64[]]@(3149877)
+    }
+    $simulatedProfile.rx_policy = $renderRxPolicy
     $simulatedEffectiveProfile = New-EffectiveTargetProfile -Profile $simulatedProfile -Target 'listen-91'
+    $simulatedEffectiveProfile.rx_policy = Copy-UiRxPolicy -Policy $renderRxPolicy
     Set-MainTargetSummary -Profile $simulatedEffectiveProfile -OverallLabel '离线模拟 · 全球收听 TG91'
     Set-MainText -Name 'TrafficValue' -Text '离线模拟 · 正在接收'
     Set-MainText -Name 'TrafficDetail' -Text '离线模拟：收听 TG91，未连接 BM。'
     Set-MainText -Name 'RadioStateValue' -Text '电台状态：未知（离线模拟）'
-    Set-MainText -Name 'CurrentCallValue' -Text '离线模拟 · DMR ID 3149876'
+    Set-MainText -Name 'CurrentCallValue' -Text 'DMR ID 3149876'
     Set-MainText -Name 'CurrentCallDetail' -Text '离线模拟：组呼 · 目标 91 · TS2 · CC 1 · LC 已验证 · 接收中'
+    $renderRouting = [pscustomobject][ordered]@{
+        local_source_id=[uint64]3149876; rx_policy_revision=[uint64]2; tx_policy_revision=[uint64]1
+        rx_policy=(Copy-UiRxPolicy -Policy $renderRxPolicy)
+        tx_target=[pscustomobject][ordered]@{ destination_id=[uint64]460997; kind='private'; slot=[uint64]2 }
+        transmit_enabled=$false; media_owner='idle'; active_rx=$null; active_tx_lease=$null
+        observed_sources=@(
+            [pscustomobject][ordered]@{ source_id=[uint64]3149877; destination_id=[uint64]91; slot=[uint64]2; kind='group'; observation_level='outer_header_seen' },
+            [pscustomobject][ordered]@{ source_id=[uint64]460997; destination_id=[uint64]3149876; slot=[uint64]2; kind='private'; observation_level='outer_header_seen' }
+        )
+    }
+    if (-not (Test-UiRoutingSnapshot -Routing $renderRouting)) { throw '离线渲染路由样例无效。' }
+    $script:activeRouting = $renderRouting
+    $script:activeProfile = $simulatedEffectiveProfile
+    $script:editRxPolicy = Copy-UiRxPolicy -Policy $renderRxPolicy
+    $script:editTxTarget = [pscustomobject][ordered]@{ destination_id=[uint64]460997; kind='private'; slot=[uint64]2 }
+    $script:editTransmitEnabled = $false
+    Update-RoutingDisplays
+    Set-MainTargetSummary -Profile $simulatedEffectiveProfile -OverallLabel '离线模拟 · 全球收听 TG91'
+    $script:mainWindow.UpdateLayout()
+    Save-RenderedWindow -Window $script:mainWindow -Path (Join-Path $renderDirectory 'main-routing-fixture.png')
+    $script:loadingSettings = $true
+    (Get-SettingsControl 'CallsignBox').Text = 'TEST'
+    (Get-SettingsControl 'GatewayBox').Text = '1'
+    (Get-SettingsControl 'SourceBox').Text = '3149876'
+    (Get-SettingsControl 'MasterBox').Text = '192.0.2.1'
+    (Get-SettingsControl 'MasterPortBox').Text = '62031'
+    (Get-SettingsControl 'ColorCodeBox').Text = '1'
+    (Get-SettingsControl 'DestinationBox').Text = '460997'
+    $renderSlot = Get-SettingsControl 'SlotBox'
+    $renderSlot.SelectedItem = @($renderSlot.Items | Where-Object { [string]$_.Tag -ceq '2' })[0]
+    $renderKind = Get-SettingsControl 'CallKindBox'
+    $renderKind.SelectedItem = @($renderKind.Items | Where-Object { [string]$_.Tag -ceq 'private' })[0]
+    (Get-SettingsControl 'TransmitEnabledBox').IsChecked = $false
+    (Get-SettingsControl 'GroupRouteIdBox').Text = '91'
+    (Get-SettingsControl 'BlockedGroupIdBox').Text = '46001'
+    (Get-SettingsControl 'PeerSourceIdBox').Text = '460997'
+    (Get-SettingsControl 'PeerLocalDestinationBox').Text = '3149876'
+    (Get-SettingsControl 'LocalPrivateDestinationBox').Text = '3149876'
+    (Get-SettingsControl 'BlockedSourceIdBox').Text = '3149877'
+    (Get-SettingsControl 'ProfileMigrationText').Text = '离线渲染样例：下方路由和观察卡片均为模拟数据，没有连接电台或 BM。'
+    $script:loadingSettings = $false
+    Set-SettingsPolicyLists
+    $script:settingsWindow.FindName('SettingsScrollViewer').ScrollToVerticalOffset(440)
+    (Get-SettingsControl 'GroupRoutesList').SelectedIndex = 0
+    [void][System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::Render)
+    $script:settingsWindow.UpdateLayout()
+    Save-RenderedWindow -Window $script:settingsWindow -Path (Join-Path $renderDirectory 'settings-routes.png')
+    $routeStyleControl = Get-SettingsControl 'GroupRoutesList'
+    $routeStyleContainer = $routeStyleControl.ItemContainerGenerator.ContainerFromIndex(0)
+    $renderRouteListEvidence = [pscustomobject][ordered]@{
+        group_routes=@($routeStyleControl.Items | ForEach-Object { [string]$_ })
+        blocked_groups=@((Get-SettingsControl 'BlockedGroupsList').Items | ForEach-Object { [string]$_ })
+        private_peers=@((Get-SettingsControl 'PeerRoutesList').Items | ForEach-Object { [string]$_ })
+        local_private_routes=@((Get-SettingsControl 'LocalPrivateRoutesList').Items | ForEach-Object { [string]$_ })
+        blocked_sources=@((Get-SettingsControl 'BlockedSourcesList').Items | ForEach-Object { [string]$_ })
+        group_background=$routeStyleControl.Background.Color.ToString()
+        group_foreground=$routeStyleControl.Foreground.Color.ToString()
+        selected_route_background=if ($routeStyleContainer -and $routeStyleContainer.Background -is [System.Windows.Media.SolidColorBrush]) { $routeStyleContainer.Background.Color.ToString() } else { '' }
+    }
     $activeCallDirectory = Join-Path $renderDirectory 'configured-active-call'
     [System.IO.Directory]::CreateDirectory($activeCallDirectory) | Out-Null
     $script:mainWindow.UpdateLayout()
@@ -2828,10 +4145,39 @@ if ($RenderOnly) {
             value = (Get-UiControl 'CurrentCallValue').Text
             detail = (Get-UiControl 'CurrentCallDetail').Text
             visual_text = @(Get-UiVisualTextValues -Root $script:mainWindow)
+            configured_routes_text = @(Get-UiVisualTextValues -Root $script:mainWindow.FindName('ConfiguredRoutesPanel'))
+            observed_cards = @(
+                foreach ($card in @($script:mainWindow.FindName('ObservedSourcesPanel').Children)) {
+                    if ($card -isnot [System.Windows.Controls.Border] -or $card.Child -isnot [System.Windows.Controls.StackPanel]) { continue }
+                    $actions = @($card.Child.Children | Where-Object { $_ -is [System.Windows.Controls.Primitives.UniformGrid] }) | Select-Object -First 1
+                    if (-not $actions -or $actions.Children.Count -lt 3) { continue }
+                    $localButton = $actions.Children[0]; $sourceButton = $actions.Children[1]; $txButton = $actions.Children[2]
+                    $source = $localButton.Tag.Source
+                    [pscustomobject][ordered]@{
+                        source_id=[uint64]$source.source_id; destination_id=[uint64]$source.destination_id; slot=[uint64]$source.slot; kind=[string]$source.kind
+                        local_action=[string]$localButton.Content; local_action_enabled=[bool]$localButton.IsEnabled
+                        source_action=[string]$sourceButton.Content; tx_action=[string]$txButton.Content; tx_action_enabled=[bool]$txButton.IsEnabled
+                    }
+                }
+            )
         }
+        route_settings = $renderRouteListEvidence
     }
     [System.IO.File]::WriteAllText((Join-Path $activeCallDirectory 'layout-info.json'),
-        (ConvertTo-Json -InputObject $activeCallLayout -Depth 7), (New-Object System.Text.UTF8Encoding($false)))
+        (ConvertTo-Json -InputObject $activeCallLayout -Depth 9), (New-Object System.Text.UTF8Encoding($false)))
+    $routeSettingsLayout = Get-WpfWindowLayoutInfo -Window $script:settingsWindow -ControlNames @(
+        'GroupModeBox','PrivateModeBox','GroupRouteIdBox','GroupRouteSlotBox','AddGroupRouteButton','RemoveGroupRouteButton','GroupRoutesList',
+        'BlockedGroupIdBox','BlockedGroupSlotBox','AddBlockedGroupButton','RemoveBlockedGroupButton','BlockedGroupsList',
+        'PeerSourceIdBox','PeerLocalDestinationBox','PeerSlotBox','AddPeerRouteButton','RemovePeerRouteButton','PeerRoutesList',
+        'LocalPrivateDestinationBox','LocalPrivateSlotBox','AddLocalPrivateRouteButton','RemoveLocalPrivateRouteButton','LocalPrivateRoutesList',
+        'BlockedSourceIdBox','AddBlockedSourceButton','RemoveBlockedSourceButton','BlockedSourcesList')
+    [System.IO.File]::WriteAllText((Join-Path $renderDirectory 'settings-routes-layout.json'),
+        (ConvertTo-Json -InputObject ([pscustomobject][ordered]@{ settings=$routeSettingsLayout; route_settings=$renderRouteListEvidence }) -Depth 7),
+        (New-Object System.Text.UTF8Encoding($false)))
+    $script:settingsWindow.FindName('SettingsScrollViewer').ScrollToVerticalOffset(850)
+    [void][System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::Render)
+    $script:settingsWindow.UpdateLayout()
+    Save-RenderedWindow -Window $script:settingsWindow -Path (Join-Path $renderDirectory 'settings-private-routes.png')
     $script:settingsWindow.Close()
     $script:mainWindow.Close()
     $script:uiTimer.Stop()

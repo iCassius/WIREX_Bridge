@@ -1,17 +1,16 @@
 #include "wirex/ui_control_protocol.hpp"
+#include "wirex/routing_state.hpp"
 
 #include <array>
+#include <limits>
 #include <utility>
 
 namespace wirex::ui_control {
 namespace {
 
-constexpr std::string_view supported_commands_json = "[\"hello\",\"status\",\"shutdown\"]";
-
-bool is_space(char value) noexcept
-{
-    return value == ' ' || value == '\t' || value == '\r';
-}
+constexpr std::string_view basic_commands_json = "[\"hello\",\"status\",\"shutdown\"]";
+constexpr std::string_view routing_commands_json =
+    "[\"hello\",\"status\",\"shutdown\",\"routing.status\",\"rx_policy.replace\",\"tx_policy.replace\"]";
 
 bool valid_identifier(std::string_view value, std::size_t maximum) noexcept
 {
@@ -68,131 +67,33 @@ struct Request {
     std::string run_id{};
     std::string request_id{};
     std::string command{};
+    const strict_json::Value* parameters{};
 };
 
-class FlatJsonReader final {
-public:
-    explicit FlatJsonReader(std::string_view input) noexcept : input_(input) {}
-
-    bool parse(Request& request)
-    {
-        skip_space();
-        if (!consume('{')) return false;
-        bool have_schema = false;
-        bool have_run_id = false;
-        bool have_request_id = false;
-        bool have_command = false;
-        skip_space();
-        if (consume('}')) return false;
-        while (position_ < input_.size()) {
-            std::string key;
-            if (!parse_string(key)) return false;
-            skip_space();
-            if (!consume(':')) return false;
-            skip_space();
-            if (key == "schema_version") {
-                if (have_schema || !parse_unsigned(request.schema_version)) return false;
-                have_schema = true;
-            } else if (key == "run_id") {
-                if (have_run_id || !parse_string(request.run_id)) return false;
-                have_run_id = true;
-            } else if (key == "request_id") {
-                if (have_request_id || !parse_string(request.request_id)) return false;
-                have_request_id = true;
-            } else if (key == "command") {
-                if (have_command || !parse_string(request.command)) return false;
-                have_command = true;
-            } else {
-                return false;
-            }
-            skip_space();
-            if (consume('}')) break;
-            if (!consume(',')) return false;
-            skip_space();
-        }
-        skip_space();
-        return position_ == input_.size() && have_schema && have_run_id &&
-            have_request_id && have_command && valid_identifier(request.run_id, 128U) &&
-            valid_identifier(request.request_id, 128U) && valid_command_name(request.command);
-    }
-
-private:
-    bool consume(char expected) noexcept
-    {
-        if (position_ >= input_.size() || input_[position_] != expected) return false;
-        ++position_;
-        return true;
-    }
-
-    void skip_space() noexcept
-    {
-        while (position_ < input_.size() && is_space(input_[position_])) ++position_;
-    }
-
-    bool parse_string(std::string& output)
-    {
-        if (!consume('"')) return false;
-        output.clear();
-        while (position_ < input_.size()) {
-            const unsigned char ch = static_cast<unsigned char>(input_[position_++]);
-            if (ch == '"') return true;
-            if (ch < 0x20U || ch > 0x7eU) return false;
-            if (ch != '\\') {
-                output.push_back(static_cast<char>(ch));
-                continue;
-            }
-            if (position_ >= input_.size()) return false;
-            const char escaped = input_[position_++];
-            switch (escaped) {
-            case '"': output.push_back('"'); break;
-            case '\\': output.push_back('\\'); break;
-            case '/': output.push_back('/'); break;
-            case 'b': output.push_back('\b'); break;
-            case 'f': output.push_back('\f'); break;
-            case 'n': output.push_back('\n'); break;
-            case 'r': output.push_back('\r'); break;
-            case 't': output.push_back('\t'); break;
-            case 'u': {
-                if (input_.size() - position_ < 4U) return false;
-                unsigned int codepoint = 0U;
-                for (unsigned int index = 0U; index < 4U; ++index) {
-                    const char digit = input_[position_++];
-                    unsigned int value = 0U;
-                    if (digit >= '0' && digit <= '9') value = static_cast<unsigned int>(digit - '0');
-                    else if (digit >= 'a' && digit <= 'f') value = static_cast<unsigned int>(digit - 'a' + 10);
-                    else if (digit >= 'A' && digit <= 'F') value = static_cast<unsigned int>(digit - 'A' + 10);
-                    else return false;
-                    codepoint = (codepoint << 4U) | value;
-                }
-                if (codepoint < 0x20U || codepoint > 0x7eU) return false;
-                output.push_back(static_cast<char>(codepoint));
-                break;
-            }
-            default: return false;
-            }
-        }
-        return false;
-    }
-
-    bool parse_unsigned(std::uint32_t& output) noexcept
-    {
-        if (position_ >= input_.size() || input_[position_] < '0' || input_[position_] > '9') return false;
-        if (input_[position_] == '0' && position_ + 1U < input_.size() &&
-            input_[position_ + 1U] >= '0' && input_[position_ + 1U] <= '9') return false;
-        std::uint64_t value = 0U;
-        while (position_ < input_.size() && input_[position_] >= '0' && input_[position_] <= '9') {
-            const auto digit = static_cast<unsigned int>(input_[position_] - '0');
-            if (value > (UINT32_MAX - digit) / 10U) return false;
-            value = value * 10U + digit;
-            ++position_;
-        }
-        output = static_cast<std::uint32_t>(value);
-        return true;
-    }
-
-    std::string_view input_;
-    std::size_t position_{};
-};
+bool parse_request(std::string_view input, Request& request, strict_json::Value& envelope)
+{
+    if (!strict_json::parse(input, envelope) || envelope.type != strict_json::Value::Type::object) return false;
+    const auto* schema = envelope.find("schema_version");
+    const auto* run = envelope.find("run_id");
+    const auto* request_id = envelope.find("request_id");
+    const auto* command = envelope.find("command");
+    if (schema == nullptr || schema->type != strict_json::Value::Type::unsigned_integer ||
+        schema->integer_value > UINT32_MAX || run == nullptr || run->type != strict_json::Value::Type::string ||
+        request_id == nullptr || request_id->type != strict_json::Value::Type::string ||
+        command == nullptr || command->type != strict_json::Value::Type::string) return false;
+    request.schema_version = static_cast<std::uint32_t>(schema->integer_value);
+    request.run_id = run->string_value;
+    request.request_id = request_id->string_value;
+    request.command = command->string_value;
+    request.parameters = envelope.find("parameters");
+    const bool mutating = request.command == "rx_policy.replace" || request.command == "tx_policy.replace";
+    const auto expected_size = mutating ? 5U : 4U;
+    if (envelope.object_value.size() != expected_size || (mutating &&
+        (request.parameters == nullptr || request.parameters->type != strict_json::Value::Type::object)) ||
+        (!mutating && request.parameters != nullptr)) return false;
+    return valid_identifier(request.run_id, 128U) && valid_identifier(request.request_id, 128U) &&
+        valid_command_name(request.command);
+}
 
 std::string snapshot_json(const StatusSnapshot& snapshot)
 {
@@ -259,8 +160,12 @@ JsonLineStatus JsonLineParser::feed(std::string_view bytes, std::vector<std::str
     return completed ? JsonLineStatus::complete : JsonLineStatus::pending;
 }
 
-Dispatcher::Dispatcher(std::string run_id, bool diagnostic)
-    : run_id_(std::move(run_id)), diagnostic_(diagnostic)
+Dispatcher::Dispatcher(std::string run_id, bool diagnostic, RoutingCallbacks routing)
+    : run_id_(std::move(run_id)), diagnostic_(diagnostic),
+      routing_enabled_(static_cast<bool>(routing.replace_rx_policy) &&
+                       static_cast<bool>(routing.replace_tx_policy) &&
+                       static_cast<bool>(routing.snapshot_json)),
+      routing_(std::move(routing))
 {
 }
 
@@ -272,8 +177,21 @@ std::string Dispatcher::ready_line(std::uint32_t process_id)
     return "{\"schema_version\":2,\"type\":\"control_ready\",\"run_id\":" +
         json_escape(run_id_) + ",\"control_seq\":1,\"process_id\":" +
         std::to_string(process_id) + ",\"control_version\":2,\"supported_commands\":" +
-        std::string(supported_commands_json) + ",\"diagnostic\":" +
+        std::string(routing_enabled_ ? routing_commands_json : basic_commands_json) + ",\"diagnostic\":" +
         (diagnostic_ ? "true" : "false") + "}";
+}
+
+std::string Dispatcher::routing_state_line()
+{
+    if (!routing_enabled_ || !hello_seen_) return {};
+    std::string routing_json;
+    try { routing_json = routing_.snapshot_json(); }
+    catch (...) { return {}; }
+    if (routing_json.empty()) return {};
+    ++control_seq_;
+    return "{\"schema_version\":2,\"type\":\"routing_state\",\"run_id\":" +
+        json_escape(run_id_) + ",\"control_seq\":" + std::to_string(control_seq_) +
+        ",\"routing\":" + routing_json + "}";
 }
 
 std::string Dispatcher::serialize_result(std::string_view request_id, std::string_view command,
@@ -313,8 +231,8 @@ DispatchResult Dispatcher::handle(std::string_view json_line, const StatusSnapsh
         return {serialize_rejection({}, {}, "frame_too_long"), false, true};
     }
     Request request{};
-    FlatJsonReader reader(json_line);
-    if (!reader.parse(request)) {
+    strict_json::Value envelope{};
+    if (!parse_request(json_line, request, envelope)) {
         return {serialize_rejection({}, {}, "invalid_request"), false, true};
     }
     if (request.run_id != run_id_) {
@@ -346,70 +264,172 @@ DispatchResult Dispatcher::handle(std::string_view json_line, const StatusSnapsh
     }
 
     const bool may_use_shutdown_slot = valid_shutdown && !shutdown_slot_used_ && !shutdown_requested_;
-    CachedResult cached{};
-    cached.body.assign(json_line);
-    cached.request_id = request.request_id;
-    cached.command = request.command;
     if (cache_exhausted_ && !may_use_shutdown_slot) {
-        // 缓存已满后不再接受新状态查询或操作；第二个溢出ID使运行进入有界收尾。
+        // 哨兵后的第二个新ID立即触发有界收尾；后端不会收到该请求。
         shutdown_requested_ = true;
         return {serialize_rejection(request.request_id, request.command, "cache_full"), true, false};
-    } else if (request.schema_version != 2U) {
-        cached.result = "rejected";
-        cached.extra_json = "\"error\":\"unsupported_schema\"";
-    } else if (shutdown_requested_) {
-        cached.result = "rejected";
-        cached.extra_json = "\"error\":\"shutdown_in_progress\"";
-    } else if (request.command == "hello") {
-        cached.result = "ok";
-        cached.extra_json = "\"supported_commands\":" + std::string(supported_commands_json);
-    } else if (request.command == "status") {
-        if (!hello_seen_) {
-            cached.result = "rejected";
-            cached.extra_json = "\"error\":\"hello_required\"";
-        } else {
-            cached.result = "ok";
-            cached.extra_json = "\"snapshot\":" + snapshot_json(snapshot);
-        }
-    } else if (request.command == "shutdown") {
-        cached.result = "ok";
-        cached.shutdown_requested = true;
-        cached.extra_json = "\"shutdown_requested\":true";
-    } else {
-        cached.result = "unsupported";
-        cached.extra_json = "\"error\":\"command_not_supported\"";
     }
 
-    const std::size_t current_cached_result_count = cached_result_count();
-    if (cached.shutdown_requested && (shutdown_slot_used_ || current_cached_result_count >= max_cached_requests)) {
+    if (!may_use_shutdown_slot && !cache_full_rejection_ &&
+        non_shutdown_requests_ >= max_cached_requests - 2U) {
+        CachedResult sentinel{};
+        try {
+            sentinel.body.assign(json_line);
+            sentinel.request_id = request.request_id;
+            sentinel.command = request.command;
+            sentinel.result = "rejected";
+            sentinel.extra_json = "\"error\":\"cache_full\"";
+            cache_full_rejection_ = std::move(sentinel);
+            cache_exhausted_ = true;
+        } catch (...) {
+            shutdown_requested_ = true;
+            return {serialize_rejection(request.request_id, request.command,
+                                        "cache_full_allocation_failed"), true, false};
+        }
+        return {serialize_result(request.request_id, request.command, "rejected",
+                                 "\"error\":\"cache_full\"", false), shutdown_requested_, false};
+    }
+
+    if (cached_result_count() >= max_cached_requests) {
         shutdown_requested_ = true;
         return {serialize_rejection(request.request_id, request.command,
                                     "cache_full"), true, false};
     }
-    if (!cached.shutdown_requested && !cache_full_rejection_ &&
-        non_shutdown_requests_ >= max_cached_requests - 2U) {
-        cached.result = "rejected";
-        cached.extra_json = "\"error\":\"cache_full\"";
-        cache_full_rejection_ = cached;
-        cache_exhausted_ = true;
-        return {serialize_result(request.request_id, cached.command, cached.result,
-                                 cached.extra_json, false), shutdown_requested_, false};
-    }
-    if (!cached.shutdown_requested && current_cached_result_count >= max_cached_requests) {
-        // 此路径发生在溢出拒绝已绑定后；关闭本 run，避免无空间记录新 request_id。
+
+    CachedResult seed{};
+    try {
+        seed.body.assign(json_line);
+        seed.request_id = request.request_id;
+        seed.command = request.command;
+        // 先将request_id/body放入有界缓存，再允许后端产生任何副作用。
+        const auto inserted = cache_.emplace(request.request_id, std::move(seed));
+        if (!inserted.second) {
+            return {serialize_rejection(request.request_id, request.command,
+                                        "request_id_conflict"), false, true};
+        }
+    } catch (...) {
         shutdown_requested_ = true;
-        return {serialize_rejection(request.request_id, request.command, "cache_full"), true, false};
+        return {serialize_rejection(request.request_id, request.command,
+                                    "request_cache_allocation_failed"), true, false};
     }
 
-    cache_.emplace(request.request_id, cached);
-    if (request.command == "hello" && cached.result == "ok") hello_seen_ = true;
-    if (request.command == "shutdown" && cached.result == "ok") {
+    auto& cached = cache_.find(request.request_id)->second;
+    bool mark_hello = false;
+    bool accept_shutdown = false;
+    bool routing_mutation_applied = false;
+    try {
+        if (request.schema_version != 2U) {
+            cached.result = "rejected";
+            cached.extra_json = "\"error\":\"unsupported_schema\"";
+        } else if (shutdown_requested_) {
+            cached.result = "rejected";
+            cached.extra_json = "\"error\":\"shutdown_in_progress\"";
+        } else if (request.command == "hello") {
+            cached.result = "ok";
+            cached.extra_json = "\"supported_commands\":" +
+                std::string(routing_enabled_ ? routing_commands_json : basic_commands_json);
+            mark_hello = true;
+        } else if (request.command == "status") {
+            if (!hello_seen_) {
+                cached.result = "rejected";
+                cached.extra_json = "\"error\":\"hello_required\"";
+            } else {
+                cached.result = "ok";
+                cached.extra_json = "\"snapshot\":" + snapshot_json(snapshot);
+            }
+        } else if (request.command == "routing.status") {
+            if (!hello_seen_) {
+                cached.result = "rejected";
+                cached.extra_json = "\"error\":\"hello_required\"";
+            } else if (!routing_enabled_) {
+                cached.result = "unsupported";
+                cached.extra_json = "\"error\":\"command_not_supported\"";
+            } else {
+                cached.result = "ok";
+                cached.extra_json = "\"routing\":" + routing_.snapshot_json();
+            }
+        } else if (request.command == "rx_policy.replace" || request.command == "tx_policy.replace") {
+            if (!hello_seen_) {
+                cached.result = "rejected";
+                cached.extra_json = "\"error\":\"hello_required\"";
+            } else if (!routing_enabled_) {
+                cached.result = "unsupported";
+                cached.extra_json = "\"error\":\"command_not_supported\"";
+            } else {
+                const auto* params = request.parameters;
+                const auto* revision = params->find("expected_revision");
+                bool valid = revision != nullptr && revision->type == strict_json::Value::Type::unsigned_integer;
+                talkgroup_routing::PolicyUpdateResult update{};
+                if (request.command == "rx_policy.replace") {
+                    valid = valid && params->object_value.size() == 2U && params->find("rx_policy") != nullptr;
+                    talkgroup_routing::RxPolicy policy{};
+                    valid = valid && routing_state::parse_rx_policy(
+                        *params->find("rx_policy"), routing_.local_source_id, policy);
+                    if (valid) update = routing_.replace_rx_policy(revision->integer_value, policy);
+                } else {
+                    const auto* target_value = params->find("tx_target");
+                    const auto* enabled_value = params->find("transmit_enabled");
+                    valid = valid && params->object_value.size() == 3U && target_value != nullptr &&
+                        enabled_value != nullptr && enabled_value->type == strict_json::Value::Type::boolean;
+                    talkgroup_routing::TxTarget target{};
+                    valid = valid && routing_state::parse_tx_target(*target_value, target);
+                    const bool enabled = enabled_value != nullptr && enabled_value->boolean_value;
+                    const bool protected_target = target.kind == dmr_call::CallKind::group &&
+                        (target.destination_id == 91U || target.destination_id == 46001U);
+                    if (valid && protected_target && enabled) valid = false;
+                    if (valid) update = routing_.replace_tx_policy(revision->integer_value, target, enabled);
+                }
+                if (!valid) {
+                    cached.result = "rejected";
+                    cached.extra_json = "\"error\":\"invalid_parameters\"";
+                } else if (!update) {
+                    cached.result = "rejected";
+                    std::string_view error = "invalid_policy";
+                    switch (update.status) {
+                    case talkgroup_routing::PolicyUpdateStatus::revision_conflict: error = "revision_conflict"; break;
+                    case talkgroup_routing::PolicyUpdateStatus::revision_exhausted: error = "revision_exhausted"; break;
+                    case talkgroup_routing::PolicyUpdateStatus::resource_failure: error = "resource_failure"; break;
+                    case talkgroup_routing::PolicyUpdateStatus::invalid_policy: error = "invalid_policy"; break;
+                    case talkgroup_routing::PolicyUpdateStatus::applied: break;
+                    }
+                    cached.extra_json = "\"error\":" + json_escape(error);
+                } else {
+                    routing_mutation_applied = true;
+                    cached.result = "ok";
+                    cached.extra_json = "\"routing\":" + routing_.snapshot_json();
+                }
+            }
+        } else if (request.command == "shutdown") {
+            cached.result = "ok";
+            cached.shutdown_requested = true;
+            cached.extra_json = "\"shutdown_requested\":true";
+            accept_shutdown = true;
+        } else {
+            cached.result = "unsupported";
+            cached.extra_json = "\"error\":\"command_not_supported\"";
+        }
+
+        const auto output = serialize_result(request.request_id, cached.command, cached.result,
+                                             cached.extra_json, false);
+        if (mark_hello && cached.result == "ok") hello_seen_ = true;
+        if (accept_shutdown && cached.result == "ok") {
+            shutdown_requested_ = true;
+            shutdown_slot_used_ = true;
+        }
+        if (!accept_shutdown) ++non_shutdown_requests_;
+        return {output, accept_shutdown && cached.result == "ok", false};
+    } catch (...) {
+        // request_id/body已经进入缓存，所以应用后序列化失败也不能让相同ID再次执行。
+        cached.result = "rejected";
+        cached.extra_json = routing_mutation_applied
+            ? "\"error\":\"applied_result_serialization_failed\""
+            : "\"error\":\"fatal\"";
+        cached.shutdown_requested = false;
         shutdown_requested_ = true;
-        shutdown_slot_used_ = true;
+        ++non_shutdown_requests_;
+        return {serialize_result(request.request_id, cached.command, cached.result,
+                                 cached.extra_json, false), true, false};
     }
-    if (!cached.shutdown_requested) ++non_shutdown_requests_;
-    return {serialize_result(request.request_id, cached.command, cached.result,
-                             cached.extra_json, false), cached.shutdown_requested, false};
 }
 
 DispatchResult Dispatcher::reject(std::string_view error_code)

@@ -183,6 +183,11 @@ public:
         std::uint64_t expected_revision,
         const talkgroup_routing::TxPolicy& policy) noexcept;
     [[nodiscard]] RoutedSnapshot routing_snapshot() const noexcept;
+    [[nodiscard]] std::uint32_t routed_local_source_id() const noexcept;
+    [[nodiscard]] const talkgroup_routing::RxPolicy* routed_rx_policy() const noexcept;
+    [[nodiscard]] const talkgroup_routing::TxPolicy* routed_tx_policy() const noexcept;
+    // 已撤销租约保持禁止发送语音，即使全局TX权限随后恢复；header/EOT由外层单独放行。
+    [[nodiscard]] bool routed_tx_voice_permitted() const noexcept;
     [[nodiscard]] Error begin_routed_tx(const dmr_call::CallConfig& identity_template,
                                         Readiness readiness,
                                         TimePoint now) noexcept;

@@ -16,6 +16,9 @@ $selectedFunctions = @(
     'ConvertTo-ProfileUnsigned',
     'Test-ValidMasterName',
     'ConvertTo-ValidatedConnectionProfile',
+    'ConvertTo-RoutingStatePolicy',
+    'New-RoutingStateDocument',
+    'Write-RoutingStateFile',
     'Read-ConnectionProfile',
     'Read-ConnectionPrompt',
     'Read-ManualConnectionProfile',
@@ -200,16 +203,25 @@ try {
     Write-ConnectionProfile -Path $connectionProfilePath -Profile $profile
     $loadedProfile = Read-ConnectionProfile -Path $connectionProfilePath
     Assert-True ($loadedProfile.tx_target.kind -ceq 'group' -and $loadedProfile.devices.serial_port -ceq 'auto') 'profile 写入后应准确恢复呼叫类型和自动设备选择'
-    $loadedLegacyProfile = Get-BridgeLegacyRuntimeProfile -Profile $loadedProfile
-    Assert-True ($loadedLegacyProfile.receive.destination_id -eq $loadedProfile.tx_target.destination_id -and
-        $loadedLegacyProfile.receive.call_kind -ceq 'group' -and $loadedLegacyProfile.receive.slot -eq 2) `
-        '旧组呼 profile 缺少接收对象时仍按原发射目标接收'
+    $routingDocument = New-RoutingStateDocument -Profile $loadedProfile
+    Assert-True (@($routingDocument.PSObject.Properties | ForEach-Object { $_.Name }).Count -eq 5 -and
+        $routingDocument.schema_version -eq 1 -and $routingDocument.local_source_id -eq $loadedProfile.connection.source_id) `
+        'routing-state 顶层严格保留五个字段并绑定本机 Source ID'
+    Assert-True ($routingDocument.tx_target.destination_id -eq $loadedProfile.tx_target.destination_id -and
+        $routingDocument.tx_target.kind -ceq $loadedProfile.tx_target.kind -and
+        $routingDocument.tx_target.slot -eq $loadedProfile.tx_target.slot) `
+        'routing-state 的初始 TX 目标必须与用户配置完全一致'
     $listenProfile = ConvertTo-ValidatedConnectionProfile -Connection $profileConnection -Devices $profileDevices `
         -Receive ([pscustomobject]@{ destination_id = [uint64]91; slot = [uint64]2; call_kind = 'group' }) `
         -TransmitEnabled $false
-    $listenArgs = @(Get-ProfileConnectionArgs -Profile (Get-BridgeLegacyRuntimeProfile -Profile $listenProfile))
-    Assert-True (($listenArgs -join ' ') -match '--profile-receive-destination-id 91 --profile-receive-slot 2 --profile-receive-call-kind G') `
-        '独立 TG91 接收目标必须写入 native 启动参数'
+    $routingStatePath = Join-Path $temporaryRoot 'routing-state.json'
+    $listenArgs = @(Get-ProfileConnectionArgs -Profile $listenProfile -RoutingStatePath $routingStatePath)
+    Assert-True (($listenArgs -join ' ') -match '--profile-destination-id 16777215 --profile-slot 2 --profile-color-code 15 --profile-call-kind G') `
+        'TX 参数必须来自完整 tx_target，而不是旧 connection 字段'
+    Assert-True (($listenArgs -join ' ') -match '--routing-state-file .+routing-state\.json') `
+        '完整 RX 策略应通过唯一 routing-state 文件传入 native'
+    Assert-True (@($listenArgs | Where-Object { $_ -like '--profile-receive-*' }).Count -eq 0) `
+        'launcher 不得把单路 receive 参数作为真实策略传入 native'
     Assert-True ($listenArgs -ccontains '--listen-only') '只收配置必须向 native 传递 listen-only'
     $legacyPrivateConnection = $profileConnection.PSObject.Copy()
     $legacyPrivateConnection.call_kind = 'private'
@@ -218,9 +230,90 @@ try {
     $legacyPrivateProfile = ConvertTo-ValidatedConnectionProfile -Connection $legacyPrivateConnection -Devices $profileDevices
     Assert-True ($legacyPrivateProfile.rx_policy.local_private_routes[0].local_destination_id -eq 4611355 -and
         $legacyPrivateProfile.rx_policy.allow_private_peers.Count -eq 0) '本机私呼默认接收路由已经覆盖同slot TX精确回程'
-    $legacyPrivateArgs = @(Get-ProfileConnectionArgs -Profile (Get-BridgeLegacyRuntimeProfile -Profile $legacyPrivateProfile))
-    Assert-True (($legacyPrivateArgs -join ' ') -match '--profile-receive-destination-id 4611355 --profile-receive-slot 2 --profile-receive-call-kind P') `
-        '本机私呼回声接收目标必须进入 native 启动参数'
+    $legacyPrivateState = New-RoutingStateDocument -Profile $legacyPrivateProfile
+    Assert-True ($legacyPrivateState.rx_policy.local_private_routes.Count -eq 1 -and
+        $legacyPrivateState.rx_policy.local_private_routes[0].local_destination_id -eq $legacyPrivateState.local_source_id) `
+        '本机私呼路由应完整留在 routing-state，而非压成旧 receive 参数'
+    $complexPolicy = [pscustomobject][ordered]@{
+        group_mode = 'all_delivered'
+        private_mode = 'selected_peers'
+        allow_groups = [object[]]@(
+            [pscustomobject][ordered]@{ destination_id=[uint64]91; slot=[uint64]2 },
+            [pscustomobject][ordered]@{ destination_id=[uint64]123; slot=[uint64]1 })
+        blocked_groups = [object[]]@([pscustomobject][ordered]@{ destination_id=[uint64]555; slot=[uint64]2 })
+        allow_private_peers = [object[]]@([pscustomobject][ordered]@{
+            source_id=[uint64]200; local_destination_id=[uint64]16777215; slot=[uint64]2 })
+        local_private_routes = [object[]]@()
+        blocked_source_ids = [uint64[]]@(300, 301)
+    }
+    $complexProfile = [pscustomobject][ordered]@{
+        connection = $loadedProfile.connection
+        tx_target = $loadedProfile.tx_target
+        rx_policy = $complexPolicy
+        transmit_enabled = $true
+    }
+    $complexState = New-RoutingStateDocument -Profile $complexProfile
+    Assert-True ($complexState.rx_policy.group_mode -ceq 'all_delivered' -and
+        $complexState.rx_policy.allow_groups.Count -eq 2 -and $complexState.rx_policy.blocked_groups.Count -eq 1 -and
+        $complexState.rx_policy.allow_private_peers.Count -eq 1 -and $complexState.rx_policy.blocked_source_ids.Count -eq 2) `
+        '复杂接收策略的组呼、屏蔽、私呼 peer 和来源 ID 必须逐项保留'
+    $badLocalPolicy = $complexProfile.rx_policy.PSObject.Copy()
+    $badLocalPolicy.allow_private_peers = [object[]]@([pscustomobject][ordered]@{
+        source_id=[uint64]200; local_destination_id=[uint64]999; slot=[uint64]2 })
+    $badLocalProfile = [pscustomobject][ordered]@{
+        connection = $complexProfile.connection; tx_target = $complexProfile.tx_target
+        rx_policy = $badLocalPolicy; transmit_enabled = $true
+    }
+    Assert-Throws { New-RoutingStateDocument -Profile $badLocalProfile | Out-Null } `
+        '本机私呼路由目标必须等于当前 Source ID'
+    $unknownPolicy = $complexProfile.rx_policy.PSObject.Copy()
+    Add-Member -InputObject $unknownPolicy -NotePropertyName future_policy -NotePropertyValue $true
+    $unknownProfile = [pscustomobject][ordered]@{
+        connection = $complexProfile.connection; tx_target = $complexProfile.tx_target
+        rx_policy = $unknownPolicy; transmit_enabled = $true
+    }
+    Assert-Throws { New-RoutingStateDocument -Profile $unknownProfile | Out-Null } '未知 RX policy 字段必须拒绝'
+    $writtenRoutingPath = Write-RoutingStateFile -Path $routingStatePath -Profile $complexProfile
+    $writtenRoutingBytes = [System.IO.File]::ReadAllBytes($writtenRoutingPath)
+    Assert-True ($writtenRoutingBytes.Length -le 65536 -and
+        -not ($writtenRoutingBytes.Length -ge 3 -and $writtenRoutingBytes[0] -eq 0xEF -and $writtenRoutingBytes[1] -eq 0xBB -and $writtenRoutingBytes[2] -eq 0xBF)) `
+        'routing-state 文件必须是 64 KiB 内的 UTF-8 无 BOM 文件'
+    $writtenRoutingJson = [System.Text.Encoding]::UTF8.GetString($writtenRoutingBytes) | ConvertFrom-Json
+    Assert-True ($writtenRoutingJson.rx_policy.allow_groups.Count -eq 2 -and
+        $writtenRoutingJson.rx_policy.blocked_source_ids.Count -eq 2 -and
+        -not $writtenRoutingJson.PSObject.Properties['password']) 'routing-state 文件只保存完整策略，不写入凭据'
+    $originalRoutingText = [System.IO.File]::ReadAllText($writtenRoutingPath, [System.Text.Encoding]::UTF8)
+    Assert-Throws { Write-RoutingStateFile -Path $routingStatePath -Profile $loadedProfile | Out-Null } `
+        '禁止覆盖当前 run 已写入的 routing-state 文件'
+    Assert-True ([System.IO.File]::ReadAllText($writtenRoutingPath, [System.Text.Encoding]::UTF8) -ceq $originalRoutingText) `
+        '拒绝覆盖时保留原策略文件内容'
+
+    $legacyMigrationPath = Join-Path $temporaryRoot 'legacy-schema1-profile.json'
+    $legacyDocument = [ordered]@{
+        schema_version = 1
+        connection = [ordered]@{
+            callsign='BI7KGD'; gateway_id=[uint64]461135501; source_id=[uint64]4611355
+            master='43.129.83.124'; master_port=[uint64]62031; destination_id=[uint64]460997
+            slot=[uint64]2; color_code=[uint64]1; call_kind='private'
+        }
+        receive = [ordered]@{ destination_id=[uint64]4611355; slot=[uint64]2; call_kind='private' }
+        devices = [ordered]@{ serial_port='auto'; wave_in_endpoint_id='auto'; wave_out_endpoint_id='auto' }
+        transmit_enabled = $true
+    }
+    [System.IO.File]::WriteAllText($legacyMigrationPath,
+        (ConvertTo-Json -InputObject $legacyDocument -Depth 8) + "`n",
+        (New-Object System.Text.UTF8Encoding($false)))
+    $legacyOriginal = [System.IO.File]::ReadAllText($legacyMigrationPath, [System.Text.Encoding]::UTF8)
+    $migratedProfile = Read-ConnectionProfile -Path $legacyMigrationPath
+    Assert-True ($migratedProfile.migration_source_schema_version -eq 1 -and
+        $migratedProfile.schema_version -eq 2 -and $migratedProfile.rx_policy.local_private_routes.Count -eq 1) `
+        '旧 schema 1 profile 应只在内存迁移成 schema 2 并完整保留接收策略'
+    Assert-True ([System.IO.File]::ReadAllText($legacyMigrationPath, [System.Text.Encoding]::UTF8) -ceq $legacyOriginal) `
+        '读取旧 schema 1 profile 不得自动改写用户文件'
+    $migratedState = New-RoutingStateDocument -Profile $migratedProfile
+    Assert-True ($migratedState.local_source_id -eq 4611355 -and
+        $migratedState.rx_policy.local_private_routes[0].local_destination_id -eq 4611355) `
+        '迁移后的 source ID 与 RX 路由必须一致'
     Assert-Throws {
         ConvertTo-ValidatedConnectionProfile -Connection $profileConnection -Devices $profileDevices `
             -Receive ([pscustomobject]@{ destination_id = [uint64]91; slot = [uint64]2 })

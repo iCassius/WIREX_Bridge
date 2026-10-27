@@ -20,6 +20,11 @@ $tokens = $null
 $parseErrors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($sourcePath, [ref]$tokens, [ref]$parseErrors)
 Assert-UiPreparation ($parseErrors.Count -eq 0) 'bridge-ui.ps1 PowerShell 5.1 语法解析失败。'
+foreach ($functionName in @('Test-UiExactControlFields','Test-UiControlUnsigned','Test-UiRxPolicy','Test-UiRoutingStateFile')) {
+    $dependencyAst = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $functionName }, $true)
+    Assert-UiPreparation ($null -ne $dependencyAst) "缺少启动校验依赖：$functionName"
+    Invoke-Expression $dependencyAst.Extent.Text
+}
 $functionAst = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Test-UiPreparationRecord' }, $true)
 Assert-UiPreparation ($null -ne $functionAst) '没有找到 UI 启动参数验证函数。'
 Invoke-Expression $functionAst.Extent.Text
@@ -31,6 +36,11 @@ $runDirectory = Join-Path $runRoot ([guid]::NewGuid().ToString('N'))
 $expectedExe = Join-Path $testRoot 'wirex_bridge.exe'
 [System.IO.File]::WriteAllBytes($expectedExe, [byte[]]@(0x4D, 0x5A))
 $statusPath = Join-Path $runDirectory 'bm-bridge-20261026-123456-789-0123abcd.jsonl'
+$routingStatePath = Join-Path $runDirectory 'routing-state.json'
+$initialPolicy = [pscustomobject][ordered]@{ group_mode='selected'; private_mode='disabled'; allow_groups=@(); allow_private_peers=@(); local_private_routes=@(); blocked_groups=@(); blocked_source_ids=@() }
+$initialRoutingState = [pscustomobject][ordered]@{ schema_version=1; local_source_id=1; rx_policy=$initialPolicy;
+    tx_target=[pscustomobject][ordered]@{ destination_id=460997; kind='private'; slot=2 }; transmit_enabled=$false }
+[System.IO.File]::WriteAllText($routingStatePath,(ConvertTo-Json -InputObject $initialRoutingState -Depth 8 -Compress),(New-Object System.Text.UTF8Encoding($false)))
 $arguments = [System.Collections.Generic.List[string]]::new()
 $arguments.AddRange([string[]]@('--run', '--port', 'COM5', '--body-file', 'fixture.bin', '--input', '1', '--output', '3',
     '--status-file', $statusPath, '--expected-wavein-endpoint', 'input-endpoint', '--expected-waveout-endpoint', 'output-endpoint',
@@ -38,18 +48,20 @@ $arguments.AddRange([string[]]@('--run', '--port', 'COM5', '--body-file', 'fixtu
     '--password-file', 'local-password-fixture.txt',
     '--profile-source-id', '1', '--profile-master', 'localhost', '--profile-master-port', '62031',
     '--profile-destination-id', '460997', '--profile-slot', '2', '--profile-color-code', '1', '--profile-call-kind', 'P',
-    '--profile-receive-destination-id', '1', '--profile-receive-slot', '2', '--profile-receive-call-kind', 'P',
+    '--routing-state-file', $routingStatePath,
     '--ui-pipe', '--ui-control-version', '2'))
 $record = [pscustomobject][ordered]@{
     schema_version = [int64]1
     executable = [System.IO.Path]::GetFullPath($expectedExe)
     arguments = [string[]]$arguments.ToArray()
     status_path = $statusPath
+    routing_state_path = $routingStatePath
 }
 
 try {
     $validated = Test-UiPreparationRecord -Record $record -RunDirectory $runDirectory -RunRoot $runRoot -ExpectedExecutable $expectedExe
     Assert-UiPreparation ([string]::Equals($validated.StatusPath, [System.IO.Path]::GetFullPath($statusPath), [System.StringComparison]::OrdinalIgnoreCase)) '有效预检记录未返回实际状态路径。'
+    Assert-UiPreparation ([string]::Equals($validated.RoutingStatePath, [System.IO.Path]::GetFullPath($routingStatePath), [System.StringComparison]::OrdinalIgnoreCase)) '有效预检记录未返回本次完整路由状态路径。'
     Assert-UiPreparation ($validated.Arguments.Count -eq $record.arguments.Count -and
         [string]::Join([char]0, $validated.Arguments) -ceq [string]::Join([char]0, $record.arguments)) '有效预检记录的完整启动参数没有保留。'
 
@@ -66,30 +78,40 @@ try {
     $listenOnlyRecord = $record.PSObject.Copy()
     $listenOnlyRecord.arguments = [string[]]@($record.arguments) + [string[]]@('--listen-only')
     [void](Test-UiPreparationRecord -Record $listenOnlyRecord -RunDirectory $runDirectory -RunRoot $runRoot -ExpectedExecutable $expectedExe)
-    $withoutReceive = [System.Collections.Generic.List[string]]::new()
+    $withoutRoutingState = [System.Collections.Generic.List[string]]::new()
     for ($index = 0; $index -lt $record.arguments.Count; $index++) {
-        if ($record.arguments[$index] -ceq '--profile-receive-destination-id') { $index++; continue }
-        if ($record.arguments[$index] -ceq '--profile-receive-slot') { $index++; continue }
-        if ($record.arguments[$index] -ceq '--profile-receive-call-kind') { $index++; continue }
-        $withoutReceive.Add([string]$record.arguments[$index])
+        if ($record.arguments[$index] -ceq '--routing-state-file') { $index++; continue }
+        $withoutRoutingState.Add([string]$record.arguments[$index])
     }
     $invalid = $record.PSObject.Copy()
-    $invalid.arguments = [string[]]$withoutReceive.ToArray()
+    $invalid.arguments = [string[]]$withoutRoutingState.ToArray()
     $rejected = $false
     try { [void](Test-UiPreparationRecord -Record $invalid -RunDirectory $runDirectory -RunRoot $runRoot -ExpectedExecutable $expectedExe) }
     catch { $rejected = $true }
-    Assert-UiPreparation $rejected '缺少接收目标三元组时没有拒绝启动参数。'
+    Assert-UiPreparation $rejected '缺少完整路由状态文件参数时没有拒绝启动参数。'
 
     $invalid = $record.PSObject.Copy()
-    $badReceive = [System.Collections.Generic.List[string]]::new()
-    $badReceive.AddRange([string[]]$record.arguments)
-    $badIndex = $badReceive.IndexOf('--profile-receive-slot')
-    $badReceive[$badIndex + 1] = '3'
-    $invalid.arguments = [string[]]$badReceive.ToArray()
+    $invalid.routing_state_path = Join-Path $testRoot 'routing-state.json'
     $rejected = $false
     try { [void](Test-UiPreparationRecord -Record $invalid -RunDirectory $runDirectory -RunRoot $runRoot -ExpectedExecutable $expectedExe) }
     catch { $rejected = $true }
-    Assert-UiPreparation $rejected '无效接收时隙没有拒绝启动参数。'
+    Assert-UiPreparation $rejected '运行目录之外的路由状态文件没有被拒绝。'
+
+    $invalid = $record.PSObject.Copy()
+    $invalid.routing_state_path = Join-Path $runDirectory 'wrong.json'
+    $rejected = $false
+    try { [void](Test-UiPreparationRecord -Record $invalid -RunDirectory $runDirectory -RunRoot $runRoot -ExpectedExecutable $expectedExe) }
+    catch { $rejected = $true }
+    Assert-UiPreparation $rejected '与 routing-state.json 不同名的路径没有被拒绝。'
+
+    $badState = $initialRoutingState.PSObject.Copy()
+    $badState.tx_target = [pscustomobject][ordered]@{ destination_id=91; kind='group'; slot=2 }
+    [System.IO.File]::WriteAllText($routingStatePath,(ConvertTo-Json -InputObject $badState -Depth 8 -Compress),(New-Object System.Text.UTF8Encoding($false)))
+    $rejected = $false
+    try { [void](Test-UiPreparationRecord -Record $record -RunDirectory $runDirectory -RunRoot $runRoot -ExpectedExecutable $expectedExe) }
+    catch { $rejected = $true }
+    Assert-UiPreparation $rejected 'routing-state.json 与完整启动 TX 目标不一致时没有拒绝。'
+    [System.IO.File]::WriteAllText($routingStatePath,(ConvertTo-Json -InputObject $initialRoutingState -Depth 8 -Compress),(New-Object System.Text.UTF8Encoding($false)))
 
     $invalid = $record.PSObject.Copy()
     $invalid.arguments = [string[]]@($record.arguments) + [string[]]@('--unrecognized-option', '1')

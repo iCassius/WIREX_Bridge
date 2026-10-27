@@ -501,8 +501,9 @@ void test_routed_tx_target_permission_and_cleanup_gates()
     const auto header = pipeline.take_outbound();
     check(header && header->kind == PacketKind::voice_lc_header &&
           header->datagram.destination_id == 460997U &&
+          (header->datagram.flags & 0x3fU) == 0x21U &&
           (header->datagram.flags & 0xc0U) == 0xc0U,
-          "routed TX should overwrite the identity template target with the lease target");
+          "routed TX header uses the actual DMRD voice-LC type and frozen lease target");
 
     auto next_policy = tx;
     next_policy.target = TxTarget{3100U, CallKind::group, Slot::ts1};
@@ -581,6 +582,93 @@ void test_routed_tx_target_permission_and_cleanup_gates()
           "observed physical PTT release should clear the safety latch");
     check(pipeline.begin_routed_tx(identity, Readiness{true, true}, start + 7ms) == Error::none,
           "TX should resume only after permission and physical release are both confirmed");
+}
+
+void test_permission_revocation_preserves_held_lease_eot()
+{
+    using namespace wirex::talkgroup_routing;
+    using namespace wirex::bm_voice;
+    using wirex::dmr_call::CallKind;
+    using wirex::dmr_call::Slot;
+    const auto start = TimePoint{} + 350s;
+    const auto identity = make_call(local_id, 999U, Slot::ts1, CallKind::group, 16U);
+    RxPolicy rx{};
+    rx.group_mode = GroupMode::all_delivered;
+
+    BmVoicePipeline header_pending;
+    const auto enabled = enabled_tx_policy(3100U, CallKind::group, Slot::ts1);
+    check(enable_routing(header_pending, rx, enabled), "header-pending policy should enable");
+    check(header_pending.begin_routed_tx(identity, Readiness{true, true}, start) == Error::none,
+          "header-pending PTT should acquire a lease");
+    auto state = header_pending.routing_snapshot();
+    const auto pending_lease = state.router.active_tx_lease;
+    auto disabled = enabled;
+    disabled.transmit_enabled = false;
+    const auto header_revoke = header_pending.replace_tx_policy(state.router.tx_policy_revision, disabled);
+    check(header_revoke && pending_lease && header_revoke.stop_tx_lease_id == pending_lease->id &&
+          !header_pending.routed_tx_voice_permitted(),
+          "revoking before the first header marks the lease revoked and blocks voice");
+    const auto retained_header = header_pending.take_outbound();
+    const auto retained_eot = header_pending.take_outbound();
+    check(retained_header && retained_header->kind == wirex::dmr_call::PacketKind::voice_lc_header &&
+          (retained_header->datagram.flags & 0x3fU) == 0x21U && retained_eot &&
+          retained_eot->kind == wirex::dmr_call::PacketKind::terminator_with_lc &&
+          (retained_eot->datagram.flags & 0x3fU) == 0x22U,
+          "an already-held lease may send its actual header and EOT after permission revocation");
+
+    auto reenabled = enabled;
+    state = header_pending.routing_snapshot();
+    check(static_cast<bool>(header_pending.replace_tx_policy(state.router.tx_policy_revision, reenabled)) &&
+          !header_pending.routed_tx_voice_permitted() &&
+          header_pending.routing_snapshot().router.active_tx_lease->admission_revoked,
+          "restoring global permission cannot revive an already-revoked lease");
+    check(pending_lease && header_pending.complete_routed_tx_eot(pending_lease->id, true) ==
+              OperationStatus::completed &&
+          header_pending.complete_routed_tx_cleanup(pending_lease->id, true) ==
+              OperationStatus::completed,
+          "the revoked header-pending lease completes only after actual EOT and local cleanup");
+    check(header_pending.begin_routed_tx(identity, Readiness{true, true}, start + 1ms) == Error::busy,
+          "permission restoration cannot bypass the still-held physical PTT lock");
+    check(header_pending.observe_routed_ptt_release() == OperationStatus::completed &&
+          header_pending.begin_routed_tx(identity, Readiness{true, true}, start + 2ms) == Error::none,
+          "a new lease may start after cleanup and a separate physical PTT release");
+
+    BmVoicePipeline draining;
+    check(enable_routing(draining, rx, enabled), "draining policy should enable");
+    check(draining.begin_routed_tx(identity, Readiness{true, true}, start) == Error::none,
+          "draining PTT should acquire a lease");
+    const auto sent_header = draining.take_outbound();
+    std::array<std::int16_t, max_tx_audio_samples_per_push> pcm{};
+    check(sent_header && draining.push_tx_audio(pcm.data(), pcm.size(), start + 1ms),
+          "draining fixture queues voice PCM after its header");
+    check(draining.end_tx(start + 2ms) == Error::none &&
+          draining.snapshot().tx_state == TxState::draining,
+          "physical PTT release leaves queued voice in the draining phase");
+    state = draining.routing_snapshot();
+    const auto draining_lease = state.router.active_tx_lease;
+    const auto draining_revoke = draining.replace_tx_policy(state.router.tx_policy_revision, disabled);
+    check(draining_revoke && draining_lease && draining_revoke.stop_tx_lease_id == draining_lease->id &&
+          !draining.routed_tx_voice_permitted(),
+          "permission revocation also stops a lease that is already draining");
+    bool saw_eot = false;
+    bool saw_voice = false;
+    while (const auto packet = draining.take_outbound()) {
+        saw_eot = saw_eot || packet->kind == wirex::dmr_call::PacketKind::terminator_with_lc;
+        saw_voice = saw_voice || packet->kind == wirex::dmr_call::PacketKind::voice;
+    }
+    check(saw_eot && !saw_voice,
+          "draining revocation drops queued voice tail but retains the old lease EOT");
+    state = draining.routing_snapshot();
+    check(static_cast<bool>(draining.replace_tx_policy(state.router.tx_policy_revision, reenabled)) &&
+          !draining.routed_tx_voice_permitted() &&
+          draining.routing_snapshot().router.active_tx_lease->admission_revoked,
+          "reenabling before cleanup does not reauthorize the previous lease tail");
+    check(draining_lease && draining.complete_routed_tx_eot(draining_lease->id, true) ==
+              OperationStatus::completed &&
+          draining.complete_routed_tx_cleanup(draining_lease->id, true) ==
+              OperationStatus::completed &&
+          draining.begin_routed_tx(identity, Readiness{true, true}, start + 3ms) == Error::none,
+          "released draining lease cleanup allows a new call under the restored policy");
 }
 
 void test_ptt_gate_stays_ready_while_routed_tx_owns_the_lane()
@@ -691,6 +779,7 @@ int main()
     test_retired_stream_is_extended_by_packets_and_expires_after_silence();
     test_late_packet_times_out_unstarted_playback_without_tick();
     test_routed_tx_target_permission_and_cleanup_gates();
+    test_permission_revocation_preserves_held_lease_eot();
     test_ptt_gate_stays_ready_while_routed_tx_owns_the_lane();
     test_failed_eot_remains_faulted_after_cleanup_attempt();
     if (failures != 0) {

@@ -55,6 +55,7 @@ $script:alpha3TestNames = @(
 )
 $script:alpha4TestNames = @($script:alpha3TestNames)
 $script:alpha5TestNames = @($script:alpha4TestNames + 'ui_control_protocol_v2_test')
+$script:alpha6TestNames = @($script:alpha5TestNames + 'talkgroup_routing_test' + 'bm_routing_lifecycle_test' + 'routing_state_test')
 $script:activeReleaseVersion = 'v0.1.0-alpha.1'
 
 function Get-ReleaseProfile {
@@ -268,7 +269,37 @@ function Get-ReleaseProfile {
                 )
             }
         }
-        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, and v0.1.0-alpha.5 release profiles are supported.' }
+        'v0.1.0-alpha.6' {
+            $alpha5 = Get-ReleaseProfile -Version 'v0.1.0-alpha.5'
+            $alpha6SourceFiles = @($alpha5.SourceFiles | Where-Object { [string]$_.Destination -cne 'README.md' }) + @(
+                @{ Source='docs\releases\v0.1.0-alpha.6-package-README.md'; Destination='README.md' },
+                @{ Source='docs\R108_收发路由状态与alpha6验收.md'; Destination='docs\R108_收发路由状态与alpha6验收.md' },
+                @{ Source='tools\start-merged-test.cmd'; Destination='start-merged-test.cmd' },
+                @{ Source='tools\start-merged-test.ps1'; Destination='start-merged-test.ps1' }
+            )
+            $alpha6AssetMap = [ordered]@{}
+            foreach ($path in $alpha5.AssetMap.Keys) { $alpha6AssetMap[$path] = $alpha5.AssetMap[$path] }
+            $alpha6AssetMap['docs/R108_收发路由状态与alpha6验收.md'] = 'docs__r108-routing-state-alpha6.md'
+            $alpha6AssetMap['start-merged-test.cmd'] = 'start-merged-test.cmd'
+            $alpha6AssetMap['start-merged-test.ps1'] = 'start-merged-test.ps1'
+            return [pscustomobject]@{
+                Version = 'v0.1.0-alpha.6'
+                TestNames = $script:alpha6TestNames
+                SourceFiles = $alpha6SourceFiles
+                PackageFiles = @($alpha5.PackageFiles) + @(
+                    'docs/R108_收发路由状态与alpha6验收.md', 'start-merged-test.cmd', 'start-merged-test.ps1'
+                )
+                Directories = @($alpha5.Directories)
+                AssetMap = $alpha6AssetMap
+                PackageReadme = 'docs\releases\v0.1.0-alpha.6-package-README.md'
+                ReleaseScope = 'R108 Stage 3: full schema-2 receive-policy runtime routing through a strict per-run routing-state file, with the merged alpha.6 desktop entry'
+                NotIncluded = @(
+                    'Serial, audio, BrandMeister, PTT, and RF behavior has no alpha.6 hardware acceptance record',
+                    'The package IPC diagnostic does not exercise radio, audio, or network operation'
+                )
+            }
+        }
+        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, and v0.1.0-alpha.6 release profiles are supported.' }
     }
 }
 

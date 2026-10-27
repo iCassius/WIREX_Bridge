@@ -38,6 +38,7 @@ $script:alpha3TestNames = @(
     'bm_bridge_loopback_test'
 )
 $script:alpha5TestNames = @($script:alpha3TestNames + 'ui_control_protocol_v2_test')
+$script:alpha6TestNames = @($script:alpha5TestNames + 'talkgroup_routing_test' + 'bm_routing_lifecycle_test' + 'routing_state_test')
 
 function Set-PublishProfile {
     param([Parameter(Mandatory=$true)][string]$Tag)
@@ -133,7 +134,19 @@ function Set-PublishProfile {
             $script:expectedDirectories = @($alpha4.Directories)
             $script:expectedTestNames = $script:alpha5TestNames
         }
-        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, and v0.1.0-alpha.5 release profiles are supported.' }
+        'v0.1.0-alpha.6' {
+            $alpha5 = Set-PublishProfile -Tag 'v0.1.0-alpha.5'
+            $assetMap = [ordered]@{}
+            foreach ($path in $alpha5.AssetPathMap.Keys) { $assetMap[$path] = $alpha5.AssetPathMap[$path] }
+            $assetMap['docs/R108_收发路由状态与alpha6验收.md'] = 'docs__r108-routing-state-alpha6.md'
+            $assetMap['start-merged-test.cmd'] = 'start-merged-test.cmd'
+            $assetMap['start-merged-test.ps1'] = 'start-merged-test.ps1'
+            $script:publishTag = $Tag
+            $script:assetPathMap = $assetMap
+            $script:expectedDirectories = @($alpha5.Directories)
+            $script:expectedTestNames = $script:alpha6TestNames
+        }
+        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, and v0.1.0-alpha.6 release profiles are supported.' }
     }
     return [pscustomobject]@{
         Tag = $script:publishTag

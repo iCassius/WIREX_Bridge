@@ -44,7 +44,7 @@ function Test-RenderedLayout {
             $detailBounds.actual.right -le $cardBounds.right -and $detailBounds.actual.bottom -le $cardBounds.bottom) `
             ("状态详情 $($status.detail) 超出卡片或被裁切。")
     }
-    foreach ($controlName in @('ProfileMigrationText', 'ReceivePolicyPreviewText', 'MasterPresetBox', 'DestinationBox', 'ReceiveDestinationBox', 'ReceiveSlotBox', 'ReceiveCallKindBox', 'TransmitEnabledBox', 'PlaybackGainSlider', 'TransmitGainSlider')) {
+    foreach ($controlName in @('ProfileMigrationText', 'ReceivePolicyPreviewText', 'MasterPresetBox', 'DestinationBox', 'SlotBox', 'CallKindBox', 'TransmitEnabledBox', 'ApplyNextTxTargetButton', 'GroupModeBox', 'PrivateModeBox', 'GroupRouteIdBox', 'GroupRouteSlotBox', 'GroupRoutesList', 'BlockedGroupIdBox', 'BlockedGroupSlotBox', 'BlockedGroupsList', 'PeerSourceIdBox', 'PeerLocalDestinationBox', 'PeerSlotBox', 'PeerRoutesList', 'LocalPrivateDestinationBox', 'LocalPrivateSlotBox', 'LocalPrivateRoutesList', 'BlockedSourceIdBox', 'BlockedSourcesList', 'PlaybackGainSlider', 'TransmitGainSlider')) {
         Assert-UiRender ([bool]$layout.settings.controls_visible.$controlName) ("设置窗口控件 $controlName 未显示。")
     }
     $trafficCard = $layout.main.controls_bounds.TrafficCard.actual
@@ -92,14 +92,52 @@ function Test-ConfiguredActiveCallLayout {
     Assert-UiRender ($layout.configured_profile.rx_policy.allow_groups.Count -eq 1 -and
         $layout.configured_profile.rx_policy.allow_groups[0].destination_id -eq 91 -and
         $layout.configured_profile.rx_policy.allow_groups[0].slot -eq 2 -and
+        $layout.configured_profile.rx_policy.blocked_groups.Count -eq 1 -and
+        $layout.configured_profile.rx_policy.blocked_groups[0].destination_id -eq 46001 -and
+        $layout.configured_profile.rx_policy.blocked_source_ids.Count -eq 1 -and
+        $layout.configured_profile.rx_policy.blocked_source_ids[0] -eq 3149877 -and
+        $layout.configured_profile.rx_policy.private_mode -ceq 'all_peers_to_local' -and
+        $layout.configured_profile.rx_policy.allow_private_peers.Count -eq 1 -and
+        $layout.configured_profile.rx_policy.local_private_routes.Count -eq 1 -and
         $layout.configured_profile.tx_target.destination_id -eq 460997 -and
         $layout.configured_profile.tx_target.kind -ceq 'private' -and -not [bool]$layout.configured_profile.transmit_enabled) `
-        '配置与来话模拟场景没有保留 TG91 接收和禁发规则。'
-    Assert-UiRender ($layout.active_call.value -ceq '离线模拟 · DMR ID 3149876' -and
+        '路由模拟场景没有保留 TG91、频道/来源屏蔽、本机私呼与禁发策略。'
+    Assert-UiRender ($layout.active_call.value -ceq 'DMR ID 3149876' -and
         $layout.active_call.detail -ceq '离线模拟：组呼 · 目标 91 · TS2 · CC 1 · LC 已验证 · 接收中') `
-        '配置与来话模拟场景没有显示完整来话值和详情。'
+        '配置与来话模拟场景没有显示完整 DMR ID 和详情。'
+    Assert-UiRender ($layout.active_call.value -notmatch '[…]|\.\.\.' -and
+        @($layout.active_call.visual_text) -ccontains 'DMR ID 3149876') '当前来话卡片用省略号遮住了 DMR ID。'
     Assert-UiRender (@($layout.active_call.visual_text) -ccontains $layout.active_call.value -and
         @($layout.active_call.visual_text) -ccontains $layout.active_call.detail) '模拟来话文字没有进入 WPF 视觉树。'
+    Assert-UiRender (@($layout.active_call.configured_routes_text) -ccontains 'Selected · TG 91 · TS2' -and
+        @($layout.active_call.configured_routes_text) -ccontains '本地屏蔽 · TG 46001 · TS2' -and
+        @($layout.active_call.configured_routes_text) -ccontains '跨组屏蔽 · DMR ID 3149877') '主窗口没有显示带样例策略的已配置路由。'
+    $observedCards = @($layout.active_call.observed_cards)
+    $groupCard = @($observedCards | Where-Object { $_.kind -ceq 'group' }) | Select-Object -First 1
+    $privateCard = @($observedCards | Where-Object { $_.kind -ceq 'private' }) | Select-Object -First 1
+    Assert-UiRender ($observedCards.Count -eq 2 -and $groupCard.source_id -eq 3149877 -and
+        $groupCard.destination_id -eq 91 -and [bool]$groupCard.local_action_enabled -and
+        $groupCard.source_action -ceq '恢复来源' -and -not [bool]$groupCard.tx_action_enabled -and
+        $privateCard.source_id -eq 460997 -and $privateCard.destination_id -eq 3149876 -and
+        [bool]$privateCard.local_action_enabled) '主窗口观察来源没有展示组呼与精确私呼卡片动作。'
+    $settingsRouteLayoutPath = Join-Path (Split-Path -Parent $Directory) 'settings-routes-layout.json'
+    if ([System.IO.File]::Exists($settingsRouteLayoutPath)) {
+        $settingsRoutes = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($settingsRouteLayoutPath,[System.Text.Encoding]::UTF8)) -ErrorAction Stop
+        Assert-UiRender ($settingsRoutes.route_settings.group_routes -contains 'TG 91 · TS2' -and
+            $settingsRoutes.route_settings.blocked_groups -contains 'TG 46001 · TS2' -and
+            $settingsRoutes.route_settings.private_peers -contains 'peer 460997 → 本机 3149876 · TS2' -and
+            $settingsRoutes.route_settings.local_private_routes -contains '发往本机 3149876 · TS1' -and
+            $settingsRoutes.route_settings.blocked_sources -contains 'DMR ID 3149877') '设置窗口路由编辑区没有显示多路由样例列表。'
+        Assert-UiRender ($settingsRoutes.route_settings.group_background -ceq '#FF191E21' -and
+            $settingsRoutes.route_settings.group_foreground -ceq '#FFEDF1F2' -and
+            $settingsRoutes.route_settings.selected_route_background -ceq '#FF355A42') '路由列表没有应用暗色背景、浅色文字和绿色选中项。'
+        foreach ($controlName in @('GroupModeBox','PrivateModeBox','GroupRouteIdBox','GroupRoutesList','BlockedGroupIdBox','BlockedGroupsList','PeerSourceIdBox','PeerRoutesList','LocalPrivateDestinationBox','LocalPrivateRoutesList','BlockedSourceIdBox','BlockedSourcesList')) {
+            Assert-UiRender ([bool]$settingsRoutes.settings.controls_visible.$controlName) ("设置窗口路由编辑控件 $controlName 未显示。")
+        }
+        foreach ($controlName in @('GroupModeBox','PrivateModeBox','GroupRouteIdBox','GroupRouteSlotBox','AddGroupRouteButton','GroupRoutesList')) {
+            Assert-UiRender ([bool]$settingsRoutes.settings.controls_bounds.$controlName.fully_visible) ("设置窗口路由控件 $controlName 在路由截图中被裁切。")
+        }
+    }
 }
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -149,7 +187,7 @@ try {
     $exitCode = [int]$LASTEXITCODE
     Assert-UiRender ($exitCode -eq 0) ("WPF 离线渲染进程退出码为 $exitCode。")
 
-    foreach ($name in @('main-window.png', 'settings-window.png')) {
+    foreach ($name in @('main-window.png', 'settings-window.png','main-routing-fixture.png','settings-routes.png','settings-private-routes.png')) {
         $path = Join-Path $renderDirectory $name
         Assert-UiRender ([System.IO.File]::Exists($path)) ("缺少渲染结果：$name")
         $bytes = [System.IO.File]::ReadAllBytes($path)

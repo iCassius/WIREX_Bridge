@@ -65,7 +65,7 @@ $v2Tx = [pscustomobject][ordered]@{ destination_id=[uint64]460997; kind='private
 $v2Policy = [pscustomobject][ordered]@{
     group_mode='selected'; private_mode='disabled'
     allow_groups=@([pscustomobject]@{destination_id=[uint64]91;slot=[uint64]2}, [pscustomobject]@{destination_id=[uint64]46001;slot=[uint64]1})
-    allow_private_peers=@(); local_private_routes=@(); blocked_groups=@(); blocked_source_ids=@()
+    allow_private_peers=@(); local_private_routes=@(); blocked_groups=@([pscustomobject]@{destination_id=[uint64]12345;slot=[uint64]1}); blocked_source_ids=@([uint64]71001,[uint64]72001)
 }
 $multi = ConvertTo-BridgeUserConnectionProfile -Connection $v2Connection -TxTarget $v2Tx -Devices $devices `
     -RxPolicy $v2Policy -TransmitEnabled $false
@@ -73,7 +73,7 @@ $multiView = New-EffectiveTargetProfile -Profile $multi -Target 'custom'
 Assert-UiTarget ($multiView.rx_policy.allow_groups.Count -eq 2 -and $multiView.rx_policy.allow_groups[1].destination_id -eq 46001) `
     '自定义目标的 UI 视图必须完整保留多组 schema 2 配置'
 $multiEditor = Get-UiReceiveEditorState -Profile $multiView
-Assert-UiTarget (-not $multiEditor.CanEdit -and $multiEditor.Reason) '多组策略在第一步单路由编辑器中必须只读'
+Assert-UiTarget ($multiEditor.CanEdit -and $multiEditor.Reason -match '完整 schema 2') '完整多组策略必须可以使用独立路由编辑器修改'
 Assert-UiTarget ((Format-ProfileReceiveTarget -Profile $multiView).Contains('TG 91') -and
     (Format-ProfileReceiveTarget -Profile $multiView).Contains('TG 46001')) 'UI 预览应显示所有保留的 Selected 组呼'
 
@@ -86,4 +86,18 @@ Assert-UiTarget ($mainXaml.Contains('x:Name="ControlProtocolValue"') -and
 Assert-UiTarget ($settingsXaml.Contains('Tag="bm-china-4602"') -and $settingsXaml.Contains('43.129.83.124:62031')) `
     '设置窗口应列出 BM China 4602 地址和 UDP 端口'
 
-Write-Output '通过：schema 2 目标预设、完整多组策略保留、复杂策略只读、迁移与控制协议 UI 字段已校验。'
+$multiListen91 = New-EffectiveTargetProfile -Profile $multiView -Target 'listen-91'
+Assert-UiTarget ($multiListen91.rx_policy.blocked_source_ids.Count -eq 2 -and
+    $multiListen91.rx_policy.blocked_source_ids[0] -eq 71001 -and
+    $multiListen91.rx_policy.blocked_groups.Count -eq 1 -and $multiListen91.rx_policy.blocked_groups[0].destination_id -eq 12345) `
+    '切换收听TG91必须保留无关跨组来源和TG屏蔽。'
+$multiListen46001 = New-EffectiveTargetProfile -Profile $multiView -Target 'listen-46001'
+Assert-UiTarget ($multiListen46001.rx_policy.blocked_source_ids.Count -eq 2 -and
+    $multiListen46001.rx_policy.blocked_groups.Count -eq 1 -and $multiListen46001.rx_policy.blocked_groups[0].destination_id -eq 12345) `
+    '切换收听TG46001必须保留无关跨组来源和频道屏蔽。'
+$multiParrot = New-EffectiveTargetProfile -Profile $multiView -Target 'parrot-cn'
+Assert-UiTarget ($multiParrot.rx_policy.blocked_source_ids.Count -eq 2 -and
+    $multiParrot.rx_policy.blocked_groups.Count -eq 1 -and $multiParrot.tx_target.kind -ceq 'private') `
+    '切换鹦鹉预设必须保留无关跨组来源和频道屏蔽。'
+
+Write-Output '通过：schema 2 预设、完整多组策略可编辑、跨组来源屏蔽保留、迁移与控制协议 UI 字段已校验。'
