@@ -31,6 +31,7 @@ BmVoicePipeline::~BmVoicePipeline() = default;
 
 Error BmVoicePipeline::set_receive_filter(const ReceiveFilter& filter) noexcept
 {
+    if (router_) return Error::busy;
     if (tx_state_ != TxState::idle || rx_state_ != RxState::idle) {
         return Error::busy;
     }
@@ -50,6 +51,7 @@ Error BmVoicePipeline::set_receive_filter(const ReceiveFilter& filter) noexcept
 Error BmVoicePipeline::set_secondary_receive_filter(
     const std::optional<ReceiveFilter>& filter) noexcept
 {
+    if (router_) return Error::busy;
     if (tx_state_ != TxState::idle || rx_state_ != RxState::idle) return Error::busy;
     if (!filter) {
         secondary_receive_filter_ = {};
@@ -68,9 +70,187 @@ Error BmVoicePipeline::set_secondary_receive_filter(
     return Error::none;
 }
 
+Error BmVoicePipeline::enable_routing(
+    std::uint32_t local_source_id,
+    const talkgroup_routing::RxPolicy& rx_policy,
+    const talkgroup_routing::TxPolicy& tx_policy) noexcept
+{
+    if (router_ || tx_state_ != TxState::idle || rx_state_ != RxState::idle ||
+        outbound_count_ != 0U || active_rx_mapping_ || stopping_rx_mapping_) {
+        return Error::busy;
+    }
+    std::unique_ptr<talkgroup_routing::Router> candidate;
+    try {
+        candidate = std::make_unique<talkgroup_routing::Router>(local_source_id);
+    } catch (...) {
+        return Error::resource_failure;
+    }
+    if (!candidate->valid()) return Error::invalid_call;
+
+    const auto rx_update = candidate->replace_rx_policy(1U, rx_policy);
+    if (!rx_update) {
+        return rx_update.status == talkgroup_routing::PolicyUpdateStatus::resource_failure
+            ? Error::resource_failure
+            : Error::invalid_call;
+    }
+    const auto tx_update = candidate->replace_tx_policy(1U, tx_policy);
+    if (!tx_update) {
+        return tx_update.status == talkgroup_routing::PolicyUpdateStatus::resource_failure
+            ? Error::resource_failure
+            : Error::invalid_call;
+    }
+    receive_filter_ = {};
+    secondary_receive_filter_ = {};
+    secondary_receive_filter_enabled_ = false;
+    router_ = std::move(candidate);
+    return Error::none;
+}
+
+talkgroup_routing::PolicyUpdateResult BmVoicePipeline::replace_rx_policy(
+    std::uint64_t expected_revision,
+    const talkgroup_routing::RxPolicy& policy) noexcept
+{
+    if (!router_) {
+        return {talkgroup_routing::PolicyUpdateStatus::invalid_policy, 0U, std::nullopt};
+    }
+    auto result = router_->replace_rx_policy(expected_revision, policy);
+    if (result && result.cancelled_rx_generation) {
+        (void)stop_routed_rx(true);
+    }
+    return result;
+}
+
+talkgroup_routing::PolicyUpdateResult BmVoicePipeline::replace_tx_policy(
+    std::uint64_t expected_revision,
+    const talkgroup_routing::TxPolicy& policy) noexcept
+{
+    if (!router_) {
+        return {talkgroup_routing::PolicyUpdateStatus::invalid_policy,
+                0U, std::nullopt, std::nullopt};
+    }
+    auto result = router_->replace_tx_policy(expected_revision, policy);
+    if (result && result.stop_tx_lease_id && tx_state_ == TxState::active && has_last_now_) {
+        (void)stop_tx(last_now_);
+    }
+    return result;
+}
+
+RoutedSnapshot BmVoicePipeline::routing_snapshot() const noexcept
+{
+    RoutedSnapshot result{};
+    if (router_) result.router = router_->snapshot();
+    result.active_rx_mapping = active_rx_mapping_;
+    result.stopping_rx_mapping = stopping_rx_mapping_;
+    return result;
+}
+
+Error BmVoicePipeline::begin_routed_tx(const dmr_call::CallConfig& identity_template,
+                                      Readiness readiness,
+                                      TimePoint now) noexcept
+{
+    if (!router_) return Error::busy;
+    if (!accept_time(now)) return Error::clock_reversed;
+    if (tx_state_ != TxState::idle || rx_state_ != RxState::idle || outbound_count_ != 0U) {
+        return Error::busy;
+    }
+    if (!readiness.bm_ready) return Error::bm_not_ready;
+    if (!readiness.hri_ready) return Error::hri_not_ready;
+    if (identity_template.source_id != router_->local_source_id()) return Error::invalid_call;
+    if (identity_template.color_code > 15U) return Error::invalid_call;
+
+    const auto started = router_->begin_ptt();
+    if (!started) {
+        return started.status == talkgroup_routing::TxStartStatus::invalid_target
+            ? Error::invalid_call
+            : Error::busy;
+    }
+    auto call = identity_template;
+    call.destination_id = started.lease->target.destination_id;
+    call.kind = started.lease->target.kind;
+    call.slot = started.lease->target.slot;
+    const auto error = begin_tx_media(call, readiness, now);
+    if (error != Error::none) {
+        (void)router_->request_tx_stop(started.lease->id);
+        (void)router_->complete_tx_eot(started.lease->id, false);
+        (void)router_->complete_tx_cleanup(started.lease->id, true);
+        return error;
+    }
+    routed_tx_lease_id_ = started.lease->id;
+    routed_tx_stop_queued_ = false;
+    return Error::none;
+}
+
+talkgroup_routing::OperationStatus BmVoicePipeline::observe_routed_ptt_release() noexcept
+{
+    if (!router_) return talkgroup_routing::OperationStatus::not_active;
+    return router_->observe_ptt_release();
+}
+
+talkgroup_routing::OperationStatus BmVoicePipeline::complete_routed_rx_cleanup(
+    std::uint64_t pipeline_generation,
+    bool cleanup_succeeded) noexcept
+{
+    if (!router_ || !stopping_rx_mapping_ ||
+        stopping_rx_mapping_->pipeline_generation != pipeline_generation) {
+        return talkgroup_routing::OperationStatus::stale_generation;
+    }
+    const auto mapping = *stopping_rx_mapping_;
+    const auto status = router_->complete_rx_stop(mapping.router_generation, cleanup_succeeded);
+    if (status != talkgroup_routing::OperationStatus::completed) return status;
+
+    stopping_rx_mapping_.reset();
+    active_rx_mapping_.reset();
+    routed_rx_cleanup_pending_ = false;
+    receiver_.reset();
+    routed_staging_receiver_.reset();
+    clear_routed_rx_staging();
+    upsampler_.reset();
+    clear_rx_media();
+    rx_state_ = RxState::idle;
+    rx_call_ = {};
+    rx_playback_ready_ = false;
+    rx_network_ended_ = false;
+    rx_start_deadline_ = {};
+    rx_have_link_control_ = false;
+    rx_color_code_known_ = false;
+    rx_upsampler_finished_ = false;
+    if (!advance_rx_generation()) return talkgroup_routing::OperationStatus::generation_exhausted;
+    return status;
+}
+
+talkgroup_routing::OperationStatus BmVoicePipeline::complete_routed_tx_eot(
+    std::uint64_t lease_id,
+    bool sent) noexcept
+{
+    if (!router_) return talkgroup_routing::OperationStatus::stale_lease;
+    return router_->complete_tx_eot(lease_id, sent);
+}
+
+talkgroup_routing::OperationStatus BmVoicePipeline::complete_routed_tx_cleanup(
+    std::uint64_t lease_id,
+    bool cleanup_succeeded) noexcept
+{
+    if (!router_) return talkgroup_routing::OperationStatus::stale_lease;
+    const auto status = router_->complete_tx_cleanup(lease_id, cleanup_succeeded);
+    if (status == talkgroup_routing::OperationStatus::completed &&
+        routed_tx_lease_id_ == lease_id) {
+        routed_tx_lease_id_.reset();
+        routed_tx_stop_queued_ = false;
+    }
+    return status;
+}
+
 Error BmVoicePipeline::begin_tx(const dmr_call::CallConfig& call,
                                 Readiness readiness,
                                 TimePoint now) noexcept
+{
+    if (router_) return Error::busy;
+    return begin_tx_media(call, readiness, now);
+}
+
+Error BmVoicePipeline::begin_tx_media(const dmr_call::CallConfig& call,
+                                      Readiness readiness,
+                                      TimePoint now) noexcept
 {
     if (!accept_time(now)) {
         return Error::clock_reversed;
@@ -177,6 +357,9 @@ Error BmVoicePipeline::end_tx(TimePoint now) noexcept
     if (!accept_time(now)) {
         return Error::clock_reversed;
     }
+    if (router_ && routed_tx_lease_id_) {
+        (void)router_->release_tx(*routed_tx_lease_id_);
+    }
     if (tx_state_ != TxState::active) {
         return Error::not_active;
     }
@@ -209,6 +392,10 @@ Error BmVoicePipeline::stop_tx(TimePoint now) noexcept
 {
     if (!accept_time(now)) {
         return Error::clock_reversed;
+    }
+    if (router_ && routed_tx_lease_id_) {
+        (void)router_->request_tx_stop(*routed_tx_lease_id_);
+        routed_tx_stop_queued_ = true;
     }
     if (tx_state_ == TxState::idle) {
         return Error::not_active;
@@ -252,6 +439,10 @@ Error BmVoicePipeline::stop_tx(TimePoint now) noexcept
 
 void BmVoicePipeline::cancel_tx() noexcept
 {
+    if (router_ && routed_tx_lease_id_) {
+        (void)router_->request_tx_stop(*routed_tx_lease_id_);
+        routed_tx_stop_queued_ = false;
+    }
     transmitter_.reset();
     downsampler_.reset();
     tx_codeword_read_ = 0U;
@@ -292,6 +483,7 @@ ReceiveResult BmVoicePipeline::ingest_rx(const dmrd::Datagram& datagram,
         result.error = Error::generation_exhausted;
         return result;
     }
+    if (router_) return ingest_routed_rx(datagram, now);
     if (rx_state_ != RxState::idle && rx_state_ != RxState::filtered &&
         !rx_playback_ready_ && now >= rx_start_deadline_) {
         result.error = timeout_rx_start();
@@ -315,10 +507,266 @@ ReceiveResult BmVoicePipeline::ingest_rx(const dmrd::Datagram& datagram,
     return result;
 }
 
+ReceiveResult BmVoicePipeline::ingest_routed_rx(const dmrd::Datagram& datagram,
+                                                TimePoint now) noexcept
+{
+    ReceiveResult result{};
+    if (!router_) {
+        result.error = Error::busy;
+        return result;
+    }
+
+    const auto candidate = call_from_datagram(datagram);
+    if (routed_stream_retired(candidate, now)) {
+        result.error = Error::filtered;
+        return result;
+    }
+    if (routed_rx_cleanup_pending_ || stopping_rx_mapping_) {
+        result.error = Error::busy;
+        return result;
+    }
+    const auto route_state = router_->snapshot();
+    if (active_rx_mapping_) {
+        if (!rx_playback_ready_ && now >= rx_start_deadline_) {
+            result.error = timeout_rx_start();
+            return result;
+        }
+        const auto admission = router_->admit_rx(candidate, false);
+        if (admission.decision != talkgroup_routing::RxDecision::same_active_call) {
+            result.error = admission.decision == talkgroup_routing::RxDecision::media_busy ||
+                           admission.decision == talkgroup_routing::RxDecision::stopping
+                ? Error::busy
+                : Error::filtered;
+            return result;
+        }
+        try {
+            result.protocol = receiver_.ingest(datagram, now);
+            result.error = process_receive_result(result.protocol, now);
+        } catch (...) {
+            cancel_rx();
+            result.error = Error::codec_failure;
+        }
+        return result;
+    }
+
+    if (route_state.media_owner != talkgroup_routing::MediaOwner::idle ||
+        tx_state_ != TxState::idle || rx_state_ != RxState::idle) {
+        result.error = Error::busy;
+        return result;
+    }
+
+    constexpr std::uint8_t flag_data_sync = 0x20U;
+    constexpr std::uint8_t flag_voice_sync = 0x10U;
+    constexpr std::uint8_t data_type_mask = 0x0fU;
+    const auto low_flags = static_cast<std::uint8_t>(datagram.flags & data_type_mask);
+    const bool starts_from_header = (datagram.flags & flag_data_sync) != 0U && low_flags == 0x01U;
+    const bool starts_from_voice_sync = (datagram.flags & flag_voice_sync) != 0U && low_flags == 0U;
+    if (routed_rx_staging_count_ != 0U &&
+        now - routed_staging_started_at_ >= dmr_call::default_receive_timeout) {
+        clear_routed_rx_staging();
+        routed_staging_receiver_.reset();
+    }
+    if (routed_rx_staging_count_ == 0U) {
+        if (!starts_from_header && !starts_from_voice_sync) {
+            result.error = Error::filtered;
+            return result;
+        }
+        if (routed_stream_retired(candidate, now)) {
+            result.error = Error::filtered;
+            return result;
+        }
+        routed_staging_call_ = candidate;
+        routed_staging_started_at_ = now;
+        routed_staging_has_call_start_ = true;
+    } else {
+        const auto& first = routed_rx_staging_[0U].datagram;
+        const auto staged_call = call_from_datagram(first);
+        const bool same_stream = staged_call.source_id == candidate.source_id &&
+                                 staged_call.destination_id == candidate.destination_id &&
+                                 staged_call.gateway_id == candidate.gateway_id &&
+                                 staged_call.stream_id == candidate.stream_id &&
+                                 staged_call.slot == candidate.slot &&
+                                 staged_call.kind == candidate.kind;
+        if (!same_stream) {
+            if (starts_from_header && !routed_stream_retired(candidate, now)) {
+                clear_routed_rx_staging();
+                routed_staging_receiver_.reset();
+                routed_staging_call_ = candidate;
+                routed_staging_started_at_ = now;
+                routed_staging_has_call_start_ = true;
+            } else {
+                result.error = Error::filtered;
+                return result;
+            }
+        }
+    }
+
+    if (routed_rx_staging_count_ == routed_rx_staging_.size()) {
+        clear_routed_rx_staging();
+        routed_staging_receiver_.reset();
+        result.error = Error::filtered;
+        return result;
+    }
+    routed_rx_staging_[routed_rx_staging_count_++] = StagedRxDatagram{datagram, now};
+    const auto staged = routed_staging_receiver_.ingest(datagram, now);
+    result.protocol = staged;
+    if (staged.status == dmr_call::ReceiveStatus::malformed) {
+        clear_routed_rx_staging();
+        routed_staging_receiver_.reset();
+        result.error = Error::invalid_call;
+        return result;
+    }
+
+    std::optional<dmr_call::CallConfig> validated_call;
+    for (std::size_t index = 0U; index < staged.event_count; ++index) {
+        const auto& event = staged.events[index];
+        if ((event.kind == dmr_call::ReceiveEventKind::call_started ||
+             event.kind == dmr_call::ReceiveEventKind::link_control_confirmed) &&
+            event.link_control_validated) {
+            validated_call = event.call;
+        }
+    }
+    if (!validated_call) {
+        result.error = Error::filtered;
+        return result;
+    }
+    const bool validated_staged_stream = routed_staging_call_ &&
+        routed_staging_call_->source_id == validated_call->source_id &&
+        routed_staging_call_->destination_id == validated_call->destination_id &&
+        routed_staging_call_->gateway_id == validated_call->gateway_id &&
+        routed_staging_call_->stream_id == validated_call->stream_id &&
+        routed_staging_call_->slot == validated_call->slot &&
+        routed_staging_call_->kind == validated_call->kind;
+    if (!routed_staging_has_call_start_ || !validated_staged_stream ||
+        routed_stream_retired(*validated_call, now)) {
+        clear_routed_rx_staging();
+        routed_staging_receiver_.reset();
+        result.error = Error::filtered;
+        return result;
+    }
+
+    const auto admission = router_->admit_rx(*validated_call, true);
+    if (!admission.admitted()) {
+        clear_routed_rx_staging();
+        routed_staging_receiver_.reset();
+        result.error = admission.decision == talkgroup_routing::RxDecision::media_busy ||
+                       admission.decision == talkgroup_routing::RxDecision::stopping
+            ? Error::busy
+            : Error::filtered;
+        return result;
+    }
+
+    result.error = Error::none;
+    try {
+        for (std::size_t index = 0U; index < routed_rx_staging_count_; ++index) {
+            const auto& pending = routed_rx_staging_[index];
+            result.protocol = receiver_.ingest(pending.datagram, pending.time);
+            const auto process_error = process_receive_result(result.protocol, pending.time);
+            if (process_error != Error::none) {
+                result.error = process_error;
+                break;
+            }
+        }
+    } catch (...) {
+        cancel_rx();
+        result.error = Error::codec_failure;
+    }
+    clear_routed_rx_staging();
+    routed_staging_receiver_.reset();
+    return result;
+}
+
+void BmVoicePipeline::clear_routed_rx_staging() noexcept
+{
+    for (auto& pending : routed_rx_staging_) pending = {};
+    routed_rx_staging_count_ = 0U;
+    routed_staging_call_.reset();
+    routed_staging_started_at_ = {};
+    routed_staging_has_call_start_ = false;
+}
+
+void BmVoicePipeline::retire_routed_stream(const dmr_call::CallConfig& call,
+                                           TimePoint now) noexcept
+{
+    if (call.source_id == 0U || call.destination_id == 0U) return;
+    retired_routed_streams_[retired_routed_stream_cursor_ % retired_routed_streams_.size()] =
+        RetiredRoutedStream{true, call, now + dmr_call::default_retired_stream_lifetime};
+    retired_routed_stream_cursor_ = (retired_routed_stream_cursor_ + 1U) % retired_routed_streams_.size();
+}
+
+bool BmVoicePipeline::routed_stream_retired(const dmr_call::CallConfig& call,
+                                            TimePoint now) noexcept
+{
+    for (auto& retired : retired_routed_streams_) {
+        if (!retired.valid) continue;
+        if (now >= retired.expires_at) {
+            retired.valid = false;
+            continue;
+        }
+        if (retired.call.source_id == call.source_id &&
+            retired.call.destination_id == call.destination_id &&
+            retired.call.stream_id == call.stream_id && retired.call.slot == call.slot) {
+            retired.expires_at = now + dmr_call::default_retired_stream_lifetime;
+            return true;
+        }
+    }
+    return false;
+}
+
+Error BmVoicePipeline::stop_routed_rx(bool router_already_stopping) noexcept
+{
+    if (!router_) return Error::busy;
+    if (stopping_rx_mapping_) return Error::none;
+
+    std::optional<std::uint64_t> router_generation;
+    if (router_already_stopping) {
+        const auto state = router_->snapshot();
+        if (state.media_owner == talkgroup_routing::MediaOwner::rx_stopping ||
+            (state.media_owner == talkgroup_routing::MediaOwner::fault && state.active_rx_generation != 0U)) {
+            router_generation = state.active_rx_generation;
+        }
+    } else {
+        router_generation = router_->request_rx_stop();
+    }
+    if (!router_generation) return Error::not_active;
+
+    RxGenerationMapping mapping{};
+    if (active_rx_mapping_ && active_rx_mapping_->router_generation == *router_generation) {
+        mapping = *active_rx_mapping_;
+    } else {
+        mapping = RxGenerationMapping{*router_generation, rx_generation_};
+    }
+    active_rx_mapping_.reset();
+    stopping_rx_mapping_ = mapping;
+    routed_rx_cleanup_pending_ = true;
+    if (rx_state_ != RxState::idle && rx_state_ != RxState::stopping) {
+        Event cancelled{};
+        cancelled.kind = EventKind::receive_cancelled;
+        cancelled.call = rx_call_;
+        cancelled.generation = mapping.pipeline_generation;
+        (void)queue_event(cancelled);
+    }
+    retire_routed_stream(rx_call_, has_last_now_ ? last_now_ : TimePoint{});
+    receiver_.reset();
+    routed_staging_receiver_.reset();
+    clear_routed_rx_staging();
+    upsampler_.reset();
+    clear_rx_media();
+    rx_state_ = RxState::stopping;
+    rx_playback_ready_ = false;
+    rx_network_ended_ = true;
+    rx_start_deadline_ = {};
+    rx_upsampler_finished_ = true;
+    return Error::none;
+}
+
 Error BmVoicePipeline::playback_ready(TimePoint now) noexcept
 {
     if (!accept_time(now)) {
         return Error::clock_reversed;
+    }
+    if (routed_rx_cleanup_pending_ || rx_state_ == RxState::stopping) {
+        return Error::playback_not_waiting;
     }
     if (rx_state_ == RxState::filtered) {
         return Error::filtered;
@@ -340,6 +788,31 @@ Error BmVoicePipeline::playback_ready(TimePoint now) noexcept
 
 void BmVoicePipeline::cancel_rx() noexcept
 {
+    if (router_) {
+        const auto owner = router_->snapshot();
+        const bool router_has_rx_owner = owner.active_rx_generation != 0U &&
+            (owner.media_owner == talkgroup_routing::MediaOwner::rx_active ||
+             owner.media_owner == talkgroup_routing::MediaOwner::rx_draining ||
+             owner.media_owner == talkgroup_routing::MediaOwner::rx_stopping ||
+             owner.media_owner == talkgroup_routing::MediaOwner::fault);
+        if (active_rx_mapping_ || stopping_rx_mapping_ || router_has_rx_owner) {
+            (void)stop_routed_rx(false);
+        } else {
+            receiver_.reset();
+            clear_routed_rx_staging();
+            routed_staging_receiver_.reset();
+            clear_rx_media();
+            rx_state_ = RxState::idle;
+            rx_call_ = {};
+            rx_playback_ready_ = false;
+            rx_network_ended_ = false;
+            rx_start_deadline_ = {};
+            rx_have_link_control_ = false;
+            rx_color_code_known_ = false;
+            rx_upsampler_finished_ = false;
+        }
+        return;
+    }
     if (rx_state_ != RxState::idle) {
         Event event{};
         event.kind = EventKind::receive_cancelled;
@@ -362,7 +835,7 @@ void BmVoicePipeline::cancel_rx() noexcept
 
 bool BmVoicePipeline::take_playback_pcm(PlaybackFrame& frame) noexcept
 {
-    if (!rx_playback_ready_ || playback_count_ == 0U ||
+    if (routed_rx_cleanup_pending_ || !rx_playback_ready_ || playback_count_ == 0U ||
         playback_inflight_ == max_unconfirmed_playback_frames) {
         return false;
     }
@@ -386,6 +859,7 @@ Error BmVoicePipeline::acknowledge_playback(std::uint64_t generation,
     if (generation != rx_generation_) {
         return Error::stale_playback_ack;
     }
+    if (routed_rx_cleanup_pending_) return Error::stale_playback_ack;
     if (completed_frames == 0U || completed_frames > playback_inflight_) {
         return Error::invalid_playback_ack;
     }
@@ -434,6 +908,9 @@ void BmVoicePipeline::reset() noexcept
     cancel_rx();
     event_read_ = 0U;
     event_count_ = 0U;
+    if (router_) {
+        return;
+    }
     receive_filter_ = {};
     secondary_receive_filter_ = {};
     secondary_receive_filter_enabled_ = false;
@@ -639,6 +1116,7 @@ Error BmVoicePipeline::tick_tx(TimePoint now)
 
 Error BmVoicePipeline::tick_rx(TimePoint now)
 {
+    if (routed_rx_cleanup_pending_ || rx_state_ == RxState::stopping) return Error::none;
     if (rx_state_ != RxState::idle && rx_state_ != RxState::filtered &&
         !rx_playback_ready_ && now >= rx_start_deadline_) {
         return timeout_rx_start();
@@ -779,18 +1257,25 @@ bool BmVoicePipeline::filter_matches(const ReceiveFilter& filter,
 
 bool BmVoicePipeline::filter_accepts_datagram(const dmrd::Datagram& datagram) const noexcept
 {
+    return filter_accepts(call_from_datagram(datagram));
+}
+
+dmr_call::CallConfig BmVoicePipeline::call_from_datagram(const dmrd::Datagram& datagram) noexcept
+{
     constexpr std::uint8_t flag_ts2 = 0x80U;
     constexpr std::uint8_t flag_private_call = 0x40U;
     dmr_call::CallConfig candidate{};
     candidate.source_id = datagram.source_id;
     candidate.destination_id = datagram.destination_id;
+    candidate.gateway_id = datagram.gateway_id;
+    candidate.stream_id = datagram.stream_id;
     candidate.slot = (datagram.flags & flag_ts2) != 0U
         ? dmr_call::Slot::ts2
         : dmr_call::Slot::ts1;
     candidate.kind = (datagram.flags & flag_private_call) != 0U
         ? dmr_call::CallKind::private_call
         : dmr_call::CallKind::group;
-    return filter_accepts(candidate);
+    return candidate;
 }
 
 bool BmVoicePipeline::accept_time(TimePoint now) noexcept
@@ -854,6 +1339,24 @@ Error BmVoicePipeline::process_receive_result(const dmr_call::ReceiveResult& res
             rx_call_ = protocol_event.call;
             rx_have_link_control_ = protocol_event.link_control_validated;
             rx_color_code_known_ = protocol_event.color_code_known;
+            if (router_) {
+                const auto routed = router_->snapshot();
+                if (routed.active_rx_call && routed.active_rx_generation != 0U) {
+                    const auto& admitted = *routed.active_rx_call;
+                    const bool same_stream = admitted.source_id == protocol_event.call.source_id &&
+                                             admitted.destination_id == protocol_event.call.destination_id &&
+                                             admitted.stream_id == protocol_event.call.stream_id &&
+                                             admitted.slot == protocol_event.call.slot &&
+                                             admitted.kind == protocol_event.call.kind;
+                    if (same_stream) {
+                        rx_call_ = admitted;
+                        rx_have_link_control_ = true;
+                        rx_color_code_known_ = true;
+                        active_rx_mapping_ = RxGenerationMapping{
+                            routed.active_rx_generation, rx_generation_};
+                    }
+                }
+            }
             decoder_.reset();
             upsampler_.reset();
             clear_rx_media();
@@ -863,9 +1366,9 @@ Error BmVoicePipeline::process_receive_result(const dmr_call::ReceiveResult& res
             rx_start_deadline_ = now + receive_start_timeout;
             Event started{};
             started.kind = EventKind::receive_started;
-            started.call = protocol_event.call;
-            started.link_control_validated = protocol_event.link_control_validated;
-            started.color_code_known = protocol_event.color_code_known;
+            started.call = rx_call_;
+            started.link_control_validated = rx_have_link_control_;
+            started.color_code_known = rx_color_code_known_;
             started.generation = rx_generation_;
             if (!queue_event(started)) {
                 receiver_.reset();
@@ -930,6 +1433,9 @@ Error BmVoicePipeline::process_receive_result(const dmr_call::ReceiveResult& res
             if (rx_state_ == RxState::idle) {
                 continue;
             }
+            if (router_ && active_rx_mapping_) {
+                (void)router_->rx_network_eot(active_rx_mapping_->router_generation);
+            }
             rx_network_ended_ = true;
             rx_state_ = RxState::draining;
             const auto missing = cap_missing(protocol_event.missing_packets);
@@ -985,6 +1491,11 @@ Error BmVoicePipeline::timeout_rx_start() noexcept
     timeout.color_code_known = rx_color_code_known_;
     timeout.generation = rx_generation_;
     const bool event_queued = queue_event(timeout);
+    if (router_ && active_rx_mapping_) {
+        const auto stop_error = stop_routed_rx(false);
+        if (stop_error != Error::none) return stop_error;
+        return event_queued ? Error::playback_start_timeout : Error::event_queue_full;
+    }
     receiver_.reset();
     upsampler_.reset();
     clear_rx_media();
@@ -1016,6 +1527,25 @@ void BmVoicePipeline::finish_rx_if_drained() noexcept
     drained.color_code_known = rx_color_code_known_;
     drained.generation = rx_generation_;
     if (!queue_event(drained)) {
+        return;
+    }
+    if (router_ && active_rx_mapping_) {
+        const auto mapping = *active_rx_mapping_;
+        if (router_->rx_playback_finished(mapping.router_generation) !=
+            talkgroup_routing::OperationStatus::completed) {
+            return;
+        }
+        active_rx_mapping_.reset();
+        stopping_rx_mapping_ = mapping;
+        routed_rx_cleanup_pending_ = true;
+        retire_routed_stream(rx_call_, has_last_now_ ? last_now_ : TimePoint{});
+        upsampler_.reset();
+        receiver_.reset();
+        rx_state_ = RxState::stopping;
+        rx_playback_ready_ = false;
+        rx_network_ended_ = true;
+        rx_upsampler_finished_ = true;
+        clear_rx_media();
         return;
     }
     upsampler_.reset();

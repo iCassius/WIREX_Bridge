@@ -3,6 +3,7 @@
 #include "wirex/dmr_call.hpp"
 #include "wirex/dmr_vocoder.hpp"
 #include "wirex/pcm_resampler.hpp"
+#include "wirex/talkgroup_routing.hpp"
 
 #include <array>
 #include <chrono>
@@ -25,6 +26,7 @@ inline constexpr std::size_t max_rx_queued_pcm_frames = 150U;
 inline constexpr std::size_t max_unconfirmed_playback_frames = 3U;
 inline constexpr std::size_t max_pipeline_events = 16U;
 inline constexpr std::uint32_t max_missing_bursts_to_compensate = 4U;
+inline constexpr std::size_t max_routed_rx_staging_datagrams = 8U;
 inline constexpr auto receive_start_timeout = std::chrono::seconds{3};
 inline constexpr auto voice_schedule_reanchor_lateness = std::chrono::milliseconds{20};
 inline constexpr auto max_voice_schedule_lateness = std::chrono::milliseconds{120};
@@ -59,6 +61,7 @@ enum class Error : std::uint8_t {
     half_duplex_collision,
     clock_reversed,
     deadline_missed,
+    resource_failure,
 };
 
 struct Readiness {
@@ -89,6 +92,7 @@ enum class RxState : std::uint8_t {
     buffering,
     playing,
     draining,
+    stopping,
 };
 
 enum class EventKind : std::uint8_t {
@@ -143,6 +147,19 @@ struct Snapshot {
     bool receive_network_ended{};
 };
 
+struct RxGenerationMapping {
+    // Router和pipeline分别分配generation；外层必须按这组映射回报cleanup。
+    std::uint64_t router_generation{};
+    std::uint64_t pipeline_generation{};
+};
+
+struct RoutedSnapshot {
+    talkgroup_routing::Snapshot router{};
+    // active在接收/排空阶段有效；stopping保留到外层确认WinMM与HRI清理。
+    std::optional<RxGenerationMapping> active_rx_mapping;
+    std::optional<RxGenerationMapping> stopping_rx_mapping;
+};
+
 // 纯软件双向语音管线；外层负责 HRI、BM session 和真实设备的生命周期。
 // 输入输出按 48 kHz PCM16、单声道分块；内部每 20 ms 运行一个 codec 帧，
 // 再按 dmr_call 的 60 ms DMRD 语音 burst 节奏交付网络数据报。
@@ -156,6 +173,29 @@ public:
     [[nodiscard]] Error set_receive_filter(const ReceiveFilter& filter) noexcept;
     [[nodiscard]] Error set_secondary_receive_filter(
         const std::optional<ReceiveFilter>& filter) noexcept;
+    [[nodiscard]] Error enable_routing(std::uint32_t local_source_id,
+                                       const talkgroup_routing::RxPolicy& rx_policy,
+                                       const talkgroup_routing::TxPolicy& tx_policy) noexcept;
+    [[nodiscard]] talkgroup_routing::PolicyUpdateResult replace_rx_policy(
+        std::uint64_t expected_revision,
+        const talkgroup_routing::RxPolicy& policy) noexcept;
+    [[nodiscard]] talkgroup_routing::PolicyUpdateResult replace_tx_policy(
+        std::uint64_t expected_revision,
+        const talkgroup_routing::TxPolicy& policy) noexcept;
+    [[nodiscard]] RoutedSnapshot routing_snapshot() const noexcept;
+    [[nodiscard]] Error begin_routed_tx(const dmr_call::CallConfig& identity_template,
+                                        Readiness readiness,
+                                        TimePoint now) noexcept;
+    [[nodiscard]] talkgroup_routing::OperationStatus observe_routed_ptt_release() noexcept;
+    [[nodiscard]] talkgroup_routing::OperationStatus complete_routed_rx_cleanup(
+        std::uint64_t pipeline_generation,
+        bool cleanup_succeeded) noexcept;
+    [[nodiscard]] talkgroup_routing::OperationStatus complete_routed_tx_eot(
+        std::uint64_t lease_id,
+        bool sent) noexcept;
+    [[nodiscard]] talkgroup_routing::OperationStatus complete_routed_tx_cleanup(
+        std::uint64_t lease_id,
+        bool cleanup_succeeded) noexcept;
     [[nodiscard]] Error begin_tx(const dmr_call::CallConfig& call,
                                  Readiness readiness,
                                  TimePoint now) noexcept;
@@ -185,6 +225,17 @@ public:
     [[nodiscard]] Snapshot snapshot() const noexcept;
 
 private:
+    struct StagedRxDatagram {
+        dmrd::Datagram datagram{};
+        TimePoint time{};
+    };
+
+    struct RetiredRoutedStream {
+        bool valid{};
+        dmr_call::CallConfig call{};
+        TimePoint expires_at{};
+    };
+
     struct RxBurst {
         dmr_call::AmbeVoiceBurst voice{};
         std::uint8_t missing_before{};
@@ -209,6 +260,18 @@ private:
     [[nodiscard]] static bool filter_matches(const ReceiveFilter& filter,
                                              const dmr_call::CallConfig& call) noexcept;
     [[nodiscard]] bool filter_accepts_datagram(const dmrd::Datagram& datagram) const noexcept;
+    [[nodiscard]] ReceiveResult ingest_routed_rx(const dmrd::Datagram& datagram,
+                                                 TimePoint now) noexcept;
+    void clear_routed_rx_staging() noexcept;
+    void retire_routed_stream(const dmr_call::CallConfig& call, TimePoint now) noexcept;
+    [[nodiscard]] bool routed_stream_retired(const dmr_call::CallConfig& call,
+                                             TimePoint now) noexcept;
+    [[nodiscard]] Error stop_routed_rx(bool router_already_stopping) noexcept;
+    [[nodiscard]] Error begin_tx_media(const dmr_call::CallConfig& call,
+                                       Readiness readiness,
+                                       TimePoint now) noexcept;
+    [[nodiscard]] static dmr_call::CallConfig call_from_datagram(
+        const dmrd::Datagram& datagram) noexcept;
     [[nodiscard]] bool accept_time(TimePoint now) noexcept;
     [[nodiscard]] bool advance_rx_generation() noexcept;
     [[nodiscard]] std::size_t buffered_rx_frames() const noexcept;
@@ -220,6 +283,7 @@ private:
 
     dmr_call::Transmitter transmitter_{};
     dmr_call::Receiver receiver_{};
+    dmr_call::Receiver routed_staging_receiver_{};
     dmr_vocoder::Encoder encoder_{};
     dmr_vocoder::Decoder decoder_{};
     audio::PcmResampler48To8 downsampler_{};
@@ -227,6 +291,19 @@ private:
     ReceiveFilter receive_filter_{};
     ReceiveFilter secondary_receive_filter_{};
     bool secondary_receive_filter_enabled_{};
+    std::unique_ptr<talkgroup_routing::Router> router_;
+    std::optional<RxGenerationMapping> active_rx_mapping_;
+    std::optional<RxGenerationMapping> stopping_rx_mapping_;
+    std::array<StagedRxDatagram, max_routed_rx_staging_datagrams> routed_rx_staging_{};
+    std::array<RetiredRoutedStream, 8U> retired_routed_streams_{};
+    std::size_t retired_routed_stream_cursor_{};
+    std::size_t routed_rx_staging_count_{};
+    std::optional<dmr_call::CallConfig> routed_staging_call_;
+    TimePoint routed_staging_started_at_{};
+    bool routed_staging_has_call_start_{};
+    bool routed_rx_cleanup_pending_{};
+    std::optional<std::uint64_t> routed_tx_lease_id_;
+    bool routed_tx_stop_queued_{};
     TxState tx_state_{TxState::idle};
     RxState rx_state_{RxState::idle};
     dmr_call::CallConfig rx_call_{};

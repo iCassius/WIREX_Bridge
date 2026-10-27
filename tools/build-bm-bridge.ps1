@@ -154,6 +154,7 @@ try {
         'src\dmrd.cpp',
         'third_party\dmr_signal\dmr_signal.cpp',
         'src\dmr_call.cpp',
+        'src\talkgroup_routing.cpp',
         'src\dmr_vocoder.cpp',
         'src\pcm_resampler.cpp',
         'src\bm_voice_pipeline.cpp',
@@ -239,7 +240,9 @@ try {
         @{ Name='bm_connection_config_test'; Source='tests\bm_connection_config_test.cpp' },
         @{ Name='hri_stream_session_test'; Source='tests\hri_stream_session_test.cpp' },
         @{ Name='bm_bridge_loopback_test'; Source='tests\bm_bridge_loopback_test.cpp' },
-        @{ Name='ui_control_protocol_v2_test'; Source='tests\ui_control_protocol_v2_test.cpp' }
+        @{ Name='ui_control_protocol_v2_test'; Source='tests\ui_control_protocol_v2_test.cpp' },
+        @{ Name='talkgroup_routing_test'; Source='tests\talkgroup_routing_test.cpp' },
+        @{ Name='bm_routing_lifecycle_test'; Source='tests\bm_routing_lifecycle_test.cpp' }
     )
     $testObjects = @()
     foreach ($test in $testSpecs) {

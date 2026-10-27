@@ -35,6 +35,7 @@
 #include "wirex/dmrd.hpp"
 #include "wirex/hri_stream_session.hpp"
 #include "wirex/hri_ptt_gate.hpp"
+#include "wirex/talkgroup_routing.hpp"
 #include "wirex/ui_control_protocol.hpp"
 #endif
 
@@ -4524,6 +4525,13 @@ struct BmBridgeCounters {
     bool hri_y_zero_ready{};
     bool wavein_open{};
     bool waveout_open{};
+    std::string media_owner{"not_started"};
+    std::uint64_t rx_router_generation{};
+    std::uint64_t rx_pipeline_generation{};
+    std::uint64_t tx_lease_id{};
+    std::string rx_cleanup_result{"not_started"};
+    std::string tx_eot_result{"not_started"};
+    std::string tx_cleanup_result{"not_started"};
     std::uint64_t tx_datagrams{};
     std::uint64_t rx_datagrams{};
     std::uint64_t control_tx_attempted{};
@@ -4564,11 +4572,105 @@ struct BmBridgeCounters {
     std::uint64_t rx_filtered_slot{};
     std::uint64_t rx_filtered_call_kind{};
     std::uint64_t rx_filtered_protocol{};
+    std::uint64_t rx_filtered_routed_path{};
     bool lcd_source_identity_prepared{};
     std::uint32_t lcd_source_identity_source_id{};
     std::uint64_t lcd_source_identity_generation{};
     std::string lcd_source_identity_label;
 };
+
+bool append_receive_filter_to_router_policy(
+    const wirex::bm_voice::ReceiveFilter& filter,
+    std::uint32_t local_source_id,
+    wirex::talkgroup_routing::RxPolicy& policy)
+{
+    using namespace wirex::talkgroup_routing;
+    using wirex::dmr_call::CallKind;
+    using wirex::dmr_call::Slot;
+
+    // 当前 CLI 构造的 legacy filters 总是锁定呼叫类型。遇到未来新增的
+    // 通配类型/source 组合时明确拒绝，避免转换后无意扩大接收范围。
+    if (!filter.match_call_kind ||
+        (filter.call_kind != CallKind::group && filter.call_kind != CallKind::private_call)) {
+        return false;
+    }
+    const std::array<Slot, 2U> slots{{Slot::ts1, Slot::ts2}};
+    const std::size_t first_slot = filter.match_slot
+        ? static_cast<std::size_t>(filter.slot) - 1U : 0U;
+    const std::size_t slot_count = filter.match_slot ? 1U : slots.size();
+    if (first_slot >= slots.size()) return false;
+
+    if (filter.call_kind == CallKind::group) {
+        if (filter.match_source_id) return false;
+        if (filter.destination_id == 0U) {
+            if (filter.match_slot) return false;
+            policy.group_mode = GroupMode::all_delivered;
+            return true;
+        }
+        for (std::size_t index = first_slot; index < first_slot + slot_count; ++index) {
+            const GroupRoute route{filter.destination_id, slots[index]};
+            if (std::find(policy.allowed_groups.begin(), policy.allowed_groups.end(), route) ==
+                policy.allowed_groups.end()) {
+                policy.allowed_groups.push_back(route);
+            }
+        }
+        return true;
+    }
+
+    // 所有当前 private 目标都发往本机 source ID。Router 的 private routes
+    // 同样只允许发往 local_id；不同 source/本机目标则不能等价转换。
+    if (filter.destination_id != local_source_id ||
+        (filter.match_source_id && filter.source_id == 0U)) {
+        return false;
+    }
+    for (std::size_t index = first_slot; index < first_slot + slot_count; ++index) {
+        const Slot slot = slots[index];
+        if (filter.match_source_id) {
+            const PrivatePeerRoute route{filter.source_id, filter.destination_id, slot};
+            if (std::find(policy.private_peers.begin(), policy.private_peers.end(), route) ==
+                policy.private_peers.end()) {
+                policy.private_peers.push_back(route);
+            }
+            if (policy.private_mode == PrivateMode::disabled) {
+                policy.private_mode = PrivateMode::selected_peers;
+            }
+        } else {
+            const LocalPrivateRoute route{filter.destination_id, slot};
+            if (std::find(policy.local_private_routes.begin(), policy.local_private_routes.end(), route) ==
+                policy.local_private_routes.end()) {
+                policy.local_private_routes.push_back(route);
+            }
+            policy.private_mode = PrivateMode::all_peers_to_local;
+        }
+    }
+    return true;
+}
+
+bool make_routed_policies(
+    std::uint32_t local_source_id,
+    const wirex::bm_voice::ReceiveFilter& primary_receive_filter,
+    const std::optional<wirex::bm_voice::ReceiveFilter>& secondary_receive_filter,
+    wirex::bm_test_profile::TxPolicy legacy_tx_policy,
+    const wirex::dmr_call::CallConfig& call_template,
+    wirex::talkgroup_routing::RxPolicy& receive_policy,
+    wirex::talkgroup_routing::TxPolicy& transmit_policy)
+{
+    receive_policy = {};
+    if (!append_receive_filter_to_router_policy(primary_receive_filter, local_source_id, receive_policy)) {
+        return false;
+    }
+    if (secondary_receive_filter &&
+        !append_receive_filter_to_router_policy(*secondary_receive_filter, local_source_id, receive_policy)) {
+        return false;
+    }
+
+    transmit_policy = {};
+    transmit_policy.transmit_enabled = wirex::bm_test_profile::permits_transmit(legacy_tx_policy);
+    transmit_policy.dynamic_join_enabled = false;
+    transmit_policy.dynamic_join_blocked_group_ids = {91U, 46001U};
+    transmit_policy.target = {call_template.destination_id, call_template.kind, call_template.slot};
+    return true;
+}
 
 const char* ptt_level_name(wirex::hri_session::PttLevel level) noexcept
 {
@@ -4577,6 +4679,21 @@ const char* ptt_level_name(wirex::hri_session::PttLevel level) noexcept
     case PttLevel::unknown: return "unknown";
     case PttLevel::pressed: return "pressed";
     case PttLevel::released: return "released";
+    }
+    return "unknown";
+}
+
+const char* media_owner_name(wirex::talkgroup_routing::MediaOwner owner) noexcept
+{
+    using wirex::talkgroup_routing::MediaOwner;
+    switch (owner) {
+    case MediaOwner::idle: return "idle";
+    case MediaOwner::rx_active: return "rx_active";
+    case MediaOwner::rx_draining: return "rx_draining";
+    case MediaOwner::rx_stopping: return "rx_stopping";
+    case MediaOwner::tx_active: return "tx_active";
+    case MediaOwner::tx_draining: return "tx_draining";
+    case MediaOwner::fault: return "fault";
     }
     return "unknown";
 }
@@ -4591,6 +4708,7 @@ const char* receive_media_state_name(wirex::bm_voice::RxState state) noexcept
     case RxState::buffering: return "buffering";
     case RxState::playing: return "playing";
     case RxState::draining: return "draining";
+    case RxState::stopping: return "stopping";
     }
     return "idle";
 }
@@ -4753,6 +4871,13 @@ bool append_bridge_status(std::ofstream& file, std::string_view event, std::uint
          << ",\"hri_y_zero_ready\":" << (counters.hri_y_zero_ready ? "true" : "false")
          << ",\"wavein_state\":\"" << (counters.wavein_open ? "open" : "closed") << "\""
          << ",\"waveout_state\":\"" << (counters.waveout_open ? "open" : "closed") << "\""
+         << ",\"media_owner\":\"" << counters.media_owner << "\""
+         << ",\"rx_router_generation\":" << counters.rx_router_generation
+         << ",\"rx_pipeline_generation\":" << counters.rx_pipeline_generation
+         << ",\"tx_lease_id\":" << counters.tx_lease_id
+         << ",\"rx_cleanup_result\":\"" << counters.rx_cleanup_result << "\""
+         << ",\"tx_eot_result\":\"" << counters.tx_eot_result << "\""
+         << ",\"tx_cleanup_result\":\"" << counters.tx_cleanup_result << "\""
          << ",\"control_tx_attempted\":" << counters.control_tx_attempted
          << ",\"control_tx_succeeded\":" << counters.control_tx_succeeded
          << ",\"control_rx_datagrams\":" << counters.control_rx_datagrams
@@ -4810,6 +4935,7 @@ bool append_bridge_status(std::ofstream& file, std::string_view event, std::uint
          << ",\"rx_filtered_slot\":" << counters.rx_filtered_slot
          << ",\"rx_filtered_call_kind\":" << counters.rx_filtered_call_kind
          << ",\"rx_filtered_protocol\":" << counters.rx_filtered_protocol
+         << ",\"rx_filtered_routed_path\":" << counters.rx_filtered_routed_path
          << ",\"tx_datagrams\":" << counters.tx_datagrams
          << ",\"rx_datagrams\":" << counters.rx_datagrams
          << ",\"tx_audio_samples\":" << counters.tx_audio_samples
@@ -5436,10 +5562,6 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         (void)bm_stderr(L"Bridge software state allocation failed before devices were opened.\n");
         return 2;
     }
-    if (pipeline->set_receive_filter(receive_filter) != wirex::bm_voice::Error::none) {
-        (void)bm_stderr(L"The selected DMR receive filter is invalid.\n");
-        return 2;
-    }
     std::optional<wirex::bm_voice::ReceiveFilter> parrot_return_filter;
     if (wirex::bm_test_profile::permits_transmit(tx_policy) &&
         call_template.kind == wirex::dmr_call::CallKind::private_call) {
@@ -5453,10 +5575,25 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         filter.match_source_id = true;
         parrot_return_filter = filter;
     }
-    if (pipeline->set_secondary_receive_filter(parrot_return_filter) != wirex::bm_voice::Error::none) {
-        (void)bm_stderr(L"The selected private-call return filter is invalid.\n");
+    wirex::talkgroup_routing::RxPolicy routed_receive_policy{};
+    wirex::talkgroup_routing::TxPolicy routed_transmit_policy{};
+    try {
+        if (!make_routed_policies(call_template.source_id, receive_filter, parrot_return_filter,
+                                  tx_policy, call_template,
+                                  routed_receive_policy, routed_transmit_policy)) {
+            (void)bm_stderr(L"The selected legacy receive filters cannot be represented without widening their routing policy.\n");
+            return 2;
+        }
+    } catch (...) {
+        (void)bm_stderr(L"Bridge routing policy allocation failed before devices were opened.\n");
         return 2;
     }
+    if (pipeline->enable_routing(call_template.source_id, routed_receive_policy,
+                                 routed_transmit_policy) != wirex::bm_voice::Error::none) {
+        (void)bm_stderr(L"Could not enable Router arbitration for this BM bridge configuration.\n");
+        return 2;
+    }
+    counters.media_owner = "idle";
 
     if (ui_pipe) {
         const auto inspection = inspect_ui_pipe(ui_pipe_handle, ui_control_version);
@@ -5553,6 +5690,18 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         counters.waveout_open = radio_output_open;
         const auto snapshot = bm_session.snapshot();
         const auto receive_snapshot = pipeline->snapshot();
+        const auto routing = pipeline->routing_snapshot();
+        counters.media_owner = media_owner_name(routing.router.media_owner);
+        if (routing.active_rx_mapping) {
+            counters.rx_router_generation = routing.active_rx_mapping->router_generation;
+            counters.rx_pipeline_generation = routing.active_rx_mapping->pipeline_generation;
+        } else if (routing.stopping_rx_mapping) {
+            counters.rx_router_generation = routing.stopping_rx_mapping->router_generation;
+            counters.rx_pipeline_generation = routing.stopping_rx_mapping->pipeline_generation;
+        }
+        if (routing.router.active_tx_lease) {
+            counters.tx_lease_id = routing.router.active_tx_lease->id;
+        }
         if (!append_bridge_status(status_file, event, elapsed_ms(), snapshot, hri_state,
                                   ptt_gate.snapshot(), counters, receive_snapshot)) {
             status_report_failed = true;
@@ -5588,6 +5737,83 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
     bool shutdown_tx_terminator_reported = false;
     std::array<std::uint8_t, 4U> active_tx_stream_id{};
     std::array<std::uint8_t, 4U> shutdown_tx_stream_id{};
+    std::optional<std::uint64_t> active_routed_tx_lease_id;
+    bool routed_tx_eot_reported = false;
+    bool routed_tx_input_cleanup_attempted = false;
+    bool routed_tx_input_cleanup_succeeded = true;
+    bool routed_tx_cleanup_reported = false;
+    std::optional<std::uint64_t> active_routed_rx_pipeline_generation;
+    bool routed_rx_waveout_cleanup_attempted = false;
+    bool routed_rx_waveout_cleanup_succeeded = true;
+    bool routed_rx_cleanup_reported = false;
+    bool routed_rx_hri_start_attempted = false;
+    bool routed_rx_cancel_action_seen = false;
+    auto maybe_complete_routed_tx_cleanup = [&]() {
+        if (!active_routed_tx_lease_id || !routed_tx_eot_reported ||
+            !routed_tx_input_cleanup_attempted || routed_tx_cleanup_reported) {
+            return;
+        }
+        const auto result = pipeline->complete_routed_tx_cleanup(
+            *active_routed_tx_lease_id, routed_tx_input_cleanup_succeeded);
+        routed_tx_cleanup_reported = true;
+        counters.tx_cleanup_result = routed_tx_input_cleanup_succeeded ? "completed" : "failed";
+        if (!routed_tx_input_cleanup_succeeded) set_failure("wavein_routed_tx_cleanup_failed");
+        if (routed_tx_input_cleanup_succeeded && counters.tx_eot_result != "failed" &&
+            result != wirex::talkgroup_routing::OperationStatus::completed) {
+            set_failure("routed_tx_cleanup_completion_rejected");
+        }
+        status(routed_tx_input_cleanup_succeeded
+            ? "tx_wavein_cleanup_completed" : "tx_wavein_cleanup_failed");
+    };
+    auto report_routed_tx_eot = [&](bool sent) {
+        if (!active_routed_tx_lease_id || routed_tx_eot_reported) return;
+        const auto result = pipeline->complete_routed_tx_eot(*active_routed_tx_lease_id, sent);
+        routed_tx_eot_reported = true;
+        counters.tx_eot_result = sent ? "sent" : "failed";
+        if (sent && result != wirex::talkgroup_routing::OperationStatus::completed) {
+            set_failure("routed_tx_eot_completion_rejected");
+        } else if (!sent && result != wirex::talkgroup_routing::OperationStatus::send_failed &&
+                   result != wirex::talkgroup_routing::OperationStatus::completed) {
+            set_failure("routed_tx_eot_failure_completion_rejected");
+        }
+        if (!sent) set_failure("routed_tx_eot_not_sent");
+        status(sent ? "tx_eot_udp_send_succeeded" : "tx_eot_udp_send_failed");
+        maybe_complete_routed_tx_cleanup();
+    };
+    auto record_routed_tx_input_cleanup = [&](bool succeeded) {
+        if (!active_routed_tx_lease_id || routed_tx_cleanup_reported) return;
+        routed_tx_input_cleanup_attempted = true;
+        routed_tx_input_cleanup_succeeded = routed_tx_input_cleanup_succeeded && succeeded;
+        maybe_complete_routed_tx_cleanup();
+    };
+    auto record_routed_rx_waveout_cleanup = [&](bool succeeded) {
+        if (!active_routed_rx_pipeline_generation || routed_rx_cleanup_reported) return;
+        routed_rx_waveout_cleanup_attempted = true;
+        routed_rx_waveout_cleanup_succeeded = routed_rx_waveout_cleanup_succeeded && succeeded;
+    };
+    auto report_routed_rx_cleanup = [&](bool hri_t0_confirmed) {
+        if (!active_routed_rx_pipeline_generation || routed_rx_cleanup_reported) return;
+        const bool generation_t0_confirmed = routed_rx_hri_start_attempted && hri_t0_confirmed;
+        const bool cleanup_succeeded = routed_rx_waveout_cleanup_attempted &&
+            routed_rx_waveout_cleanup_succeeded &&
+            (!routed_rx_hri_start_attempted || generation_t0_confirmed);
+        const auto result = pipeline->complete_routed_rx_cleanup(
+            *active_routed_rx_pipeline_generation, cleanup_succeeded);
+        routed_rx_cleanup_reported = true;
+        counters.rx_cleanup_result = cleanup_succeeded ? "completed" : "failed";
+        if (!cleanup_succeeded) set_failure("routed_rx_cleanup_failed");
+        if (cleanup_succeeded && result != wirex::talkgroup_routing::OperationStatus::completed) {
+            set_failure("routed_rx_cleanup_completion_rejected");
+        } else if (!cleanup_succeeded &&
+                   result != wirex::talkgroup_routing::OperationStatus::cleanup_failed &&
+                   result != wirex::talkgroup_routing::OperationStatus::completed) {
+            set_failure("routed_rx_cleanup_failure_completion_rejected");
+        }
+        const auto cleanup_event = !cleanup_succeeded ? "rx_waveout_or_hri_t0_cleanup_failed" :
+            (generation_t0_confirmed ? "rx_waveout_reset_and_hri_t0_cleanup_completed"
+                                     : "rx_audio_cleanup_hri_not_started_completed");
+        status(cleanup_event);
+    };
     auto maybe_show_operator_ready_instructions = [&]() {
         if (operator_ready_instructions_shown || shutdown_requested || failed || !network_ready_seen ||
             bm_session.snapshot().state != wirex::bm::State::ready || !hri_ready ||
@@ -5616,9 +5842,9 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         }
     };
     auto stop_tx_input = [&]() -> bool {
-        if (!radio_input_open) return !radio_input.close_failed();
         const bool closed = radio_input.close();
         radio_input_open = radio_input.is_open();
+        record_routed_tx_input_cleanup(closed);
         return closed;
     };
     auto tx_start_permitted = [&]() {
@@ -5630,9 +5856,12 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         }
         const auto pipeline_state = pipeline->snapshot();
         const auto stream_state = stream_session->snapshot();
+        const auto routing_state = pipeline->routing_snapshot().router;
         return pipeline_state.tx_state == wirex::bm_voice::TxState::idle &&
             pipeline_state.rx_state == wirex::bm_voice::RxState::idle &&
-            stream_state.phase == StreamPhase::idle;
+            stream_state.phase == StreamPhase::idle &&
+            routing_state.media_owner == wirex::talkgroup_routing::MediaOwner::idle &&
+            !routing_state.ptt_release_required;
     };
     auto start_tx_call = [&]() {
         if (!tx_start_permitted()) {
@@ -5647,21 +5876,56 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
             set_failure("stream_id_random_failed");
             return false;
         }
-        const auto begin_result = wirex::bm_test_profile::begin_tx(tx_policy, *pipeline, call,
-            wirex::bm_voice::Readiness{network_ready_seen, hri_ready}, Clock::now());
-        if (begin_result.status != wirex::bm_test_profile::TxStartStatus::started) {
+        const auto begin_result = pipeline->begin_routed_tx(
+            call, wirex::bm_voice::Readiness{network_ready_seen, hri_ready}, Clock::now());
+        if (begin_result != wirex::bm_voice::Error::none) {
             ++counters.rejected_calls;
-            status(begin_result.status == wirex::bm_test_profile::TxStartStatus::denied_receive_only
-                ? "tx_start_rejected_receive_only_policy" : "tx_start_rejected_by_pipeline");
+            const auto rejected_routing = pipeline->routing_snapshot().router;
+            if (rejected_routing.active_tx_lease &&
+                rejected_routing.active_tx_lease->eot_sent.has_value() &&
+                !*rejected_routing.active_tx_lease->eot_sent) {
+                counters.tx_lease_id = rejected_routing.active_tx_lease->id;
+                counters.tx_eot_result = "failed";
+                counters.tx_cleanup_result = "completed";
+                set_failure("routed_tx_begin_media_failed");
+                status("routed_tx_start_failed_router_faulted_after_eot_not_sent");
+            } else {
+                const auto rejection_event = begin_result == wirex::bm_voice::Error::busy
+                    ? "tx_start_rejected_router_busy_or_ptt_release_required"
+                    : (begin_result == wirex::bm_voice::Error::bm_not_ready
+                        ? "tx_start_rejected_bm_not_ready"
+                        : (begin_result == wirex::bm_voice::Error::hri_not_ready
+                            ? "tx_start_rejected_hri_not_ready"
+                            : (wirex::bm_test_profile::permits_transmit(tx_policy)
+                                ? "tx_start_rejected_by_router_or_pipeline"
+                                : "tx_start_rejected_receive_only_policy")));
+                status(rejection_event);
+            }
             return false;
         }
+        const auto routed = pipeline->routing_snapshot();
+        if (!routed.router.active_tx_lease) {
+            pipeline->cancel_tx();
+            set_failure("routed_tx_lease_missing_after_begin");
+            return false;
+        }
+        active_routed_tx_lease_id = routed.router.active_tx_lease->id;
+        routed_tx_eot_reported = false;
+        routed_tx_input_cleanup_attempted = false;
+        routed_tx_input_cleanup_succeeded = true;
+        routed_tx_cleanup_reported = false;
+        counters.tx_lease_id = *active_routed_tx_lease_id;
+        counters.tx_eot_result = "pending";
+        counters.tx_cleanup_result = "pending";
+        active_tx_stream_id = call.stream_id;
         if (!radio_input.open(input_id, &expected_wavein_endpoint_id)) {
             pipeline->cancel_tx();
+            (void)stop_tx_input();
+            report_routed_tx_eot(false);
             ++counters.rejected_calls;
             status("radio_wavein_open_failed_tx_cancelled");
             return false;
         }
-        active_tx_stream_id = call.stream_id;
         radio_input_open = true;
         if (!manual_ptt) ++counters.ptt_tx_starts;
         status(manual_ptt ? "tx_started_explicitly_by_t_key" : "tx_started_from_radio_ptt_down");
@@ -5701,7 +5965,11 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         return succeeded;
     };
     auto finish_tx_capture = [&]() {
-        if (!radio_input_open) return !radio_input.close_failed();
+        if (!radio_input_open) {
+            const bool closed = radio_input.close();
+            record_routed_tx_input_cleanup(closed);
+            return closed;
+        }
         bool succeeded = radio_input.stop_capture();
         if (succeeded) {
             const DWORD wait_result = WaitForSingleObject(radio_input.event(), 100U);
@@ -5713,26 +5981,31 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         }
         const bool closed = radio_input.close();
         radio_input_open = radio_input.is_open();
+        record_routed_tx_input_cleanup(closed);
         return succeeded && closed;
     };
     auto end_tx_call = [&]() {
         if (!finish_tx_capture()) {
             pipeline->cancel_tx();
+            report_routed_tx_eot(false);
             set_failure("wavein_tx_release_cleanup_failed");
             return false;
         }
         const auto state = pipeline->snapshot();
         if (state.tx_state != wirex::bm_voice::TxState::active) {
             if (state.tx_state != wirex::bm_voice::TxState::idle) pipeline->cancel_tx();
+            report_routed_tx_eot(false);
             set_failure("tx_release_without_active_call");
             return false;
         }
         const auto ended = pipeline->end_tx(Clock::now());
         if (ended != wirex::bm_voice::Error::none) {
             pipeline->cancel_tx();
+            report_routed_tx_eot(false);
             set_failure("tx_audio_flush_failed");
             return false;
         }
+        if (manual_ptt) status("manual_t_key_operator_released_tx_lease");
         status("tx_audio_draining_after_radio_ptt_release");
         return true;
     };
@@ -5744,6 +6017,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
             } else if (!manual_ptt && !ptt_gate.start_succeeded(elapsed_ms())) {
                 (void)stop_tx_input();
                 pipeline->cancel_tx();
+                report_routed_tx_eot(false);
                 ptt_gate.start_failed();
                 set_failure("ptt_call_timer_start_failed");
             }
@@ -5771,10 +6045,12 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 if (network_ready_seen && bm_session.snapshot().state == wirex::bm::State::ready) {
                     if (pipeline->stop_tx(Clock::now()) != wirex::bm_voice::Error::none) {
                         pipeline->cancel_tx();
+                        report_routed_tx_eot(false);
                         set_failure("ptt_call_timeout_terminator_failed");
                     }
                 } else {
                     pipeline->cancel_tx();
+                    report_routed_tx_eot(false);
                 }
             }
             ptt_gate.disarm_until_release();
@@ -5789,10 +6065,12 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
             if (bm_session.snapshot().state == wirex::bm::State::ready) {
                 if (pipeline->stop_tx(Clock::now()) != wirex::bm_voice::Error::none) {
                     pipeline->cancel_tx();
+                    report_routed_tx_eot(false);
                     set_failure("ptt_abort_terminator_failed");
                 }
             } else {
                 pipeline->cancel_tx();
+                report_routed_tx_eot(false);
             }
         }
         ptt_gate.disarm_until_release();
@@ -5808,6 +6086,10 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
     };
     process_ptt_observation = [&](const wirex::hri_session::PttObservation& observation) {
         if (manual_ptt || !observation.y_zero_acknowledged) return;
+        if (observation.level == wirex::hri_session::PttLevel::released &&
+            pipeline->observe_routed_ptt_release() != wirex::talkgroup_routing::OperationStatus::completed) {
+            set_failure("routed_physical_ptt_release_observation_rejected");
+        }
         synchronize_ptt_gate();
         PttLevel level = PttLevel::unknown;
         switch (observation.level) {
@@ -5864,6 +6146,10 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                     set_failure("hri_stream_write_state_error");
                     break;
                 }
+                if (action.kind == StreamActionKind::write_start_candidate &&
+                    active_routed_rx_pipeline_generation) {
+                    routed_rx_hri_start_attempted = true;
+                }
                 DWORD written = 0U;
                 const BOOL wrote = WriteFile(port.get(), action.frame.data(),
                     static_cast<DWORD>(action.frame.size()), &written, nullptr);
@@ -5893,18 +6179,26 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
             }
             case StreamActionKind::cancel_playback:
                 clear_lcd_source_identity();
+                routed_rx_cancel_action_seen = true;
                 pipeline->cancel_rx();
                 pending_receive_start = false;
                 pending_playback_drain = false;
-                if (radio_output_open) {
+                {
                     const bool closed = radio_output.close();
-                    radio_output_open = false;
+                    radio_output_open = radio_output.is_open();
+                    record_routed_rx_waveout_cleanup(closed);
                     if (!closed) set_failure("waveout_cancel_cleanup_failed");
                 }
                 status("playback_cancelled_and_queue_cleared");
                 break;
             case StreamActionKind::call_finished: {
                 const auto state = stream_session->snapshot();
+                const bool waveout_cleanup_ok = radio_output.close();
+                radio_output_open = radio_output.is_open();
+                record_routed_rx_waveout_cleanup(waveout_cleanup_ok);
+                if (!waveout_cleanup_ok) set_failure("waveout_rx_call_cleanup_failed");
+                const bool hri_t0_confirmed = state.stop_write_succeeded && state.stop_t_record_observed;
+                report_routed_rx_cleanup(hri_t0_confirmed);
                 clear_lcd_source_identity();
                 ++counters.calls_ended;
                 if (state.reason == StreamReason::none && state.stop_write_succeeded &&
@@ -5973,13 +6267,39 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         }
     };
 
+    auto cleanup_routed_rx_without_hri_start = [&](std::string_view event) {
+        if (!active_routed_rx_pipeline_generation) return;
+        if (routed_rx_hri_start_attempted) return;
+        const bool closed = radio_output.close();
+        radio_output_open = radio_output.is_open();
+        record_routed_rx_waveout_cleanup(closed);
+        if (!closed) set_failure("waveout_pre_t3_cleanup_failed");
+        report_routed_rx_cleanup(false);
+        status(event);
+    };
+
     auto begin_stream_for_pending_rx = [&]() {
         if (!pending_receive_start || !hri_ready || shutdown_requested) return;
         const auto pipeline_state = pipeline->snapshot();
-        if (pipeline_state.rx_state == wirex::bm_voice::RxState::idle) {
+        if (pipeline_state.rx_state == wirex::bm_voice::RxState::idle ||
+            pipeline_state.rx_state == wirex::bm_voice::RxState::filtered ||
+            pipeline_state.rx_state == wirex::bm_voice::RxState::stopping) {
             pending_receive_start = false;
             pending_receive_ended = false;
             clear_lcd_source_identity();
+            pipeline->cancel_rx();
+            const auto stream_phase = stream_session->snapshot().phase;
+            if (stream_phase != StreamPhase::idle && stream_phase != StreamPhase::faulted) {
+                service_stream_update(stream_session->cancel(StreamReason::cancelled, elapsed_ms()));
+            } else if (routed_rx_hri_start_attempted) {
+                const bool closed = radio_output.close();
+                radio_output_open = radio_output.is_open();
+                record_routed_rx_waveout_cleanup(closed);
+                if (!closed) set_failure("waveout_stopping_rx_cleanup_failed");
+                report_routed_rx_cleanup(false);
+            } else {
+                cleanup_routed_rx_without_hri_start("rx_media_idle_or_stopping_before_hri_start");
+            }
             return;
         }
         const auto stream_state = stream_session->snapshot();
@@ -5993,10 +6313,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 // Receiver替换流时旧播放队列已不再属于当前通话；复位电台输出并收尾旧T会话。
                 service_stream_update(stream_session->cancel(StreamReason::cancelled, elapsed_ms()));
             }
-            if (radio_output_open) {
-                if (!radio_output.close()) set_failure("radio_waveout_busy_cleanup_failed");
-                radio_output_open = false;
-            }
+            cleanup_routed_rx_without_hri_start("rx_rejected_busy_or_hri_cleanup_incomplete");
             status("downlink_call_rejected_busy_or_hri_cleanup_incomplete");
             return;
         }
@@ -6010,6 +6327,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 pipeline->cancel_rx();
                 downlink_blocked = true;
                 set_failure("radio_waveout_reopen_failed");
+                cleanup_routed_rx_without_hri_start("rx_rejected_waveout_reopen_failed");
                 status("downlink_rejected_without_ready_radio_waveout");
                 return;
             }
@@ -6023,20 +6341,26 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
             pending_receive_ended = false;
             clear_lcd_source_identity();
             pipeline->cancel_rx();
+            cleanup_routed_rx_without_hri_start("rx_rejected_after_bounded_window");
             return;
         }
         const auto call_window_ms = continuous_run ? wirex::hri_stream_session::max_call_window_ms
             : std::min(wirex::hri_stream_session::max_call_window_ms, bm_bridge_window_ms - now_ms);
         using wirex::bm_voice::RxState;
         const auto& receive_call = pipeline_state.receive_call;
-        const bool receive_snapshot_valid = pipeline_state.rx_state != RxState::idle &&
-            pipeline_state.rx_state != RxState::filtered && pipeline_state.receive_generation != 0U;
+        const bool receive_snapshot_valid =
+            (pipeline_state.rx_state == RxState::waiting_for_playback ||
+             pipeline_state.rx_state == RxState::buffering ||
+             pipeline_state.rx_state == RxState::playing ||
+             pipeline_state.rx_state == RxState::draining) &&
+            pipeline_state.receive_generation != 0U;
         if (!receive_snapshot_valid) {
             ++counters.rejected_calls;
             pending_receive_start = false;
             pending_receive_ended = false;
             clear_lcd_source_identity();
             pipeline->cancel_rx();
+            cleanup_routed_rx_without_hri_start("rx_rejected_invalid_receive_snapshot");
             status("lcd_source_identity_rejected_invalid_receive_snapshot");
             return;
         }
@@ -6048,6 +6372,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
             pending_receive_ended = false;
             clear_lcd_source_identity();
             pipeline->cancel_rx();
+            cleanup_routed_rx_without_hri_start("rx_rejected_invalid_source_identity");
             status("lcd_source_identity_rejected_invalid_source_id");
             return;
         }
@@ -6059,6 +6384,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
             pending_receive_ended = false;
             clear_lcd_source_identity();
             pipeline->cancel_rx();
+            cleanup_routed_rx_without_hri_start("rx_rejected_invalid_hri_start_frame");
             status("lcd_source_identity_frame_encode_failed");
             return;
         }
@@ -6071,6 +6397,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
             ++counters.rejected_calls;
             clear_lcd_source_identity();
             pipeline->cancel_rx();
+            cleanup_routed_rx_without_hri_start("rx_rejected_hri_stream_start");
             status("lcd_source_identity_rejected_by_stream_session");
             return;
         }
@@ -6093,12 +6420,49 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         }
     };
 
+    auto capture_routed_rx_generation = [&]() {
+        if (active_routed_rx_pipeline_generation && !routed_rx_cleanup_reported) {
+            set_failure("routed_rx_generation_replaced_before_cleanup");
+            return false;
+        }
+        const auto pipeline_state = pipeline->snapshot();
+        const auto routing = pipeline->routing_snapshot();
+        std::optional<wirex::bm_voice::RxGenerationMapping> mapping;
+        if (routing.active_rx_mapping &&
+            routing.active_rx_mapping->pipeline_generation == pipeline_state.receive_generation) {
+            mapping = routing.active_rx_mapping;
+        } else if (routing.stopping_rx_mapping &&
+                   routing.stopping_rx_mapping->pipeline_generation == pipeline_state.receive_generation) {
+            mapping = routing.stopping_rx_mapping;
+        }
+        if (!mapping) {
+            set_failure("routed_rx_generation_mapping_missing");
+            status("rx_owner_generation_mapping_missing");
+            return false;
+        }
+        active_routed_rx_pipeline_generation = mapping->pipeline_generation;
+        routed_rx_waveout_cleanup_attempted = false;
+        routed_rx_waveout_cleanup_succeeded = true;
+        routed_rx_cleanup_reported = false;
+        routed_rx_hri_start_attempted = false;
+        routed_rx_cancel_action_seen = false;
+        counters.rx_router_generation = mapping->router_generation;
+        counters.rx_pipeline_generation = mapping->pipeline_generation;
+        counters.rx_cleanup_result = "pending";
+        status("rx_owner_generation_reserved");
+        return true;
+    };
+
     auto drain_pipeline_events = [&]() {
         while (const auto event = pipeline->take_event()) {
             switch (event->kind) {
             case PipelineEventKind::receive_started:
-                pending_receive_start = true;
-                begin_stream_for_pending_rx();
+                if (capture_routed_rx_generation()) {
+                    pending_receive_start = true;
+                    begin_stream_for_pending_rx();
+                } else {
+                    pipeline->cancel_rx();
+                }
                 break;
             case PipelineEventKind::network_ended:
                 if (stream_session->snapshot().phase != StreamPhase::idle &&
@@ -6114,7 +6478,27 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 status("bm_receive_playback_drained");
                 break;
             case PipelineEventKind::receive_cancelled:
+                pending_receive_start = false;
+                pending_receive_ended = false;
+                pending_playback_drain = false;
                 clear_lcd_source_identity();
+                if (active_routed_rx_pipeline_generation && !routed_rx_cleanup_reported) {
+                    const auto phase = stream_session->snapshot().phase;
+                    if (phase != StreamPhase::idle && phase != StreamPhase::faulted &&
+                        !routed_rx_cancel_action_seen) {
+                        service_stream_update(stream_session->cancel(StreamReason::cancelled, elapsed_ms()));
+                    } else if (phase == StreamPhase::idle || phase == StreamPhase::faulted) {
+                        if (routed_rx_hri_start_attempted) {
+                            const bool closed = radio_output.close();
+                            radio_output_open = radio_output.is_open();
+                            record_routed_rx_waveout_cleanup(closed);
+                            if (!closed) set_failure("waveout_cancelled_rx_cleanup_failed");
+                            report_routed_rx_cleanup(false);
+                        } else {
+                            cleanup_routed_rx_without_hri_start("rx_cancelled_before_hri_start");
+                        }
+                    }
+                }
                 status("bm_receive_cancelled");
                 break;
             case PipelineEventKind::playback_start_timeout:
@@ -6160,6 +6544,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 const auto stopped = pipeline->stop_tx(Clock::now());
                 if (stopped != wirex::bm_voice::Error::none) {
                     pipeline->cancel_tx();
+                    report_routed_tx_eot(false);
                     set_failure("tx_exit_terminator_failed");
                     report_shutdown_terminator_not_sent("shutdown_tx_terminator_not_sent_pipeline_rejected");
                 } else {
@@ -6167,6 +6552,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 }
             } else {
                 pipeline->cancel_tx();
+                report_routed_tx_eot(false);
                 report_shutdown_terminator_not_sent("shutdown_tx_terminator_not_sent_network_lost");
             }
         }
@@ -6179,10 +6565,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
             service_stream_update(stream_session->cancel(StreamReason::cancelled, now_ms));
         } else if (pipeline->snapshot().rx_state != wirex::bm_voice::RxState::idle) {
             pipeline->cancel_rx();
-            if (radio_output_open) {
-                if (!radio_output.close()) set_failure("radio_waveout_shutdown_cleanup_failed");
-                radio_output_open = false;
-            }
+            cleanup_routed_rx_without_hri_start("rx_shutdown_without_hri_stream");
         }
         status("shutdown_requested");
     };
@@ -6218,6 +6601,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         if (was_ready) ++counters.reconnects;
         (void)stop_tx_input();
         pipeline->cancel_tx();
+        report_routed_tx_eot(false);
         pipeline->cancel_rx();
         clear_lcd_source_identity();
         status("bm_receive_cancelled");
@@ -6225,8 +6609,10 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         pending_receive_ended = false;
         pending_playback_drain = false;
         if (radio_output_open) {
-            if (!radio_output.close()) set_failure("radio_waveout_network_cleanup_failed");
-            radio_output_open = false;
+            const bool closed = radio_output.close();
+            radio_output_open = radio_output.is_open();
+            record_routed_rx_waveout_cleanup(closed);
+            if (!closed) set_failure("radio_waveout_network_cleanup_failed");
         }
         const auto phase = stream_session->snapshot().phase;
         if (shutdown_tx_terminator_pending) {
@@ -6234,9 +6620,29 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         }
         if (phase != StreamPhase::idle && phase != StreamPhase::faulted) {
             service_stream_update(stream_session->cancel(StreamReason::network_lost, elapsed_ms()));
+        } else if (active_routed_rx_pipeline_generation) {
+            cleanup_routed_rx_without_hri_start("rx_network_loss_without_hri_t0");
         }
         status(reason);
         last_logged_bm_snapshot = bm_session.snapshot();
+    };
+
+    auto routed_tx_datagram_matches_lease = [&](const wirex::dmrd::Datagram& datagram) {
+        const auto routing = pipeline->routing_snapshot().router;
+        if (!active_routed_tx_lease_id || !routing.active_tx_lease ||
+            routing.active_tx_lease->id != *active_routed_tx_lease_id) {
+            return false;
+        }
+        const auto& target = routing.active_tx_lease->target;
+        const auto slot = (datagram.flags & 0x80U) != 0U
+            ? wirex::dmr_call::Slot::ts2 : wirex::dmr_call::Slot::ts1;
+        const auto kind = (datagram.flags & 0x40U) != 0U
+            ? wirex::dmr_call::CallKind::private_call : wirex::dmr_call::CallKind::group;
+        return datagram.source_id == call_template.source_id &&
+            datagram.gateway_id == call_template.gateway_id &&
+            datagram.destination_id == target.destination_id &&
+            slot == target.slot && kind == target.kind &&
+            datagram.stream_id == active_tx_stream_id;
     };
 
     auto drain_bm_outbound = [&]() {
@@ -6248,6 +6654,26 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 status("bm_dmrd_packet_rejected_receive_only_policy");
                 continue;
             }
+            wirex::dmrd::DecodeResult routed_decoded{};
+            bool is_routed_tx_terminator = false;
+            if (packet.kind == wirex::bm::PacketKind::application) {
+                routed_decoded = wirex::dmrd::decode(packet.bytes.data(), packet.bytes.size());
+                if (!routed_decoded || !routed_tx_datagram_matches_lease(routed_decoded.datagram)) {
+                    ++counters.rejected_calls;
+                    if (active_routed_tx_lease_id) {
+                        pipeline->cancel_tx();
+                        (void)stop_tx_input();
+                        report_routed_tx_eot(false);
+                    }
+                    set_failure("routed_tx_udp_packet_target_or_lease_changed");
+                    status("routed_tx_udp_packet_rejected_before_send");
+                    transport.close();
+                    bm_session.transport_lost(elapsed_ms());
+                    handle_network_loss("routed_tx_udp_packet_rejected_before_send");
+                    return false;
+                }
+                is_routed_tx_terminator = (routed_decoded.datagram.flags & 0x3FU) == 0x22U;
+            }
             const bool is_rptcl = packet.kind == wirex::bm::PacketKind::control &&
                 packet.bytes.size() == 9U && packet.bytes[0U] == 'R' && packet.bytes[1U] == 'P' &&
                 packet.bytes[2U] == 'T' && packet.bytes[3U] == 'C' && packet.bytes[4U] == 'L';
@@ -6258,6 +6684,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                     (decoded.datagram.flags & 0x3FU) == 0x22U;
             }
             if (!transport.is_open() || !transport.send(packet.bytes.data(), packet.bytes.size())) {
+                if (is_routed_tx_terminator) report_routed_tx_eot(false);
                 if (is_shutdown_terminator) {
                     report_shutdown_terminator_not_sent("shutdown_tx_terminator_udp_send_failed");
                 }
@@ -6269,6 +6696,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 return false;
             }
             if (packet.kind == wirex::bm::PacketKind::control) ++counters.control_tx_succeeded;
+            if (is_routed_tx_terminator) report_routed_tx_eot(true);
             if (is_shutdown_terminator) {
                 shutdown_tx_terminator_pending = false;
                 shutdown_tx_terminator_reported = true;
@@ -6282,9 +6710,19 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
 
     auto pump_tx_datagrams = [&]() {
         while (auto packet = pipeline->take_outbound()) {
+            if (!routed_tx_datagram_matches_lease(packet->datagram)) {
+                pipeline->cancel_tx();
+                (void)stop_tx_input();
+                report_routed_tx_eot(false);
+                set_failure("routed_tx_packet_target_or_lease_changed");
+                ptt_gate.disarm_until_release();
+                status("routed_tx_packet_rejected_target_or_lease_changed");
+                return;
+            }
             if (!wirex::bm_test_profile::permits_transmit(tx_policy)) {
                 pipeline->cancel_tx();
                 (void)stop_tx_input();
+                report_routed_tx_eot(false);
                 ptt_gate.disarm_until_release();
                 ++counters.rejected_calls;
                 status("tx_datagram_rejected_receive_only_policy");
@@ -6296,6 +6734,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 }
                 pipeline->cancel_tx();
                 (void)stop_tx_input();
+                report_routed_tx_eot(false);
                 (void)ptt_gate.set_ready(false);
                 ptt_gate.disarm_until_release();
                 status("tx_stopped_bm_not_ready");
@@ -6308,6 +6747,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 }
                 pipeline->cancel_tx();
                 (void)stop_tx_input();
+                report_routed_tx_eot(false);
                 ptt_gate.disarm_until_release();
                 status("tx_datagram_rejected_and_queue_cleared");
                 return;
@@ -6333,6 +6773,12 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         (void)start_tx_call();
     };
 
+    auto shutdown_media_cleanup_complete = [&]() {
+        const bool routed_tx_complete = !active_routed_tx_lease_id ||
+            (routed_tx_eot_reported && routed_tx_cleanup_reported);
+        return routed_tx_complete && !shutdown_tx_terminator_pending;
+    };
+
     bool exception_while_running = false;
     try {
         if (!shutdown_requested) {
@@ -6345,14 +6791,16 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         while (true) {
             const auto stream_phase_at_loop_start = stream_session->snapshot().phase;
             if (shutdown_requested && pipeline->snapshot().tx_state == wirex::bm_voice::TxState::idle &&
-                (stream_phase_at_loop_start == StreamPhase::idle || stream_phase_at_loop_start == StreamPhase::faulted)) {
+                (stream_phase_at_loop_start == StreamPhase::idle || stream_phase_at_loop_start == StreamPhase::faulted) &&
+                shutdown_media_cleanup_complete()) {
                 break;
             }
             if (failed && !shutdown_requested) begin_shutdown(failure_reason);
             const auto stream_phase_after_failure_check = stream_session->snapshot().phase;
             if (shutdown_requested && pipeline->snapshot().tx_state == wirex::bm_voice::TxState::idle &&
                 (stream_phase_after_failure_check == StreamPhase::idle ||
-                 stream_phase_after_failure_check == StreamPhase::faulted)) {
+                 stream_phase_after_failure_check == StreamPhase::faulted) &&
+                shutdown_media_cleanup_complete()) {
                 break;
             }
             synchronize_ptt_gate();
@@ -6629,47 +7077,9 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                     const auto accepted = pipeline->ingest_rx(decoded.datagram, Clock::now());
                     if (accepted.error == wirex::bm_voice::Error::filtered) {
                         ++counters.rx_filtered_datagrams;
-                        struct FilterMismatch {
-                            bool destination{};
-                            bool slot{};
-                            bool call_kind{};
-                            bool source{};
-                            unsigned count{};
-                        };
-                        const auto inspect_filter = [&](const wirex::bm_voice::ReceiveFilter& filter) {
-                            FilterMismatch mismatch{};
-                            mismatch.destination = filter.destination_id != 0U &&
-                                datagram.destination_id != filter.destination_id;
-                            mismatch.slot = filter.match_slot && received_slot != filter.slot;
-                            mismatch.call_kind = filter.match_call_kind &&
-                                received_call_kind != filter.call_kind;
-                            mismatch.source = filter.match_source_id &&
-                                datagram.source_id != filter.source_id;
-                            mismatch.count = static_cast<unsigned>(mismatch.destination) +
-                                static_cast<unsigned>(mismatch.slot) +
-                                static_cast<unsigned>(mismatch.call_kind) +
-                                static_cast<unsigned>(mismatch.source);
-                            return mismatch;
-                        };
-                        const auto primary_mismatch = inspect_filter(receive_filter);
-                        const auto return_mismatch = parrot_return_filter
-                            ? inspect_filter(*parrot_return_filter) : FilterMismatch{};
-                        const auto primary_count = primary_mismatch.count;
-                        const auto return_count = parrot_return_filter
-                            ? return_mismatch.count : std::numeric_limits<unsigned>::max();
-                        if (primary_count == 0U || return_count == 0U) {
-                            // 包头满足至少一条接收规则；pipeline仍拒绝时属于语音/协议内容问题。
-                            ++counters.rx_filtered_protocol;
-                        } else {
-                            // 选失败条件最少的规则解释此拒包；回音规则平局时优先，便于识别来源ID不符。
-                            const auto& mismatch = return_count <= primary_count
-                                ? return_mismatch : primary_mismatch;
-                            if (mismatch.destination) ++counters.rx_filtered_destination_id;
-                            if (mismatch.slot) ++counters.rx_filtered_slot;
-                            if (mismatch.call_kind) ++counters.rx_filtered_call_kind;
-                            if (mismatch.source) ++counters.rx_filtered_protocol;
-                            if (mismatch.count == 0U) ++counters.rx_filtered_protocol;
-                        }
+                        // routed mode可能拒绝策略不符或retired stream；不再用legacy单滤镜
+                        // 推断原因，避免报告与实际Router准入结果不一致。
+                        ++counters.rx_filtered_routed_path;
                     }
                     if (accepted.error != wirex::bm_voice::Error::none &&
                         accepted.error != wirex::bm_voice::Error::filtered &&
@@ -6709,6 +7119,8 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                     const auto stream_phase = stream_session->snapshot().phase;
                     if (stream_phase != StreamPhase::idle && stream_phase != StreamPhase::faulted) {
                         service_stream_update(stream_session->cancel(StreamReason::transport_failed, elapsed_ms()));
+                    } else {
+                        cleanup_routed_rx_without_hri_start("rx_deadline_without_hri_stream_cleanup");
                     }
                     status("rx_deadline_missed_media_cleared_hri_t0_cleanup");
                 }
@@ -6786,8 +7198,10 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                     }
                     secure_wipe(frame.pcm.data(), sizeof(frame.pcm));
                     pipeline->cancel_rx();
-                    if (!radio_output.close()) set_failure("waveout_submit_cleanup_failed");
-                    radio_output_open = false;
+                    const bool closed = radio_output.close();
+                    radio_output_open = radio_output.is_open();
+                    record_routed_rx_waveout_cleanup(closed);
+                    if (!closed) set_failure("waveout_submit_cleanup_failed");
                     set_failure(gain.valid ? "waveout_playback_submit_failed" : "waveout_playback_gain_invalid");
                     break;
                 }
@@ -6807,23 +7221,24 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 cleanup_forced = pipeline->snapshot().tx_state != wirex::bm_voice::TxState::idle ||
                     pipeline->snapshot().rx_state != wirex::bm_voice::RxState::idle ||
                     (stream_session->snapshot().phase != StreamPhase::idle &&
-                     stream_session->snapshot().phase != StreamPhase::faulted);
+                     stream_session->snapshot().phase != StreamPhase::faulted) ||
+                    !shutdown_media_cleanup_complete();
                 if (cleanup_forced) {
                     report_shutdown_terminator_not_sent("shutdown_tx_terminator_not_sent_cleanup_deadline");
                     pipeline->cancel_tx();
                     pipeline->cancel_rx();
                     (void)stop_tx_input();
-                    if (radio_output_open) {
-                        (void)radio_output.close();
-                        radio_output_open = false;
-                    }
+                    const bool output_closed = radio_output.close();
+                    radio_output_open = radio_output.is_open();
+                    record_routed_rx_waveout_cleanup(output_closed);
                     set_failure("cleanup_deadline_exceeded");
                 }
                 break;
             }
             const auto stream_phase = stream_session->snapshot().phase;
             if (shutdown_requested && pipeline->snapshot().tx_state == wirex::bm_voice::TxState::idle &&
-                (stream_phase == StreamPhase::idle || stream_phase == StreamPhase::faulted)) {
+                (stream_phase == StreamPhase::idle || stream_phase == StreamPhase::faulted) &&
+                shutdown_media_cleanup_complete()) {
                 break;
             }
             Sleep(5U);
@@ -6854,10 +7269,9 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         }
         pipeline->cancel_tx();
         pipeline->cancel_rx();
-        if (radio_output_open) {
-            (void)radio_output.close();
-            radio_output_open = false;
-        }
+        const bool output_closed = radio_output.close();
+        radio_output_open = radio_output.is_open();
+        record_routed_rx_waveout_cleanup(output_closed);
     }
 
     if (!shutdown_requested) begin_shutdown("runtime_loop_ended");
@@ -6865,10 +7279,15 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
     if (pipeline->snapshot().tx_state != wirex::bm_voice::TxState::idle) {
         pipeline->cancel_tx();
     }
+    if (active_routed_tx_lease_id && !routed_tx_eot_reported) report_routed_tx_eot(false);
     pipeline->cancel_rx();
     const bool input_cleanup_ok = stop_tx_input();
     const bool output_cleanup_ok = radio_output.close();
-    radio_output_open = false;
+    radio_output_open = radio_output.is_open();
+    record_routed_rx_waveout_cleanup(output_cleanup_ok);
+    const auto final_stream_state = stream_session->snapshot();
+    report_routed_rx_cleanup(
+        final_stream_state.stop_write_succeeded && final_stream_state.stop_t_record_observed);
     const HANDLE raw_port = port.release();
     const bool serial_cleanup_ok = raw_port == nullptr || raw_port == INVALID_HANDLE_VALUE || CloseHandle(raw_port) != FALSE;
     if (!bm_ever_ready) {

@@ -381,6 +381,30 @@ OperationStatus Router::release_tx(std::uint64_t lease_id) noexcept
     return OperationStatus::completed;
 }
 
+OperationStatus Router::request_tx_stop(std::uint64_t lease_id) noexcept
+{
+    if (!active_tx_lease_ || active_tx_lease_->id != lease_id) {
+        return OperationStatus::stale_lease;
+    }
+    if (media_owner_ == MediaOwner::fault && !fault_is_rx_) {
+        return OperationStatus::wrong_phase;
+    }
+    if (media_owner_ == MediaOwner::tx_draining && active_tx_lease_->eot_pending) {
+        return OperationStatus::completed;
+    }
+    if (media_owner_ != MediaOwner::tx_active) {
+        return OperationStatus::wrong_phase;
+    }
+    active_tx_lease_->admission_revoked = true;
+    active_tx_lease_->eot_pending = true;
+    if (active_tx_lease_->purpose == TxPurpose::ptt &&
+        !active_tx_lease_->ptt_release_seen) {
+        ptt_release_required_ = true;
+    }
+    media_owner_ = MediaOwner::tx_draining;
+    return OperationStatus::completed;
+}
+
 OperationStatus Router::observe_ptt_release() noexcept
 {
     if (active_tx_lease_ && active_tx_lease_->purpose == TxPurpose::ptt) {
@@ -405,7 +429,6 @@ OperationStatus Router::complete_tx_eot(std::uint64_t lease_id, bool sent) noexc
         fault_is_rx_ = false;
         return OperationStatus::send_failed;
     }
-    clear_tx_owner();
     return OperationStatus::completed;
 }
 
@@ -415,11 +438,21 @@ OperationStatus Router::complete_tx_cleanup(std::uint64_t lease_id,
     if (!active_tx_lease_ || active_tx_lease_->id != lease_id) {
         return OperationStatus::stale_lease;
     }
-    if (media_owner_ != MediaOwner::fault || fault_is_rx_ ||
-        active_tx_lease_->eot_sent != std::optional<bool>{false}) {
+    if (active_tx_lease_->eot_pending || !active_tx_lease_->eot_sent.has_value()) {
         return OperationStatus::wrong_phase;
     }
-    if (!cleanup_succeeded) return OperationStatus::cleanup_failed;
+    if (active_tx_lease_->eot_sent == std::optional<bool>{false}) {
+        if (media_owner_ != MediaOwner::fault || fault_is_rx_) return OperationStatus::wrong_phase;
+        if (!cleanup_succeeded) return OperationStatus::cleanup_failed;
+        return OperationStatus::send_failed;
+    }
+    if (media_owner_ != MediaOwner::tx_draining &&
+        !(media_owner_ == MediaOwner::fault && !fault_is_rx_)) return OperationStatus::wrong_phase;
+    if (!cleanup_succeeded) {
+        media_owner_ = MediaOwner::fault;
+        fault_is_rx_ = false;
+        return OperationStatus::cleanup_failed;
+    }
     clear_tx_owner();
     return OperationStatus::completed;
 }
@@ -464,6 +497,9 @@ bool Router::valid_rx_policy(const RxPolicy& policy) const noexcept
         for (std::size_t prior = 0U; prior < index; ++prior) {
             if (policy.blocked_groups[prior] == route) return false;
         }
+        for (const auto& allowed : policy.allowed_groups) {
+            if (allowed == route) return false;
+        }
     }
     for (std::size_t index = 0U; index < policy.blocked_source_ids.size(); ++index) {
         const auto id = policy.blocked_source_ids[index];
@@ -491,6 +527,14 @@ bool Router::valid_rx_policy(const RxPolicy& policy) const noexcept
         for (std::size_t prior = 0U; prior < index; ++prior) {
             if (policy.local_private_routes[prior] == route) return false;
         }
+    }
+    if (policy.private_mode == PrivateMode::disabled &&
+        (!policy.private_peers.empty() || !policy.local_private_routes.empty())) {
+        return false;
+    }
+    if (policy.private_mode == PrivateMode::selected_peers &&
+        !policy.local_private_routes.empty()) {
+        return false;
     }
     return true;
 }
@@ -535,15 +579,13 @@ bool Router::rx_policy_accepts(const dmr_call::CallConfig& call) const noexcept
     }
 
     if (call.destination_id != local_source_id_) return false;
-    if (rx_policy_.private_mode == PrivateMode::selected_peers) {
-        return contains_peer(rx_policy_.private_peers,
-                             PrivatePeerRoute{call.source_id, call.destination_id, call.slot});
-    }
-    if (rx_policy_.private_mode == PrivateMode::all_peers_to_local) {
-        return contains_local_route(rx_policy_.local_private_routes,
-                                    LocalPrivateRoute{call.destination_id, call.slot});
-    }
-    return false;
+    const bool exact_peer_allowed = rx_policy_.private_mode != PrivateMode::disabled &&
+        contains_peer(rx_policy_.private_peers,
+                      PrivatePeerRoute{call.source_id, call.destination_id, call.slot});
+    const bool all_local_route_allowed = rx_policy_.private_mode == PrivateMode::all_peers_to_local &&
+        contains_local_route(rx_policy_.local_private_routes,
+                             LocalPrivateRoute{call.destination_id, call.slot});
+    return exact_peer_allowed || all_local_route_allowed;
 }
 
 bool Router::blocked_source(std::uint32_t source_id) const noexcept

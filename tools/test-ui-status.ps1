@@ -16,6 +16,7 @@ Assert-UiStatus ($parseErrors.Count -eq 0) 'bridge-ui.ps1 PowerShell 5.1 语法�
 $wantedFunctions = @('Test-UiSourceIdentityRecord', 'Get-UiSourceIdentityDisplay', 'Get-UiCompletedRunRecord',
     'Get-UiRunDirectorySize', 'Invoke-UiRunLogRetention', 'Test-UiStatusRecord', 'Test-UiStatusFreshness',
     'Test-UiRunRecordAcceptance', 'Get-VisibleUiEventText', 'Apply-StatusRecord', 'Set-StaleDisplay',
+    'Reset-UiControlState',
     'Format-ProfileTarget', 'Format-ProfileReceiveTarget', 'Format-ProfileTransmitPermission', 'Set-MainTargetSummary', 'On-UiTimerTick')
 $found = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wantedFunctions -ccontains $node.Name }, $true))
 Assert-UiStatus ($found.Count -eq $wantedFunctions.Count) '没有找到状态记录验证函数。'
@@ -77,6 +78,9 @@ $draining.current_call_valid = $false; $draining.current_call_phase = 'none'; $d
 $draining.current_call_source_id = [int64]0; $draining.current_call_destination_id = [int64]0
 $draining.current_call_slot = [int64]0; $draining.current_call_kind = 'none'; $draining.current_call_generation = [int64]0
 Assert-UiStatus (Test-UiStatusRecord $draining) 'BM EOT 后、HRI 播放收尾前应保留已准备来源标签。'
+$stopping = $draining.PSObject.Copy(); $stopping.lcd_source_identity = $draining.lcd_source_identity.PSObject.Copy()
+$stopping.receive_media_state = 'stopping'
+Assert-UiStatus (Test-UiStatusRecord $stopping) 'HRI 停止确认待处理时应接受 stopping，且当前来话仍保持无效。'
 foreach ($mutation in @('bad-source', 'bad-generation', 'bad-label', 'bad-display', 'extra-field', 'bad-type')) {
     $invalidIdentity = $copy.PSObject.Copy(); $invalidIdentity.lcd_source_identity = $copy.lcd_source_identity.PSObject.Copy()
     switch ($mutation) {

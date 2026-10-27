@@ -94,7 +94,7 @@ void test_selected_groups_and_slot_scoped_block()
     Router router(local_id);
     RxPolicy policy{};
     policy.group_mode = GroupMode::selected;
-    policy.allowed_groups = {{91U, Slot::ts1}, {91U, Slot::ts2}, {46001U, Slot::ts2}};
+    policy.allowed_groups = {{91U, Slot::ts1}, {46001U, Slot::ts2}};
     policy.blocked_groups = {{91U, Slot::ts2}};
     check(install_rx(router, policy), "a valid multi-group policy should install");
 
@@ -162,6 +162,28 @@ void test_private_peer_and_local_destination_are_distinct()
     check(install_rx(router, policy), "private speaker block should install");
     check(router.match_receive(make_call(1234U, local_id, Slot::ts1, CallKind::private_call)) == RouteMatch::blocked_source,
         "source block must override all-peers private mode");
+}
+
+void test_all_local_private_routes_union_with_exact_peers_on_other_slots()
+{
+    Router router(local_id);
+    RxPolicy policy{};
+    policy.private_mode = PrivateMode::all_peers_to_local;
+    policy.local_private_routes = {{local_id, Slot::ts1}};
+    policy.private_peers = {{460997U, local_id, Slot::ts2}};
+    check(install_rx(router, policy), "all-local and exact-peer routes should install together");
+    check(router.match_receive(make_call(1234U, local_id, Slot::ts1, CallKind::private_call)) == RouteMatch::allowed,
+        "all peers to the local ID should be allowed on the configured local route");
+    check(router.match_receive(make_call(460997U, local_id, Slot::ts2, CallKind::private_call)) == RouteMatch::allowed,
+        "the exact peer route should be allowed on its separate timeslot");
+    check(router.match_receive(make_call(1234U, local_id, Slot::ts2, CallKind::private_call)) == RouteMatch::policy_denied,
+        "the exact peer timeslot must not become an all-peers route");
+
+    policy.blocked_source_ids = {1234U, 460997U};
+    check(install_rx(router, policy), "source blocks should apply to both private route sets");
+    check(router.match_receive(make_call(1234U, local_id, Slot::ts1, CallKind::private_call)) == RouteMatch::blocked_source &&
+          router.match_receive(make_call(460997U, local_id, Slot::ts2, CallKind::private_call)) == RouteMatch::blocked_source,
+        "source blocks must override the union of local and exact-peer private routes");
 }
 
 void test_candidate_observation_does_not_change_policy_or_claim_playback()
@@ -311,8 +333,14 @@ void test_tx_target_is_frozen_and_rx_identity_never_rewrites_it()
     check(router.snapshot().active_tx_lease->target.destination_id == 460997U &&
           router.snapshot().active_tx_lease->eot_pending,
         "EOT drain should continue using the frozen target");
-    check(router.complete_tx_eot(started.lease->id, true) == OperationStatus::completed,
-        "successful EOT should release the old lease");
+    check(router.complete_tx_eot(started.lease->id, true) == OperationStatus::completed &&
+          router.snapshot().media_owner == MediaOwner::tx_draining &&
+          router.snapshot().active_tx_lease.has_value(),
+        "successful EOT should retain the lease until local cleanup is acknowledged");
+    check(router.begin_ptt().status == TxStartStatus::media_busy,
+        "a new PTT must remain blocked after EOT but before cleanup");
+    check(router.complete_tx_cleanup(started.lease->id, true) == OperationStatus::completed,
+        "successful local cleanup should release the completed lease");
 
     const auto next = router.begin_ptt();
     check(next && next.lease->target.destination_id == 3100U &&
@@ -367,7 +395,9 @@ void test_dynamic_join_requires_explicit_enabled_idle_and_allowed_target()
     check(router.release_tx(joined.lease->id) == OperationStatus::completed,
         "the dynamic short call must release into its EOT phase");
     check(router.complete_tx_eot(joined.lease->id, true) == OperationStatus::completed,
-        "dynamic short call lease ends only after EOT completion");
+        "dynamic short call EOT result should be recorded");
+    check(router.complete_tx_cleanup(joined.lease->id, true) == OperationStatus::completed,
+        "dynamic short call lease ends only after cleanup confirmation");
 
     Router mandatory_guard_router(local_id);
     auto no_custom_deny = make_tx_policy(91U, CallKind::group, Slot::ts2, true);
@@ -412,7 +442,10 @@ void test_permission_revocation_stops_active_tx_and_requires_ptt_release()
     check(router.begin_ptt().status == TxStartStatus::transmit_disabled,
         "disabled permission must reject a new PTT immediately");
     check(router.complete_tx_eot(started.lease->id, true) == OperationStatus::completed,
-        "the revoked call still releases its owner only after EOT completion");
+        "the revoked call should record the successful EOT result");
+    check(router.snapshot().media_owner == MediaOwner::tx_draining &&
+          router.complete_tx_cleanup(started.lease->id, true) == OperationStatus::completed,
+        "the revoked call releases its owner only after local cleanup confirmation");
 
     auto enabled_again = disabled;
     enabled_again.transmit_enabled = true;
@@ -443,9 +476,29 @@ void test_permission_revocation_stops_active_tx_and_requires_ptt_release()
     check(join_router.request_dynamic_join({3100U, Slot::ts2}, true).status == TxStartStatus::transmit_disabled,
         "revoked TX permission blocks later dynamic joins");
     check(join_router.complete_tx_eot(quick_call.lease->id, true) == OperationStatus::completed,
-        "the existing Quick call releases only after its current EOT completes");
+        "the existing Quick call records its current EOT result");
+    check(join_router.complete_tx_cleanup(quick_call.lease->id, true) == OperationStatus::completed,
+        "the existing Quick call releases only after local cleanup");
     check(!join_router.snapshot().ptt_release_required,
         "a dynamic Quick call does not latch the physical radio PTT release gate");
+
+    Router forced_stop_router(local_id);
+    check(install_tx(forced_stop_router, make_tx_policy(460997U)),
+        "forced-stop TX policy should install");
+    const auto forced = forced_stop_router.begin_ptt();
+    check(forced && forced_stop_router.request_tx_stop(forced.lease->id) == OperationStatus::completed,
+        "explicit forced stop should end TX admission without claiming a physical PTT release");
+    check(forced_stop_router.snapshot().active_tx_lease &&
+          !forced_stop_router.snapshot().active_tx_lease->ptt_release_seen,
+        "forced stop must retain the lease's truthful PTT release observation");
+    check(forced_stop_router.complete_tx_eot(forced.lease->id, true) == OperationStatus::completed &&
+          forced_stop_router.complete_tx_cleanup(forced.lease->id, true) == OperationStatus::completed,
+        "forced stop may release its lease after both EOT and local cleanup complete");
+    check(forced_stop_router.begin_ptt().status == TxStartStatus::ptt_release_required,
+        "a completed forced stop must still wait for physical PTT release");
+    check(forced_stop_router.observe_ptt_release() == OperationStatus::completed &&
+          static_cast<bool>(forced_stop_router.begin_ptt()),
+        "only an observed physical release should permit the next PTT");
 }
 
 void test_failed_tx_eot_keeps_owner_until_cleanup_and_validates_lease_id()
@@ -467,10 +520,11 @@ void test_failed_tx_eot_keeps_owner_until_cleanup_and_validates_lease_id()
         "new PTT remains blocked until failed TX cleanup is acknowledged");
     check(router.complete_tx_cleanup(started.lease->id, false) == OperationStatus::cleanup_failed,
         "failed cleanup keeps the TX fault active");
-    check(router.complete_tx_cleanup(started.lease->id, true) == OperationStatus::completed,
-        "successful explicit cleanup releases the failed TX owner");
-    check(router.snapshot().media_owner == MediaOwner::idle,
-        "cleanup acknowledgement returns the lane to idle");
+    check(router.complete_tx_cleanup(started.lease->id, true) == OperationStatus::send_failed,
+        "local cleanup cannot erase a failed EOT send result");
+    check(router.snapshot().media_owner == MediaOwner::fault &&
+          router.begin_ptt().status == TxStartStatus::media_busy,
+        "a failed EOT keeps the owner faulted even after local cleanup");
 }
 
 void test_invalid_policy_and_target_updates_are_atomic()
@@ -483,6 +537,24 @@ void test_invalid_policy_and_target_updates_are_atomic()
         "invalid media slot must reject the complete RX policy");
     check(router.snapshot().rx_policy_revision == before_rx && router.rx_policy().allowed_groups.empty(),
         "invalid RX update must not partially mutate policy");
+
+    RxPolicy overlapping{};
+    overlapping.allowed_groups = {{91U, Slot::ts2}};
+    overlapping.blocked_groups = {{91U, Slot::ts2}};
+    check(router.replace_rx_policy(before_rx, overlapping).status == PolicyUpdateStatus::invalid_policy,
+        "the same group route cannot be both allowed and blocked");
+
+    RxPolicy disabled_private{};
+    disabled_private.private_mode = PrivateMode::disabled;
+    disabled_private.local_private_routes = {{local_id, Slot::ts1}};
+    check(router.replace_rx_policy(before_rx, disabled_private).status == PolicyUpdateStatus::invalid_policy,
+        "disabled private mode must not retain active local or exact-peer routes");
+    RxPolicy selected_with_local{};
+    selected_with_local.private_mode = PrivateMode::selected_peers;
+    selected_with_local.private_peers = {{460997U, local_id, Slot::ts2}};
+    selected_with_local.local_private_routes = {{local_id, Slot::ts1}};
+    check(router.replace_rx_policy(before_rx, selected_with_local).status == PolicyUpdateStatus::invalid_policy,
+        "selected-peer mode must not widen admission with a local all-peers route");
 
     TxPolicy tx = make_tx_policy(460997U);
     tx.dynamic_join_blocked_group_ids = {91U, 91U};
@@ -532,6 +604,8 @@ void test_revision_generation_and_lease_id_exhaustion_never_wraps()
     check(tx_router.release_tx(max_id) == OperationStatus::completed &&
           tx_router.complete_tx_eot(max_id, true) == OperationStatus::completed,
         "the maximum TX lease should still complete its EOT lifecycle");
+    check(tx_router.complete_tx_cleanup(max_id, true) == OperationStatus::completed,
+        "maximum lease cleanup should complete before checking exhaustion");
     check(tx_router.begin_ptt().status == TxStartStatus::lease_id_exhausted &&
           tx_router.snapshot().media_owner == MediaOwner::idle,
         "lease ID exhaustion must reject new TX rather than reusing an ID");
@@ -544,6 +618,7 @@ int main()
     test_selected_groups_and_slot_scoped_block();
     test_all_delivered_mode_and_blocks();
     test_private_peer_and_local_destination_are_distinct();
+    test_all_local_private_routes_union_with_exact_peers_on_other_slots();
     test_candidate_observation_does_not_change_policy_or_claim_playback();
     test_single_stream_arbiter_keeps_owner_until_hri_stop_confirmation();
     test_policy_removal_cancels_rx_but_waits_for_cleanup();

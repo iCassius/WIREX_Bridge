@@ -778,7 +778,7 @@ function Test-UiStatusRecord {
     if ($hasCurrentCallStatus) {
         if ($Record.current_call_kind -cnotin @('none', 'G', 'P')) { return $false }
         if ($Record.current_call_phase -cnotin @('none', 'waiting_for_playback', 'buffering', 'playing')) { return $false }
-        if ($Record.receive_media_state -cnotin @('idle', 'filtered', 'waiting_for_playback', 'buffering', 'playing', 'draining')) { return $false }
+        if ($Record.receive_media_state -cnotin @('idle', 'filtered', 'waiting_for_playback', 'buffering', 'playing', 'draining', 'stopping')) { return $false }
         $activeMedia = $Record.receive_media_state -cin @('waiting_for_playback', 'buffering', 'playing')
         if ([bool]$Record.current_call_valid -ne $activeMedia) { return $false }
         if ([bool]$Record.current_call_valid) {

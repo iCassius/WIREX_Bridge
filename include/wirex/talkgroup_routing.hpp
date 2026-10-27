@@ -240,8 +240,11 @@ public:
     [[nodiscard]] TxStartResult request_dynamic_join(const GroupRoute& group,
                                                       bool explicit_user_action) noexcept;
     [[nodiscard]] OperationStatus release_tx(std::uint64_t lease_id) noexcept;
+    // 进入EOT收尾但不伪造手咪已松开；只有observe_ptt_release会解除安全锁存。
+    [[nodiscard]] OperationStatus request_tx_stop(std::uint64_t lease_id) noexcept;
     // 硬件报告手咪已松开后，清除安全锁存。
     [[nodiscard]] OperationStatus observe_ptt_release() noexcept;
+    // EOT发送结果与本地设备清理分开确认；成功EOT仍保持owner到cleanup完成。
     [[nodiscard]] OperationStatus complete_tx_eot(std::uint64_t lease_id,
                                                    bool sent) noexcept;
     [[nodiscard]] OperationStatus complete_tx_cleanup(std::uint64_t lease_id,
