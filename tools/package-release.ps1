@@ -57,6 +57,7 @@ $script:alpha4TestNames = @($script:alpha3TestNames)
 $script:alpha5TestNames = @($script:alpha4TestNames + 'ui_control_protocol_v2_test')
 $script:alpha6TestNames = @($script:alpha5TestNames + 'talkgroup_routing_test' + 'bm_routing_lifecycle_test' + 'routing_state_test')
 $script:alpha7TestNames = @($script:alpha6TestNames)
+$script:alpha8TestNames = @($script:alpha7TestNames)
 $script:activeReleaseVersion = 'v0.1.0-alpha.1'
 
 function Get-ReleaseProfile {
@@ -335,7 +336,50 @@ function Get-ReleaseProfile {
                 )
             }
         }
-        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, and v0.1.0-alpha.7 release profiles are supported.' }
+        'v0.1.0-alpha.8' {
+            $alpha7 = Get-ReleaseProfile -Version 'v0.1.0-alpha.7'
+            $alpha8ExcludedPaths = @(
+                'start-bm-radio-bridge.cmd', 'start-listen-91.cmd', 'start-profile.cmd',
+                'start-ui.cmd', 'start-user-config.cmd', 'start-user-config.ps1',
+                'start-step1-test.cmd', 'start-step1-test.ps1', 'test-control.cmd', 'test-control.ps1',
+                'start-merged-test.cmd', 'start-merged-test.ps1'
+            )
+            $alpha8SourceFiles = @($alpha7.SourceFiles | Where-Object {
+                [string]$_.Destination -cne 'README.md' -and
+                $alpha8ExcludedPaths -cnotcontains [string]$_.Destination
+            }) + @(
+                @{ Source='docs\releases\v0.1.0-alpha.8-package-README.md'; Destination='README.md' },
+                @{ Source='tools\start-wirex-bridge-alpha8.cmd'; Destination='start-wirex-bridge.cmd' },
+                @{ Source='tools\start-wirex-bridge-alpha8.ps1'; Destination='tools\start-wirex-bridge.ps1' }
+            )
+            $alpha8PackageFiles = @($alpha7.PackageFiles | Where-Object {
+                $alpha8ExcludedPaths -cnotcontains [string]$_
+            }) + @('start-wirex-bridge.cmd', 'tools/start-wirex-bridge.ps1')
+            $alpha8AssetMap = [ordered]@{}
+            foreach ($path in $alpha7.AssetMap.Keys) {
+                if ($alpha8ExcludedPaths -cnotcontains [string]$path) {
+                    $alpha8AssetMap[$path] = $alpha7.AssetMap[$path]
+                }
+            }
+            $alpha8AssetMap['start-wirex-bridge.cmd'] = 'start-wirex-bridge.cmd'
+            $alpha8AssetMap['tools/start-wirex-bridge.ps1'] = 'tools__start-wirex-bridge.ps1'
+            return [pscustomobject]@{
+                Version = 'v0.1.0-alpha.8'
+                TestNames = $script:alpha8TestNames
+                SourceFiles = $alpha8SourceFiles
+                PackageFiles = $alpha8PackageFiles
+                Directories = @($alpha7.Directories) + 'tools'
+                AssetMap = $alpha8AssetMap
+                PackageReadme = 'docs\releases\v0.1.0-alpha.8-package-README.md'
+                ReleaseScope = 'R110: alpha.7 runtime with a single user-facing command prompt entry and Windows PowerShell 5.1 package parsing and isolated launcher verification'
+                NotIncluded = @(
+                    'No alpha.8 hardware acceptance record for serial, audio, BrandMeister, PTT, FTX-1 physical BUSY/TX LED, or RF behavior',
+                    'The FTX-1 physical BUSY/TX LED reported on this and the older local-hri-downlink-0304eff build is not fixed or explained by this slice',
+                    'TG91 disconnect causes outside the documented empty-call case remain unconfirmed'
+                )
+            }
+        }
+        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, and v0.1.0-alpha.8 release profiles are supported.' }
     }
 }
 

@@ -1,0 +1,241 @@
+{
+  "schema_version": 1,
+  "analysis": "R110 官方 HRI UART 下行控制静态分析",
+  "artifact": {
+    "path": "research/inputs/v2.010/payload/HRI_UART.dll",
+    "sha256": "56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed",
+    "installed_copy": "C:/Program Files (x86)/YAESUMUSEN/WIRES-X/HRI-UART.dll",
+    "installed_copy_sha256_matches_sample": true,
+    "format": "PE32 x86"
+  },
+  "rea": {
+    "provider": "Ghidra",
+    "provider_version": "12.1.4",
+    "rea_agent_version": "6.7.0",
+    "document": "target-56e0050ef6af.dll",
+    "document_load_evidence_id": "ev_34f07c46038aecc34dcc91836e35576786e9dc6e393ded88f820e4c55cdea1b9"
+  },
+  "evidence": [
+    {
+      "id": "ev_a34393d8e0306fff8abad4af4d42d10cff7ecbe9b962c0f42353b3bd2ffede3d",
+      "address": "0x100026f0",
+      "symbol": "SetIncallFirstVoice",
+      "claim": "读取 DAT_10191d38[index] 并返回对应 HRI 对象槽是否非空；该函数不写入首音方向或呼叫状态。",
+      "artifact_sha256": "56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed",
+      "document": "target-56e0050ef6af.dll"
+    },
+    {
+      "id": "ev_0c361831f423a08ed190b224299cc9dbcccd84099dca2f6ec7910dc9ec911006",
+      "address": "0x10191d38",
+      "symbol": "HRI object slot xrefs",
+      "claim": "交叉引用显示多个位置访问按索引选择的全局 HRI 对象槽表。",
+      "artifact_sha256": "56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed",
+      "document": "target-56e0050ef6af.dll"
+    },
+    {
+      "id": "ev_5bb834fbcfd1fd2c1e3f0b21a61ab52e8f3b2588a5ed9ca632cb4884182cbc2f",
+      "address": "0x10002670",
+      "symbol": "SendTrcvPttCmd",
+      "claim": "检查索引对应的全局对象槽；对象存在时调用 owner 的 PTT 处理函数。",
+      "artifact_sha256": "56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed",
+      "document": "target-56e0050ef6af.dll"
+    },
+    {
+      "id": "ev_d5a284cd9091cf6f0d70feafdd14a48e6faca271131dff6b9d04dfb135378791",
+      "address": "0x1000f100",
+      "symbol": "FUN_1000f100",
+      "claim": "更新 owner+0x44 的 PttSw；child+0x2c4 等于 5 时选择 T 记录路径，其它状态在状态变化时选择 S 记录路径。",
+      "artifact_sha256": "56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed",
+      "document": "target-56e0050ef6af.dll"
+    },
+    {
+      "id": "ev_23add9b801ea1fb07a79cb312a6c003b13a152421b16f7c3387a866c014e3f5a",
+      "address": "0x1000afb0",
+      "symbol": "FUN_1000afb0",
+      "claim": "构造内部 S 记录，把 PttSw 编码为正文首字符并加入内部队列；现有证据没有证明 S 表示 Busy。",
+      "artifact_sha256": "56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed",
+      "document": "target-56e0050ef6af.dll"
+    },
+    {
+      "id": "ev_0b9ed8732ace5fbca14b93278f85c286ae2354053325a9da2b7c36b1e0c320b4",
+      "address": "0x10014b50",
+      "symbol": "FUN_10014b50",
+      "claim": "构造内部 T 记录；可走合成空首部路径，也可复制已填充的 68 字节 owner 首部及可用数据尾串。",
+      "artifact_sha256": "56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed",
+      "document": "target-56e0050ef6af.dll"
+    },
+    {
+      "id": "ev_9bc2cafd6346899991119b9750b7e0b00869e56fc93562ba588b1099e0a93281",
+      "address": "0x1000dcb0",
+      "symbol": "FUN_1000dcb0",
+      "claim": "从配置读取 DGKEY_NUM_TRCVTYPE 到 owner+0x50，并读取 DGKEY_NUM_OPE_MODE 到 owner+0x58。",
+      "artifact_sha256": "56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed",
+      "document": "target-56e0050ef6af.dll"
+    },
+    {
+      "id": "ev_67cf25295bc7fbadae50dda6ebac3950bc0e3cc0b77b371ce12a93dd2979c231",
+      "address": "0x1000a070",
+      "symbol": "FUN_1000a070",
+      "claim": "根据构造参数选择 Direct 或 HRI 序列化器虚表；此选择与 owner+0x50 和 child+0x2c4 分开。",
+      "artifact_sha256": "56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed",
+      "document": "target-56e0050ef6af.dll"
+    },
+    {
+      "id": "ev_e0eaf1ab2302ef45109d91a9cda53cd175c911718409b7dc5f66a0ff0f138d2e",
+      "address": "0x10014dd0",
+      "symbol": "FUN_10014dd0",
+      "claim": "从 owner 的一组接口回调读取记录，并处理 #、$、H、G、R、E 标记，包括窗口消息和 AMBE 缓冲区路径。",
+      "artifact_sha256": "56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed",
+      "document": "target-56e0050ef6af.dll"
+    },
+    {
+      "id": "ev_dd4741e6a283be5d7a5c88c8e35f4a98f22825de30ac56f6d3e015d8ee702ad9",
+      "address": "0x10014330",
+      "symbol": "FUN_10014330",
+      "claim": "把 G 记录的 68 字节首部复制到 owner+0x1420，设置首部字节 +3、+4 和 owner+0x248c，然后解析 G 数据尾串。",
+      "artifact_sha256": "56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed",
+      "document": "target-56e0050ef6af.dll"
+    },
+    {
+      "id": "ev_ff3b86eb2d794e9b21e25e777ed5b79fbc7ba58efb404a9b41d4cf1f61dda27c",
+      "address": "0x10014330",
+      "symbol": "FUN_10014330 assembly",
+      "claim": "汇编证据支持 G 首部复制和数据尾串偏移。",
+      "artifact_sha256": "56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed",
+      "document": "target-56e0050ef6af.dll"
+    },
+    {
+      "id": "ev_af377ccbc045e89e9964c53d4ab86c39d7534f358fda167ec8bf64bfc7435d28",
+      "address": "0x10014070",
+      "symbol": "FUN_10014070",
+      "claim": "根据首部标志计算数据类型，并在类型 4、6、7 时分别把 owner+0x28e8 设为 0x66、0x8e、0xc0 个字符。",
+      "artifact_sha256": "56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed",
+      "document": "target-56e0050ef6af.dll"
+    },
+    {
+      "id": "ev_41dd62f0ba0e27eee32dc1c33bd25314f9ca62f9a933fd434341a2c6eac45d78",
+      "address": "0x10017ee0",
+      "symbol": "FUN_10017ee0",
+      "claim": "使用写入 owner+0x2490 的两字节值选择后续状态分支；该字段的产品含义尚未查明。",
+      "artifact_sha256": "56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed",
+      "document": "target-56e0050ef6af.dll"
+    },
+    {
+      "id": "ev_fb50285f47956b3caed9a67f56748b0556ca1386d61ff99e44ff08617d53e5f9",
+      "address": "0x1000adb0",
+      "symbol": "FUN_1000adb0",
+      "claim": "将限定范围的字节转换为大写十六进制文本，并追加 03 和 8 位校验和。",
+      "artifact_sha256": "56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed",
+      "document": "target-56e0050ef6af.dll"
+    },
+    {
+      "id": "ev_052edc219e2586cffb322973c6aa924ffdfc562c259f42ed81e13a38413b8b3c",
+      "address": "0x1000adb0",
+      "symbol": "FUN_1000adb0 assembly",
+      "claim": "汇编证据支持字节转十六进制及追加校验和的处理。",
+      "artifact_sha256": "56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed",
+      "document": "target-56e0050ef6af.dll"
+    },
+    {
+      "id": "ev_197da0b900013b8b5a094d9c97889641cbeee1c540e7f5c637e4983435051c4d",
+      "address": "0x1000b130",
+      "symbol": "FUN_1000b130",
+      "claim": "把 T 文本包装为内部类型 0x54 的队列项并提交到内部队列。",
+      "artifact_sha256": "56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed",
+      "document": "target-56e0050ef6af.dll"
+    },
+    {
+      "id": "ev_3b65fb6614f18fcbf72824b4ab87211134c20722cc1b245cc8e061978083b9c0",
+      "address": "0x1000aa40",
+      "symbol": "FUN_1000aa40",
+      "claim": "把文本包装为内部 F 队列项；仅当使能参数非零时才入队。",
+      "artifact_sha256": "56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed",
+      "document": "target-56e0050ef6af.dll"
+    },
+    {
+      "id": "ev_d4b20a210d1235b7acff4b7fbe388afdc602d192d1d5101b2e5b1e4902ae2168",
+      "address": "0x1000ab10",
+      "symbol": "FUN_1000ab10",
+      "claim": "根据首部和正文格式化 F 记录，并在使能时加入队列。",
+      "artifact_sha256": "56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed",
+      "document": "target-56e0050ef6af.dll"
+    },
+    {
+      "id": "ev_692dbd27f38be1bf8e94c3e25139803276b3d30f2ace0d56b327f64b4f22568a",
+      "address": "0x1000af20",
+      "symbol": "FUN_1000af20",
+      "claim": "包装内部 E 记录。",
+      "artifact_sha256": "56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed",
+      "document": "target-56e0050ef6af.dll"
+    },
+    {
+      "id": "ev_d2cb94ab9856ade391cafa317db90ee3e41483196e01938c10f962990b9e1785",
+      "address": "0x1000a140",
+      "symbol": "FUN_1000a140",
+      "claim": "使用互斥量维护内部队列，执行去重并限制队列容量。",
+      "artifact_sha256": "56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed",
+      "document": "target-56e0050ef6af.dll"
+    },
+    {
+      "id": "ev_108646d7e00c6085f50e947ba0e8e6a4fdc9d97fc116d502d6a1c6428d95a92b",
+      "address": "0x10013720",
+      "symbol": "FUN_10013720",
+      "claim": "根据 owner 队列数据构造 N 记录，并根据子状态选择 T 或 F 路径。",
+      "artifact_sha256": "56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed",
+      "document": "target-56e0050ef6af.dll"
+    },
+    {
+      "id": "ev_60bf2c92db2c31c96f48b38fda45dedfde40a047e54960ec024eed8edda5bda9",
+      "address": "0x10018a70",
+      "symbol": "FUN_10018a70 / rSt38_FrameCheckTime",
+      "claim": "检查帧与状态；child 状态为 5 时选择 T 路径，其它状态走 F 路径，并包含重试和结束处理。",
+      "artifact_sha256": "56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed",
+      "document": "target-56e0050ef6af.dll"
+    },
+    {
+      "id": "ev_a45d11d05f862051b623ae94442bed3592e054deba70ffe457bf2ea7c6c571af",
+      "address": "0x10019730",
+      "symbol": "FUN_10019730 / rSt38_RcvAmbeResp",
+      "claim": "处理 T/F 响应，并根据接口状态推进 PTT-ON 状态或安排 PTT-OFF。",
+      "artifact_sha256": "56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed",
+      "document": "target-56e0050ef6af.dll"
+    },
+    {
+      "id": "ev_6d707ad47e975d3cffc6fc9885b486d7bd657231ce9d184eb29c5da3e819d874",
+      "address": "0x1001df60",
+      "symbol": "FUN_1001df60 / rSt32_RcvFrameResp",
+      "claim": "处理帧响应数据及分隔符，包含 PTT ON/OFF 日志分支，并发送窗口消息 0x141a。",
+      "artifact_sha256": "56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed",
+      "document": "target-56e0050ef6af.dll"
+    },
+    {
+      "id": "ev_998396d42019961c53dd6d500ad49bbf7dbdd12cc7b2168931fb53893a836b5d",
+      "address": "0x1001e1c0",
+      "symbol": "FUN_1001e1c0 / rSt60_RcvPttSwInd",
+      "claim": "处理来自电台侧的数字 PTT 指示，并向主程序请求二进制帧；该路径方向为电台到主程序。",
+      "artifact_sha256": "56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed",
+      "document": "target-56e0050ef6af.dll"
+    },
+    {
+      "id": "ev_3e0c6b9793d619fe5ecdbfd7734783c33ac26a9eefc6484e6eadb57a630155f4",
+      "address": "0x10018510",
+      "symbol": "FUN_10018510",
+      "claim": "部分状态转换会在生成 T 记录前把 PttSw 重置为 0。",
+      "artifact_sha256": "56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed",
+      "document": "target-56e0050ef6af.dll"
+    },
+    {
+      "id": "ev_310b7faf6deb14ed2813c5715b5ac35e01746472cdb523ffbe7a4533571daa30",
+      "address": "0x10191d38 (string table references)",
+      "symbol": "PTT status strings",
+      "claim": "包含 Analog RX/PTT OFF、Digital RX/PTT OFF、Analog TX/PTT ON、Digital TX/PTT ON 状态文字；这些字符串没有说明 FTX-1 机身 BUSY/TX LED 的颜色含义或点亮条件。",
+      "artifact_sha256": "56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed",
+      "document": "target-56e0050ef6af.dll"
+    }
+  ],
+  "static_limitations": [
+    "本分析没有运行 WIRES-X，也没有访问设备、串口/USB、音频、PTT 或 RF。",
+    "HRI 代码可定位三字节前置元数据并连续解码整个尾串；这些证据没有证明尾串被拆成五个语音帧。",
+    "两个接口回调槽的数据来源、元数据字段的产品含义，以及完整的主机到电台接收/播放契约仍未确定。"
+  ]
+}

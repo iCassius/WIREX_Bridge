@@ -321,6 +321,70 @@ try {
     Assert-True (-not (Set-PublishProfile -Tag 'v0.1.0-alpha.7').AssetPathMap.Contains('include/wirex/quick_call.hpp')) `
         'quick_call.hpp is not part of the alpha.7 runtime package asset map'
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.7')
+
+    $alpha8Root = Join-Path $testRoot 'package-alpha8'
+    Copy-Item -LiteralPath $alpha7Root -Destination $alpha8Root -Recurse
+    [void](Set-PublishProfile -Tag 'v0.1.0-alpha.8')
+    $alpha8ExcludedPaths = @(
+        'start-bm-radio-bridge.cmd', 'start-listen-91.cmd', 'start-profile.cmd',
+        'start-ui.cmd', 'start-user-config.cmd', 'start-user-config.ps1',
+        'start-step1-test.cmd', 'start-step1-test.ps1', 'test-control.cmd', 'test-control.ps1',
+        'start-merged-test.cmd', 'start-merged-test.ps1'
+    )
+    foreach ($relativePath in $alpha8ExcludedPaths) {
+        $excludedFile = Join-Path $alpha8Root $relativePath
+        if ([System.IO.File]::Exists($excludedFile)) { [System.IO.File]::Delete($excludedFile) }
+    }
+    $alpha8ToolsPath = Join-Path $alpha8Root 'tools'
+    New-Item -ItemType Directory -Path $alpha8ToolsPath -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha8.cmd') `
+        -Destination (Join-Path $alpha8Root 'start-wirex-bridge.cmd')
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha8.ps1') `
+        -Destination (Join-Path $alpha8ToolsPath 'start-wirex-bridge.ps1')
+    $alpha8ManifestPath = Join-Path $alpha8Root 'manifest.json'
+    $alpha8Manifest = [System.IO.File]::ReadAllText($alpha8ManifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $alpha8Manifest.files = @($alpha8Manifest.files | Where-Object {
+        $alpha8ExcludedPaths -cnotcontains [string]$_.path
+    })
+    $alpha8ReadmePath = Join-Path $alpha8Root 'README.md'
+    Write-Utf8NoBom -Path $alpha8ReadmePath -Text 'synthetic alpha.8 package README'
+    $alpha8ReadmeRecord = @($alpha8Manifest.files | Where-Object { [string]$_.path -ceq 'README.md' })
+    if ($alpha8ReadmeRecord.Count -ne 1) { throw 'Synthetic alpha.7 manifest must contain exactly one README record.' }
+    $alpha8ReadmeRecord[0].length_bytes = [long](Get-Item -LiteralPath $alpha8ReadmePath).Length
+    $alpha8ReadmeRecord[0].sha256 = (Get-FileHash -LiteralPath $alpha8ReadmePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    foreach ($relativePath in @('start-wirex-bridge.cmd','tools/start-wirex-bridge.ps1')) {
+        $physicalPath = Join-Path $alpha8Root ($relativePath -replace '/', '\\')
+        $physicalItem = Get-Item -LiteralPath $physicalPath
+        $alpha8Manifest.files += ,([ordered]@{
+            path = $relativePath
+            asset_name = (Get-PublishAssetName -RelativePath $relativePath)
+            length_bytes = [long]$physicalItem.Length
+            sha256 = (Get-FileHash -LiteralPath $physicalPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            source = 'synthetic test content'
+        })
+    }
+    $alpha8Manifest.version = 'v0.1.0-alpha.8'
+    $alpha8Manifest.tag_candidate = 'v0.1.0-alpha.8'
+    $alpha8Manifest.build.passed_test_count = 39
+    $alpha8Manifest.build.passed_tests = @((Set-PublishProfile -Tag 'v0.1.0-alpha.8').TestNames)
+    $validAlpha8ManifestJson = ConvertTo-Json -InputObject $alpha8Manifest -Depth 12
+    Write-Utf8NoBom -Path $alpha8ManifestPath -Text ($validAlpha8ManifestJson + "`n")
+    $alpha8Package = Assert-PublishPackage -PackageRoot $alpha8Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.8'
+    Assert-True ($alpha8Package.Assets.Count -eq 29) 'alpha.8 package accepts 28 files plus standalone manifest'
+    Assert-True ((Set-PublishProfile -Tag 'v0.1.0-alpha.8').AssetPathMap.Count -eq
+        ((Set-PublishProfile -Tag 'v0.1.0-alpha.7').AssetPathMap.Count - $alpha8ExcludedPaths.Count + 2)) `
+        'alpha.8 publisher profile removes legacy entry scripts and retains the two new entrance files'
+    Assert-True (@($alpha8Package.Assets | Where-Object { [string]$_.Name -match '\.cmd$' }).Count -eq 1 -and
+        @($alpha8Package.Assets | Where-Object { [string]$_.Name -ceq 'tools__start-wirex-bridge.ps1' }).Count -eq 1) `
+        'alpha.8 publisher accepts one command and the hidden technical launcher'
+    Assert-True ($alpha8Package.Manifest.build.passed_tests.Count -eq 39 -and
+        [string]::Join('|', @($alpha8Package.Manifest.build.passed_tests)) -ceq
+            [string]::Join('|', @(Set-PublishProfile -Tag 'v0.1.0-alpha.7').TestNames)) `
+        'alpha.8 publisher profile preserves all 39 native tests in order'
+    Assert-Throws { Assert-PublishPackage -PackageRoot $alpha8Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.7' } `
+        'alpha.8 package cannot pass the alpha.7 profile'
+    [void](Set-PublishProfile -Tag 'v0.1.0-alpha.8')
+    [void](Set-PublishProfile -Tag 'v0.1.0-alpha.1')
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.1')
     $manifest = [System.IO.File]::ReadAllText($manifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
 
@@ -450,7 +514,7 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $preflightRepo 'tools') -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $preflightRepo 'docs/releases') -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'download-release.ps1') -Destination (Join-Path $preflightRepo 'tools/download-release.ps1')
-    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7')) {
+    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8')) {
         Write-Utf8NoBom -Path (Join-Path $preflightRepo ('docs/releases/' + $tag + '.md')) -Text ('Synthetic offline release notes for ' + $tag + "`n")
     }
     $gitInit = @(& git -C $preflightRepo init --quiet 2>&1)
@@ -459,7 +523,7 @@ try {
         @('config', 'user.name', 'WIREX Offline Test'),
         @('config', 'user.email', 'wirex-offline-test@example.invalid'),
         @('remote', 'add', 'origin', $script:repositoryUrl),
-        @('add', '--', 'tools/download-release.ps1', 'docs/releases/v0.1.0-alpha.1.md', 'docs/releases/v0.1.0-alpha.2.md', 'docs/releases/v0.1.0-alpha.3.md', 'docs/releases/v0.1.0-alpha.4.md', 'docs/releases/v0.1.0-alpha.5.md', 'docs/releases/v0.1.0-alpha.6.md', 'docs/releases/v0.1.0-alpha.7.md'),
+        @('add', '--', 'tools/download-release.ps1', 'docs/releases/v0.1.0-alpha.1.md', 'docs/releases/v0.1.0-alpha.2.md', 'docs/releases/v0.1.0-alpha.3.md', 'docs/releases/v0.1.0-alpha.4.md', 'docs/releases/v0.1.0-alpha.5.md', 'docs/releases/v0.1.0-alpha.6.md', 'docs/releases/v0.1.0-alpha.7.md', 'docs/releases/v0.1.0-alpha.8.md'),
         @('commit', '--quiet', '-m', 'offline publisher preflight fixture')
     )) {
         $previousErrorActionPreference = $ErrorActionPreference
@@ -472,7 +536,7 @@ try {
     $preflightCommit = [string](@(& git -C $preflightRepo rev-parse HEAD 2>$null)[0]).Trim()
     if ($LASTEXITCODE -ne 0 -or $preflightCommit -cnotmatch '^[0-9a-f]{40}$') { throw 'Could not identify the temporary offline commit.' }
     New-Item -ItemType Directory -Path (Join-Path $preflightRepo 'build/_work') -Force | Out-Null
-    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7')) {
+    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8')) {
         $sourcePackage = switch ($tag) {
             'v0.1.0-alpha.1' { $packageRoot; break }
             'v0.1.0-alpha.2' { $alpha2Root; break }
@@ -481,6 +545,7 @@ try {
             'v0.1.0-alpha.5' { $alpha5Root; break }
             'v0.1.0-alpha.6' { $alpha6Root; break }
             'v0.1.0-alpha.7' { $alpha7Root; break }
+            'v0.1.0-alpha.8' { $alpha8Root; break }
         }
         $targetPackage = Join-Path $preflightRepo ('build/releases/' + $tag)
         $targetParent = Split-Path -Parent $targetPackage
@@ -494,6 +559,7 @@ try {
             'v0.1.0-alpha.5' { $validAlpha5ManifestJson; break }
             'v0.1.0-alpha.6' { $validAlpha6ManifestJson; break }
             'v0.1.0-alpha.7' { $validAlpha7ManifestJson; break }
+            'v0.1.0-alpha.8' { $validAlpha8ManifestJson; break }
         }
         $preflightManifest = $sourceManifestText | ConvertFrom-Json
         $preflightManifest.source.commit = $preflightCommit
@@ -513,7 +579,7 @@ try {
         $script:credentialAttempted = $true
         throw 'OFFLINE_TEST_CREDENTIAL_ACCESS_BLOCKED'
     }
-    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7')) {
+    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8')) {
         $script:preflightBoundaryReached = $false
         $boundaryMessage = ''
         try {

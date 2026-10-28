@@ -3366,14 +3366,32 @@ function Start-UiRoutingDiagnosticAutoTest {
         Request-StopAndExit
         return
     }
-    if ($null -eq $script:settingsWindow) { Initialize-SettingsWindow }
-    (Get-SettingsControl 'GroupRouteIdBox').Text = '12345'
-    $slot = Get-SettingsControl 'GroupRouteSlotBox'
-    $slot.SelectedItem = @($slot.Items | Where-Object { [string]$_.Tag -ceq '1' })[0]
-    $script:routingDiagnosticAutoTestPhase = 1
-    Raise-UiButtonClick -ControlName 'AddGroupRouteButton'
-    Write-UiRoutingDiagnosticProgress -Message 'rx-add-group-button-clicked'
-    [void]$script:settingsWindow.ShowDialog()
+    try {
+        if ($null -eq $script:settingsWindow) {
+            Write-UiRoutingDiagnosticProgress -Message 'settings-window-initialize-started'
+            Initialize-SettingsWindow
+            Write-UiRoutingDiagnosticProgress -Message 'settings-window-initialize-completed'
+        }
+        (Get-SettingsControl 'GroupRouteIdBox').Text = '12345'
+        $slot = Get-SettingsControl 'GroupRouteSlotBox'
+        $slot.SelectedItem = @($slot.Items | Where-Object { [string]$_.Tag -ceq '1' })[0]
+        $script:routingDiagnosticAutoTestPhase = 1
+        Write-UiRoutingDiagnosticProgress -Message 'add-group-button-click-started'
+        Raise-UiButtonClick -ControlName 'AddGroupRouteButton'
+        Write-UiRoutingDiagnosticProgress -Message 'rx-add-group-button-clicked'
+        if (-not $script:settingsWindow.IsVisible) {
+            Write-UiRoutingDiagnosticProgress -Message 'settings-window-show-started'
+            $script:settingsWindow.Show()
+        }
+        Write-UiRoutingDiagnosticProgress -Message 'settings-window-visible'
+    } catch {
+        $failure = $_.Exception
+        $details = '{0}: {1}{2}{3}' -f $failure.GetType().FullName, $failure.Message,
+            [Environment]::NewLine, [string]$_.ScriptStackTrace
+        Write-UiRoutingDiagnosticProgress -Message ('auto-test-initialization-failed:' + $details)
+        Fail-UiRoutingDiagnosticDynamicGroupTest -Message $details
+        return
+    }
 }
 
 function Invoke-UiRoutingDiagnosticTimeoutFenceProbe {

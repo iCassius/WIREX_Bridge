@@ -1,5 +1,17 @@
 # WIREX Bridge 交接入口
 
+## R110 alpha.8 当前交接（2026-10-29）
+
+R110 从 `main` / `cf9775f47812d2b25bc155156803ad8b2fb7ea22` 开始。Windows PowerShell 5.1 `Parser.ParseFile` 在实际 alpha.7 包的 `start-merged-test.ps1` 复现 5 个错误：无 BOM 的 UTF-8 中文消息被按 ANSI 代码页误读，随后报告字符串和括号错误。源码 `tools/start-merged-test-alpha7.ps1` 已补 UTF-8 BOM，正文未改；alpha.7 已发包保持原样。
+
+alpha.8 源码准备了根目录唯一启动命令 `start-wirex-bridge.cmd`，Start 和隔离诊断都经同一 `start-wirex-bridge.ps1 → start-ui.ps1 → ui/windows/bridge-ui.ps1` dot-source 链，保留参数转发和退出码。Windows PowerShell 5.1 source-mapped 检查通过：5 个包内脚本解析成功；唯一 CMD 经中文、空格路径运行 `PrepareOnly` 与隔离 `RoutingDiagnosticAutoTest`。无参数失败负例确认 ASCII 错误提示和原退出码 2；静态断言检查 `pause >nul` 仅位于交互式启动失败分支。该用例通过重定向 stdin 自动运行，未模拟人工按键或关闭控制台。fake-sleep 超时退出检查通过。最新私有测试索引是 `private/build-history/R110/source-mapped-startup-test-20261028-185632-545.json`，输出 SHA-256 `dff379f1d2dae49c4933110bfe92d853b5bea568dd0131522c14acc431277e3c`。这不是正式 build/package 证据。
+
+R110 的路由初始化诊断异常会写入隔离结果并失败退出；此前 modal `ShowDialog()` 异常曾被 UI timer 仅记状态，后续 ACK 可能使旧 runner 错误报告 passed。新的 Start 与诊断入口走相同 WPF 脚本作用域。正式 clean full39 build 和 alpha.8 包仍待源提交后执行；之后需由 root 审核正式包并决定是否切换 `bridge-directory.txt`。当前没有推送、更新本机包指针或移动旧 build。
+
+canonical 配置三文件已在 `private/config-backups/R110` 做回滚备份，并按用户最近 alpha.7 的完整 RX/TX profile 更新；旧的 `bridge-directory.txt` 暂未切换，密码文件内容未读取或复制。build 清理仍只是一份待批准的可恢复移动清单；旧包、旧 build 和 cache 均未删除或移动。
+
+静态研究没有修复或解释 FTX-1 机身 BUSY/TX LED；官方程序对设备的实际调用与 LED 变化还需受控运行观察。R110 没有连接 COM、音频、BrandMeister，没有做 PTT、LED 或 RF 硬件验收。详细状态见 [R110 启动故障修复与 alpha.8 准备](docs/R110_启动故障修复与alpha8准备.md)。
+
 ## R105 多目标改造状态（2026-10-27）
 
 R105 核心契约与纯内存路由模型已完成；12 个独立模型测试函数由本会话及 root 独立运行通过。BM API 静态请求 mock 的一次运行通过 99 条断言，Windows PowerShell 5.1 及 root 独立复跑均 exit 0。独立 HTML 交互原型模拟检查 40/40 通过、`failed=0`；root 检查了 RX 等待 T0 清理截图，UI agent 对 router 的只读交叉审查没有阻断项。这些结果不表示 WPF/Native 已运行。R105 尚未接入 Native pipeline、IPC、WPF 或 BM live transport，也没有真实设备/Quick call/RF 验证。实施顺序和复跑命令见[R105 执行交接与实施顺序](docs/R105_执行交接与实施顺序.md)。本轮工作以 `main` / `71a45c7` 为提交基点，当前发布继续保持 `v0.1.0-alpha.4`。

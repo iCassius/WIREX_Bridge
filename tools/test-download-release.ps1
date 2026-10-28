@@ -27,7 +27,7 @@ $script:releaseAssetRedirectHosts = @(
 )
 $script:assertionCount = 0
 $downloadProfiles = @{}
-foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7')) {
+foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8')) {
     $downloadProfiles[$tag] = [pscustomobject]@{
         Files = @(Get-ExpectedReleaseFiles -Tag $tag)
         Tests = @(Get-ExpectedReleaseTests -Tag $tag)
@@ -215,6 +215,23 @@ Assert-True (@($alpha7Validated.Files | Where-Object {
 }).Count -eq 1) 'alpha.7 dynamic-group guide is mapped to one fixed ASCII asset name'
 Assert-True (Test-ReleaseTag -Tag 'v0.1.0-alpha.7') 'alpha.7 is an explicitly supported release tag'
 Assert-Throws { Test-ManifestDocument -Manifest $alpha7Manifest -RequestedTag 'v0.1.0-alpha.6' } 'alpha.7 manifest is rejected for alpha.6 tag'
+$alpha8Manifest = New-TestManifest -Tag 'v0.1.0-alpha.8'
+$alpha8Validated = Test-ManifestDocument -Manifest $alpha8Manifest -RequestedTag 'v0.1.0-alpha.8'
+Assert-True ($alpha8Validated.Files.Count -eq 28) 'alpha.8 inventory removes legacy entry scripts and adds one command and one technical launcher'
+Assert-True (@($alpha8Manifest.build.passed_tests).Count -eq 39 -and
+    [string]::Join('|', @($alpha8Manifest.build.passed_tests)) -ceq
+        [string]::Join('|', @($alpha7Manifest.build.passed_tests))) `
+    'alpha.8 retains the exact 39 alpha.7 C++ tests in order'
+Assert-True (@($alpha8Validated.Files | Where-Object {
+    $_.path -ceq 'start-wirex-bridge.cmd' -and $_.asset_name -ceq 'start-wirex-bridge.cmd'
+}).Count -eq 1 -and @($alpha8Validated.Files | Where-Object {
+    $_.path -ceq 'tools/start-wirex-bridge.ps1' -and $_.asset_name -ceq 'tools__start-wirex-bridge.ps1'
+}).Count -eq 1) 'alpha.8 maps the sole root command and hidden technical launcher to fixed ASCII asset names'
+Assert-True (@($alpha8Validated.Files | Where-Object {
+    $_.path -match '\.cmd$' -and $_.path -cne 'start-wirex-bridge.cmd'
+}).Count -eq 0) 'alpha.8 contains no additional CMD entry points'
+Assert-True (Test-ReleaseTag -Tag 'v0.1.0-alpha.8') 'alpha.8 is an explicitly supported release tag'
+Assert-Throws { Test-ManifestDocument -Manifest $alpha8Manifest -RequestedTag 'v0.1.0-alpha.7' } 'alpha.8 manifest is rejected for alpha.7 tag'
 
 $invalid = New-TestManifest; $invalid.package_status = 'awaiting_root_audit'
 Assert-Throws { Test-ManifestDocument -Manifest $invalid -RequestedTag 'v0.1.0-alpha.1' } 'unreviewed package status is rejected'
@@ -260,6 +277,8 @@ $publishedAlpha6 = [pscustomobject]@{ tag_name='v0.1.0-alpha.6'; draft=$false; p
 Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha6) -RequestedTag 'v0.1.0-alpha.6').tag_name -ceq 'v0.1.0-alpha.6') 'alpha.6 is selected by exact tag'
 $publishedAlpha7 = [pscustomobject]@{ tag_name='v0.1.0-alpha.7'; draft=$false; prerelease=$true }
 Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha7) -RequestedTag 'v0.1.0-alpha.7').tag_name -ceq 'v0.1.0-alpha.7') 'alpha.7 is selected by exact tag'
+$publishedAlpha8 = [pscustomobject]@{ tag_name='v0.1.0-alpha.8'; draft=$false; prerelease=$true }
+Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha8) -RequestedTag 'v0.1.0-alpha.8').tag_name -ceq 'v0.1.0-alpha.8') 'alpha.8 is selected by exact tag'
 
 $goodAssets = New-TestAssetList -Manifest $validManifest
 $release = [pscustomobject]@{ assets=$goodAssets; target_commitish=[string]$validManifest.source.commit }
@@ -402,7 +421,7 @@ try {
 
 . (Join-Path $PSScriptRoot 'package-release.ps1')
 . (Join-Path $PSScriptRoot 'publish-release.ps1')
-foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7')) {
+foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8')) {
     $packageProfile = Set-ReleaseVersion -Version $tag
     $packagePaths = @($packageProfile.PackageFiles | Where-Object { $_ -cne 'manifest.json' })
     $downloadFiles = @($downloadProfiles[$tag].Files)

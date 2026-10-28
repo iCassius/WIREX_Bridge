@@ -6,10 +6,15 @@ param(
     [switch]$NoAutoConnect,
     [switch]$RenderOnly,
     [string]$RenderOutputDirectory,
-    [string]$RenderWorkArea
+    [string]$RenderWorkArea,
+    [switch]$RoutingDiagnostic,
+    [switch]$RoutingDiagnosticAutoTest
 )
 
 $ErrorActionPreference = 'Stop'
+if ($RoutingDiagnosticAutoTest -and -not $RoutingDiagnostic) {
+    throw '-RoutingDiagnosticAutoTest 必须与 -RoutingDiagnostic 一起使用。'
+}
 try {
     $packageRoot = if ([System.IO.File]::Exists((Join-Path $PSScriptRoot 'ui\windows\bridge-ui.ps1'))) {
         [System.IO.Path]::GetFullPath($PSScriptRoot)
@@ -29,7 +34,9 @@ try {
     if ($RenderOnly) { $arguments.RenderOnly = $true }
     if (-not [string]::IsNullOrWhiteSpace($RenderOutputDirectory)) { $arguments.RenderOutputDirectory = $RenderOutputDirectory }
     if (-not [string]::IsNullOrWhiteSpace($RenderWorkArea)) { $arguments.RenderWorkArea = $RenderWorkArea }
-    & $uiScript @arguments
+    if ($RoutingDiagnostic) { $arguments.RoutingDiagnostic = $true }
+    if ($RoutingDiagnosticAutoTest) { $arguments.RoutingDiagnosticAutoTest = $true }
+    . $uiScript @arguments
 } catch {
     [Console]::Error.WriteLine(('WIREX Bridge UI 启动失败：' + $_.Exception.Message))
     exit 2

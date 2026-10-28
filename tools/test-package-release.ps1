@@ -394,6 +394,10 @@ Assert-True (@($alpha7CmdBytes | Where-Object { $_ -gt 127 }).Count -eq 0) 'alph
 $alpha7CmdText = [System.Text.Encoding]::ASCII.GetString($alpha7CmdBytes)
 Assert-True ($alpha7CmdText.Contains('alpha7 local test') -and $alpha7CmdText.Contains("`r`n") -and
     -not $alpha7CmdText.Replace("`r`n", '').Contains("`n")) 'alpha.7 cmd entry has its own title and Windows CRLF line endings'
+$alpha7LauncherBytes = [System.IO.File]::ReadAllBytes($alpha7LauncherPath)
+Assert-True ($alpha7LauncherBytes.Length -ge 3 -and $alpha7LauncherBytes[0] -eq 0xEF -and
+    $alpha7LauncherBytes[1] -eq 0xBB -and $alpha7LauncherBytes[2] -eq 0xBF) `
+    'alpha.7 launcher has a UTF-8 BOM so Windows PowerShell 5.1 reads its Chinese strings correctly'
 $alpha7Tokens = $null
 $alpha7ParseErrors = $null
 $alpha7Ast = [System.Management.Automation.Language.Parser]::ParseFile(
@@ -404,6 +408,72 @@ $alpha7EntryDirectory = @($alpha7Ast.ParamBlock.Parameters | Where-Object {
 Assert-True ($alpha7ParseErrors.Count -eq 0 -and $alpha7EntryDirectory.Count -eq 0) `
     ('alpha.7 launcher parses and fixes its isolated config path; parse errors={0}, mutable config parameters={1}' -f
         $alpha7ParseErrors.Count, $alpha7EntryDirectory.Count)
+
+$alpha8Profile = Get-ReleaseProfile -Version 'v0.1.0-alpha.8'
+[void](Set-ReleaseVersion -Version 'v0.1.0-alpha.8')
+$alpha8Files = @(Get-ExpectedReleasePackageFiles)
+$alpha8Tests = @(Get-ExpectedReleaseTests)
+$alpha8ExcludedPaths = @(
+    'start-bm-radio-bridge.cmd', 'start-listen-91.cmd', 'start-profile.cmd',
+    'start-ui.cmd', 'start-user-config.cmd', 'start-user-config.ps1',
+    'start-step1-test.cmd', 'start-step1-test.ps1', 'test-control.cmd', 'test-control.ps1',
+    'start-merged-test.cmd', 'start-merged-test.ps1'
+)
+Assert-Equal $alpha8Files.Count ($alpha7Files.Count - $alpha8ExcludedPaths.Count + 2) `
+    'alpha.8 只保留一个用户 CMD 入口和一个子目录 PowerShell 入口'
+Assert-Equal $alpha8Tests.Count $alpha7Tests.Count 'alpha.8 沿用 alpha.7 的 39 项 C++ 离线测试清单'
+Assert-True (@($alpha8Files | Where-Object { [string]$_ -match '\.cmd$' }).Count -eq 1 -and
+    $alpha8Files -ccontains 'start-wirex-bridge.cmd' -and
+    $alpha8Files -ccontains 'tools/start-wirex-bridge.ps1') `
+    'alpha.8 包清单只含根目录的 start-wirex-bridge.cmd 入口'
+foreach ($path in $alpha8ExcludedPaths) {
+    Assert-True (-not ($alpha8Files -ccontains $path)) "alpha.8 package excludes obsolete entry $path"
+}
+foreach ($requiredPath in @('start-ui.ps1','start-bm-radio-bridge.ps1','bridge-user-config.psm1',
+    'ui/windows/bridge-ui.ps1','ui/windows/BridgeSupervisor.cs','ui/windows/MainWindow.xaml',
+    'ui/windows/SettingsWindow.xaml','private/device-y.bin')) {
+    Assert-True ($alpha8Files -ccontains $requiredPath) "alpha.8 preserves runtime dependency $requiredPath"
+}
+foreach ($mapping in @(
+    @{ Source='docs\releases\v0.1.0-alpha.8-package-README.md'; Destination='README.md' },
+    @{ Source='tools\start-wirex-bridge-alpha8.cmd'; Destination='start-wirex-bridge.cmd' },
+    @{ Source='tools\start-wirex-bridge-alpha8.ps1'; Destination='tools\start-wirex-bridge.ps1' }
+)) {
+    Assert-True (@($alpha8Profile.SourceFiles | Where-Object {
+        [string]$_.Source -ceq $mapping.Source -and [string]$_.Destination -ceq $mapping.Destination
+    }).Count -eq 1) "alpha.8 source mapping is fixed: $($mapping.Source)"
+}
+$alpha8CmdPath = Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha8.cmd'
+$alpha8CmdBytes = [System.IO.File]::ReadAllBytes($alpha8CmdPath)
+Assert-True (@($alpha8CmdBytes | Where-Object { $_ -gt 127 }).Count -eq 0) 'alpha.8 CMD source contains ASCII only'
+$alpha8CmdText = [System.Text.Encoding]::ASCII.GetString($alpha8CmdBytes)
+Assert-True ($alpha8CmdText.Contains('powershell.exe -NoLogo -NoProfile -STA -ExecutionPolicy Bypass') -and
+    $alpha8CmdText.Contains('"%~dp0tools\start-wirex-bridge.ps1" %*') -and
+    $alpha8CmdText.Contains('exit /b %_wirex_exit%') -and $alpha8CmdText.Contains("`r`n") -and
+    -not $alpha8CmdText.Replace("`r`n", '').Contains("`n")) `
+    'alpha.8 CMD forwards quoted paths and arguments through PowerShell while preserving the exit code'
+$alpha8LauncherPath = Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha8.ps1'
+$alpha8LauncherBytes = [System.IO.File]::ReadAllBytes($alpha8LauncherPath)
+Assert-True ($alpha8LauncherBytes.Length -ge 3 -and $alpha8LauncherBytes[0] -eq 0xEF -and
+    $alpha8LauncherBytes[1] -eq 0xBB -and $alpha8LauncherBytes[2] -eq 0xBF) `
+    'alpha.8 technical entry uses UTF-8 BOM for Windows PowerShell 5.1'
+$alpha8Tokens = $null
+$alpha8ParseErrors = $null
+$alpha8Ast = [System.Management.Automation.Language.Parser]::ParseFile(
+    $alpha8LauncherPath, [ref]$alpha8Tokens, [ref]$alpha8ParseErrors)
+Assert-True ($alpha8ParseErrors.Count -eq 0) `
+    ('alpha.8 technical entry parses in Windows PowerShell; parse errors={0}' -f $alpha8ParseErrors.Count)
+$alpha8ReadmeMap = @($alpha8Profile.SourceFiles | Where-Object { [string]$_.Destination -ceq 'README.md' })
+Assert-Equal $alpha8ReadmeMap.Count 1 'alpha.8 has exactly one package README'
+$alpha8ReadmeText = [System.IO.File]::ReadAllText(
+    (Join-Path $repositoryRoot $alpha8ReadmeMap[0].Source), [System.Text.Encoding]::UTF8)
+Assert-True ($alpha8ReadmeText.Contains('start-wirex-bridge.cmd') -and
+    $alpha8ReadmeText.Contains('private/user-config-directory.txt') -and
+    $alpha8ReadmeText.Contains('config-backups/R110') -and
+    $alpha8ReadmeText.Contains('密码文件内容') -and
+    -not $alpha8ReadmeText.Contains('test-control.cmd')) `
+    'alpha.8 README points users to one command and documents the local-only configuration boundary'
+
 [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.1')
 Assert-Throws { Get-ReleaseAssetName -RelativePath 'start-ui.cmd' } 'alpha.1 不接受 alpha.2 UI asset'
 Assert-True ((Get-ReleaseAssetName -RelativePath 'docs/连接配置.md') -ceq 'docs__connection-profile.md') `
@@ -414,7 +484,7 @@ $testRoot = Join-Path $repositoryRoot ('build\_work\package-release-test-' + [gu
 $buildDirectory = Join-Path $testRoot 'wirex-bridge-0123456-20261025-000000'
 $buildLogPath = Join-Path $testRoot 'synthetic-build.log'
 $packageRoot = Join-Path $testRoot 'synthetic-package'
-$approvedFixturePath = Join-Path $repositoryRoot 'build\bm-radio-bridge-5e33433\private\device-y.bin'
+$approvedFixturePath = Join-Path $repositoryRoot 'private\fixtures\device-y.bin'
 $approvedFixtureHash = Test-ApprovedYFixture -Path $approvedFixturePath
 New-Item -ItemType Directory -Path $buildDirectory -Force | Out-Null
 try {

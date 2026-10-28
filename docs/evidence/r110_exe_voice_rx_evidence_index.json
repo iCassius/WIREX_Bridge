@@ -1,0 +1,334 @@
+{
+  "schema_version": 1,
+  "research_id": "R110-EXE-VOICE-RX",
+  "artifact": {
+    "name": "WIRES_X.EXE",
+    "path": "research/inputs/v2.010/payload/WIRES_X.EXE",
+    "sha256": "8f05dc26794144438566b880ce775f5178d62eb3c4deb8c053089216342bc671",
+    "format": "PE32",
+    "architecture": "x86"
+  },
+  "analysis": {
+    "authority": "shipped-artifact",
+    "provider": "Ghidra",
+    "provider_version": "12.1.4",
+    "document": "target-8f05dc267941.EXE",
+    "image_base": "0x400000",
+    "raw_evidence_bundle": "research/rea/v2.010/r110_exe_voice_rx_evidence_bundle_20261028.json",
+    "raw_evidence_records": 97,
+    "execution_performed": false,
+    "evidence_id": "ev_d5fa281acd0c4198dd47692a38dc192ec5d2905bab8e91c9b6680ff093635505",
+    "overview_evidence_id": "ev_a7ba4d1482fe7cbb79056493efc0f225ad8fa288057963fc15683ebe3636c9f9"
+  },
+  "writefile_metadata_observer": {
+    "static_sources": [
+      "research/rea/v2.010/wires-x.asm",
+      "research/rea/v2.010/r11_serial_object_static.json",
+      "docs/R103_HRI记录到WriteFile路径摘要.md"
+    ],
+    "artifact_sha256": "8f05dc26794144438566b880ce775f5178d62eb3c4deb8c053089216342bc671",
+    "image_base": "0x00400000",
+    "import": {
+      "iat_va": "0x0070966C",
+      "symbol": "KERNEL32!WriteFile"
+    },
+    "covered_callsite": {
+      "wrapper": "FUN_0040F7E0",
+      "call_va": "0x0040F7F4",
+      "call_rva": "0x0000F7F4",
+      "instruction_bytes": "ff156c967000",
+      "return_va": "0x0040F7FA",
+      "return_rva": "0x0000F7FA",
+      "runtime_match": "WIRES-X.exe.base + 0x0000F7FA"
+    },
+    "uncovered_writefile_callsite": {
+      "call_va": "0x0040F823",
+      "return_va": "0x0040F829",
+      "return_rva": "0x0000F829"
+    },
+    "caller_scope": {
+      "wrapper_callers": ["0x0040C5A9", "0x0040C6DC", "0x0040D28A"],
+      "hri_message_path_confirmed_at": "0x0040D28A",
+      "hri_path_reference": "docs/R103_HRI记录到WriteFile路径摘要.md",
+      "limitations": [
+        "返回点属于通用 wrapper；现有静态资料只把其中一条调用路径连到 HRI 消息处理。",
+        "观察器只记录本窗口内匿名句柄 token、请求长度、WriteFile 成功结果和事件时间。",
+        "观察器不读取缓冲区，不将 token 认定为 HRI 专属，也不把它加入 ReadFile 句柄集合。",
+        "第二处 WriteFile 调用返回点 0x0000F829 不在观察范围内。"
+      ]
+    }
+  },
+  "records": [
+    {
+      "evidence_id": "ev_a360442e0ab2c0f4258ff33d25ac46376879c7799fc4d8ac68ff9c9db7060af5",
+      "operation": "analyze_function",
+      "location": "0x004E6D30",
+      "function": "StartRcvVoice",
+      "supports": "Called-voice 分支选择 Hearing 行 9、发送 0x88A 并投递线程消息 0x715；忙碌/其它分支可选择 Talk_Idle 行 8。",
+      "limitations": ["静态分支不能证明一次特定来话实际命中。", "消息 0x715 的消费函数未在本轮闭合。"]
+    },
+    {
+      "evidence_id": "ev_9371bfb6a4a854ab83994dcc4f94789db3778a49b116b591625d416b72d0f2fb",
+      "operation": "procedure_callers",
+      "location": "0x004E6D30",
+      "supports": "列出 5 个已解析直接调用位置。",
+      "limitations": ["只覆盖已解析直接调用引用；不能排除未解析间接调用。"]
+    },
+    {
+      "evidence_id": "ev_730ee7faf4e045c90f6882a0a7f0bbfbaff9829b4e8d0c40788af2f5664d37f3",
+      "operation": "analyze_function",
+      "location": "0x004D6DF0",
+      "function": "ConnectCntl",
+      "supports": "按行复制 6 个短值；ToHRI-PTT 字段变化时调用公共 PTT 封装。",
+      "limitations": ["不能据此证明下游控制请求成功或发生 RF。"]
+    },
+    {
+      "evidence_id": "ev_7947fe4178f84d76020db8870239c455d27680d92f5720ef736291e3d3ab9471",
+      "operation": "read_bytes",
+      "location": "0x007C23B8",
+      "supports": "静态状态行表中，行 8 为 [0,1,1,0,1,0]，行 9 为 [1,0,1,0,1,0]。",
+      "limitations": ["表值是软件状态数据，不是电台物理 LED 或 PTT 的实测结果。"]
+    },
+    {
+      "evidence_id": "ev_7ef9965727ac0fbc74b90e68dbe5b24fc2c2df00f2f01dd57807737cde182560",
+      "operation": "xrefs",
+      "location": "0x007C23C2",
+      "supports": "状态行数据被 ConnectCntl 函数体引用。",
+      "limitations": ["引用清单不提供运行时选择值。"]
+    },
+    {
+      "evidence_id": "ev_c1209cca314c2c7df5c7b14d2d6ff63ec2060e78cac16f1cd7ad16ad1faf0361",
+      "operation": "procedure_callers",
+      "location": "0x004D6DF0",
+      "supports": "展示 ConnectCntl 的已解析直接调用者，包括 StartRcvVoice。",
+      "limitations": ["覆盖为 partial；Ghidra 报告 37 条函数体引用未能归属调用者。"]
+    },
+    {
+      "evidence_id": "ev_ed358618f89c3495d441e0e1dcf3d3ada606cc9933fd3807200c9d3ba8be27cf",
+      "operation": "analyze_function",
+      "location": "0x0040DDB0",
+      "function": "PTT wrapper",
+      "supports": "根据实例 +0x3C4 与 b8/bc 门控，选择 HRI 函数表调用或 P 类路径。",
+      "limitations": ["不能从函数实现推出当前运行时门控值。"]
+    },
+    {
+      "evidence_id": "ev_aa2cc756197afd4f462003c67f0c161753d3f5b3a8ac93d8adcf2175ed64c210",
+      "operation": "procedure_callers",
+      "location": "0x0040DDB0",
+      "supports": "公共 PTT 封装的 3 个已解析直接调用位置。",
+      "limitations": ["仅包含已解析直接调用引用。"]
+    },
+    {
+      "evidence_id": "ev_839704adc0b9d1ae8565c704e552ae051de05ff1958ed98dfaf6d104f73a9dd5",
+      "operation": "read_function_instructions",
+      "location": "0x0040DDB0",
+      "supports": "PTT wrapper 的间接调用点前依次 PUSH 从 owner 短字段扩展来的值和 0，再 CALL EAX；这为 HRI `SendTrcvPttCmd(index,value)` 的标量参数顺序提供 caller-side 证据。",
+      "limitations": ["owner 指针本身不作为观察器参数读取。"]
+    },
+    {
+      "evidence_id": "ev_3a65b42693ba72d638eaaebd9924c9c4741dfffb67c18c38c5f8f6e19c79f6ea",
+      "operation": "read_bytes",
+      "location": "0x004E6D30",
+      "supports": "StartRcvVoice entry 的 12 个 shipped-artifact 字节供运行时 hook 地址/目标版本核对。",
+      "limitations": ["签名只用于匹配静态代码位置，不能替代安装文件哈希核对。"]
+    },
+    {
+      "evidence_id": "ev_0850f2f6a163594ae6d6b9069fd785c57664f7d5763352b9912e4309ebbb6b24",
+      "operation": "read_bytes",
+      "location": "0x004D6DF0",
+      "supports": "ConnectCntl entry 的首部机器码供运行时 hook 地址/目标版本核对。",
+      "limitations": ["hook 不读取 ConnectCntl 自定义参数。"]
+    },
+    {
+      "evidence_id": "ev_563e7a62793c5b04a6c03dd05845b83b95abda45409ff3d07d58b6fdbadca907",
+      "operation": "read_bytes",
+      "location": "0x0040DDB0",
+      "supports": "PTT wrapper entry 的首部机器码供运行时 hook 地址/目标版本核对。",
+      "limitations": ["hook 不读取 wrapper 自定义参数或 owner 字段。"]
+    },
+    {
+      "evidence_id": "ev_f334c62ed4a348b75a025f7f5fe485f5126b197dc46d96c5eaee070a4a409596",
+      "operation": "read_function_instructions",
+      "location": "0x004E6D30",
+      "supports": "StartRcvVoice entry uses an ECX object and ends with `RET 4`; new hook records only entry/time and scalar return value, not ECX or stack arguments.",
+      "limitations": ["The script does not infer object ownership or business state from calling convention registers."]
+    },
+    {
+      "evidence_id": "ev_bbac209ac0687c96b96b2ad68d10cd93b806565160f815767ef070b87dfea22d",
+      "operation": "read_function_instructions",
+      "location": "0x004D6DF0",
+      "supports": "ConnectCntl reads two stack arguments and uses a stack argument to index the 0x16-byte row table; the new hook therefore records only entry/time.",
+      "limitations": ["The runtime hook does not map Frida args[] to row or owner fields."]
+    },
+    {
+      "evidence_id": "ev_2d63ef9f999803d74076ab1c5fad020c9476bf351cdeb6a9ecfe3ad11aed183d",
+      "operation": "read_function_instructions",
+      "location": "0x004E6D30",
+      "supports": "StartRcvVoice call sites push row 8 or 9, then a string pointer, set ECX to the object, and call ConnectCntl; code confirms the row transitions without requiring the observer to read arguments.",
+      "limitations": ["This establishes static call-site values only, not the runtime branch taken."]
+    },
+    {
+      "evidence_id": "ev_b360b8fbe47861ce949aa48937253319c2f3e71f1025b8ea8cc02f1b85457793",
+      "operation": "read_function_instructions",
+      "location": "0x004D6DF0",
+      "supports": "ConnectCntl call site pushes 0 before invoking wrapper through ECX object pointer; the observer does not read the custom object pointer.",
+      "limitations": ["The call-site object itself is not dereferenced by the observer."]
+    },
+    {
+      "evidence_id": "ev_567011a831a4e80c5860fc6a05f532942b4510f4fc3bff069f4a76ce9278a28d",
+      "operation": "xrefs",
+      "location": "0x02F1C7B8",
+      "supports": "220 static references to b8; report uses the exact global RVA `0x2B1C7B8` from image base `0x400000`.",
+      "limitations": ["References do not reveal current runtime value."]
+    },
+    {
+      "evidence_id": "ev_42e6050f99d7a0753bfd4b4bac403d1c532d9fbc3212abd751638f26683b734f",
+      "operation": "xrefs",
+      "location": "0x02F1C7BC",
+      "supports": "33 static references to bc; report uses the exact global RVA `0x2B1C7BC` from image base `0x400000`.",
+      "limitations": ["References do not reveal current runtime value."]
+    },
+    {
+      "evidence_id": "ev_08af4141368baaab7312ab00490985cba632b8fa5712553ee22e406cfcedb8e6",
+      "operation": "analyze_function",
+      "location": "0x004BDB50",
+      "supports": "读取 DirectComPort 及 HRI 相关配置，并在成功分支设置 b8。",
+      "limitations": ["静态配置读取不能证明安装环境的当前值。"]
+    },
+    {
+      "evidence_id": "ev_14f32a1102efcca37ace1946a5ea3f22d4bd25e8614dec1a05cf41a81f363ab9",
+      "operation": "analyze_function",
+      "location": "0x0040CBC0",
+      "supports": "枚举/验证串口设备并尝试打开配置 COM 号；成功时设置实例字段。",
+      "limitations": ["未运行程序，也未访问任何 COM 设备。"]
+    },
+    {
+      "evidence_id": "ev_40569c6b0ea0dea30ea27b117ed52cc46d371702cf4da49cbcdc1b5d1566223c",
+      "operation": "read_function_instructions",
+      "location": "0x0040CBC0",
+      "supports": "调用点按返回值是否为 1 判定串口打开成功。",
+      "limitations": ["机器码条件不说明用户当前配置或设备状态。"]
+    },
+    {
+      "evidence_id": "ev_5791c5d67408e4e2d6f4c60eb717aa763a2f72fab2991b5bf2248c665a248713",
+      "operation": "xrefs",
+      "location": "0x02F1C7B8",
+      "supports": "b8 全局有大量静态引用。",
+      "limitations": ["裸引用列表不分类读写用途，不能解释为单一模式开关。"]
+    },
+    {
+      "evidence_id": "ev_ffa63b59a8b292f31d2606b0ae56043642d00f35a1e0dc9677e9f39d4ab93a3e",
+      "operation": "xrefs",
+      "location": "0x02F1C7BC",
+      "supports": "bc 全局有多处静态引用。",
+      "limitations": ["裸引用列表不分类读写用途，不能解释为单一模式开关。"]
+    },
+    {
+      "evidence_id": "ev_59c032e474b7d21691e19eb15faf34ef3eab620d69a89f8c928dc95d9dd4a70e",
+      "operation": "analyze_function",
+      "location": "0x004FD0C0",
+      "function": "RigDataIf export loader",
+      "supports": "装载 ToHriFrameAdd、ToHriAmbeAdd/Get、ToAnaAmbeAdd/Get 到函数表的槽位。",
+      "limitations": ["装载导出不证明当前接收路径实际调用这些槽。"]
+    },
+    {
+      "evidence_id": "ev_a04246f3c4b080297bcf1ea62be98d0f98ec15d577ddd0a68e596971921b3a14",
+      "operation": "analyze_function",
+      "location": "0x004ED320",
+      "function": "DataPlayThread",
+      "supports": "从程序内部队列取数据并调用 WaveOut 输出 API。",
+      "limitations": ["没有闭合到 HRI AMBE 队列、0x715 消息或 ToAnaAmbeGet。"]
+    },
+    {
+      "evidence_id": "ev_b9cb891761386faaf549e0e35730fb0beb3bd5b86f0ae63d7eb962da40e3b960",
+      "operation": "analyze_function",
+      "location": "0x004F2140",
+      "function": "WaveOut queue getter",
+      "supports": "读取并可选弹出程序自己的 WaveOut 队列节点。",
+      "limitations": ["不证明队列节点由 HRI AMBE 生产。"]
+    },
+    {
+      "evidence_id": "ev_d216e78bba64c2e73939799468373ea96021ecc1a3dcf48eae95bd5e86abedcb",
+      "operation": "analyze_function",
+      "location": "0x004F2810",
+      "supports": "WaveOut 数据处理分支之一。",
+      "limitations": ["该函数与本次来话队列的调用边未核实。"]
+    },
+    {
+      "evidence_id": "ev_3bb30b24830bbea5948b262eba9f255bfa0993c2ea3f397af82da7fb91e4c2e0",
+      "operation": "analyze_function",
+      "location": "0x004F2B70",
+      "supports": "另一条 WaveOut 数据处理分支。",
+      "limitations": ["不能据此称为 HRI 来话播放路径。"]
+    },
+    {
+      "evidence_id": "ev_48c102f231f757edf2ca0da003dee6fe267c4b877856b667d2be86e8c7657758",
+      "operation": "historical-evidence-record",
+      "artifact": "RigDataIf.dll SHA-256 94d1217feb047288329e79e0d5de2167c79450f1945119b2ed6c6376b02a7410",
+      "location": "ToHriFrameAdd",
+      "supports": "记录外部 RigDataIf 对通用 HRI 控制/头部记录队列的入口。",
+      "source": "research/rea/v2.010/r99_rigdataif_frameadd_queue_20261027.json"
+    },
+    {
+      "evidence_id": "ev_511b4f33a6adc48d3c215a27f46494f7f554aebeae5cde3615a017388025c893",
+      "operation": "historical-evidence-record",
+      "artifact": "RigDataIf.dll SHA-256 94d1217feb047288329e79e0d5de2167c79450f1945119b2ed6c6376b02a7410",
+      "location": "0x100011C0",
+      "supports": "记录 H/G/#/$ 控制记录的队列分类与入队逻辑。",
+      "source": "research/rea/v2.010/r99_rigdataif_frameadd_queue_20261027.json"
+    },
+    {
+      "evidence_id": "ev_b251db448306d067410166d7899b176c0c0968f06659d731f841df8329ea0be2",
+      "operation": "historical-evidence-record",
+      "artifact": "RigDataIf.dll SHA-256 94d1217feb047288329e79e0d5de2167c79450f1945119b2ed6c6376b02a7410",
+      "location": "0x10001000",
+      "supports": "记录 H/G/#/$ 首字符对应的内部队列类型映射。",
+      "source": "research/rea/v2.010/r99_rigdataif_frameadd_queue_20261027.json"
+    }
+  ],
+  "related_artifact_evidence": [
+    {
+      "artifact": "HRI_UART.dll",
+      "sha256": "56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed",
+      "document": "target-56e0050ef6af.dll",
+      "evidence_id": "ev_5bb834fbcfd1fd2c1e3f0b21a61ab52e8f3b2588a5ed9ca632cb4884182cbc2f",
+      "location": "0x10002670",
+      "claim": "SendTrcvPttCmd 用 index 访问对象槽，槽存在时将 short value 交给 owner PTT 处理函数。",
+      "source": "app/docs/evidence/r110_hri_evidence_index.json"
+    },
+    {
+      "artifact": "HRI_UART.dll",
+      "sha256": "56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed",
+      "document": "target-56e0050ef6af.dll",
+      "evidence_id": "ev_d5a284cd9091cf6f0d70feafdd14a48e6faca271131dff6b9d04dfb135378791",
+      "location": "0x1000F100",
+      "claim": "owner PTT 处理函数将 short value 写到 owner+0x44 并根据 child 状态分支。",
+      "source": "app/docs/evidence/r110_hri_evidence_index.json"
+    }
+  ],
+  "runtime_observation": {
+    "performed": false,
+    "minimum_scope": "一次用户安排的官方 DIRECT 来话；最多 25 秒；只记状态/队列/帧元数据，不读 AMBE/PCM、T偏移15以后、G正文、呼号或密码。",
+    "observer_script": "app/tools/research/r110_official_rx_path_observer.js",
+    "offline_fixture": "app/tools/research/r110_official_rx_path_observer_offline_test.js",
+    "offline_fixture_status": "passed",
+    "com_handle_scope": "只跟踪挂接后新打开的 COM 句柄；若目标进程在挂接前已打开串口，不枚举或重开现有句柄。",
+    "serial_read_allowlist": "SOH/type/length/EOT/checksum 字符；仅 T body offsets 0..14；其它 payload 全部按长度跳过且不读取。",
+    "waveout_read_allowlist": "WAVEHDR.dwBufferLength at +4 and dwFlags at +16; lpData is never dereferenced.",
+    "static_va_to_rva": {
+      "image_base": "0x00400000",
+      "StartRcvVoice": { "va": "0x004E6D30", "rva": "0x000E6D30" },
+      "ConnectCntl": { "va": "0x004D6DF0", "rva": "0x000D6DF0" },
+      "PTT_wrapper": { "va": "0x0040DDB0", "rva": "0x0000DDB0" },
+      "global_b8": { "va": "0x02F1C7B8", "rva": "0x02B1C7B8" },
+      "global_bc": { "va": "0x02F1C7BC", "rva": "0x02B1C7BC" }
+    },
+    "existing_reusable_observers": [
+      "research/runtime/r91_hri_dual_instance_metadata_observer.js",
+      "research/runtime/hri_serial_observer_r37.js",
+      "research/runtime/hri_voice_activity_r43.js"
+    ],
+    "status": "未证明 LED、继电器或扬声器播放已修复；未修改应用代码。"
+  },
+  "cross_reference": "app/docs/R110_HRI官方下行控制.md"
+}

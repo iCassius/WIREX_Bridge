@@ -40,6 +40,7 @@ $script:alpha3TestNames = @(
 $script:alpha5TestNames = @($script:alpha3TestNames + 'ui_control_protocol_v2_test')
 $script:alpha6TestNames = @($script:alpha5TestNames + 'talkgroup_routing_test' + 'bm_routing_lifecycle_test' + 'routing_state_test')
 $script:alpha7TestNames = @($script:alpha6TestNames)
+$script:alpha8TestNames = @($script:alpha7TestNames)
 
 function Set-PublishProfile {
     param([Parameter(Mandatory=$true)][string]$Tag)
@@ -158,7 +159,26 @@ function Set-PublishProfile {
             $script:expectedDirectories = @($alpha6.Directories)
             $script:expectedTestNames = $script:alpha7TestNames
         }
-        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, and v0.1.0-alpha.7 release profiles are supported.' }
+        'v0.1.0-alpha.8' {
+            $alpha7 = Set-PublishProfile -Tag 'v0.1.0-alpha.7'
+            $excludedPaths = @(
+                'start-bm-radio-bridge.cmd', 'start-listen-91.cmd', 'start-profile.cmd',
+                'start-ui.cmd', 'start-user-config.cmd', 'start-user-config.ps1',
+                'start-step1-test.cmd', 'start-step1-test.ps1', 'test-control.cmd', 'test-control.ps1',
+                'start-merged-test.cmd', 'start-merged-test.ps1'
+            )
+            $assetMap = [ordered]@{}
+            foreach ($path in $alpha7.AssetPathMap.Keys) {
+                if ($excludedPaths -cnotcontains [string]$path) { $assetMap[$path] = $alpha7.AssetPathMap[$path] }
+            }
+            $assetMap['start-wirex-bridge.cmd'] = 'start-wirex-bridge.cmd'
+            $assetMap['tools/start-wirex-bridge.ps1'] = 'tools__start-wirex-bridge.ps1'
+            $script:publishTag = $Tag
+            $script:assetPathMap = $assetMap
+            $script:expectedDirectories = @($alpha7.Directories) + 'tools'
+            $script:expectedTestNames = $script:alpha8TestNames
+        }
+        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, and v0.1.0-alpha.8 release profiles are supported.' }
     }
     return [pscustomobject]@{
         Tag = $script:publishTag

@@ -68,8 +68,8 @@ return
     $env:WIREX_LOCAL_FAKE_JSON = $script:fakeJson
 
     $appRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
-    $bodyPath = Join-Path $appRoot 'build\local-hri-downlink-0304eff\private\device-y.bin'
-    $wavPath = Join-Path $appRoot 'build\local-hri-downlink-0304eff\assets\voice-test.wav'
+    $bodyPath = Join-Path $appRoot 'private\fixtures\device-y.bin'
+    $wavPath = Join-Path $appRoot 'private\fixtures\voice-test.wav'
     $reportPath = Join-Path $tempRoot 'logs\session.json'
     $plan = New-LocalSessionPlan -Executable $script:fakeProbePath -BodyPath $bodyPath -WavPath $wavPath `
         -Port 'COM5' -RadioInputId 3 -PcOutputId 6 -MicInputId 7 -AudioDevices $devices `

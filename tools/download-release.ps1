@@ -29,7 +29,7 @@ function Test-ReleaseTag {
     return ($Tag -ceq 'v0.1.0-alpha.1' -or $Tag -ceq 'v0.1.0-alpha.2' -or
         $Tag -ceq 'v0.1.0-alpha.3' -or $Tag -ceq 'v0.1.0-alpha.4' -or
         $Tag -ceq 'v0.1.0-alpha.5' -or $Tag -ceq 'v0.1.0-alpha.6' -or
-        $Tag -ceq 'v0.1.0-alpha.7')
+        $Tag -ceq 'v0.1.0-alpha.7' -or $Tag -ceq 'v0.1.0-alpha.8')
 }
 
 function Get-ExpectedReleaseTests {
@@ -64,7 +64,8 @@ function Get-ExpectedReleaseTests {
         'v0.1.0-alpha.5' { return @((Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.4') + 'ui_control_protocol_v2_test') }
         'v0.1.0-alpha.6' { return @((Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.5') + 'talkgroup_routing_test' + 'bm_routing_lifecycle_test' + 'routing_state_test') }
         'v0.1.0-alpha.7' { return @(Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.6') }
-        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, and v0.1.0-alpha.7 are supported.' }
+        'v0.1.0-alpha.8' { return @(Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.7') }
+        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, and v0.1.0-alpha.8 are supported.' }
     }
 }
 
@@ -157,7 +158,21 @@ function Get-ExpectedReleaseFiles {
             }
             return $alpha7
         }
-        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, and v0.1.0-alpha.7 are supported.' }
+        'v0.1.0-alpha.8' {
+            $excludedPaths = @(
+                'start-bm-radio-bridge.cmd', 'start-listen-91.cmd', 'start-profile.cmd',
+                'start-ui.cmd', 'start-user-config.cmd', 'start-user-config.ps1',
+                'start-step1-test.cmd', 'start-step1-test.ps1', 'test-control.cmd', 'test-control.ps1',
+                'start-merged-test.cmd', 'start-merged-test.ps1'
+            )
+            $alpha8 = @(Get-ExpectedReleaseFiles -Tag 'v0.1.0-alpha.7' | Where-Object {
+                $excludedPaths -cnotcontains [string]$_.Path
+            })
+            $alpha8 += [pscustomobject]@{ Path='start-wirex-bridge.cmd'; AssetName='start-wirex-bridge.cmd'; MaximumBytes=524288L }
+            $alpha8 += [pscustomobject]@{ Path='tools/start-wirex-bridge.ps1'; AssetName='tools__start-wirex-bridge.ps1'; MaximumBytes=1048576L }
+            return $alpha8
+        }
+        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, and v0.1.0-alpha.8 are supported.' }
     }
 }
 
@@ -431,7 +446,7 @@ function Test-BuildProvenanceDocument {
 
 function Select-ReleaseCandidate {
     param([object[]]$Releases, [Parameter(Mandatory=$true)][string]$RequestedTag, [switch]$AllowDraft)
-    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, and v0.1.0-alpha.7 are supported.' }
+    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, and v0.1.0-alpha.8 are supported.' }
     $matches = @($Releases | Where-Object { [string]$_.tag_name -ceq $RequestedTag })
     if ($matches.Count -ne 1) { throw 'GitHub Release 列表中没有唯一匹配的 tag。' }
     $release = $matches[0]
@@ -602,7 +617,7 @@ function New-GitHubApiUri {
     )
     switch ($Kind) {
         'tag' {
-            if (-not (Test-ReleaseTag -Tag $Tag)) { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, and v0.1.0-alpha.7 are supported.' }
+            if (-not (Test-ReleaseTag -Tag $Tag)) { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, and v0.1.0-alpha.8 are supported.' }
             return [Uri]($script:githubApiRoot + '/releases/tags/' + $Tag)
         }
         'list' {
@@ -805,7 +820,7 @@ function Invoke-ReleaseDownload {
     param([Parameter(Mandatory=$true)][string]$RequestedTag,
           [Parameter(Mandatory=$true)][string]$OutputDirectory,
           [switch]$AllowDraft)
-    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, and v0.1.0-alpha.7 are supported.' }
+    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, and v0.1.0-alpha.8 are supported.' }
     $context = Get-DownloadDestinationContext -Destination $OutputDirectory
     $token = Get-GitCredentialToken
     $stagingCreated = $false
