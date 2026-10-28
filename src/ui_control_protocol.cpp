@@ -11,6 +11,8 @@ namespace {
 constexpr std::string_view basic_commands_json = "[\"hello\",\"status\",\"shutdown\"]";
 constexpr std::string_view routing_commands_json =
     "[\"hello\",\"status\",\"shutdown\",\"routing.status\",\"rx_policy.replace\",\"tx_policy.replace\"]";
+constexpr std::string_view quick_call_commands_json =
+    "[\"hello\",\"status\",\"shutdown\",\"routing.status\",\"rx_policy.replace\",\"tx_policy.replace\",\"network_subscription.quick_call_join\"]";
 
 bool valid_identifier(std::string_view value, std::size_t maximum) noexcept
 {
@@ -86,7 +88,8 @@ bool parse_request(std::string_view input, Request& request, strict_json::Value&
     request.request_id = request_id->string_value;
     request.command = command->string_value;
     request.parameters = envelope.find("parameters");
-    const bool mutating = request.command == "rx_policy.replace" || request.command == "tx_policy.replace";
+    const bool mutating = request.command == "rx_policy.replace" || request.command == "tx_policy.replace" ||
+        request.command == "network_subscription.quick_call_join";
     const auto expected_size = mutating ? 5U : 4U;
     if (envelope.object_value.size() != expected_size || (mutating &&
         (request.parameters == nullptr || request.parameters->type != strict_json::Value::Type::object)) ||
@@ -165,6 +168,7 @@ Dispatcher::Dispatcher(std::string run_id, bool diagnostic, RoutingCallbacks rou
       routing_enabled_(static_cast<bool>(routing.replace_rx_policy) &&
                        static_cast<bool>(routing.replace_tx_policy) &&
                        static_cast<bool>(routing.snapshot_json)),
+      quick_call_enabled_(routing_enabled_ && static_cast<bool>(routing.quick_call_join)),
       routing_(std::move(routing))
 {
 }
@@ -174,10 +178,12 @@ std::string Dispatcher::ready_line(std::uint32_t process_id)
     if (ready_emitted_) return {};
     ready_emitted_ = true;
     control_seq_ = 1U;
+    const auto commands = !routing_enabled_ ? basic_commands_json :
+        (quick_call_enabled_ ? quick_call_commands_json : routing_commands_json);
     return "{\"schema_version\":2,\"type\":\"control_ready\",\"run_id\":" +
         json_escape(run_id_) + ",\"control_seq\":1,\"process_id\":" +
         std::to_string(process_id) + ",\"control_version\":2,\"supported_commands\":" +
-        std::string(routing_enabled_ ? routing_commands_json : basic_commands_json) + ",\"diagnostic\":" +
+        std::string(commands) + ",\"diagnostic\":" +
         (diagnostic_ ? "true" : "false") + "}";
 }
 
@@ -326,8 +332,10 @@ DispatchResult Dispatcher::handle(std::string_view json_line, const StatusSnapsh
             cached.extra_json = "\"error\":\"shutdown_in_progress\"";
         } else if (request.command == "hello") {
             cached.result = "ok";
+            const auto commands = !routing_enabled_ ? basic_commands_json :
+                (quick_call_enabled_ ? quick_call_commands_json : routing_commands_json);
             cached.extra_json = "\"supported_commands\":" +
-                std::string(routing_enabled_ ? routing_commands_json : basic_commands_json);
+                std::string(commands);
             mark_hello = true;
         } else if (request.command == "status") {
             if (!hello_seen_) {
@@ -397,6 +405,59 @@ DispatchResult Dispatcher::handle(std::string_view json_line, const StatusSnapsh
                     routing_mutation_applied = true;
                     cached.result = "ok";
                     cached.extra_json = "\"routing\":" + routing_.snapshot_json();
+                }
+            }
+        } else if (request.command == "network_subscription.quick_call_join") {
+            if (!hello_seen_) {
+                cached.result = "rejected";
+                cached.extra_json = "\"error\":\"hello_required\"";
+            } else if (!routing_enabled_ || !quick_call_enabled_) {
+                cached.result = "unsupported";
+                cached.extra_json = "\"error\":\"command_not_supported\"";
+            } else {
+                const auto* params = request.parameters;
+                const auto* group_value = params->find("group");
+                const auto* destination_value = group_value != nullptr ? group_value->find("destination_id") : nullptr;
+                const auto* slot_value = group_value != nullptr ? group_value->find("slot") : nullptr;
+                const bool valid = params->object_value.size() == 1U &&
+                    group_value != nullptr && group_value->type == strict_json::Value::Type::object &&
+                    group_value->object_value.size() == 2U &&
+                    destination_value != nullptr &&
+                    destination_value->type == strict_json::Value::Type::unsigned_integer &&
+                    destination_value->integer_value >= 1U && destination_value->integer_value <= 0x00ffffffU &&
+                    destination_value->integer_value != 4000U &&
+                    slot_value != nullptr && slot_value->type == strict_json::Value::Type::unsigned_integer &&
+                    slot_value->integer_value >= 1U && slot_value->integer_value <= 2U;
+                if (!valid) {
+                    cached.result = "rejected";
+                    cached.extra_json = "\"error\":\"invalid_or_forbidden_group\"";
+                } else {
+                    const talkgroup_routing::GroupRoute group{
+                        static_cast<std::uint32_t>(destination_value->integer_value),
+                        static_cast<dmr_call::Slot>(slot_value->integer_value)};
+                    RoutingCallbacks::QuickCallOutcome outcome{};
+                    try { outcome = routing_.quick_call_join(group); }
+                    catch (...) { outcome.status = RoutingCallbacks::QuickCallStatus::send_failed; }
+                    using QuickCallStatus = RoutingCallbacks::QuickCallStatus;
+                    if (outcome.status == QuickCallStatus::sent && outcome.packets_sent == 2U) {
+                        cached.result = "ok";
+                        cached.extra_json = "\"activation_status\":\"request_sent\",\"destination_id\":" +
+                            std::to_string(group.destination_id) + ",\"slot\":" +
+                            std::to_string(static_cast<unsigned int>(group.slot)) + ",\"frames_sent\":2";
+                    } else {
+                        cached.result = "rejected";
+                        std::string_view error = "quick_call_send_failed";
+                        switch (outcome.status) {
+                        case QuickCallStatus::not_ready: error = "quick_call_not_ready"; break;
+                        case QuickCallStatus::busy: error = "media_busy"; break;
+                        case QuickCallStatus::invalid_target: error = "invalid_or_forbidden_group"; break;
+                        case QuickCallStatus::forbidden_target: error = "disconnect_group_forbidden"; break;
+                        case QuickCallStatus::partial_send: error = "quick_call_partial_send"; break;
+                        case QuickCallStatus::send_failed: error = "quick_call_send_failed"; break;
+                        case QuickCallStatus::sent: error = "quick_call_send_incomplete"; break;
+                        }
+                        cached.extra_json = "\"error\":" + json_escape(error);
+                    }
                 }
             }
         } else if (request.command == "shutdown") {

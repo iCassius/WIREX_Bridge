@@ -21,9 +21,29 @@ function Test-RenderedLayout {
             Assert-UiRender ([bool]$property.Value) ("$windowName 窗口中的 $($property.Name) 未显示。")
         }
     }
-    foreach ($controlName in @('TargetSelector', 'ReceiveTargetValue', 'TransmitTargetValue', 'TransmitPermissionValue', 'ControlProtocolValue', 'ControlStatusButton')) {
+    foreach ($controlName in @('TargetSelector', 'ReceiveTargetValue', 'TransmitTargetValue', 'TransmitPermissionValue', 'ActiveLeaseValue', 'ControlProtocolValue', 'ControlStatusButton')) {
         Assert-UiRender ([bool]$layout.main.controls_visible.$controlName) ("主窗口收发目标控件 $controlName 未显示。")
         Assert-UiRender ([bool]$layout.main.controls_bounds.$controlName.fully_visible) ("主窗口收发目标控件 $controlName 被裁切。")
+    }
+    foreach ($controlName in @('DynamicGroupPanel','DynamicGroupIdBox','DynamicGroupSlotBox','AddListenGroupButton','ActivateDynamicGroupButton','DynamicGroupStatus','StopButton')) {
+        Assert-UiRender ([bool]$layout.main.controls_visible.$controlName) ("动态组操作或停止控件 $controlName 未显示。")
+        Assert-UiRender ([bool]$layout.main.controls_bounds.$controlName.fully_visible) ("动态组操作或停止控件 $controlName 被裁切。")
+    }
+    Assert-UiRender ($layout.main.controls_bounds.DynamicGroupIdBox.text -ceq '91' -and
+        $layout.main.controls_bounds.DynamicGroupSlotBox.selected_text -ceq 'TS2') '动态组输入没有显示渲染样例 TG91 和 TS2。'
+    Assert-UiRender ($layout.main.controls_bounds.DynamicGroupIdBox.background_color -ceq '#FF20252A' -and
+        $layout.main.controls_bounds.DynamicGroupIdBox.foreground_color -ceq '#FFEDF1F2' -and
+        $layout.main.controls_bounds.DynamicGroupIdBox.border_color -ceq '#FF536169') '动态组 TG 输入没有使用深色背景、浅色文字和可见边框。'
+    Assert-UiRender (@($layout.main.controls_bounds.DynamicGroupPanel.visual_text) -ccontains 'TG') '动态组输入的 TG 标签没有进入 WPF 视觉树。'
+    Assert-UiRender (@($layout.main.controls_bounds.AddListenGroupButton.visual_text) -ccontains '加入本机收听') '本机收听按钮文字没有进入 WPF 视觉树。'
+    Assert-UiRender (@($layout.main.controls_bounds.ActivateDynamicGroupButton.visual_text) -ccontains '激活动态组') '动态组激活按钮文字没有进入 WPF 视觉树。'
+    Assert-UiRender (@($layout.main.controls_bounds.StopButton.visual_text) -ccontains '停止并退出') '停止并退出按钮文字没有进入 WPF 视觉树。'
+    $dynamicGroupBounds = $layout.main.controls_bounds.DynamicGroupPanel.actual
+    foreach ($controlName in @('DynamicGroupIdBox','DynamicGroupSlotBox','AddListenGroupButton','ActivateDynamicGroupButton','DynamicGroupStatus')) {
+        $controlBounds = $layout.main.controls_bounds.$controlName.actual
+        Assert-UiRender ($controlBounds.x -ge $dynamicGroupBounds.x -and $controlBounds.y -ge $dynamicGroupBounds.y -and
+            $controlBounds.right -le $dynamicGroupBounds.right -and $controlBounds.bottom -le $dynamicGroupBounds.bottom) `
+            ("动态组控件 $controlName 超出面板范围。")
     }
     $statusButton = $layout.main.controls_bounds.ControlStatusButton
     Assert-UiRender (@($statusButton.visual_text) -ccontains '查询状态') '查询状态按钮文字没有进入 WPF 视觉树。'
@@ -48,15 +68,15 @@ function Test-RenderedLayout {
         Assert-UiRender ([bool]$layout.settings.controls_visible.$controlName) ("设置窗口控件 $controlName 未显示。")
     }
     $trafficCard = $layout.main.controls_bounds.TrafficCard.actual
-    foreach ($controlName in @('CurrentCallLabel', 'CurrentCallValue', 'CurrentCallDetail')) {
+    foreach ($controlName in @('CurrentCallLabel', 'CurrentCallValue', 'CurrentCallDetail', 'BlockCurrentSourceButton')) {
         $callBounds = $layout.main.controls_bounds.$controlName
-        Assert-UiRender ([bool]$callBounds.fully_visible) ("当前 BM 来话控件 $controlName 被裁切。")
+        Assert-UiRender ([bool]$callBounds.fully_visible) ("当前 BM 来话控件或屏蔽按钮 $controlName 被裁切。")
         Assert-UiRender ($callBounds.actual.x -ge $trafficCard.x -and $callBounds.actual.y -ge $trafficCard.y -and
             $callBounds.actual.right -le $trafficCard.right -and $callBounds.actual.bottom -le $trafficCard.bottom) `
             ("当前 BM 来话控件 $controlName 超出收发状态卡片范围。")
     }
     if ($MaximumHeight -le 700) {
-        Assert-UiRender ($layout.main.event_list_height -ge 44 -and $layout.main.event_list_height -le 52) '小工作区运行记录区域高度不符合紧凑布局。'
+        Assert-UiRender ($layout.main.event_list_height -ge 42 -and $layout.main.event_list_height -le 46) '小工作区运行记录区域高度不符合紧凑布局。'
     }
     $identity = $layout.main_source_identity
     Assert-UiRender ($identity.value -ceq '等待本次运行报告' -and
@@ -105,6 +125,15 @@ function Test-ConfiguredActiveCallLayout {
     Assert-UiRender ($layout.active_call.value -ceq 'DMR ID 3149876' -and
         $layout.active_call.detail -ceq '离线模拟：组呼 · 目标 91 · TS2 · CC 1 · LC 已验证 · 接收中') `
         '配置与来话模拟场景没有显示完整 DMR ID 和详情。'
+    $activeLease = $layout.main.controls_bounds.ActiveLeaseValue
+    $nextTarget = $layout.main.controls_bounds.TransmitTargetValue
+    Assert-UiRender ([bool]$activeLease.fully_visible -and [bool]$nextTarget.fully_visible -and
+        $layout.active_call.current_tx_target -match '53000.*TS1' -and
+        $layout.active_call.next_tx_target -match '460997.*TS2' -and
+        $layout.active_call.current_tx_target -cne $layout.active_call.next_tx_target) `
+        '当前发射锁定目标与下一发射目标没有分别显示，或样例目标不一致。'
+    Assert-UiRender ($activeLease.actual.right -le $nextTarget.actual.x -or
+        $nextTarget.actual.right -le $activeLease.actual.x) '当前发射目标和下一发射目标控件发生重叠。'
     Assert-UiRender ($layout.active_call.value -notmatch '[…]|\.\.\.' -and
         @($layout.active_call.visual_text) -ccontains 'DMR ID 3149876') '当前来话卡片用省略号遮住了 DMR ID。'
     Assert-UiRender (@($layout.active_call.visual_text) -ccontains $layout.active_call.value -and

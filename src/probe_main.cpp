@@ -33,6 +33,7 @@
 #include "wirex/bm_udp.hpp"
 #include "wirex/bm_voice_pipeline.hpp"
 #include "wirex/dmrd.hpp"
+#include "wirex/quick_call.hpp"
 #include "wirex/hri_stream_session.hpp"
 #include "wirex/hri_ptt_gate.hpp"
 #include "wirex/talkgroup_routing.hpp"
@@ -4533,6 +4534,9 @@ struct BmBridgeCounters {
     std::uint64_t rx_pipeline_generation{};
     std::uint64_t tx_lease_id{};
     std::string rx_cleanup_result{"not_started"};
+    std::string rx_call_end_reason{"none"};
+    std::uint32_t rx_call_missing_packets{};
+    std::uint64_t rx_call_accepted_voice_bursts{};
     std::string tx_eot_result{"not_started"};
     std::string tx_cleanup_result{"not_started"};
     std::uint64_t tx_datagrams{};
@@ -4716,6 +4720,17 @@ const char* receive_media_state_name(wirex::bm_voice::RxState state) noexcept
     return "idle";
 }
 
+const char* receive_end_reason_name(wirex::dmr_call::CallEndReason reason) noexcept
+{
+    using wirex::dmr_call::CallEndReason;
+    switch (reason) {
+    case CallEndReason::terminator: return "terminator";
+    case CallEndReason::watchdog: return "watchdog";
+    case CallEndReason::replaced_by_new_stream: return "replaced_by_new_stream";
+    }
+    return "unknown";
+}
+
 std::string make_bridge_run_id()
 {
     return std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64());
@@ -4777,6 +4792,7 @@ int run_control_diagnostic(bool routing_diagnostic)
     std::unique_ptr<wirex::bm_voice::BmVoicePipeline> pipeline;
     wirex::routing_state::ObservedSources observed_sources;
     wirex::ui_control::RoutingCallbacks routing_callbacks{};
+    std::size_t diagnostic_quick_call_requests = 0U;
     if (routing_diagnostic) {
         try { pipeline = std::make_unique<wirex::bm_voice::BmVoicePipeline>(); }
         catch (...) { return 2; }
@@ -4808,6 +4824,54 @@ int run_control_diagnostic(bool routing_diagnostic)
             const auto* tx = pipeline->routed_tx_policy();
             if (rx == nullptr || tx == nullptr) return std::string{};
             return wirex::routing_state::routing_json(pipeline->routing_snapshot(), 1U, *rx, *tx, observed_sources);
+        };
+        routing_callbacks.quick_call_join = [&](const wirex::talkgroup_routing::GroupRoute& group) {
+            using CallbackStatus = wirex::ui_control::RoutingCallbacks::QuickCallStatus;
+            using Outcome = wirex::ui_control::RoutingCallbacks::QuickCallOutcome;
+            if (++diagnostic_quick_call_requests != 1U) return Outcome{CallbackStatus::busy, 0U};
+            const auto* rx_before = pipeline->routed_rx_policy();
+            const auto* tx_before = pipeline->routed_tx_policy();
+            if (rx_before == nullptr || tx_before == nullptr) return Outcome{CallbackStatus::send_failed, 0U};
+            const auto routing_before = wirex::routing_state::routing_json(
+                pipeline->routing_snapshot(), 1U, *rx_before, *tx_before, observed_sources);
+            const std::array<std::uint8_t, 4U> stream_id{{'R', '1', '0', '9'}};
+            const auto planned = wirex::quick_call::make_group_plan(1U, 1U, group, 1U, stream_id);
+            if (!planned) {
+                return Outcome{planned.error == wirex::quick_call::PlanError::disconnect_group_forbidden
+                    ? CallbackStatus::forbidden_target : CallbackStatus::invalid_target, 0U};
+            }
+            std::array<wirex::dmrd::Datagram, 2U> memory_sink{};
+            std::size_t memory_sink_count = 0U;
+            const auto sent = wirex::quick_call::send_once(planned.plan,
+                [&](const wirex::dmr_call::TxPacket& frame) {
+                    if (memory_sink_count >= memory_sink.size()) return false;
+                    const auto encoded = wirex::dmrd::encode(frame.datagram);
+                    if (!encoded) return false;
+                    const auto decoded = wirex::dmrd::decode(encoded.bytes.data(), encoded.bytes.size());
+                    const auto expected_kind = memory_sink_count == 0U
+                        ? wirex::dmr_call::PacketKind::voice_lc_header
+                        : wirex::dmr_call::PacketKind::terminator_with_lc;
+                    const auto expected_type = memory_sink_count == 0U ? 0x21U : 0x22U;
+                    // 控制帧用 0xFF 标记没有语音 burst；不能把空字段当作语音索引 0。
+                    if (!decoded || frame.kind != expected_kind || frame.voice_burst_index != 0xffU ||
+                        !wirex::quick_call::same_datagram(frame, decoded.datagram) ||
+                        (decoded.datagram.flags & 0x3fU) != expected_type) {
+                        return false;
+                    }
+                    memory_sink[memory_sink_count++] = decoded.datagram;
+                    return true;
+                });
+            const auto* rx_after = pipeline->routed_rx_policy();
+            const auto* tx_after = pipeline->routed_tx_policy();
+            if (rx_after == nullptr || tx_after == nullptr) return Outcome{CallbackStatus::send_failed, sent.packets_sent};
+            const auto routing_after = wirex::routing_state::routing_json(
+                pipeline->routing_snapshot(), 1U, *rx_after, *tx_after, observed_sources);
+            if (sent.status != wirex::quick_call::SendStatus::sent || sent.packets_sent != 2U ||
+                memory_sink_count != 2U || routing_before != routing_after) {
+                return Outcome{sent.packets_sent == 1U ? CallbackStatus::partial_send : CallbackStatus::send_failed,
+                    sent.packets_sent};
+            }
+            return Outcome{CallbackStatus::sent, 2U};
         };
     }
     wirex::ui_control::Dispatcher dispatcher(run_id, true, std::move(routing_callbacks));
@@ -4933,6 +4997,9 @@ bool append_bridge_status(std::ofstream& file, std::string_view event, std::uint
          << ",\"rx_pipeline_generation\":" << counters.rx_pipeline_generation
          << ",\"tx_lease_id\":" << counters.tx_lease_id
          << ",\"rx_cleanup_result\":\"" << counters.rx_cleanup_result << "\""
+         << ",\"rx_call_end_reason\":\"" << counters.rx_call_end_reason << "\""
+         << ",\"rx_call_missing_packets\":" << counters.rx_call_missing_packets
+         << ",\"rx_call_accepted_voice_bursts\":" << counters.rx_call_accepted_voice_bursts
          << ",\"tx_eot_result\":\"" << counters.tx_eot_result << "\""
          << ",\"tx_cleanup_result\":\"" << counters.tx_cleanup_result << "\""
          << ",\"control_tx_attempted\":" << counters.control_tx_attempted
@@ -5605,6 +5672,8 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
     wirex::ui_control::Parser ui_control_parser;
     wirex::ui_control::JsonLineParser ui_control_json_parser;
     std::unique_ptr<wirex::ui_control::Dispatcher> ui_control_dispatcher;
+    std::function<wirex::ui_control::RoutingCallbacks::QuickCallOutcome(
+        const wirex::talkgroup_routing::GroupRoute&)> process_quick_call;
     wirex::bounded_pipe_writer::Writer ui_control_writer(GetStdHandle(STD_OUTPUT_HANDLE));
     PttGate ptt_gate;
     std::function<void(PttAction, std::string_view)> handle_ptt_gate_action;
@@ -5729,6 +5798,13 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
             candidate.target = target;
             candidate.transmit_enabled = enabled;
             return pipeline->replace_tx_policy(revision, candidate);
+        };
+        callbacks.quick_call_join = [&](const wirex::talkgroup_routing::GroupRoute& group) {
+            if (!process_quick_call) {
+                return wirex::ui_control::RoutingCallbacks::QuickCallOutcome{
+                    wirex::ui_control::RoutingCallbacks::QuickCallStatus::not_ready, 0U};
+            }
+            return process_quick_call(group);
         };
         callbacks.snapshot_json = [&]() {
             const auto* rx = pipeline->routed_rx_policy();
@@ -5917,6 +5993,9 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
     bool shutdown_tx_terminator_reported = false;
     std::array<std::uint8_t, 4U> active_tx_stream_id{};
     std::array<std::uint8_t, 4U> shutdown_tx_stream_id{};
+    std::optional<wirex::quick_call::Plan> active_quick_call_plan;
+    std::size_t active_quick_call_next_frame = 0U;
+    std::uint8_t active_quick_call_frames_sent = 0U;
     std::optional<std::uint64_t> active_routed_tx_lease_id;
     bool routed_tx_eot_reported = false;
     bool routed_tx_input_cleanup_attempted = false;
@@ -6492,6 +6571,11 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
             }
             return;
         }
+        const auto hri_start_decision = wirex::bm_voice::receive_hri_start_decision(pipeline_state);
+        if (hri_start_decision == wirex::bm_voice::ReceiveHriStartDecision::wait_for_voice ||
+            hri_start_decision == wirex::bm_voice::ReceiveHriStartDecision::discard_empty_ended_call) {
+            return;
+        }
         const auto stream_state = stream_session->snapshot();
         if (downlink_blocked || stream_state.phase != StreamPhase::idle || !network_ready_seen) {
             ++counters.rejected_calls;
@@ -6639,6 +6723,9 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         counters.rx_router_generation = mapping->router_generation;
         counters.rx_pipeline_generation = mapping->pipeline_generation;
         counters.rx_cleanup_result = "pending";
+        counters.rx_call_end_reason = "in_progress";
+        counters.rx_call_missing_packets = 0U;
+        counters.rx_call_accepted_voice_bursts = 0U;
         status("rx_owner_generation_reserved");
         return true;
     };
@@ -6655,11 +6742,23 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 }
                 break;
             case PipelineEventKind::network_ended:
+                counters.rx_call_end_reason = receive_end_reason_name(event->end_reason);
+                counters.rx_call_missing_packets = event->missing_packets;
+                counters.rx_call_accepted_voice_bursts = event->accepted_voice_bursts;
                 if (stream_session->snapshot().phase != StreamPhase::idle &&
                     stream_session->snapshot().phase != StreamPhase::faulted) {
                     service_stream_update(stream_session->network_ended(elapsed_ms()));
                 } else if (pending_receive_start) {
-                    pending_receive_ended = true;
+                    const auto ended_snapshot = pipeline->snapshot();
+                    if (wirex::bm_voice::receive_hri_start_decision(ended_snapshot) ==
+                        wirex::bm_voice::ReceiveHriStartDecision::discard_empty_ended_call) {
+                        pending_receive_start = false;
+                        pending_receive_ended = false;
+                        pipeline->cancel_rx();
+                        status("bm_empty_receive_ended_without_hri_t3");
+                    } else {
+                        pending_receive_ended = true;
+                    }
                 }
                 status("bm_receive_ended");
                 break;
@@ -6668,6 +6767,11 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 status("bm_receive_playback_drained");
                 break;
             case PipelineEventKind::receive_cancelled:
+                if (counters.rx_call_end_reason == "in_progress") {
+                    counters.rx_call_end_reason = "cancelled";
+                    counters.rx_call_missing_packets = 0U;
+                }
+                counters.rx_call_accepted_voice_bursts = event->accepted_voice_bursts;
                 pending_receive_start = false;
                 pending_receive_ended = false;
                 pending_playback_drain = false;
@@ -6692,6 +6796,9 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 status("bm_receive_cancelled");
                 break;
             case PipelineEventKind::playback_start_timeout:
+                counters.rx_call_end_reason = "playback_start_timeout";
+                counters.rx_call_missing_packets = 0U;
+                counters.rx_call_accepted_voice_bursts = event->accepted_voice_bursts;
                 pending_receive_start = false;
                 pending_receive_ended = false;
                 clear_lcd_source_identity();
@@ -6840,9 +6947,19 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
             if (packet.kind == wirex::bm::PacketKind::control) ++counters.control_tx_attempted;
             wirex::dmrd::DecodeResult routed_decoded{};
             bool is_routed_tx_terminator = false;
+            bool is_quick_call_frame = false;
             if (packet.kind == wirex::bm::PacketKind::application) {
                 routed_decoded = wirex::dmrd::decode(packet.bytes.data(), packet.bytes.size());
-                if (!routed_decoded || !routed_tx_datagram_matches_lease(routed_decoded.datagram)) {
+                bool valid_application = false;
+                if (routed_decoded && active_quick_call_plan) {
+                    valid_application = active_quick_call_next_frame < active_quick_call_plan->frames.size() &&
+                        wirex::quick_call::same_datagram(
+                            active_quick_call_plan->frames[active_quick_call_next_frame], routed_decoded.datagram);
+                    is_quick_call_frame = valid_application;
+                } else if (routed_decoded) {
+                    valid_application = routed_tx_datagram_matches_lease(routed_decoded.datagram);
+                }
+                if (!valid_application) {
                     ++counters.rejected_calls;
                     if (active_routed_tx_lease_id) {
                         pipeline->cancel_tx();
@@ -6857,9 +6974,10 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                     return false;
                 }
                 const auto packet_type = static_cast<std::uint8_t>(routed_decoded.datagram.flags & 0x3FU);
-                is_routed_tx_terminator = packet_type == 0x22U;
-                const bool is_active_lease_header = packet_type == 0x21U;
-                if (!live_routed_voice_permission() && !is_routed_tx_terminator && !is_active_lease_header) {
+                is_routed_tx_terminator = !is_quick_call_frame && packet_type == 0x22U;
+                const bool is_active_lease_header = !is_quick_call_frame && packet_type == 0x21U;
+                if (!is_quick_call_frame && !live_routed_voice_permission() &&
+                    !is_routed_tx_terminator && !is_active_lease_header) {
                     ++counters.rejected_calls;
                     status("bm_queued_voice_dropped_after_tx_permission_revoked");
                     continue;
@@ -6887,6 +7005,14 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 return false;
             }
             if (packet.kind == wirex::bm::PacketKind::control) ++counters.control_tx_succeeded;
+            if (is_quick_call_frame) {
+                const auto sent_index = active_quick_call_next_frame;
+                ++active_quick_call_frames_sent;
+                ++active_quick_call_next_frame;
+                status(sent_index == 0U
+                    ? "quick_call_header_udp_send_succeeded"
+                    : "quick_call_eot_udp_send_succeeded");
+            }
             if (is_routed_tx_terminator) report_routed_tx_eot(true);
             if (is_shutdown_terminator) {
                 shutdown_tx_terminator_pending = false;
@@ -6894,9 +7020,88 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 status("shutdown_tx_terminator_udp_send_succeeded");
             }
             if (is_rptcl) status("bm_rptcl_local_udp_send_succeeded");
-            if (packet.kind == wirex::bm::PacketKind::application) ++counters.tx_datagrams;
+            if (packet.kind == wirex::bm::PacketKind::application && !is_quick_call_frame) {
+                ++counters.tx_datagrams;
+            }
         }
         return true;
+    };
+
+    process_quick_call = [&](const wirex::talkgroup_routing::GroupRoute& group) {
+        using CallbackStatus = wirex::ui_control::RoutingCallbacks::QuickCallStatus;
+        using Outcome = wirex::ui_control::RoutingCallbacks::QuickCallOutcome;
+        const auto pipeline_state = pipeline->snapshot();
+        const auto routing_state = pipeline->routing_snapshot().router;
+        const auto hri_stream_state = stream_session->snapshot();
+        const auto bm_state = bm_session.snapshot();
+        const bool cleanup_idle = (!active_routed_tx_lease_id || routed_tx_cleanup_reported) &&
+            (!active_routed_rx_pipeline_generation || routed_rx_cleanup_reported) &&
+            !radio_input_open && !radio_output_open && !pending_receive_start &&
+            !pending_receive_ended && !pending_playback_drain;
+        const wirex::quick_call::Readiness readiness{
+            ui_control_dispatcher && ui_control_dispatcher->hello_seen() &&
+                !shutdown_requested && !failed && !active_quick_call_plan.has_value(),
+            network_ready_seen && bm_state.state == wirex::bm::State::ready,
+            transport.is_open(),
+            pipeline_state.tx_state == wirex::bm_voice::TxState::idle &&
+                pipeline_state.rx_state == wirex::bm_voice::RxState::idle,
+            routing_state.media_owner == wirex::talkgroup_routing::MediaOwner::idle &&
+                !routing_state.ptt_release_required,
+            hri_stream_state.phase == StreamPhase::idle,
+            cleanup_idle};
+        const auto gate = wirex::quick_call::check_readiness(readiness);
+        if (gate == wirex::quick_call::GateStatus::not_ready) {
+            return Outcome{CallbackStatus::not_ready, 0U};
+        }
+        if (gate == wirex::quick_call::GateStatus::busy) {
+            return Outcome{CallbackStatus::busy, 0U};
+        }
+
+        std::array<std::uint8_t, 4U> stream_id{};
+        const auto random_result = BCryptGenRandom(nullptr, stream_id.data(),
+            static_cast<ULONG>(stream_id.size()), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+        if (random_result < 0) return Outcome{CallbackStatus::send_failed, 0U};
+
+        const auto plan_result = wirex::quick_call::make_group_plan(
+            call_template.source_id, call_template.gateway_id, group,
+            call_template.color_code, stream_id);
+        if (!plan_result) {
+            return Outcome{plan_result.error == wirex::quick_call::PlanError::disconnect_group_forbidden
+                ? CallbackStatus::forbidden_target : CallbackStatus::invalid_target, 0U};
+        }
+
+        active_quick_call_plan = plan_result.plan;
+        active_quick_call_next_frame = 0U;
+        active_quick_call_frames_sent = 0U;
+        const auto send_result = wirex::quick_call::send_once(*active_quick_call_plan,
+            [&](const wirex::dmr_call::TxPacket& frame) {
+                const auto current_bm_state = bm_session.snapshot();
+                if (current_bm_state.state != wirex::bm::State::ready ||
+                    !network_ready_seen || !transport.is_open()) {
+                    return false;
+                }
+                const auto encoded = wirex::dmrd::encode(frame.datagram);
+                if (!encoded || !bm_session.send_dmrd(encoded.bytes.data(), encoded.bytes.size(), elapsed_ms())) {
+                    return false;
+                }
+                const auto frames_before_drain = active_quick_call_frames_sent;
+                (void)drain_bm_outbound();
+                // 辅助控制包失败不能掩盖已经完成的本帧 UDP 发送；下一帧仍会重新检查通道状态。
+                return active_quick_call_frames_sent == static_cast<std::uint8_t>(frames_before_drain + 1U);
+            });
+        const auto frames_sent = send_result.packets_sent;
+        active_quick_call_plan.reset();
+        active_quick_call_next_frame = 0U;
+        active_quick_call_frames_sent = 0U;
+        switch (send_result.status) {
+        case wirex::quick_call::SendStatus::sent:
+            return Outcome{CallbackStatus::sent, frames_sent};
+        case wirex::quick_call::SendStatus::send_failed:
+            return Outcome{CallbackStatus::send_failed, frames_sent};
+        case wirex::quick_call::SendStatus::partial_send:
+            return Outcome{CallbackStatus::partial_send, frames_sent};
+        }
+        return Outcome{CallbackStatus::send_failed, frames_sent};
     };
 
     auto pump_tx_datagrams = [&]() {

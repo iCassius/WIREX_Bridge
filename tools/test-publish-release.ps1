@@ -267,6 +267,60 @@ try {
     Assert-Throws { Assert-PublishPackage -PackageRoot $alpha6Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.5' } `
         'alpha.6 package cannot pass the alpha.5 profile'
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.6')
+    $validAlpha6ManifestJson = [System.IO.File]::ReadAllText($alpha6ManifestPath, [System.Text.Encoding]::UTF8)
+
+    $alpha7Root = Join-Path $testRoot 'package-alpha7'
+    Copy-Item -LiteralPath $alpha6Root -Destination $alpha7Root -Recurse
+    [void](Set-PublishProfile -Tag 'v0.1.0-alpha.7')
+    $alpha7ManifestPath = Join-Path $alpha7Root 'manifest.json'
+    $alpha7ReadmePath = Join-Path $alpha7Root 'README.md'
+    Write-Utf8NoBom -Path $alpha7ReadmePath -Text 'synthetic alpha.7 package README'
+    $alpha7Manifest = [System.IO.File]::ReadAllText($alpha7ManifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $alpha7ReadmeItem = Get-Item -LiteralPath $alpha7ReadmePath
+    $alpha7ReadmeRecord = @($alpha7Manifest.files | Where-Object { [string]$_.path -ceq 'README.md' })
+    if ($alpha7ReadmeRecord.Count -ne 1) { throw 'Synthetic alpha.6 manifest must contain one README record.' }
+    $alpha7ReadmeRecord[0].length_bytes = [long]$alpha7ReadmeItem.Length
+    $alpha7ReadmeRecord[0].sha256 = (Get-FileHash -LiteralPath $alpha7ReadmePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $alpha7DocPath = Join-Path $alpha7Root 'docs\R109_下行状态与动态组修复.md'
+    Write-Utf8NoBom -Path $alpha7DocPath -Text 'synthetic alpha.7 R109 guide'
+    $alpha7DocItem = Get-Item -LiteralPath $alpha7DocPath
+    $alpha7Manifest.files += ,([ordered]@{
+        path = 'docs/R109_下行状态与动态组修复.md'
+        asset_name = (Get-PublishAssetName -RelativePath 'docs/R109_下行状态与动态组修复.md')
+        length_bytes = [long]$alpha7DocItem.Length
+        sha256 = (Get-FileHash -LiteralPath $alpha7DocPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        source = 'synthetic test content'
+    })
+    $alpha7DynamicDocPath = Join-Path $alpha7Root 'docs\R109_动态组激活实现.md'
+    Write-Utf8NoBom -Path $alpha7DynamicDocPath -Text 'synthetic alpha.7 dynamic-group guide'
+    $alpha7DynamicDocItem = Get-Item -LiteralPath $alpha7DynamicDocPath
+    $alpha7Manifest.files += ,([ordered]@{
+        path = 'docs/R109_动态组激活实现.md'
+        asset_name = (Get-PublishAssetName -RelativePath 'docs/R109_动态组激活实现.md')
+        length_bytes = [long]$alpha7DynamicDocItem.Length
+        sha256 = (Get-FileHash -LiteralPath $alpha7DynamicDocPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        source = 'synthetic test content'
+    })
+    $alpha7Manifest.version = 'v0.1.0-alpha.7'
+    $alpha7Manifest.tag_candidate = 'v0.1.0-alpha.7'
+    $alpha7Manifest.build.passed_test_count = 39
+    $alpha7Manifest.build.passed_tests = @((Set-PublishProfile -Tag 'v0.1.0-alpha.7').TestNames)
+    $validAlpha7ManifestJson = ConvertTo-Json -InputObject $alpha7Manifest -Depth 12
+    Write-Utf8NoBom -Path $alpha7ManifestPath -Text ($validAlpha7ManifestJson + "`n")
+    $alpha7Package = Assert-PublishPackage -PackageRoot $alpha7Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.7'
+    Assert-True ($alpha7Package.Assets.Count -eq 39) 'alpha.7 package accepts 38 files plus standalone manifest'
+    Assert-True ((Set-PublishProfile -Tag 'v0.1.0-alpha.7').AssetPathMap.Count -eq
+        ((Set-PublishProfile -Tag 'v0.1.0-alpha.6').AssetPathMap.Count + 2)) `
+        'alpha.7 adds the two R109 guides to the alpha.6 package profile'
+    Assert-True ($alpha7Package.Manifest.build.passed_tests.Count -eq 39 -and
+        [string]::Join('|', @($alpha7Package.Manifest.build.passed_tests)) -ceq
+            [string]::Join('|', @(Set-PublishProfile -Tag 'v0.1.0-alpha.6').TestNames)) `
+        'alpha.7 publisher profile retains all 39 alpha.6 tests in order'
+    Assert-Throws { Assert-PublishPackage -PackageRoot $alpha7Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.6' } `
+        'alpha.7 package cannot pass the alpha.6 profile'
+    Assert-True (-not (Set-PublishProfile -Tag 'v0.1.0-alpha.7').AssetPathMap.Contains('include/wirex/quick_call.hpp')) `
+        'quick_call.hpp is not part of the alpha.7 runtime package asset map'
+    [void](Set-PublishProfile -Tag 'v0.1.0-alpha.7')
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.1')
     $manifest = [System.IO.File]::ReadAllText($manifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
 
@@ -396,7 +450,7 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $preflightRepo 'tools') -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $preflightRepo 'docs/releases') -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'download-release.ps1') -Destination (Join-Path $preflightRepo 'tools/download-release.ps1')
-    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6')) {
+    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7')) {
         Write-Utf8NoBom -Path (Join-Path $preflightRepo ('docs/releases/' + $tag + '.md')) -Text ('Synthetic offline release notes for ' + $tag + "`n")
     }
     $gitInit = @(& git -C $preflightRepo init --quiet 2>&1)
@@ -405,7 +459,7 @@ try {
         @('config', 'user.name', 'WIREX Offline Test'),
         @('config', 'user.email', 'wirex-offline-test@example.invalid'),
         @('remote', 'add', 'origin', $script:repositoryUrl),
-        @('add', '--', 'tools/download-release.ps1', 'docs/releases/v0.1.0-alpha.1.md', 'docs/releases/v0.1.0-alpha.2.md', 'docs/releases/v0.1.0-alpha.3.md', 'docs/releases/v0.1.0-alpha.4.md', 'docs/releases/v0.1.0-alpha.5.md', 'docs/releases/v0.1.0-alpha.6.md'),
+        @('add', '--', 'tools/download-release.ps1', 'docs/releases/v0.1.0-alpha.1.md', 'docs/releases/v0.1.0-alpha.2.md', 'docs/releases/v0.1.0-alpha.3.md', 'docs/releases/v0.1.0-alpha.4.md', 'docs/releases/v0.1.0-alpha.5.md', 'docs/releases/v0.1.0-alpha.6.md', 'docs/releases/v0.1.0-alpha.7.md'),
         @('commit', '--quiet', '-m', 'offline publisher preflight fixture')
     )) {
         $previousErrorActionPreference = $ErrorActionPreference
@@ -418,7 +472,7 @@ try {
     $preflightCommit = [string](@(& git -C $preflightRepo rev-parse HEAD 2>$null)[0]).Trim()
     if ($LASTEXITCODE -ne 0 -or $preflightCommit -cnotmatch '^[0-9a-f]{40}$') { throw 'Could not identify the temporary offline commit.' }
     New-Item -ItemType Directory -Path (Join-Path $preflightRepo 'build/_work') -Force | Out-Null
-    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6')) {
+    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7')) {
         $sourcePackage = switch ($tag) {
             'v0.1.0-alpha.1' { $packageRoot; break }
             'v0.1.0-alpha.2' { $alpha2Root; break }
@@ -426,6 +480,7 @@ try {
             'v0.1.0-alpha.4' { $alpha4Root; break }
             'v0.1.0-alpha.5' { $alpha5Root; break }
             'v0.1.0-alpha.6' { $alpha6Root; break }
+            'v0.1.0-alpha.7' { $alpha7Root; break }
         }
         $targetPackage = Join-Path $preflightRepo ('build/releases/' + $tag)
         $targetParent = Split-Path -Parent $targetPackage
@@ -438,6 +493,7 @@ try {
             'v0.1.0-alpha.4' { $validAlpha4ManifestJson; break }
             'v0.1.0-alpha.5' { $validAlpha5ManifestJson; break }
             'v0.1.0-alpha.6' { $validAlpha6ManifestJson; break }
+            'v0.1.0-alpha.7' { $validAlpha7ManifestJson; break }
         }
         $preflightManifest = $sourceManifestText | ConvertFrom-Json
         $preflightManifest.source.commit = $preflightCommit
@@ -457,7 +513,7 @@ try {
         $script:credentialAttempted = $true
         throw 'OFFLINE_TEST_CREDENTIAL_ACCESS_BLOCKED'
     }
-    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6')) {
+    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7')) {
         $script:preflightBoundaryReached = $false
         $boundaryMessage = ''
         try {

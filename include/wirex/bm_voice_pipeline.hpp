@@ -110,6 +110,8 @@ struct Event {
     dmr_call::CallConfig call{};
     dmr_call::CallEndReason end_reason{dmr_call::CallEndReason::terminator};
     std::uint32_t missing_packets{};
+    // 本接收代中、结束或取消前已接收并入队的有效DMR语音burst数。
+    std::uint64_t accepted_voice_bursts{};
     bool link_control_validated{};
     bool color_code_known{};
     std::uint64_t generation{};
@@ -141,11 +143,23 @@ struct Snapshot {
     std::size_t buffered_receive_frames{};
     std::uint64_t receive_generation{};
     bool receive_generation_exhausted{};
+    std::uint64_t accepted_receive_voice_bursts{};
     bool receive_link_control_validated{};
     bool receive_color_code_known{};
     // EOT 后本地播放队列可能仍在排空；UI 的当前网络话者应在此为 true 时清除。
     bool receive_network_ended{};
 };
+
+enum class ReceiveHriStartDecision : std::uint8_t {
+    inactive,
+    wait_for_voice,
+    start_hri,
+    discard_empty_ended_call,
+};
+
+// 原生协调器与离线测试共用：只有已准入且收到有效语音媒体的接收代才能启动HRI T3。
+[[nodiscard]] ReceiveHriStartDecision receive_hri_start_decision(
+    const Snapshot& snapshot) noexcept;
 
 struct RxGenerationMapping {
     // Router和pipeline分别分配generation；外层必须按这组映射回报cleanup。
@@ -344,6 +358,7 @@ private:
     bool rx_have_link_control_{};
     bool rx_color_code_known_{};
     bool rx_upsampler_finished_{};
+    std::uint64_t rx_accepted_voice_bursts_{};
     TimePoint next_rx_due_{};
     TimePoint rx_start_deadline_{};
     TimePoint last_now_{};

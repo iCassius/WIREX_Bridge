@@ -769,6 +769,7 @@ Error BmVoicePipeline::stop_routed_rx(bool router_already_stopping) noexcept
         Event cancelled{};
         cancelled.kind = EventKind::receive_cancelled;
         cancelled.call = rx_call_;
+        cancelled.accepted_voice_bursts = rx_accepted_voice_bursts_;
         cancelled.generation = mapping.pipeline_generation;
         (void)queue_event(cancelled);
     }
@@ -843,6 +844,7 @@ void BmVoicePipeline::cancel_rx() noexcept
         Event event{};
         event.kind = EventKind::receive_cancelled;
         event.call = rx_call_;
+        event.accepted_voice_bursts = rx_accepted_voice_bursts_;
         event.generation = rx_generation_;
         (void)queue_event(event);
     }
@@ -957,10 +959,25 @@ Snapshot BmVoicePipeline::snapshot() const noexcept
     result.buffered_receive_frames = buffered_rx_frames();
     result.receive_generation = rx_generation_;
     result.receive_generation_exhausted = rx_generation_exhausted_;
+    result.accepted_receive_voice_bursts = rx_accepted_voice_bursts_;
     result.receive_link_control_validated = rx_have_link_control_;
     result.receive_color_code_known = rx_color_code_known_;
     result.receive_network_ended = rx_network_ended_;
     return result;
+}
+
+ReceiveHriStartDecision receive_hri_start_decision(const Snapshot& snapshot) noexcept
+{
+    if (snapshot.receive_generation == 0U || snapshot.rx_state == RxState::idle ||
+        snapshot.rx_state == RxState::filtered || snapshot.rx_state == RxState::stopping) {
+        return ReceiveHriStartDecision::inactive;
+    }
+    if (snapshot.accepted_receive_voice_bursts != 0U) {
+        return ReceiveHriStartDecision::start_hri;
+    }
+    return snapshot.receive_network_ended
+        ? ReceiveHriStartDecision::discard_empty_ended_call
+        : ReceiveHriStartDecision::wait_for_voice;
 }
 
 bool BmVoicePipeline::tx_output_available(std::size_t required) const noexcept
@@ -1369,6 +1386,7 @@ Error BmVoicePipeline::process_receive_result(const dmr_call::ReceiveResult& res
                 return Error::generation_exhausted;
             }
             rx_call_ = protocol_event.call;
+            rx_accepted_voice_bursts_ = 0U;
             rx_have_link_control_ = protocol_event.link_control_validated;
             rx_color_code_known_ = protocol_event.color_code_known;
             if (router_) {
@@ -1443,6 +1461,9 @@ Error BmVoicePipeline::process_receive_result(const dmr_call::ReceiveResult& res
             rx_bursts_[write].voice = protocol_event.voice;
             rx_bursts_[write].missing_before = missing;
             ++rx_burst_count_;
+            if (rx_accepted_voice_bursts_ != std::numeric_limits<std::uint64_t>::max()) {
+                ++rx_accepted_voice_bursts_;
+            }
             rx_call_ = protocol_event.call;
             rx_have_link_control_ = protocol_event.link_control_validated;
             rx_color_code_known_ = protocol_event.color_code_known;
@@ -1483,6 +1504,7 @@ Error BmVoicePipeline::process_receive_result(const dmr_call::ReceiveResult& res
             ended.call = protocol_event.call;
             ended.end_reason = protocol_event.end_reason;
             ended.missing_packets = protocol_event.missing_packets;
+            ended.accepted_voice_bursts = rx_accepted_voice_bursts_;
             ended.link_control_validated = protocol_event.link_control_validated;
             ended.color_code_known = protocol_event.color_code_known;
             ended.generation = rx_generation_;
@@ -1519,6 +1541,7 @@ Error BmVoicePipeline::timeout_rx_start() noexcept
     Event timeout{};
     timeout.kind = EventKind::playback_start_timeout;
     timeout.call = rx_call_;
+    timeout.accepted_voice_bursts = rx_accepted_voice_bursts_;
     timeout.link_control_validated = rx_have_link_control_;
     timeout.color_code_known = rx_color_code_known_;
     timeout.generation = rx_generation_;

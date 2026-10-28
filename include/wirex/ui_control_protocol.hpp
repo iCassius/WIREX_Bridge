@@ -126,6 +126,20 @@ struct RoutingCallbacks {
         std::uint64_t, const talkgroup_routing::RxPolicy&)> replace_rx_policy{};
     std::function<talkgroup_routing::PolicyUpdateResult(
         std::uint64_t, const talkgroup_routing::TxTarget&, bool)> replace_tx_policy{};
+    enum class QuickCallStatus : std::uint8_t {
+        sent,
+        not_ready,
+        busy,
+        invalid_target,
+        forbidden_target,
+        send_failed,
+        partial_send,
+    };
+    struct QuickCallOutcome {
+        QuickCallStatus status{QuickCallStatus::not_ready};
+        std::uint8_t packets_sent{};
+    };
+    std::function<QuickCallOutcome(const talkgroup_routing::GroupRoute&)> quick_call_join{};
     std::function<std::string()> snapshot_json{};
 };
 
@@ -141,6 +155,7 @@ public:
     [[nodiscard]] std::string routing_state_line();
     [[nodiscard]] bool hello_seen() const noexcept { return hello_seen_; }
     [[nodiscard]] bool supports_routing() const noexcept { return routing_enabled_; }
+    [[nodiscard]] bool supports_quick_call() const noexcept { return quick_call_enabled_; }
     [[nodiscard]] std::uint64_t control_seq() const noexcept { return control_seq_; }
     [[nodiscard]] std::size_t cached_result_count() const noexcept
     {
@@ -169,6 +184,7 @@ private:
     std::string run_id_{};
     bool diagnostic_{false};
     bool routing_enabled_{false};
+    bool quick_call_enabled_{false};
     RoutingCallbacks routing_{};
     bool ready_emitted_{false};
     bool hello_seen_{false};

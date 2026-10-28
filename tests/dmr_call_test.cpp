@@ -4,6 +4,7 @@
  */
 #include "wirex/dmr_call.hpp"
 #include "wirex/dmrd.hpp"
+#include "wirex/quick_call.hpp"
 #include "dmr_signal.hpp"
 
 #include <array>
@@ -441,6 +442,105 @@ void test_call_kind_cannot_flip_in_stream()
           "private flag changes cannot reopen a recently retired stream ID");
 }
 
+void test_group_quick_call_is_a_two_frame_control_call()
+{
+    using wirex::quick_call::GateStatus;
+    using wirex::quick_call::PlanError;
+    using wirex::quick_call::Readiness;
+    using wirex::quick_call::SendStatus;
+    const wirex::talkgroup_routing::GroupRoute group{91U, Slot::ts2};
+    const std::array<std::uint8_t, 4U> stream_id{{0x10U, 0x20U, 0x30U, 0x40U}};
+    const auto planned = wirex::quick_call::make_group_plan(0x123456U, 0x89abcdefU,
+                                                            group, 7U, stream_id);
+    check(static_cast<bool>(planned), "Quick Call planner accepts a valid group and timeslot");
+    if (!planned) return;
+    check(planned.plan.frames.size() == 2U &&
+          planned.plan.frames[0U].kind == PacketKind::voice_lc_header &&
+          planned.plan.frames[1U].kind == PacketKind::terminator_with_lc,
+          "Quick Call plan contains only a group header and its EOT");
+    check(planned.plan.frames[0U].datagram.flags == 0xa1U &&
+          planned.plan.frames[1U].datagram.flags == 0xa2U &&
+          planned.plan.frames[0U].datagram.sequence == 0U &&
+          planned.plan.frames[1U].datagram.sequence == 1U,
+          "Quick Call frames use DMRD group LC header and EOT sequence values");
+    check(planned.plan.frames[0U].datagram.destination_id == group.destination_id &&
+          planned.plan.frames[1U].datagram.destination_id == group.destination_id &&
+          planned.plan.frames[0U].datagram.stream_id == stream_id &&
+          planned.plan.frames[1U].datagram.stream_id == stream_id,
+          "both Quick Call frames retain the selected target and stream identity");
+
+    for (std::size_t index = 0U; index < planned.plan.frames.size(); ++index) {
+        const auto& frame = planned.plan.frames[index];
+        const auto encoded = wirex::dmrd::encode(frame.datagram);
+        const auto decoded = wirex::dmrd::decode(encoded.bytes.data(), encoded.bytes.size());
+        const auto type = index == 0U ? wirex::dmr_signal::FullLcType::voice_header
+                                      : wirex::dmr_signal::FullLcType::terminator;
+        const auto lc = wirex::dmr_signal::decode_full_lc(frame.datagram.payload, type);
+        check(static_cast<bool>(encoded) && static_cast<bool>(decoded) &&
+              decoded.datagram.flags == frame.datagram.flags &&
+              decoded.datagram.source_id == 0x123456U &&
+              decoded.datagram.destination_id == 91U &&
+              decoded.datagram.gateway_id == 0x89abcdefU &&
+              wirex::quick_call::same_datagram(frame, decoded.datagram),
+              "Quick Call serializes as a valid 55-byte DMRD datagram");
+        check(lc.valid && lc.link_control.flco == 0U &&
+              lc.link_control.source_id == 0x123456U &&
+              lc.link_control.destination_id == 91U && lc.color_code == 7U,
+              "Quick Call LC payload validates as a group voice header or terminator");
+    }
+
+    std::size_t sends = 0U;
+    const auto completed = wirex::quick_call::send_once(planned.plan, [&](const auto&) {
+        ++sends;
+        return true;
+    });
+    check(completed.status == SendStatus::sent && completed.packets_sent == 2U && sends == 2U,
+          "one explicit Quick Call sends each planned control frame once");
+
+    sends = 0U;
+    const auto partial = wirex::quick_call::send_once(planned.plan, [&](const auto&) {
+        ++sends;
+        return sends == 1U;
+    });
+    check(partial.status == SendStatus::partial_send && partial.packets_sent == 1U && sends == 2U,
+          "a failed EOT reports a partial send and does not retry either frame");
+    sends = 0U;
+    const auto no_send = wirex::quick_call::send_once(planned.plan, [&](const auto&) {
+        ++sends;
+        return false;
+    });
+    check(no_send.status == SendStatus::send_failed && no_send.packets_sent == 0U && sends == 1U,
+          "a failed header stops the operation before the EOT and does not retry");
+
+    auto readiness = Readiness{true, true, true, false, false, true, true};
+    check(wirex::quick_call::check_readiness(readiness) == GateStatus::busy,
+          "Quick Call gate refuses an active voice/media owner");
+    readiness.pipeline_idle = true;
+    readiness.media_owner_idle = true;
+    readiness.hri_stream_idle = false;
+    check(wirex::quick_call::check_readiness(readiness) == GateStatus::busy,
+          "Quick Call gate refuses an active HRI stream");
+    readiness.hri_stream_idle = true;
+    readiness.cleanup_idle = false;
+    check(wirex::quick_call::check_readiness(readiness) == GateStatus::busy,
+          "Quick Call gate refuses pending media cleanup");
+    readiness.cleanup_idle = true;
+    readiness.bm_ready = false;
+    check(wirex::quick_call::check_readiness(readiness) == GateStatus::not_ready,
+          "Quick Call gate refuses a BM session that is not ready");
+
+    auto listen_46001 = group;
+    listen_46001.destination_id = 46001U;
+    check(static_cast<bool>(wirex::quick_call::make_group_plan(0x123456U, 0x89abcdefU,
+          listen_46001, 7U, stream_id)),
+          "TG46001 remains valid as an isolated dynamic Quick Call target");
+    auto forbidden = group;
+    forbidden.destination_id = 4000U;
+    check(wirex::quick_call::make_group_plan(0x123456U, 0x89abcdefU,
+          forbidden, 7U, stream_id).error == PlanError::disconnect_group_forbidden,
+          "TG4000 is rejected because it is a dynamic-group disconnect action");
+}
+
 } // namespace
 
 int main()
@@ -454,6 +554,7 @@ int main()
     test_embedded_qr_and_fec_correction();
     test_private_call_and_invalid_flags();
     test_call_kind_cannot_flip_in_stream();
+    test_group_quick_call_is_a_two_frame_control_call();
 
     if (failures != 0) {
         std::printf("%d DMR call checks failed.\n", failures);

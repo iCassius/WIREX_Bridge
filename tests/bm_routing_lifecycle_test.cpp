@@ -190,6 +190,9 @@ void test_routed_receive_waits_for_lc_and_keeps_one_owner_through_hri_stop()
     check(received.error == Error::filtered && state.router.media_owner == MediaOwner::idle &&
           !state.active_rx_mapping,
           "voice sync A alone must remain a candidate without claiming media or opening playback");
+    check(wirex::bm_voice::receive_hri_start_decision(pipeline.snapshot()) ==
+              wirex::bm_voice::ReceiveHriStartDecision::inactive,
+          "voice sync before late LC confirmation cannot open the HRI receive gate");
     PlaybackFrame frame{};
     check(!pipeline.take_playback_pcm(frame), "unvalidated late entry must not deliver PCM to fake HRI");
 
@@ -211,6 +214,13 @@ void test_routed_receive_waits_for_lc_and_keeps_one_owner_through_hri_stop()
     }
     check(lc_admitted && received.error == Error::none,
           "validated embedded LC should admit the routed stream");
+    const auto admitted_receive = pipeline.snapshot();
+    check(admitted_receive.receive_link_control_validated &&
+              admitted_receive.accepted_receive_voice_bursts != 0U &&
+              admitted_receive.receive_call.source_id == first_call.source_id &&
+              wirex::bm_voice::receive_hri_start_decision(admitted_receive) ==
+                  wirex::bm_voice::ReceiveHriStartDecision::start_hri,
+          "late LC admission preserves the source ID and opens HRI only after valid voice is admitted");
     state = pipeline.routing_snapshot();
     const auto mapping = state.active_rx_mapping;
     const auto router_generation = mapping ? mapping->router_generation : 0U;

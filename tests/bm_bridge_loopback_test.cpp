@@ -355,6 +355,17 @@ wirex::hri_stream_session::CandidateFrame hri_candidate(bool start)
     return result.bytes;
 }
 
+wirex::hri_stream_session::CandidateFrame maybe_start_candidate_for_test(std::uint32_t source_id)
+{
+    const auto body = wirex::hri_t_payload::build_empty_header_empty_ambe_candidate_body(1, 1, 9U);
+    const auto identity = wirex::hri_lcd_identity_candidate::overlay_source_id_label(body, source_id);
+    check(static_cast<bool>(identity), "source identity candidate is valid");
+    const auto frame = wirex::direct_frame::encode({static_cast<std::uint8_t>('T'),
+        std::vector<std::uint8_t>(identity.body.begin(), identity.body.end())});
+    check(static_cast<bool>(frame), "source identity T3 frame is valid");
+    return frame.bytes;
+}
+
 wirex::dmr_call::AmbeVoiceBurst synth_voice_burst()
 {
     wirex::dmr_vocoder::Encoder encoder;
@@ -498,6 +509,13 @@ void send_rx_packet(BmLoopback& link, BmVoicePipeline& pipeline,
     check(result.error == Error::none, "pipeline accepts selected DMRD from real loopback session");
 }
 
+bool take_event(BmVoicePipeline& pipeline, wirex::bm_voice::EventKind wanted)
+{
+    bool found = false;
+    while (const auto event = pipeline.take_event()) found = found || event->kind == wanted;
+    return found;
+}
+
 std::uint64_t write_id(const wirex::hri_stream_session::Update& update,
                        wirex::hri_stream_session::ActionKind kind)
 {
@@ -540,6 +558,228 @@ struct FakeHriAudioSink {
     }
 };
 
+void configure_routed_receive(BmVoicePipeline& pipeline)
+{
+    wirex::talkgroup_routing::RxPolicy receive{};
+    receive.group_mode = wirex::talkgroup_routing::GroupMode::all_delivered;
+    wirex::talkgroup_routing::TxPolicy transmit{};
+    transmit.target = {460997U, wirex::dmr_call::CallKind::private_call,
+                       wirex::dmr_call::Slot::ts2};
+    check(pipeline.enable_routing(local_id, receive, transmit) == Error::none,
+          "routed receive pipeline accepts synthetic policy");
+}
+
+wirex::bm_voice::ReceiveHriStartDecision maybe_start_fake_hri(
+    wirex::hri_stream_session::Session& hri,
+    const wirex::bm_voice::Snapshot& receive,
+    std::uint64_t now_ms,
+    std::vector<wirex::hri_stream_session::CandidateFrame>& writes)
+{
+    const auto decision = wirex::bm_voice::receive_hri_start_decision(receive);
+    if (decision != wirex::bm_voice::ReceiveHriStartDecision::start_hri) return decision;
+
+    const auto body = wirex::hri_t_payload::build_empty_header_empty_ambe_candidate_body(1, 1, 9U);
+    const auto identity = wirex::hri_lcd_identity_candidate::overlay_source_id_label(
+        body, receive.receive_call.source_id);
+    check(static_cast<bool>(identity), "accepted receive source ID builds an HRI start label");
+    const auto frame = wirex::direct_frame::encode({static_cast<std::uint8_t>('T'),
+        std::vector<std::uint8_t>(identity.body.begin(), identity.body.end())});
+    check(static_cast<bool>(frame), "one-shot source-labeled HRI start candidate encodes");
+    const auto update = hri.begin_call_with_start_candidate(frame.bytes, now_ms);
+    check(update.error == wirex::hri_stream_session::Error::none &&
+              update.state.phase == wirex::hri_stream_session::Phase::start_write_pending,
+          "fake HRI starts only after the shared receive voice gate permits T3");
+    record_write(hri, update.actions.front(), now_ms, writes);
+    check(identity.label[0] == 'I' && identity.label[1] == 'D' &&
+              std::string(identity.label.data(), identity.label.size()).find(
+                  std::to_string(receive.receive_call.source_id)) != std::string::npos,
+          "per-call HRI identity preserves the admitted BM source ID");
+    return decision;
+}
+
+void test_empty_routed_receive_suppresses_hri_and_next_voice_call_drains()
+{
+    BmLoopback link;
+    BmVoicePipeline pipeline;
+    configure_routed_receive(pipeline);
+    wirex::hri_stream_session::Session hri(hri_candidate(true), hri_candidate(false));
+    std::vector<wirex::hri_stream_session::CandidateFrame> hri_writes;
+
+    auto end_empty_call_without_hri = [&](std::uint8_t stream_tail, std::uint64_t start_ms,
+                                          bool watchdog) {
+        const auto hri_writes_before = hri_writes.size();
+        const auto completed_calls_before = hri.snapshot().completed_calls;
+        wirex::dmr_call::Transmitter source;
+        const auto call = call_config(remote_id, stream_tail);
+        const auto header = source.start(call);
+        check(static_cast<bool>(header), "empty routed DMR call produces a valid LC header");
+        send_rx_packet(link, pipeline, header.packet, start_ms);
+        check(take_event(pipeline, wirex::bm_voice::EventKind::receive_started),
+              "routed empty call reserves one generation before any voice arrives");
+        check(maybe_start_fake_hri(hri, pipeline.snapshot(), start_ms, hri_writes) ==
+                  wirex::bm_voice::ReceiveHriStartDecision::wait_for_voice,
+              "header-only receive waits for voice without writing HRI T3");
+
+        if (watchdog) {
+            check(pipeline.tick(TimePoint{} + std::chrono::milliseconds{
+                      start_ms + wirex::dmr_call::default_receive_timeout.count()}) == Error::none,
+                  "360 ms receive watchdog ends a silent routed call");
+        } else {
+            const auto eot = source.finish();
+            check(static_cast<bool>(eot), "empty routed DMR call produces a valid EOT");
+            send_rx_packet(link, pipeline, eot.packet, start_ms + 60U);
+        }
+
+        bool saw_network_end = false;
+        std::uint64_t accepted_voice_bursts = 1U;
+        while (const auto event = pipeline.take_event()) {
+            if (event->kind != wirex::bm_voice::EventKind::network_ended) continue;
+            saw_network_end = true;
+            accepted_voice_bursts = event->accepted_voice_bursts;
+            if (watchdog) {
+                check(event->end_reason == wirex::dmr_call::CallEndReason::watchdog,
+                      "silent stream records the existing receive-watchdog reason");
+            } else {
+                check(event->end_reason == wirex::dmr_call::CallEndReason::terminator,
+                      "empty call records its DMR terminator reason");
+            }
+        }
+        const auto ended = pipeline.snapshot();
+        check(saw_network_end && accepted_voice_bursts == 0U &&
+                  ended.accepted_receive_voice_bursts == 0U && ended.receive_network_ended &&
+                  wirex::bm_voice::receive_hri_start_decision(ended) ==
+                      wirex::bm_voice::ReceiveHriStartDecision::discard_empty_ended_call,
+              "zero-voice EOT or watchdog selects cleanup without T3");
+        check(maybe_start_fake_hri(hri, ended, start_ms + 70U, hri_writes) ==
+                  wirex::bm_voice::ReceiveHriStartDecision::discard_empty_ended_call &&
+                  hri_writes.size() == hri_writes_before &&
+                  hri.snapshot().completed_calls == completed_calls_before &&
+                  hri.snapshot().phase == wirex::hri_stream_session::Phase::idle,
+              "empty end produces neither fake HRI T3 nor T0");
+
+        const auto active = pipeline.routing_snapshot().active_rx_mapping;
+        check(active.has_value() && pipeline.routing_snapshot().router.media_owner ==
+                  wirex::talkgroup_routing::MediaOwner::rx_draining,
+              "empty EOT retains its routed owner until explicit cleanup");
+        pipeline.cancel_rx();
+        check(take_event(pipeline, wirex::bm_voice::EventKind::receive_cancelled),
+              "empty-call cleanup transitions the routed owner to stopping");
+        check(active && pipeline.complete_routed_rx_cleanup(active->pipeline_generation, true) ==
+                  wirex::talkgroup_routing::OperationStatus::completed,
+              "successful no-HRI audio cleanup releases the empty-call owner");
+        check(pipeline.routing_snapshot().router.media_owner ==
+                  wirex::talkgroup_routing::MediaOwner::idle,
+              "empty-call owner returns to idle for the next downlink");
+    };
+
+    end_empty_call_without_hri(20U, 50000U, false);
+    check(hri_writes.empty() && hri.snapshot().completed_calls == 0U,
+          "the first empty call produces absolutely zero HRI T3/T0 writes");
+
+    const std::uint64_t base_ms = 51000U;
+    wirex::dmr_call::Transmitter source;
+    const auto call = call_config(remote_id, 21U);
+    const auto header = source.start(call);
+    check(static_cast<bool>(header), "next routed call produces a valid header");
+    send_rx_packet(link, pipeline, header.packet, base_ms);
+    check(take_event(pipeline, wirex::bm_voice::EventKind::receive_started),
+          "next call is admitted after empty-call cleanup");
+    check(maybe_start_fake_hri(hri, pipeline.snapshot(), base_ms, hri_writes) ==
+              wirex::bm_voice::ReceiveHriStartDecision::wait_for_voice && hri_writes.empty(),
+          "next call still waits for real voice before starting HRI");
+
+    const auto burst = synth_voice_burst();
+    const auto voice = source.voice(burst);
+    check(static_cast<bool>(voice), "one-burst follow-up call produces valid voice");
+    send_rx_packet(link, pipeline, voice.packet, base_ms + 60U);
+    auto receive = pipeline.snapshot();
+    check(receive.accepted_receive_voice_bursts == 1U &&
+              receive.receive_link_control_validated && receive.receive_call.source_id == remote_id &&
+              wirex::bm_voice::receive_hri_start_decision(receive) ==
+                  wirex::bm_voice::ReceiveHriStartDecision::start_hri,
+          "first valid burst after LC confirmation opens the gate and preserves its source ID");
+    check(maybe_start_fake_hri(hri, receive, base_ms + 60U, hri_writes) ==
+              wirex::bm_voice::ReceiveHriStartDecision::start_hri && hri_writes.size() == 1U,
+          "fake HRI receives one source-labeled T3 after the first valid burst");
+
+    const auto eot = source.finish();
+    check(static_cast<bool>(eot), "one-burst follow-up call produces a valid EOT");
+    send_rx_packet(link, pipeline, eot.packet, base_ms + 120U);
+    check(take_event(pipeline, wirex::bm_voice::EventKind::network_ended),
+          "one-burst EOT is observed before fake HRI T3 acknowledgement");
+    check(pipeline.snapshot().queued_rx_bursts == 1U &&
+              pipeline.snapshot().accepted_receive_voice_bursts == 1U,
+          "short-call voice remains buffered while HRI awaits its T3 record");
+    auto hri_update = hri.network_ended(base_ms + 120U);
+    check(hri_update.error == wirex::hri_stream_session::Error::none &&
+              hri.snapshot().phase == wirex::hri_stream_session::Phase::awaiting_start_record,
+          "EOT remains pending while the fake HRI has not acknowledged T3");
+    hri_update = hri.feed(hri_writes.front().data(), hri_writes.front().size(), base_ms + 200U);
+    check(hri_update.state.start_t_record_observed && hri_update.state.playback_permitted,
+          "late fake HRI T3 acknowledgement permits the buffered one-burst call");
+    check(pipeline.playback_ready(TimePoint{} + std::chrono::milliseconds{base_ms + 200U}) == Error::none,
+          "pipeline begins playback only after fake HRI reports T3 ready");
+
+    FakeHriAudioSink sink;
+    bool saw_playback_drained = false;
+    bool saw_t0 = false;
+    for (std::uint64_t now_ms = base_ms + 200U; now_ms < base_ms + 1200U && !saw_t0; now_ms += 10U) {
+        if ((now_ms - base_ms) % 20U == 0U) {
+            check(pipeline.tick(TimePoint{} + std::chrono::milliseconds{now_ms}) == Error::none,
+                  "one-burst playback advances through the real receive pipeline");
+        }
+        PlaybackFrame frame{};
+        while (pipeline.take_playback_pcm(frame)) sink.submit(frame, now_ms);
+        while (!sink.pending.empty() && sink.pending.front().due_ms <= now_ms) {
+            const auto completed = sink.pending.front();
+            sink.pending.pop_front();
+            check(pipeline.acknowledge_playback(completed.generation, 1U,
+                      TimePoint{} + std::chrono::milliseconds{now_ms}) == Error::none,
+                  "fake HRI audio sink acknowledges each real pipeline PCM frame");
+            ++sink.acknowledged_frames;
+            sink.last_ack_ms = now_ms;
+            while (const auto event = pipeline.take_event()) {
+                if (event->kind != wirex::bm_voice::EventKind::playback_drained) continue;
+                saw_playback_drained = true;
+                hri_update = hri.playback_drained(now_ms);
+                const auto stop = std::find_if(hri_update.actions.begin(), hri_update.actions.end(),
+                    [](const auto& action) {
+                        return action.kind == wirex::hri_stream_session::ActionKind::write_stop_candidate;
+                    });
+                check(stop != hri_update.actions.end(),
+                      "fake HRI schedules T0 after the final audio acknowledgement");
+                if (stop != hri_update.actions.end()) {
+                    record_write(hri, *stop, now_ms, hri_writes);
+                    hri_update = hri.feed(hri_writes.back().data(), hri_writes.back().size(), now_ms);
+                    saw_t0 = hri_update.state.stop_t_record_observed &&
+                        hri_update.state.completed_calls == 1U;
+                }
+                break;
+            }
+        }
+    }
+    check(saw_playback_drained && saw_t0 && sink.submitted_frames != 0U &&
+              sink.acknowledged_frames == sink.submitted_frames,
+          "one accepted voice burst plays completely before fake HRI T0");
+    check(hri_writes.size() == 2U && hri_writes[0] ==
+              maybe_start_candidate_for_test(remote_id) &&
+              hri_writes[1] == hri_candidate(false),
+          "the one-burst call produces exactly one source-specific T3 and one T0");
+    const auto stopping = pipeline.routing_snapshot().stopping_rx_mapping;
+    check(stopping.has_value() && pipeline.routing_snapshot().router.media_owner ==
+              wirex::talkgroup_routing::MediaOwner::rx_stopping,
+          "played one-burst generation retains Router ownership until cleanup acknowledgement");
+    check(stopping && pipeline.complete_routed_rx_cleanup(stopping->pipeline_generation, true) ==
+              wirex::talkgroup_routing::OperationStatus::completed,
+          "fake HRI T0 and completed audio cleanup release the one-burst generation");
+    check(pipeline.routing_snapshot().router.media_owner == wirex::talkgroup_routing::MediaOwner::idle,
+          "one-burst call releases Router for a subsequent call");
+
+    end_empty_call_without_hri(22U, base_ms + 2000U, true);
+    check(hri_writes.size() == 2U && hri.snapshot().completed_calls == 1U,
+          "a later 360 ms empty-stream watchdog adds zero T3/T0 writes after the completed call");
+}
+
 void test_short_downlink_eot_waits_for_t3_and_final_audio_ack()
 {
     BmLoopback link;
@@ -575,15 +815,25 @@ void test_short_downlink_eot_waits_for_t3_and_final_audio_ack()
                   << " playback=" << early_snapshot.queued_playback_frames << '\n';
     }
     check(early_snapshot.rx_state == wirex::bm_voice::RxState::draining &&
-              early_snapshot.queued_rx_bursts == 2U && early_snapshot.queued_playback_frames == 0U,
+              early_snapshot.queued_rx_bursts == 2U && early_snapshot.queued_playback_frames == 0U &&
+              early_snapshot.accepted_receive_voice_bursts == 2U &&
+              wirex::bm_voice::receive_hri_start_decision(early_snapshot) ==
+                  wirex::bm_voice::ReceiveHriStartDecision::start_hri,
           "early EOT retains both speech bursts without decoding before T3 permission");
     check(early_snapshot.receive_call.source_id == remote_id && early_snapshot.receive_generation != 0U,
           "early BM EOT retains the accepted call source ID and generation until HRI T3 can start");
     bool saw_network_end = false;
+    bool network_end_reason_is_terminator = false;
+    std::uint64_t accepted_voice_bursts_at_end = 0U;
     while (const auto event = pipeline->take_event()) {
-        if (event->kind == wirex::bm_voice::EventKind::network_ended) saw_network_end = true;
+        if (event->kind != wirex::bm_voice::EventKind::network_ended) continue;
+        saw_network_end = true;
+        network_end_reason_is_terminator =
+            event->end_reason == wirex::dmr_call::CallEndReason::terminator;
+        accepted_voice_bursts_at_end = event->accepted_voice_bursts;
     }
-    check(saw_network_end, "the short BM call reports EOT before HRI T3 starts");
+    check(saw_network_end && network_end_reason_is_terminator && accepted_voice_bursts_at_end == 2U,
+          "the short BM call reports terminator and exactly two accepted voice bursts before HRI T3 starts");
 
     const auto default_start_body = wirex::hri_t_payload::build_empty_header_empty_ambe_candidate_body(1, 1, 9U);
     const auto tagged_start = wirex::hri_lcd_identity_candidate::overlay_source_id_label(
@@ -925,6 +1175,7 @@ int main()
 {
     try {
         test_real_loopback_tx_and_cancel_before_rptcl();
+        test_empty_routed_receive_suppresses_hri_and_next_voice_call_drains();
         test_short_downlink_eot_waits_for_t3_and_final_audio_ack();
         test_private_echo_ts2_return_and_narrow_filter();
         test_tg91_ts2_group_receive_filter();

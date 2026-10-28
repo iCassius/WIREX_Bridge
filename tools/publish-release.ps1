@@ -39,6 +39,7 @@ $script:alpha3TestNames = @(
 )
 $script:alpha5TestNames = @($script:alpha3TestNames + 'ui_control_protocol_v2_test')
 $script:alpha6TestNames = @($script:alpha5TestNames + 'talkgroup_routing_test' + 'bm_routing_lifecycle_test' + 'routing_state_test')
+$script:alpha7TestNames = @($script:alpha6TestNames)
 
 function Set-PublishProfile {
     param([Parameter(Mandatory=$true)][string]$Tag)
@@ -146,7 +147,18 @@ function Set-PublishProfile {
             $script:expectedDirectories = @($alpha5.Directories)
             $script:expectedTestNames = $script:alpha6TestNames
         }
-        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, and v0.1.0-alpha.6 release profiles are supported.' }
+        'v0.1.0-alpha.7' {
+            $alpha6 = Set-PublishProfile -Tag 'v0.1.0-alpha.6'
+            $assetMap = [ordered]@{}
+            foreach ($path in $alpha6.AssetPathMap.Keys) { $assetMap[$path] = $alpha6.AssetPathMap[$path] }
+            $assetMap['docs/R109_下行状态与动态组修复.md'] = 'docs__r109-downlink-dynamic-groups.md'
+            $assetMap['docs/R109_动态组激活实现.md'] = 'docs__r109-dynamic-group-activation.md'
+            $script:publishTag = $Tag
+            $script:assetPathMap = $assetMap
+            $script:expectedDirectories = @($alpha6.Directories)
+            $script:expectedTestNames = $script:alpha7TestNames
+        }
+        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, and v0.1.0-alpha.7 release profiles are supported.' }
     }
     return [pscustomobject]@{
         Tag = $script:publishTag

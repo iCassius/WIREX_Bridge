@@ -101,8 +101,21 @@ $result = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($resultPa
 if (-not [bool]$result.passed -or -not [bool]$result.offline_cancel_verified -or -not [bool]$result.timeout_fence_verified) {
     throw ('WPF routing diagnostic reported failure: {0}' -f $result.message)
 }
+$dynamicGroupTest = $result.dynamic_group_action_test
+if (-not $dynamicGroupTest -or -not [bool]$dynamicGroupTest.passed -or
+    [string]$dynamicGroupTest.local_listen_command -cne 'rx_policy.replace' -or
+    [string]$dynamicGroupTest.activation_command -cne 'network_subscription.quick_call_join' -or
+    [uint64]$dynamicGroupTest.destination_id -ne 46001 -or [uint64]$dynamicGroupTest.slot -ne 2 -or
+    [uint64]$dynamicGroupTest.frames_sent -ne 2 -or [bool]$dynamicGroupTest.replayed -or
+    -not [bool]$dynamicGroupTest.rx_tx_unchanged_after_activation -or
+    -not [bool]$dynamicGroupTest.source_block_preserved -or
+    [bool]$dynamicGroupTest.bm_connected -or [string]$dynamicGroupTest.bm_state -cne 'not_started' -or
+    -not [bool]$dynamicGroupTest.used_memory_sink) {
+    throw ('WPF dynamic-group button flow did not preserve the explicit offline RX/TX contract: {0}' -f $result.message)
+}
 $saved = Read-BridgeUserConnectionProfile -Path $profilePath
 if (@($saved.rx_policy.allow_groups | Where-Object { [uint64]$_.destination_id -eq 12345 -and [uint64]$_.slot -eq 1 }).Count -ne 1 -or
+    @($saved.rx_policy.allow_groups | Where-Object { [uint64]$_.destination_id -eq 46001 -and [uint64]$_.slot -eq 2 }).Count -ne 1 -or
     @($saved.rx_policy.blocked_groups | Where-Object { [uint64]$_.destination_id -eq 12345 -and [uint64]$_.slot -eq 1 }).Count -ne 0 -or
     @($saved.rx_policy.blocked_source_ids | Where-Object { [uint64]$_ -eq 777 }).Count -ne 1 -or
     [uint64]$saved.tx_target.destination_id -ne 53000 -or $saved.tx_target.kind -cne 'group' -or
@@ -115,4 +128,4 @@ if ([System.IO.File]::Exists((Join-Path $isolated 'password-file-path.txt')) -or
 }
 $canonicalHashAfterRun = (Get-FileHash -LiteralPath $sentinel -Algorithm SHA256).Hash
 if ($canonicalHashBefore -cne $canonicalHashAfterRun) { throw 'Canonical user-config sentinel changed during diagnostic.' }
-Write-Output ('通过：WPF 实际按钮→Supervisor→Native 诊断覆盖 RX/TX 配置保存、观察来源卡片屏蔽/恢复、初始 TX 草稿、超时锁定与两种取消；隔离目录标识有效，canonical 配置 SHA-256 未变。' + $result.message)
+Write-Output ('通过：WPF 实际按钮→Supervisor→Native 诊断覆盖 RX/TX设置、来源屏蔽、独立TG46001/TS2本机收听与动态组激活命令；QuickCall只经内存sink验证header+EOT，没有连接BM；TX许可/目标和源屏蔽保留；隔离目录与canonical配置均通过。' + $result.message)

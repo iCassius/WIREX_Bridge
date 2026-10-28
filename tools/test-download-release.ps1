@@ -27,7 +27,7 @@ $script:releaseAssetRedirectHosts = @(
 )
 $script:assertionCount = 0
 $downloadProfiles = @{}
-foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6')) {
+foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7')) {
     $downloadProfiles[$tag] = [pscustomobject]@{
         Files = @(Get-ExpectedReleaseFiles -Tag $tag)
         Tests = @(Get-ExpectedReleaseTests -Tag $tag)
@@ -198,6 +198,23 @@ Assert-True (@($alpha6Manifest.build.passed_tests).Count -eq 39 -and
     $alpha6Manifest.build.passed_tests[38] -ceq 'routing_state_test') `
     'alpha.6 manifest keeps alpha.5 tests and appends the three fixed R108 tests in builder order'
 Assert-Throws { Test-ManifestDocument -Manifest $alpha6Manifest -RequestedTag 'v0.1.0-alpha.5' } 'alpha.6 manifest is rejected for alpha.5 tag'
+$alpha7Manifest = New-TestManifest -Tag 'v0.1.0-alpha.7'
+$alpha7Validated = Test-ManifestDocument -Manifest $alpha7Manifest -RequestedTag 'v0.1.0-alpha.7'
+Assert-True ($alpha7Validated.Files.Count -eq 38) 'alpha.7 manifest contains the 36 alpha.6 package files plus two R109 guides'
+Assert-True (@($alpha7Manifest.build.passed_tests).Count -eq 39 -and
+    [string]::Join('|', @($alpha7Manifest.build.passed_tests)) -ceq
+        [string]::Join('|', @($alpha6Manifest.build.passed_tests))) `
+    'alpha.7 manifest retains the exact 39 alpha.6 C++ tests in order'
+Assert-True (@($alpha7Validated.Files | Where-Object {
+    $_.path -ceq 'docs/R109_下行状态与动态组修复.md' -and
+    $_.asset_name -ceq 'docs__r109-downlink-dynamic-groups.md'
+}).Count -eq 1) 'alpha.7 R109 guide is mapped to one fixed ASCII asset name'
+Assert-True (@($alpha7Validated.Files | Where-Object {
+    $_.path -ceq 'docs/R109_动态组激活实现.md' -and
+    $_.asset_name -ceq 'docs__r109-dynamic-group-activation.md'
+}).Count -eq 1) 'alpha.7 dynamic-group guide is mapped to one fixed ASCII asset name'
+Assert-True (Test-ReleaseTag -Tag 'v0.1.0-alpha.7') 'alpha.7 is an explicitly supported release tag'
+Assert-Throws { Test-ManifestDocument -Manifest $alpha7Manifest -RequestedTag 'v0.1.0-alpha.6' } 'alpha.7 manifest is rejected for alpha.6 tag'
 
 $invalid = New-TestManifest; $invalid.package_status = 'awaiting_root_audit'
 Assert-Throws { Test-ManifestDocument -Manifest $invalid -RequestedTag 'v0.1.0-alpha.1' } 'unreviewed package status is rejected'
@@ -241,6 +258,8 @@ $publishedAlpha5 = [pscustomobject]@{ tag_name='v0.1.0-alpha.5'; draft=$false; p
 Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha5) -RequestedTag 'v0.1.0-alpha.5').tag_name -ceq 'v0.1.0-alpha.5') 'alpha.5 is selected by exact tag'
 $publishedAlpha6 = [pscustomobject]@{ tag_name='v0.1.0-alpha.6'; draft=$false; prerelease=$true }
 Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha6) -RequestedTag 'v0.1.0-alpha.6').tag_name -ceq 'v0.1.0-alpha.6') 'alpha.6 is selected by exact tag'
+$publishedAlpha7 = [pscustomobject]@{ tag_name='v0.1.0-alpha.7'; draft=$false; prerelease=$true }
+Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha7) -RequestedTag 'v0.1.0-alpha.7').tag_name -ceq 'v0.1.0-alpha.7') 'alpha.7 is selected by exact tag'
 
 $goodAssets = New-TestAssetList -Manifest $validManifest
 $release = [pscustomobject]@{ assets=$goodAssets; target_commitish=[string]$validManifest.source.commit }
@@ -383,7 +402,7 @@ try {
 
 . (Join-Path $PSScriptRoot 'package-release.ps1')
 . (Join-Path $PSScriptRoot 'publish-release.ps1')
-foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6')) {
+foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7')) {
     $packageProfile = Set-ReleaseVersion -Version $tag
     $packagePaths = @($packageProfile.PackageFiles | Where-Object { $_ -cne 'manifest.json' })
     $downloadFiles = @($downloadProfiles[$tag].Files)

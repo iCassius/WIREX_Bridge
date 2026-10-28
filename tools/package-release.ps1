@@ -56,6 +56,7 @@ $script:alpha3TestNames = @(
 $script:alpha4TestNames = @($script:alpha3TestNames)
 $script:alpha5TestNames = @($script:alpha4TestNames + 'ui_control_protocol_v2_test')
 $script:alpha6TestNames = @($script:alpha5TestNames + 'talkgroup_routing_test' + 'bm_routing_lifecycle_test' + 'routing_state_test')
+$script:alpha7TestNames = @($script:alpha6TestNames)
 $script:activeReleaseVersion = 'v0.1.0-alpha.1'
 
 function Get-ReleaseProfile {
@@ -299,7 +300,42 @@ function Get-ReleaseProfile {
                 )
             }
         }
-        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, and v0.1.0-alpha.6 release profiles are supported.' }
+        'v0.1.0-alpha.7' {
+            $alpha6 = Get-ReleaseProfile -Version 'v0.1.0-alpha.6'
+            $alpha7SourceFiles = @($alpha6.SourceFiles | Where-Object {
+                [string]$_.Destination -cne 'README.md' -and
+                [string]$_.Destination -cne 'start-merged-test.cmd' -and
+                [string]$_.Destination -cne 'start-merged-test.ps1'
+            }) + @(
+                @{ Source='docs\releases\v0.1.0-alpha.7-package-README.md'; Destination='README.md' },
+                @{ Source='docs\R109_下行状态与动态组修复.md'; Destination='docs\R109_下行状态与动态组修复.md' },
+                @{ Source='docs\R109_动态组激活实现.md'; Destination='docs\R109_动态组激活实现.md' },
+                @{ Source='tools\start-merged-test-alpha7.cmd'; Destination='start-merged-test.cmd' },
+                @{ Source='tools\start-merged-test-alpha7.ps1'; Destination='start-merged-test.ps1' }
+            )
+            $alpha7AssetMap = [ordered]@{}
+            foreach ($path in $alpha6.AssetMap.Keys) { $alpha7AssetMap[$path] = $alpha6.AssetMap[$path] }
+            $alpha7AssetMap['docs/R109_下行状态与动态组修复.md'] = 'docs__r109-downlink-dynamic-groups.md'
+            $alpha7AssetMap['docs/R109_动态组激活实现.md'] = 'docs__r109-dynamic-group-activation.md'
+            return [pscustomobject]@{
+                Version = 'v0.1.0-alpha.7'
+                TestNames = $script:alpha7TestNames
+                SourceFiles = $alpha7SourceFiles
+                PackageFiles = @($alpha6.PackageFiles) + @(
+                    'docs/R109_下行状态与动态组修复.md', 'docs/R109_动态组激活实现.md'
+                )
+                Directories = @($alpha6.Directories)
+                AssetMap = $alpha7AssetMap
+                PackageReadme = 'docs\releases\v0.1.0-alpha.7-package-README.md'
+                ReleaseScope = 'R109: dynamic talkgroup input with separate local-listen and one-shot dynamic-group activation controls; wait for accepted voice before HRI T3 and discard empty ended calls without starting HRI playback'
+                NotIncluded = @(
+                    'No alpha.7 hardware acceptance record for serial, audio, BrandMeister, PTT, or RF behavior',
+                    'The red LED reported on this and the older local-hri-downlink-0304eff build is not fixed or explained by this slice',
+                    'TG91 disconnect causes outside the documented empty-call case remain unconfirmed'
+                )
+            }
+        }
+        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, and v0.1.0-alpha.7 release profiles are supported.' }
     }
 }
 

@@ -47,6 +47,10 @@ foreach ($functionName in @('Test-UiExactControlFields','Test-UiControlUnsigned'
     Assert-UiControl ($null -ne $functionAst) "缺少控制消息验证函数：$functionName"
     Invoke-Expression $functionAst.Extent.Text
 }
+$legacyRoutingCommands = [string[]]@('hello','status','shutdown','routing.status','rx_policy.replace','tx_policy.replace')
+$quickCallRoutingCommands = $legacyRoutingCommands + 'network_subscription.quick_call_join'
+Assert-UiControl (Test-UiRoutingCapabilityList -Commands $legacyRoutingCommands) '界面必须继续接受旧版六命令路由核心。'
+Assert-UiControl (Test-UiRoutingCapabilityList -Commands $quickCallRoutingCommands) '界面必须识别新增Quick Call命令能力。'
 Add-Type -Path (Join-Path $repoRoot 'ui\windows\BridgeSupervisor.cs')
 $supervisor = New-Object WirexBridge.Ui.BridgeSupervisor
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('wirex-ui-routing-control-' + [guid]::NewGuid().ToString('N'))
@@ -56,7 +60,7 @@ try {
     $supervisor.Start($NativeExecutable, [string[]]@('--routing-diagnostic','--ui-pipe','--ui-control-version','2'), $tempRoot, 2)
     $readyLine = Wait-UiControlEvent -Supervisor $supervisor -Type 'control_ready' -Command '' -RequestId '' -TimeoutMilliseconds 10000
     $ready = ConvertFrom-UiControlFrame -Json $readyLine -ExpectedProcessId $supervisor.ProcessId
-    $expectedCommands = 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace'
+    $expectedCommands = 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join'
     Assert-UiControl ([bool]$ready.diagnostic -and $ready.control_version -eq 2 -and
         (@($ready.supported_commands) -join ',' -ceq $expectedCommands)) 'ready 必须报告 v2 本地路由诊断与完整命令集。'
     Assert-UiControl $supervisor.SetControlRunId([string]$ready.run_id) 'Supervisor 必须锁定本次进程的 run_id。'

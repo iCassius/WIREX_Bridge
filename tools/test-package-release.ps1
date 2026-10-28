@@ -310,11 +310,14 @@ Assert-True ([string]$alpha6ReadmeMap[0].Source -ceq 'docs\releases\v0.1.0-alpha
     'alpha.6 package copies its own versioned README'
 $alpha6ReadmeText = [System.IO.File]::ReadAllText(
     (Join-Path $repositoryRoot $alpha6ReadmeMap[0].Source), [System.Text.Encoding]::UTF8)
-Assert-True ($alpha6ReadmeText.Contains('routing-state.json') -and
-    $alpha6ReadmeText.Contains('private/r108-merged-test-config') -and
-    $alpha6ReadmeText.Contains('test-control.cmd') -and
-    $alpha6ReadmeText.Contains('password-file-path.txt')) `
-    'alpha.6 README documents the routing file, isolated local test entry, and standalone control diagnostic'
+Assert-True ($alpha6ReadmeText.Contains('private/r108-merged-test-config') -and
+    $alpha6ReadmeText.Contains('test-control.cmd')) `
+    'alpha.6 README documents its isolated local test entry and standalone control diagnostic'
+$alpha6R108Text = [System.IO.File]::ReadAllText(
+    (Join-Path $repositoryRoot 'docs\R108_收发路由状态与alpha6验收.md'), [System.Text.Encoding]::UTF8)
+Assert-True ($alpha6R108Text.Contains('routing-state.json') -and
+    $alpha6R108Text.Contains('password-file-path.txt')) `
+    'alpha.6 R108 guide documents the per-run routing file and local password-file path pointer'
 $alpha6LauncherText = [System.IO.File]::ReadAllText(
     (Join-Path $repositoryRoot 'tools\start-merged-test.ps1'), [System.Text.Encoding]::UTF8)
 Assert-True ($alpha6LauncherText.Contains('private\r108-merged-test-config') -and
@@ -338,6 +341,69 @@ $alpha6EntryDirectory = @($alpha6Ast.ParamBlock.Parameters | Where-Object {
 Assert-True ($alpha6ParseErrors.Count -eq 0 -and $alpha6EntryDirectory.Count -eq 0) `
     ('alpha.6 launcher parses on Windows PowerShell and fixes its isolated config path; parse errors={0}, mutable config parameters={1}' -f
         $alpha6ParseErrors.Count, $alpha6EntryDirectory.Count)
+
+$alpha7Profile = Get-ReleaseProfile -Version 'v0.1.0-alpha.7'
+[void](Set-ReleaseVersion -Version 'v0.1.0-alpha.7')
+$alpha7Files = @(Get-ExpectedReleasePackageFiles)
+$alpha7Tests = @(Get-ExpectedReleaseTests)
+Assert-Equal $alpha7Files.Count ($alpha6Files.Count + 2) 'alpha.7 在 alpha.6 清单上只增加两份 R109 文档'
+Assert-Equal $alpha7Tests.Count 39 'alpha.7 沿用 39 项 C++ 离线测试'
+Assert-True ([string]::Join('|', $alpha7Tests) -ceq [string]::Join('|', $alpha6Tests) -and
+    $builderTestNames.Count -eq $alpha7Tests.Count) 'alpha.7 keeps the full alpha.6 test order and count'
+foreach ($mapping in @(
+    @{ Source='docs\releases\v0.1.0-alpha.7-package-README.md'; Destination='README.md' },
+    @{ Source='docs\R109_下行状态与动态组修复.md'; Destination='docs\R109_下行状态与动态组修复.md' },
+    @{ Source='docs\R109_动态组激活实现.md'; Destination='docs\R109_动态组激活实现.md' },
+    @{ Source='tools\start-merged-test-alpha7.cmd'; Destination='start-merged-test.cmd' },
+    @{ Source='tools\start-merged-test-alpha7.ps1'; Destination='start-merged-test.ps1' }
+)) {
+    Assert-True (@($alpha7Profile.SourceFiles | Where-Object {
+        [string]$_.Source -ceq $mapping.Source -and [string]$_.Destination -ceq $mapping.Destination
+    }).Count -eq 1) "alpha.7 source mapping is fixed: $($mapping.Source)"
+}
+Assert-True ((Get-ReleaseAssetName -RelativePath 'docs/R109_下行状态与动态组修复.md') -ceq 'docs__r109-downlink-dynamic-groups.md') `
+    'alpha.7 R109 guide has a stable ASCII asset name'
+Assert-True ((Get-ReleaseAssetName -RelativePath 'docs/R109_动态组激活实现.md') -ceq 'docs__r109-dynamic-group-activation.md') `
+    'alpha.7 dynamic-group guide has a stable ASCII asset name'
+Assert-True (-not ($alpha7Files -contains 'include/wirex/quick_call.hpp')) `
+    'quick_call.hpp remains a source build input and is not a runtime package asset'
+$alpha7ReadmeMap = @($alpha7Profile.SourceFiles | Where-Object { [string]$_.Destination -ceq 'README.md' })
+Assert-Equal $alpha7ReadmeMap.Count 1 'alpha.7 has exactly one package README'
+$alpha7ReadmeText = [System.IO.File]::ReadAllText(
+    (Join-Path $repositoryRoot $alpha7ReadmeMap[0].Source), [System.Text.Encoding]::UTF8)
+Assert-True ($alpha7ReadmeText.Contains('private/r109-merged-test-config') -and
+    $alpha7ReadmeText.Contains('加入本机收听') -and $alpha7ReadmeText.Contains('激活动态组') -and
+    $alpha7ReadmeText.Contains('一个 header 和一个 EOT') -and
+    $alpha7ReadmeText.Contains('rx_call_accepted_voice_bursts')) `
+    'alpha.7 README documents the isolated entry, separate dynamic-group actions, and empty-call diagnostics'
+$alpha7NotesText = [System.IO.File]::ReadAllText(
+    (Join-Path $repositoryRoot 'docs\releases\v0.1.0-alpha.7.md'), [System.Text.Encoding]::UTF8)
+Assert-True ($alpha7NotesText.Contains('local-hri-downlink-0304eff') -and
+    $alpha7NotesText.Contains('TG91 的所有中断原因仍未查明') -and
+    $alpha7NotesText.Contains('红色 LED 没有在 R109 中修复或解释')) `
+    'alpha.7 notes state that the LED and all TG91 interruption causes remain unresolved'
+$alpha7LauncherPath = Join-Path $repositoryRoot 'tools\start-merged-test-alpha7.ps1'
+$alpha7LauncherText = [System.IO.File]::ReadAllText($alpha7LauncherPath, [System.Text.Encoding]::UTF8)
+Assert-True ($alpha7LauncherText.Contains('private\r109-merged-test-config') -and
+    $alpha7LauncherText.Contains('UserConfigDirectory = $userConfigDirectory') -and
+    -not $alpha7LauncherText.Contains('NoAutoConnect')) `
+    'alpha.7 merged entry uses its dedicated config directory and normal UI startup behavior'
+$alpha7CmdPath = Join-Path $repositoryRoot 'tools\start-merged-test-alpha7.cmd'
+$alpha7CmdBytes = [System.IO.File]::ReadAllBytes($alpha7CmdPath)
+Assert-True (@($alpha7CmdBytes | Where-Object { $_ -gt 127 }).Count -eq 0) 'alpha.7 cmd entry is ASCII-only'
+$alpha7CmdText = [System.Text.Encoding]::ASCII.GetString($alpha7CmdBytes)
+Assert-True ($alpha7CmdText.Contains('alpha7 local test') -and $alpha7CmdText.Contains("`r`n") -and
+    -not $alpha7CmdText.Replace("`r`n", '').Contains("`n")) 'alpha.7 cmd entry has its own title and Windows CRLF line endings'
+$alpha7Tokens = $null
+$alpha7ParseErrors = $null
+$alpha7Ast = [System.Management.Automation.Language.Parser]::ParseFile(
+    $alpha7LauncherPath, [ref]$alpha7Tokens, [ref]$alpha7ParseErrors)
+$alpha7EntryDirectory = @($alpha7Ast.ParamBlock.Parameters | Where-Object {
+    [string]$_.Name.VariablePath.UserPath -ceq 'UserConfigDirectory'
+})
+Assert-True ($alpha7ParseErrors.Count -eq 0 -and $alpha7EntryDirectory.Count -eq 0) `
+    ('alpha.7 launcher parses and fixes its isolated config path; parse errors={0}, mutable config parameters={1}' -f
+        $alpha7ParseErrors.Count, $alpha7EntryDirectory.Count)
 [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.1')
 Assert-Throws { Get-ReleaseAssetName -RelativePath 'start-ui.cmd' } 'alpha.1 不接受 alpha.2 UI asset'
 Assert-True ((Get-ReleaseAssetName -RelativePath 'docs/连接配置.md') -ceq 'docs__connection-profile.md') `
@@ -618,6 +684,44 @@ try {
     Write-Utf8NoBom -Path $alpha6ManifestPath -Text ((ConvertTo-Json -InputObject $alpha6Manifest -Depth 8) + "`n")
     Assert-True ((Assert-ReleasePackageInventory -PackageRoot $alpha6PackageRoot -Version 'v0.1.0-alpha.6') -eq $null) `
         'alpha.6 synthetic folder and three additive package records match the alpha.6 profile'
+
+    $alpha7PackageRoot = Join-Path $testRoot 'package-alpha7'
+    Copy-Item -LiteralPath $alpha6PackageRoot -Destination $alpha7PackageRoot -Recurse
+    [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.7')
+    $alpha7ManifestPath = Join-Path $alpha7PackageRoot 'manifest.json'
+    $alpha7Manifest = [System.IO.File]::ReadAllText($alpha7ManifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $alpha7ReadmePath = Join-Path $alpha7PackageRoot 'README.md'
+    Write-Utf8NoBom -Path $alpha7ReadmePath -Text '# WIREX Bridge v0.1.0-alpha.7 synthetic test package'
+    $alpha7ReadmeItem = Get-Item -LiteralPath $alpha7ReadmePath
+    $alpha7ReadmeRecord = @($alpha7Manifest.files | Where-Object { [string]$_.path -ceq 'README.md' })
+    if ($alpha7ReadmeRecord.Count -ne 1) { throw 'Synthetic alpha.6 manifest must contain one README record.' }
+    $alpha7ReadmeRecord[0].length_bytes = [long]$alpha7ReadmeItem.Length
+    $alpha7ReadmeRecord[0].sha256 = (Get-FileHash -LiteralPath $alpha7ReadmePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $alpha7DocPath = Join-Path $alpha7PackageRoot 'docs\R109_下行状态与动态组修复.md'
+    Write-Utf8NoBom -Path $alpha7DocPath -Text 'synthetic alpha.7 R109 guide'
+    $alpha7DocItem = Get-Item -LiteralPath $alpha7DocPath
+    $alpha7Manifest.files += ,([pscustomobject]@{
+        path = 'docs/R109_下行状态与动态组修复.md'
+        asset_name = (Get-ReleaseAssetName -RelativePath 'docs/R109_下行状态与动态组修复.md')
+        length_bytes = [long]$alpha7DocItem.Length
+        sha256 = (Get-FileHash -LiteralPath $alpha7DocPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        source = 'synthetic alpha.7 test fixture'
+    })
+    $alpha7DynamicDocPath = Join-Path $alpha7PackageRoot 'docs\R109_动态组激活实现.md'
+    Write-Utf8NoBom -Path $alpha7DynamicDocPath -Text 'synthetic alpha.7 dynamic-group guide'
+    $alpha7DynamicDocItem = Get-Item -LiteralPath $alpha7DynamicDocPath
+    $alpha7Manifest.files += ,([pscustomobject]@{
+        path = 'docs/R109_动态组激活实现.md'
+        asset_name = (Get-ReleaseAssetName -RelativePath 'docs/R109_动态组激活实现.md')
+        length_bytes = [long]$alpha7DynamicDocItem.Length
+        sha256 = (Get-FileHash -LiteralPath $alpha7DynamicDocPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        source = 'synthetic alpha.7 test fixture'
+    })
+    $alpha7Manifest.version = 'v0.1.0-alpha.7'
+    $alpha7Manifest.tag_candidate = 'v0.1.0-alpha.7'
+    Write-Utf8NoBom -Path $alpha7ManifestPath -Text ((ConvertTo-Json -InputObject $alpha7Manifest -Depth 8) + "`n")
+    Assert-True ((Assert-ReleasePackageInventory -PackageRoot $alpha7PackageRoot -Version 'v0.1.0-alpha.7') -eq $null) `
+        'alpha.7 synthetic folder and two additive R109 guide records match the alpha.7 profile'
     [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.1')
 
     $readmeFixture = Join-Path $packageRoot 'README.md'

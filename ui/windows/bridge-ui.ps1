@@ -156,6 +156,9 @@ $script:controlRunId = ''
 $script:controlLastSequence = [uint64]0
 $script:controlConfirmed = $false
 $script:controlCapabilities = ''
+$script:quickCallCapabilities = $false
+$script:pendingQuickCall = $null
+$script:pendingDynamicLocalListen = $null
 $script:controlDiagnostic = $false
 $script:controlOverflowHandled = $false
 $script:pendingControlRequests = @{}
@@ -179,6 +182,11 @@ $script:routingDiagnosticAutoTestPhase = 0
 $script:routingDiagnosticOfflineCancelVerified = $false
 $script:routingDiagnosticFenceProbeWaiting = $false
 $script:routingDiagnosticFenceProbeVerified = $false
+$script:routingDiagnosticDynamicGroupBeforeActivation = ''
+$script:routingDiagnosticDynamicGroupBeforeListen = ''
+$script:routingDiagnosticDynamicGroupLocalListenCommand = ''
+$script:routingDiagnosticDynamicGroupActivationResponse = $null
+$script:routingDiagnosticDynamicGroupTest = $null
 $script:profileEditable = $true
 $script:profileWriteAllowed = $true
 $script:receiveEditorState = $null
@@ -218,13 +226,16 @@ function Fit-WpfWindowToWorkArea {
     $Window.Height = [Math]::Min($Window.Height, $script:maxWindowHeight)
     $eventList = $Window.FindName('EventList')
     if ($null -ne $eventList) {
-        $eventList.Height = if ($script:maxWindowHeight -le 720) { 48 } else { 94 }
+        $eventList.Height = if ($script:maxWindowHeight -le 720) { 44 } else { 94 }
     }
     if ($null -ne $Window.FindName('StatusCards') -and $script:maxWindowHeight -le 720) {
         $rootGrid = $Window.Content -as [System.Windows.Controls.Grid]
         $rootGrid.Margin = [System.Windows.Thickness]::new(12.0)
-        $rootGrid.RowDefinitions[2].Height = [System.Windows.GridLength]::new(108.0)
+        $rootGrid.RowDefinitions[2].Height = [System.Windows.GridLength]::new(92.0)
         $Window.FindName('StatusCards').Margin = [System.Windows.Thickness]::new(0.0, 0.0, 0.0, 10.0)
+        foreach ($name in @('CoreStatusCard','RadioStatusCard','AudioStatusCard','BmStatusCard')) {
+            $Window.FindName($name).Padding = [System.Windows.Thickness]::new(8.0)
+        }
         $dashboard = $Window.FindName('DashboardPanel')
         $dashboard.Padding = [System.Windows.Thickness]::new(10.0)
         $dashboard.Margin = [System.Windows.Thickness]::new(0.0, 0.0, 0.0, 6.0)
@@ -236,11 +247,24 @@ function Fit-WpfWindowToWorkArea {
             $summary.FontSize = 11
             $summary.Margin = [System.Windows.Thickness]::new(0.0, 1.0, 0.0, 0.0)
         }
+        $Window.FindName('RoutingRevisionValue').Visibility = [Windows.Visibility]::Collapsed
+        $activeLease = $Window.FindName('ActiveLeaseValue')
+        $activeLease.FontSize = 9
+        $activeLease.Margin = [System.Windows.Thickness]::new(0.0, 1.0, 0.0, 0.0)
+        $dynamicGroupPanel = $Window.FindName('DynamicGroupPanel')
+        $dynamicGroupPanel.Padding = [System.Windows.Thickness]::new(2.0)
+        $dynamicGroupPanel.Margin = [System.Windows.Thickness]::new(0.0, 2.0, 0.0, 0.0)
+        $Window.FindName('DynamicGroupHelpText').Visibility = [Windows.Visibility]::Collapsed
+        $Window.FindName('DynamicGroupSlotBox').Height = 26
+        foreach ($name in @('AddListenGroupButton','ActivateDynamicGroupButton')) {
+            $Window.FindName($name).Padding = [System.Windows.Thickness]::new(6.0, 3.0, 6.0, 3.0)
+        }
+        $Window.FindName('DynamicGroupStatus').FontSize = 9
         $Window.FindName('ControlProtocolValue').FontSize = 10
         $Window.FindName('ControlProtocolValue').Margin = [System.Windows.Thickness]::new(0.0, 2.0, 0.0, 2.0)
         $Window.FindName('ControlStatusButton').Height = 23
         $trafficCard = $Window.FindName('TrafficCard')
-        $trafficCard.Padding = [System.Windows.Thickness]::new(8.0)
+        $trafficCard.Padding = [System.Windows.Thickness]::new(6.0)
         $trafficValue = $Window.FindName('TrafficValue')
         $trafficValue.FontSize = 17
         $trafficValue.Margin = [System.Windows.Thickness]::new(0.0, 4.0, 0.0, 2.0)
@@ -313,8 +337,30 @@ function Get-WpfWindowLayoutInfo {
                     $control.ActualHeight - $control.Padding.Top - $control.Padding.Bottom -
                     $control.BorderThickness.Top - $control.BorderThickness.Bottom))
                 $evidence | Add-Member -NotePropertyName font_size -NotePropertyValue ([double]$control.FontSize)
+                $evidence | Add-Member -NotePropertyName visual_text -NotePropertyValue @(Get-UiVisualTextValues -Root $control)
             }
-            if ($name -ceq 'ControlStatusButton') {
+            if ($control -is [System.Windows.Controls.TextBox]) {
+                $evidence | Add-Member -NotePropertyName text -NotePropertyValue ([string]$control.Text)
+                if ($control.Background -is [System.Windows.Media.SolidColorBrush]) {
+                    $evidence | Add-Member -NotePropertyName background_color -NotePropertyValue $control.Background.Color.ToString()
+                }
+                if ($control.Foreground -is [System.Windows.Media.SolidColorBrush]) {
+                    $evidence | Add-Member -NotePropertyName foreground_color -NotePropertyValue $control.Foreground.Color.ToString()
+                }
+                if ($control.BorderBrush -is [System.Windows.Media.SolidColorBrush]) {
+                    $evidence | Add-Member -NotePropertyName border_color -NotePropertyValue $control.BorderBrush.Color.ToString()
+                }
+            }
+            if ($control -is [System.Windows.Controls.TextBlock]) {
+                $evidence | Add-Member -NotePropertyName text -NotePropertyValue ([string]$control.Text)
+            }
+            if ($control -is [System.Windows.Controls.ComboBox]) {
+                $selectedText = if ($control.SelectedItem -is [System.Windows.Controls.ComboBoxItem]) {
+                    [string]$control.SelectedItem.Content
+                } else { '' }
+                $evidence | Add-Member -NotePropertyName selected_text -NotePropertyValue $selectedText
+            }
+            if ($name -ceq 'DynamicGroupPanel') {
                 $evidence | Add-Member -NotePropertyName visual_text -NotePropertyValue @(Get-UiVisualTextValues -Root $control)
             }
             $bounds[$name] = $evidence
@@ -1015,7 +1061,8 @@ function Test-UiRoutingCapabilityList {
     if ($Commands -isnot [System.Array] -or @($Commands | Where-Object { $_ -isnot [string] }).Count -gt 0) { return $false }
     $joined = @($Commands) -join ','
     return ($joined -ceq 'hello,status,shutdown' -or
-        $joined -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace')
+        $joined -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace' -or
+        $joined -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join')
 }
 
 function Test-UiControlSnapshot {
@@ -1079,7 +1126,7 @@ function ConvertFrom-UiControlFrame {
     }
     if ($record.type -cne 'control_result') { throw '控制协议 v2 只接受 control_ready 或 control_result。' }
     $common = @('schema_version','type','run_id','control_seq','request_id','command','result','replayed')
-    $validCommands = @('hello','status','shutdown','routing.status','rx_policy.replace','tx_policy.replace')
+    $validCommands = @('hello','status','shutdown','routing.status','rx_policy.replace','tx_policy.replace','network_subscription.quick_call_join')
     if ($record.command -isnot [string] -or $validCommands -cnotcontains $record.command) { throw 'control_result.command 无效。' }
     $specific = switch -CaseSensitive ([string]$record.command) {
         'hello' { @('supported_commands') }
@@ -1088,6 +1135,7 @@ function ConvertFrom-UiControlFrame {
         'routing.status' { @('routing') }
         'rx_policy.replace' { @('routing') }
         'tx_policy.replace' { @('routing') }
+        'network_subscription.quick_call_join' { @('activation_status','destination_id','slot','frames_sent') }
     }
     if ($record.result -isnot [string] -or @('ok','unsupported','rejected') -cnotcontains $record.result) { throw 'control_result.result 无效。' }
     $requiredResultFields = if ($record.result -ceq 'ok') { $common + $specific } else { $common + @('error') }
@@ -1111,6 +1159,15 @@ function ConvertFrom-UiControlFrame {
             { $_ -in @('routing.status','rx_policy.replace','tx_policy.replace') } {
                 if (-not (Test-UiRoutingSnapshot -Routing $record.routing)) { throw '路由设置结果无效。' }
             }
+            'network_subscription.quick_call_join' {
+                if ($record.activation_status -cne 'request_sent' -or
+                    -not (Test-UiControlUnsigned -Value $record.destination_id -Minimum 1 -Maximum 16777215) -or
+                    [uint64]$record.destination_id -eq 4000 -or
+                    -not (Test-UiControlUnsigned -Value $record.slot -Minimum 1 -Maximum 2) -or
+                    -not (Test-UiControlUnsigned -Value $record.frames_sent -Minimum 2 -Maximum 2)) {
+                    throw '动态组激活结果字段无效。'
+                }
+            }
         }
     } elseif ($record.PSObject.Properties['error'] -and $record.error -isnot [string]) { throw '拒绝响应的 error 字段无效。' }
     return $record
@@ -1123,6 +1180,9 @@ function Reset-UiControlState {
     $script:controlConfirmed = $false
     $script:controlCapabilities = ''
     $script:routingCapabilities = $false
+    $script:quickCallCapabilities = $false
+    $script:pendingQuickCall = $null
+    $script:pendingDynamicLocalListen = $null
     $script:controlDiagnostic = $false
     $script:controlOverflowHandled = $false
     $script:pendingControlRequests = @{}
@@ -1138,6 +1198,8 @@ function Reset-UiControlState {
         Set-MainText -Name 'ControlProtocolValue' -Text $Text
         (Get-UiControl 'ControlStatusButton').IsEnabled = $false
         Update-RoutingDisplays
+        Set-MainText -Name 'DynamicGroupStatus' -Text '请连接核心与 BM 后操作动态组。'
+        Update-DynamicGroupControls
     }
 }
 
@@ -1210,7 +1272,9 @@ function Process-UiControlEvents {
             $script:controlRunId = [string]$record.run_id
             $script:controlDiagnostic = [bool]$record.diagnostic
             $script:controlCapabilities = @($record.supported_commands) -join ','
-            $script:routingCapabilities = ($script:controlCapabilities -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace')
+            $script:routingCapabilities = ($script:controlCapabilities -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace' -or
+                $script:controlCapabilities -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join')
+            $script:quickCallCapabilities = ($script:controlCapabilities -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join')
             if ($RoutingDiagnosticAutoTest) {
                 if ($null -eq $script:settingsWindow) { Initialize-SettingsWindow }
                 (Get-SettingsControl 'DestinationBox').Text = '53000'
@@ -1253,8 +1317,41 @@ function Process-UiControlEvents {
         }
         if ($record.result -cne 'ok') {
             $detail = if ($record.PSObject.Properties['error']) { [string]$record.error } else { [string]$record.result }
+            if ($record.command -ceq 'network_subscription.quick_call_join') {
+                if ($script:pendingQuickCall -and $script:pendingQuickCall.request_id -ceq [string]$record.request_id) {
+                    $script:pendingQuickCall = $null
+                }
+                if ($RoutingDiagnosticAutoTest) {
+                    Fail-UiRoutingDiagnosticDynamicGroupTest -Message ('隔离动态组按钮链失败：' + $detail)
+                    continue
+                }
+                $quickCallError = switch -CaseSensitive ($detail) {
+                    'media_busy' { '当前正在收发，请空闲后激活。' }
+                    'quick_call_not_ready' { 'BM 或核心未就绪，请检查连接后激活。' }
+                    'invalid_or_forbidden_group' { '组号或 TS 无效；TG4000 用于断开动态组。' }
+                    'disconnect_group_forbidden' { 'TG4000 用于断开动态组，不能作为激活目标。' }
+                    'quick_call_send_failed' { '激活发送失败，请检查 BM 连接后重新激活。' }
+                    'quick_call_partial_send' { '激活未完整发送；请重新连接后再尝试激活。' }
+                    'quick_call_send_incomplete' { '激活未能完成，请检查 BM 连接后重新激活。' }
+                    default { '激活请求未完成：' + $detail }
+                }
+                Set-DynamicGroupStatus $quickCallError -Failed $true
+                Set-UiControlStatus -Text '动态组激活未完成' -Confirmed $script:controlConfirmed
+                if ($detail -ceq 'quick_call_partial_send') {
+                    Add-UiEvent '动态组激活部分发送：header 已发送，EOT 发送失败；核心没有重试'
+                } else {
+                    Add-UiEvent ('动态组激活失败：' + $detail)
+                }
+                Update-DynamicGroupControls
+                continue
+            }
             Set-UiControlStatus -Text ('设置操作失败：' + $detail) -Confirmed $script:controlConfirmed
             if ($record.command -in @('rx_policy.replace','tx_policy.replace')) {
+                if ($record.command -ceq 'rx_policy.replace' -and $script:pendingDynamicLocalListen) {
+                    $route = $script:pendingDynamicLocalListen
+                    $script:pendingDynamicLocalListen = $null
+                    Set-DynamicGroupStatus ('核心拒绝了本机收听规则 TG {0} · TS{1}：{2}' -f $route.destination_id,$route.slot,$detail) -Failed $true
+                }
                 $failedMutation = $null
                 if ($script:pendingRoutingMutation -and $script:pendingRoutingMutation.request_id -ceq [string]$record.request_id) {
                     $failedMutation = $script:pendingRoutingMutation
@@ -1287,8 +1384,49 @@ function Process-UiControlEvents {
                 $diagLabel = if ($script:controlDiagnostic) { ' · 仅本地诊断' } else { '' }
                 if ($script:routingCapabilities) { $diagLabel += ' · 本机路由设置可用' }
                 Set-UiControlStatus -Text ('本机控制已确认' + $diagLabel) -Confirmed $true
+                Update-DynamicGroupControls
                 Add-UiEvent '本机控制已确认'
                 if ($script:routingCapabilities) { Request-UiRoutingStatus }
+            }
+            'network_subscription.quick_call_join' {
+                $pendingQuickCall = $script:pendingQuickCall
+                $script:pendingQuickCall = $null
+                if ($RoutingDiagnosticAutoTest -and $script:routingDiagnosticAutoTestPhase -ne 7) {
+                    Fail-UiRoutingDiagnosticDynamicGroupTest -Message '本机收听按钮或测试阶段错误地触发了动态组激活。'
+                    continue
+                }
+                if ($RoutingDiagnosticAutoTest) {
+                    if ([uint64]$record.destination_id -ne 46001 -or [uint64]$record.slot -ne 2 -or
+                        [uint64]$record.frames_sent -ne 2 -or [string]$record.activation_status -cne 'request_sent' -or
+                        [bool]$record.replayed) {
+                        Fail-UiRoutingDiagnosticDynamicGroupTest -Message '动态组按钮没有以TG46001/TS2收到新请求的两帧发送结果。'
+                        continue
+                    }
+                    $script:routingDiagnosticDynamicGroupActivationResponse = [pscustomobject][ordered]@{
+                        command=[string]$record.command; destination_id=[uint64]$record.destination_id
+                        slot=[uint64]$record.slot; frames_sent=[uint64]$record.frames_sent
+                        activation_status=[string]$record.activation_status; replayed=[bool]$record.replayed
+                    }
+                    $script:routingDiagnosticAutoTestPhase = 8
+                    Set-DynamicGroupStatus '离线验收：两帧已通过内存接收器；BM 未连接。'
+                    Set-UiControlStatus -Text '动态组离线按钮验收已完成' -Confirmed $true
+                    Add-UiEvent '离线验收：动态组请求经过内存帧接收器，没有连接 BM'
+                    Write-UiRoutingDiagnosticProgress -Message 'dynamic-activation-result-received'
+                    Request-UiRoutingStatus
+                    Update-DynamicGroupControls
+                    continue
+                }
+                if ($record.replayed) {
+                    Set-DynamicGroupStatus ('TG {0} · TS{1}：激活请求已发送，等待该组来话。' -f
+                        $record.destination_id,$record.slot)
+                } else {
+                    Set-DynamicGroupStatus ('TG {0} · TS{1}：激活请求已发送，等待该组来话。' -f
+                        $record.destination_id,$record.slot)
+                }
+                Set-UiControlStatus -Text '动态组激活请求已发送' -Confirmed $true
+                Add-UiEvent ('已发送一次动态组激活请求 · TG {0} · TS{1}' -f $record.destination_id,$record.slot)
+                if ($record.replayed) { Add-UiEvent '读取已缓存的激活结果；没有再次发送帧' }
+                Update-DynamicGroupControls
             }
             'status' {
                 $snapshot = $record.snapshot
@@ -1367,6 +1505,9 @@ function Process-UiControlEvents {
                         Set-UiControlStatus -Text '当前运行设置已刷新，草稿已保留' -Confirmed $true
                     } else { Set-UiControlStatus -Text '当前运行设置已刷新' -Confirmed $true }
                     if ($script:routingDiagnosticFenceProbeWaiting) { Continue-UiRoutingDiagnosticAutoTestAfterFenceRefresh }
+                    if ($RoutingDiagnosticAutoTest -and $script:routingDiagnosticAutoTestPhase -eq 8) {
+                        Complete-UiRoutingDiagnosticDynamicGroupTest -Routing $record.routing
+                    }
                     continue
                 }
                 if ($script:pendingRoutingMutation -and $script:pendingRoutingMutation.request_id -ceq [string]$record.request_id) { $script:pendingRoutingMutation = $null }
@@ -1376,6 +1517,11 @@ function Process-UiControlEvents {
                 Set-RoutingMutationPendingState -Pending ([bool]$script:pendingRoutingMutation)
                 Save-UiRoutingMutationAfterAck -Mutation $mutation -Routing $record.routing
                 Set-UiControlStatus -Text '设置已应用' -Confirmed $true
+                if ($record.command -ceq 'rx_policy.replace' -and $script:pendingDynamicLocalListen) {
+                    $route = $script:pendingDynamicLocalListen
+                    $script:pendingDynamicLocalListen = $null
+                    Set-DynamicGroupStatus ('本机收听规则已由核心确认：TG {0} · TS{1}；没有发送动态组激活请求。' -f $route.destination_id,$route.slot)
+                }
                 if ($RoutingDiagnosticAutoTest) { Complete-UiRoutingDiagnosticAutoTest -Mutation $mutation -Routing $record.routing }
             }
         }
@@ -2193,6 +2339,127 @@ function Update-TxTargetButtonState {
     $button.ToolTip = if ($isForbidden) { 'TG91 与 TG46001 是只收通道，不能发射。' } elseif (-not $liveReady) { '连接准备好后，可立即应用下一发射目标。' } else { '立即更新下一发射目标，不改变接收策略。' }
 }
 
+function Set-DynamicGroupStatus {
+    param([string]$Text, [bool]$Failed=$false)
+    if (-not $script:mainWindow) { return }
+    $label = Get-UiControl 'DynamicGroupStatus'
+    $label.Text = $Text
+    $label.Foreground = if ($Failed) { [Windows.Media.Brushes]::IndianRed } else { [Windows.Media.Brushes]::LightGreen }
+}
+
+function Read-DynamicGroupInput {
+    $id = [uint64]0
+    $idText = [string](Get-UiControl 'DynamicGroupIdBox').Text
+    $slotText = Get-UiComboTag -Combo (Get-UiControl 'DynamicGroupSlotBox')
+    $slot = [uint64]0
+    if (-not [uint64]::TryParse($idText,[Globalization.NumberStyles]::None,[Globalization.CultureInfo]::InvariantCulture,[ref]$id) -or
+        $id -lt 1 -or $id -gt 16777215 -or
+        -not [uint64]::TryParse([string]$slotText,[Globalization.NumberStyles]::None,[Globalization.CultureInfo]::InvariantCulture,[ref]$slot) -or
+        $slot -lt 1 -or $slot -gt 2) { throw '组呼 TG 需为 1 到 16777215 的整数，并选择 TS1 或 TS2。' }
+    return [pscustomobject][ordered]@{ destination_id=$id; slot=$slot }
+}
+
+function Update-DynamicGroupControls {
+    if (-not $script:mainWindow) { return }
+    $listenButton = Get-UiControl 'AddListenGroupButton'
+    $activateButton = Get-UiControl 'ActivateDynamicGroupButton'
+    $groupIdValid = $false
+    $groupId = [uint64]0
+    $groupIdValid = [uint64]::TryParse([string](Get-UiControl 'DynamicGroupIdBox').Text,
+        [Globalization.NumberStyles]::None,[Globalization.CultureInfo]::InvariantCulture,[ref]$groupId) -and
+        $groupId -ge 1 -and $groupId -le 16777215
+    $runtimeReady = ($script:supervisor -and -not $script:supervisor.HasExited -and
+        $script:controlConfirmed -and $script:routingCapabilities -and $script:activeRouting)
+    $statusFresh = ($script:latestStatus -and $script:lastStatusUtc -ne [DateTime]::MinValue -and
+        ([DateTime]::UtcNow - $script:lastStatusUtc).TotalSeconds -le 3)
+    $bmReady = ($statusFresh -and [string]$script:latestStatus.bm_state -ceq 'ready')
+    $offlineDiagnosticActionReady = ($RoutingDiagnosticAutoTest -and
+        $script:activeTargetTag -ceq 'routing-diagnostic' -and $script:controlDiagnostic -and
+        $script:routingDiagnosticAutoTestStarted -and $script:routingDiagnosticAutoTestPhase -ge 6 -and
+        $script:routingDiagnosticAutoTestPhase -le 8)
+    $actionReady = ($bmReady -or $offlineDiagnosticActionReady)
+    $notPending = (-not $script:pendingRoutingMutation -and -not $script:routingMutationFence -and -not $script:pendingQuickCall)
+    $listenButton.IsEnabled = ($runtimeReady -and $actionReady -and $groupIdValid -and $notPending)
+    $mediaIdle = ($script:activeRouting -and [string]$script:activeRouting.media_owner -ceq 'idle')
+    $activateButton.IsEnabled = ($runtimeReady -and $script:quickCallCapabilities -and $actionReady -and
+        $groupIdValid -and $groupId -ne 4000 -and $mediaIdle -and $notPending)
+    if (-not $groupIdValid) {
+        $activateButton.ToolTip = '请填写 1 到 16777215 的组呼 TG。TG4000 是断开命令，不能用于激活。'
+    } elseif ($groupId -eq 4000) {
+        $activateButton.ToolTip = 'TG4000 是断开动态组命令，不能用于激活。'
+    } elseif (-not $runtimeReady -or -not $script:quickCallCapabilities) {
+        $activateButton.ToolTip = '等待本次运行控制通道确认 Quick Call 能力。'
+    } elseif ($offlineDiagnosticActionReady) {
+        $activateButton.ToolTip = '隔离离线验收：Quick Call 只进入内存帧接收器，没有连接 BM。'
+    } elseif (-not $bmReady) {
+        $activateButton.ToolTip = '只有核心报告 BrandMeister ready 且状态未过期时才能激活。'
+    } elseif (-not $mediaIdle) {
+        $activateButton.ToolTip = '当前媒体或清理流程占用中；请等核心报告空闲。'
+    } else {
+        $activateButton.ToolTip = '发送一次无语音组呼 header 与 EOT；不会改变语音 TX 许可或下一发射目标。'
+    }
+    $listenButton.ToolTip = if ($offlineDiagnosticActionReady) { '隔离离线验收：只更新本机 RX 路由，没有连接 BM。' }
+        elseif (-not $runtimeReady) { '等待本次运行控制通道确认本机收听设置能力。' }
+        elseif (-not $bmReady) { '请等核心报告 BrandMeister ready；状态过期后按钮会自动停用。' }
+        elseif (-not $groupIdValid) { '请填写 1 到 16777215 的组呼 TG。' }
+        else { '只更新本机 RX allow 规则，不发送动态组激活包。' }
+}
+
+function Invoke-UiDynamicGroupLocalListen {
+    try {
+        Update-DynamicGroupControls
+        $button = Get-UiControl 'AddListenGroupButton'
+        if (-not $button.IsEnabled) { throw [string]$button.ToolTip }
+        $route = Read-DynamicGroupInput
+        $policy = Copy-UiRxPolicy -Policy $script:activeRouting.rx_policy
+        $policy.blocked_groups = @($policy.blocked_groups | Where-Object {
+            -not ([uint64]$_.destination_id -eq [uint64]$route.destination_id -and [uint64]$_.slot -eq [uint64]$route.slot)
+        })
+        if (@($policy.allow_groups | Where-Object {
+            [uint64]$_.destination_id -eq [uint64]$route.destination_id -and [uint64]$_.slot -eq [uint64]$route.slot
+        }).Count -eq 0) {
+            $policy.allow_groups += [pscustomobject][ordered]@{ destination_id=$route.destination_id; slot=$route.slot }
+        }
+        $script:pendingDynamicLocalListen = $route
+        Set-DynamicGroupStatus ('正在把 TG {0} · TS{1} 加入本机收听。' -f $route.destination_id,$route.slot)
+        Invoke-UiRoutingMutation -Command 'rx_policy.replace' -PolicyOrTarget $policy
+    } catch {
+        $script:pendingDynamicLocalListen = $null
+        Set-DynamicGroupStatus $_.Exception.Message -Failed $true
+    }
+}
+
+function Invoke-UiDynamicGroupQuickCall {
+    try {
+        Update-DynamicGroupControls
+        $button = Get-UiControl 'ActivateDynamicGroupButton'
+        if (-not $button.IsEnabled) { throw [string]$button.ToolTip }
+        $route = Read-DynamicGroupInput
+        if ([uint64]$route.destination_id -eq 4000) { throw 'TG4000 是断开动态组的控制命令，不能作为激活目标。' }
+        $parameters = [ordered]@{ group=$route }
+        $parametersJson = ConvertTo-Json -InputObject $parameters -Depth 4 -Compress
+        $requestId = [guid]::NewGuid().ToString('D')
+        $script:pendingQuickCall = [pscustomobject]@{
+            request_id=$requestId; destination_id=[uint64]$route.destination_id; slot=[uint64]$route.slot
+            started_utc=[DateTime]::UtcNow; timed_out=$false
+        }
+        $script:pendingControlRequests[$requestId] = 'network_subscription.quick_call_join'
+        Set-DynamicGroupStatus ('正在发送 TG {0} · TS{1} 动态组激活请求。' -f $route.destination_id,$route.slot)
+        Update-DynamicGroupControls
+        if (-not $script:supervisor.SendControlCommand($requestId,'network_subscription.quick_call_join',$parametersJson)) {
+            [void]$script:pendingControlRequests.Remove($requestId)
+            $script:pendingQuickCall = $null
+            Set-DynamicGroupStatus '激活请求未送达核心，请检查连接后重新激活。' -Failed $true
+            Add-UiEvent '激活请求未送达核心；没有自动重试'
+            Update-DynamicGroupControls
+            return
+        }
+    } catch {
+        Set-DynamicGroupStatus $_.Exception.Message -Failed $true
+        Update-DynamicGroupControls
+    }
+}
+
 function Set-RoutingEditorStatus {
     param([string]$Text, [bool]$Failed=$false)
     if ($script:settingsWindow) {
@@ -2278,7 +2545,7 @@ function Update-RoutingDisplays {
             default { '媒体状态需要检查' }
         }
         Set-MainText -Name 'RoutingRevisionValue' -Text ('本机媒体状态：' + $ownerText)
-        $leaseText = if ($routing.active_tx_lease) { '本次发射目标（固定）：{0}' -f (Format-UiRouteTarget $routing.active_tx_lease) } else { '当前发射目标：无' }
+        $leaseText = if ($routing.active_tx_lease) { '当前发射目标（本次锁定）：{0}' -f (Format-UiRouteTarget $routing.active_tx_lease) } else { '当前发射目标：无' }
         Set-MainText -Name 'ActiveLeaseValue' -Text $leaseText
     } else {
         $profileView = if ($script:activeProfile) { $script:activeProfile } elseif ($script:storedProfile) { $script:storedProfile } else { $null }
@@ -2352,6 +2619,7 @@ function Update-RoutingDisplays {
         Update-TxTargetButtonState
         if ($script:pendingRoutingMutation) { Set-RoutingMutationControls -Enabled $false }
     }
+    Update-DynamicGroupControls
 }
 
 function Get-UiObservedRouteAllowed {
@@ -2412,6 +2680,7 @@ function Set-RoutingMutationPendingState {
         $settings = Get-UiControl 'SettingsButton'
         $settings.IsEnabled = (-not $script:preparationStarted -and -not $locked)
     }
+    Update-DynamicGroupControls
 }
 
 function Invoke-UiRoutingMutation {
@@ -3056,7 +3325,10 @@ function Save-SettingsFromWindow {
 
 function Raise-UiButtonClick {
     param([string]$ControlName)
-    $button = Get-SettingsControl $ControlName
+    $button = $null
+    if ($script:settingsWindow) { $button = $script:settingsWindow.FindName($ControlName) }
+    if ($null -eq $button -and $script:mainWindow) { $button = $script:mainWindow.FindName($ControlName) }
+    if ($null -eq $button -or $button -isnot [System.Windows.Controls.Button]) { throw "找不到自动验收按钮 $ControlName。" }
     $args = [System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)
     $button.RaiseEvent($args)
 }
@@ -3179,6 +3451,32 @@ function Complete-UiRoutingDiagnosticAutoTest {
                 Raise-UiButtonClick -ControlName 'ApplyNextTxTargetButton'
                 return
             }
+            if ($script:routingDiagnosticAutoTestPhase -eq 6) {
+                if ($Mutation.command -cne 'rx_policy.replace' -or -not $saved -or
+                    @($saved.rx_policy.allow_groups | Where-Object { [uint64]$_.destination_id -eq 46001 -and [uint64]$_.slot -eq 2 }).Count -ne 1 -or
+                    @($saved.rx_policy.blocked_source_ids | Where-Object { [uint64]$_ -eq 777 }).Count -ne 1 -or
+                    [uint64]$Routing.tx_target.destination_id -ne 53000 -or $Routing.tx_target.kind -cne 'group' -or
+                    [uint64]$Routing.tx_target.slot -ne 2 -or -not [bool]$Routing.transmit_enabled) {
+                    throw '加入本机收听没有只更新RX规则，或动态组动作覆盖了发射状态/来源屏蔽。'
+                }
+                $beforeListen = ConvertFrom-Json -InputObject $script:routingDiagnosticDynamicGroupBeforeListen -ErrorAction Stop
+                if (@($beforeListen.rx_policy.allow_groups | Where-Object { [uint64]$_.destination_id -eq 46001 -and [uint64]$_.slot -eq 2 }).Count -ne 0 -or
+                    (ConvertTo-Json -InputObject $beforeListen.tx_target -Compress -Depth 8) -cne
+                        (ConvertTo-Json -InputObject $Routing.tx_target -Compress -Depth 8) -or
+                    [bool]$beforeListen.transmit_enabled -ne [bool]$Routing.transmit_enabled) {
+                    throw '本机收听按钮没有仅更新接收策略，或改动了下一发射目标/发射许可。'
+                }
+                $script:routingDiagnosticDynamicGroupLocalListenCommand = [string]$Mutation.command
+                $script:routingDiagnosticDynamicGroupBeforeActivation = ConvertTo-Json -InputObject $Routing -Compress -Depth 16
+                $script:routingDiagnosticAutoTestPhase = 7
+                Update-DynamicGroupControls
+                if (-not (Get-UiControl 'ActivateDynamicGroupButton').IsEnabled) {
+                    throw '隔离自动验收上下文没有启用动态组按钮。'
+                }
+                Raise-UiButtonClick -ControlName 'ActivateDynamicGroupButton'
+                Write-UiRoutingDiagnosticProgress -Message 'dynamic-activate-button-clicked'
+                return
+            }
             throw '自动路由验收收到了阶段外的 RX 确认。'
         } catch {
             Write-UiRoutingDiagnosticResult -Passed $false -Message $_.Exception.Message
@@ -3199,7 +3497,18 @@ function Complete-UiRoutingDiagnosticAutoTest {
             Raise-UiButtonClick -ControlName 'CancelSettingsButton'
             $afterCancelHash = (Get-FileHash -LiteralPath $script:profilePath -Algorithm SHA256).Hash
             if ($beforeCancelHash -cne $afterCancelHash) { throw '运行设置已确认保存后，取消设置窗口又改写了配置。' }
-            Write-UiRoutingDiagnosticResult -Passed $true -Message 'WPF 设置与观察来源卡片经匿名管道更新核心；频道屏蔽和恢复保留了独立来源屏蔽，RX/TX 确认后配置已保存，取消窗口未回滚。' -Routing $Routing
+            $script:routingDiagnosticAutoTestPhase = 6
+            $script:routingDiagnosticDynamicGroupBeforeListen = ConvertTo-Json -InputObject $Routing -Compress -Depth 16
+            (Get-UiControl 'DynamicGroupIdBox').Text = '46001'
+            $dynamicSlot = Get-UiControl 'DynamicGroupSlotBox'
+            $dynamicSlot.SelectedItem = @($dynamicSlot.Items | Where-Object { [string]$_.Tag -ceq '2' })[0]
+            Update-DynamicGroupControls
+            if (-not (Get-UiControl 'AddListenGroupButton').IsEnabled) {
+                throw '隔离自动验收上下文没有启用本机收听按钮。'
+            }
+            Raise-UiButtonClick -ControlName 'AddListenGroupButton'
+            Write-UiRoutingDiagnosticProgress -Message 'dynamic-local-listen-button-clicked'
+            return
         } catch {
             Write-UiRoutingDiagnosticResult -Passed $false -Message $_.Exception.Message -Routing $Routing
         }
@@ -3208,11 +3517,67 @@ function Complete-UiRoutingDiagnosticAutoTest {
     }
 }
 
+function Fail-UiRoutingDiagnosticDynamicGroupTest {
+    param([string]$Message)
+    $script:routingDiagnosticDynamicGroupTest = [pscustomobject][ordered]@{
+        passed=$false; message=$Message; bm_connected=$false; used_memory_sink=$true
+    }
+    Write-UiRoutingDiagnosticProgress -Message ('dynamic-group-test-failed:' + $Message)
+    Write-UiRoutingDiagnosticResult -Passed $false -Message $Message -Routing $script:activeRouting
+    Add-UiEvent ('离线动态组按钮验收失败：' + $Message)
+    if ($script:settingsWindow) { $script:settingsWindow.Close() }
+    Request-StopAndExit
+}
+
+function Complete-UiRoutingDiagnosticDynamicGroupTest {
+    param([object]$Routing)
+    try {
+        if ($script:routingDiagnosticAutoTestPhase -ne 8 -or
+            [string]::IsNullOrWhiteSpace($script:routingDiagnosticDynamicGroupBeforeActivation) -or
+            -not $script:routingDiagnosticDynamicGroupActivationResponse -or
+            $script:routingDiagnosticDynamicGroupLocalListenCommand -cne 'rx_policy.replace') {
+            throw '动态组按钮链结果缺少本机收听确认、激活结果或比较前状态。'
+        }
+        $beforeJson = $script:routingDiagnosticDynamicGroupBeforeActivation
+        $afterJson = ConvertTo-Json -InputObject $Routing -Compress -Depth 16
+        if ($beforeJson -cne $afterJson) {
+            throw '激活动作改变了本机RX路由、来源屏蔽、下一发射目标或发射许可。'
+        }
+        $saved = Read-BridgeUserConnectionProfile -Path $script:profilePath
+        if (-not $saved -or
+            @($saved.rx_policy.allow_groups | Where-Object { [uint64]$_.destination_id -eq 46001 -and [uint64]$_.slot -eq 2 }).Count -ne 1 -or
+            @($saved.rx_policy.blocked_source_ids | Where-Object { [uint64]$_ -eq 777 }).Count -ne 1 -or
+            [uint64]$Routing.tx_target.destination_id -ne 53000 -or $Routing.tx_target.kind -cne 'group' -or
+            [uint64]$Routing.tx_target.slot -ne 2 -or -not [bool]$Routing.transmit_enabled) {
+            throw '动态组离线按钮验收没有保留本机TG46001收听、来源屏蔽或已确认的TX状态。'
+        }
+        $script:routingDiagnosticDynamicGroupTest = [pscustomobject][ordered]@{
+            passed=$true; message='WPF两个动态组按钮经Native Dispatcher分发到不同命令。'
+            local_listen_command=$script:routingDiagnosticDynamicGroupLocalListenCommand
+            activation_command=[string]$script:routingDiagnosticDynamicGroupActivationResponse.command
+            destination_id=[uint64]$script:routingDiagnosticDynamicGroupActivationResponse.destination_id
+            slot=[uint64]$script:routingDiagnosticDynamicGroupActivationResponse.slot
+            frames_sent=[uint64]$script:routingDiagnosticDynamicGroupActivationResponse.frames_sent
+            replayed=[bool]$script:routingDiagnosticDynamicGroupActivationResponse.replayed
+            rx_tx_unchanged_after_activation=$true; source_block_preserved=$true
+            bm_connected=$false; bm_state='not_started'; used_memory_sink=$true
+        }
+        Write-UiRoutingDiagnosticProgress -Message 'dynamic-group-action-test-passed'
+        Write-UiRoutingDiagnosticResult -Passed $true -Message 'WPF本机收听按钮只更新RX策略；动态组按钮发送一次QuickCall，经内存接收器验证两帧；BM未连接，RX/TX状态未被激活命令改写。' -Routing $Routing
+    } catch {
+        Fail-UiRoutingDiagnosticDynamicGroupTest -Message $_.Exception.Message
+        return
+    }
+    if ($script:settingsWindow) { $script:settingsWindow.Close() }
+    Request-StopAndExit
+}
+
 function Write-UiRoutingDiagnosticResult {
     param([bool]$Passed,[string]$Message,[object]$Routing)
     if (-not $script:configDirectory) { return }
     $result = [pscustomobject][ordered]@{
         schema_version=1; passed=$Passed; message=$Message
+        dynamic_group_action_test=$script:routingDiagnosticDynamicGroupTest
         offline_cancel_verified=[bool]$script:routingDiagnosticOfflineCancelVerified
         timeout_fence_verified=[bool]$script:routingDiagnosticFenceProbeVerified
         rx_policy=if ($Routing) { $Routing.rx_policy } else { $null }
@@ -3517,6 +3882,7 @@ function Apply-StatusRecord {
     Set-MainText -Name 'FreshnessValue' -Text ('状态更新于 {0}' -f [DateTime]::Now.ToString('HH:mm:ss'))
     $visibleEvent = Get-VisibleUiEventText -EventName ([string]$Record.event)
     if ($visibleEvent) { Add-UiEvent $visibleEvent }
+    Update-DynamicGroupControls
 }
 
 function Read-StatusUpdates {
@@ -3573,6 +3939,7 @@ function Set-StaleDisplay {
     Set-MainText -Name 'HriSourceIdentityValue' -Text $identityDisplay.value
     Set-MainText -Name 'RadioDisplayValue' -Text $identityDisplay.radio_display
     Set-MainText -Name 'FreshnessValue' -Text '状态报告过期'
+    Update-DynamicGroupControls
 }
 
 function Request-StopAndExit {
@@ -3768,6 +4135,12 @@ function On-UiTimerTick {
             if ($script:statusStream) { $script:statusStream.Dispose(); $script:statusStream = $null }
         } else {
             Process-UiControlEvents
+            if ($script:pendingQuickCall -and -not [bool]$script:pendingQuickCall.timed_out -and
+                ([DateTime]::UtcNow - [DateTime]$script:pendingQuickCall.started_utc).TotalSeconds -ge 8) {
+                $script:pendingQuickCall.timed_out = $true
+                Set-DynamicGroupStatus '尚未收到激活结果；请检查连接，结果确认后再操作。' -Failed $true
+                Add-UiEvent '动态组激活等待超时；保留原 request_id，没有自动重发'
+            }
             if ($script:pendingRoutingMutation -and
                 ([DateTime]::UtcNow - [DateTime]$script:pendingRoutingMutation.started_utc).TotalSeconds -ge 8) {
                 $timedOutMutation = $script:pendingRoutingMutation
@@ -3886,6 +4259,10 @@ $script:mainWindow.FindName('OfflineBanner').Visibility = [Windows.Visibility]::
 (Get-UiControl 'ConnectButton').Add_Click({ Request-Reconnect })
 (Get-UiControl 'StopButton').Add_Click({ Request-StopAndExit })
 (Get-UiControl 'ControlStatusButton').Add_Click({ Request-UiControlStatus })
+(Get-UiControl 'DynamicGroupIdBox').Add_TextChanged({ Update-DynamicGroupControls })
+(Get-UiControl 'DynamicGroupSlotBox').Add_SelectionChanged({ Update-DynamicGroupControls })
+(Get-UiControl 'AddListenGroupButton').Add_Click({ Invoke-UiDynamicGroupLocalListen })
+(Get-UiControl 'ActivateDynamicGroupButton').Add_Click({ Invoke-UiDynamicGroupQuickCall })
 (Get-UiControl 'BlockCurrentSourceButton').Add_Click({
     if (-not $script:latestStatus -or -not [bool]$script:latestStatus.current_call_valid -or -not $script:activeRouting) { return }
     $call = $script:latestStatus
@@ -4000,6 +4377,9 @@ if ($RenderOnly) {
     $banner.Visibility = [Windows.Visibility]::Visible
     (Get-UiControl 'OfflineBannerText').Text = '离线预览样例：以下接收路由与观察来源是模拟数据；没有连接设备或网络。'
     Set-OfflineDisplay -Reason '离线预览，没有连接设备。'
+    (Get-UiControl 'DynamicGroupIdBox').Text = '91'
+    (Get-UiControl 'DynamicGroupSlotBox').SelectedIndex = 1
+    Update-DynamicGroupControls
     $script:mainWindow.Show()
     [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::ApplicationIdle)
     Save-RenderedWindow -Window $script:mainWindow -Path (Join-Path $renderDirectory 'main-window.png')
@@ -4030,7 +4410,7 @@ if ($RenderOnly) {
         max_window_width = $script:maxWindowWidth
         max_window_height = $script:maxWindowHeight
         device_combo_rendered_text = $deviceComboEvidence
-        main = Get-WpfWindowLayoutInfo -Window $script:mainWindow -ControlNames @('ConnectButton', 'SettingsButton', 'StopButton', 'ControlProtocolValue', 'ControlStatusButton', 'FooterText', 'TargetSelector', 'ReceiveTargetValue', 'TransmitTargetValue', 'TransmitPermissionValue', 'CoreDetail', 'RadioDetail', 'AudioDetail', 'BmDetail', 'CoreStatusCard', 'RadioStatusCard', 'AudioStatusCard', 'BmStatusCard', 'HriSourceIdentityValue', 'RadioDisplayValue', 'CurrentCallLabel', 'CurrentCallValue', 'CurrentCallDetail', 'TrafficCard')
+        main = Get-WpfWindowLayoutInfo -Window $script:mainWindow -ControlNames @('ConnectButton', 'SettingsButton', 'StopButton', 'ControlProtocolValue', 'ControlStatusButton', 'FooterText', 'TargetSelector', 'ReceiveTargetValue', 'TransmitTargetValue', 'TransmitPermissionValue', 'ActiveLeaseValue', 'CoreDetail', 'RadioDetail', 'AudioDetail', 'BmDetail', 'CoreStatusCard', 'RadioStatusCard', 'AudioStatusCard', 'BmStatusCard', 'HriSourceIdentityValue', 'RadioDisplayValue', 'CurrentCallLabel', 'CurrentCallValue', 'CurrentCallDetail', 'BlockCurrentSourceButton', 'TrafficCard', 'DynamicGroupPanel', 'DynamicGroupIdBox', 'DynamicGroupSlotBox', 'AddListenGroupButton', 'ActivateDynamicGroupButton', 'DynamicGroupStatus')
         settings = Get-WpfWindowLayoutInfo -Window $script:settingsWindow -ControlNames @('CancelSettingsButton', 'SaveSettingsButton', 'SettingsErrorText', 'ProfileMigrationText', 'ReceivePolicyPreviewText', 'MasterPresetBox', 'PasswordPathBox', 'BrowsePasswordButton', 'DeviceDiscoveryText', 'RefreshDevicesButton', 'SerialBox', 'WaveInEndpointBox', 'WaveOutEndpointBox', 'DestinationBox', 'SlotBox', 'CallKindBox', 'TransmitEnabledBox', 'ApplyNextTxTargetButton', 'GroupModeBox', 'PrivateModeBox', 'GroupRouteIdBox', 'GroupRouteSlotBox', 'GroupRoutesList', 'BlockedGroupIdBox', 'BlockedGroupSlotBox', 'BlockedGroupsList', 'PeerSourceIdBox', 'PeerLocalDestinationBox', 'PeerSlotBox', 'PeerRoutesList', 'LocalPrivateDestinationBox', 'LocalPrivateSlotBox', 'LocalPrivateRoutesList', 'BlockedSourceIdBox', 'BlockedSourcesList', 'PlaybackGainSlider', 'PlaybackGainValueText', 'TransmitGainSlider', 'TransmitGainValueText')
         main_source_identity = [pscustomobject][ordered]@{
             value = (Get-UiControl 'HriSourceIdentityValue').Text
@@ -4072,7 +4452,8 @@ if ($RenderOnly) {
         local_source_id=[uint64]3149876; rx_policy_revision=[uint64]2; tx_policy_revision=[uint64]1
         rx_policy=(Copy-UiRxPolicy -Policy $renderRxPolicy)
         tx_target=[pscustomobject][ordered]@{ destination_id=[uint64]460997; kind='private'; slot=[uint64]2 }
-        transmit_enabled=$false; media_owner='idle'; active_rx=$null; active_tx_lease=$null
+        transmit_enabled=$true; media_owner='idle'; active_rx=$null
+        active_tx_lease=[pscustomobject][ordered]@{ lease_id=[uint64]7; destination_id=[uint64]53000; slot=[uint64]1; kind='group' }
         observed_sources=@(
             [pscustomobject][ordered]@{ source_id=[uint64]3149877; destination_id=[uint64]91; slot=[uint64]2; kind='group'; observation_level='outer_header_seen' },
             [pscustomobject][ordered]@{ source_id=[uint64]460997; destination_id=[uint64]3149876; slot=[uint64]2; kind='private'; observation_level='outer_header_seen' }
@@ -4137,13 +4518,15 @@ if ($RenderOnly) {
         max_window_width = $script:maxWindowWidth
         max_window_height = $script:maxWindowHeight
         device_combo_rendered_text = $deviceComboEvidence
-        main = Get-WpfWindowLayoutInfo -Window $script:mainWindow -ControlNames @('ConnectButton', 'SettingsButton', 'StopButton', 'ControlProtocolValue', 'ControlStatusButton', 'FooterText', 'TargetSelector', 'ReceiveTargetValue', 'TransmitTargetValue', 'TransmitPermissionValue', 'CoreDetail', 'RadioDetail', 'AudioDetail', 'BmDetail', 'CoreStatusCard', 'RadioStatusCard', 'AudioStatusCard', 'BmStatusCard', 'HriSourceIdentityValue', 'RadioDisplayValue', 'CurrentCallLabel', 'CurrentCallValue', 'CurrentCallDetail', 'TrafficCard')
+        main = Get-WpfWindowLayoutInfo -Window $script:mainWindow -ControlNames @('ConnectButton', 'SettingsButton', 'StopButton', 'ControlProtocolValue', 'ControlStatusButton', 'FooterText', 'TargetSelector', 'ReceiveTargetValue', 'TransmitTargetValue', 'TransmitPermissionValue', 'ActiveLeaseValue', 'CoreDetail', 'RadioDetail', 'AudioDetail', 'BmDetail', 'CoreStatusCard', 'RadioStatusCard', 'AudioStatusCard', 'BmStatusCard', 'HriSourceIdentityValue', 'RadioDisplayValue', 'CurrentCallLabel', 'CurrentCallValue', 'CurrentCallDetail', 'BlockCurrentSourceButton', 'TrafficCard', 'DynamicGroupPanel', 'DynamicGroupIdBox', 'DynamicGroupSlotBox', 'AddListenGroupButton', 'ActivateDynamicGroupButton', 'DynamicGroupStatus')
         settings = $layoutInfo.settings
         main_source_identity = $layoutInfo.main_source_identity
         configured_profile = $simulatedEffectiveProfile
         active_call = [pscustomobject][ordered]@{
             value = (Get-UiControl 'CurrentCallValue').Text
             detail = (Get-UiControl 'CurrentCallDetail').Text
+            current_tx_target = (Get-UiControl 'ActiveLeaseValue').Text
+            next_tx_target = (Get-UiControl 'TransmitTargetValue').Text
             visual_text = @(Get-UiVisualTextValues -Root $script:mainWindow)
             configured_routes_text = @(Get-UiVisualTextValues -Root $script:mainWindow.FindName('ConfiguredRoutesPanel'))
             observed_cards = @(

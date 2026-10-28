@@ -374,6 +374,96 @@ void test_routing_commands_use_typed_backend_and_live_snapshots()
           "rx_policy.replace without its exact parameters object is rejected before backend dispatch");
 }
 
+void test_dynamic_quick_call_is_explicit_strict_and_replay_safe()
+{
+    using namespace wirex::talkgroup_routing;
+    using wirex::ui_control::Dispatcher;
+    using wirex::ui_control::RoutingCallbacks;
+    using wirex::ui_control::StatusSnapshot;
+    unsigned callback_count = 0U;
+    unsigned rx_policy_mutations = 0U;
+    unsigned tx_policy_mutations = 0U;
+    RoutingCallbacks::QuickCallStatus next_status = RoutingCallbacks::QuickCallStatus::sent;
+    std::uint8_t next_packets_sent = 2U;
+    RoutingCallbacks callbacks{};
+    callbacks.local_source_id = 0x123456U;
+    callbacks.replace_rx_policy = [&](std::uint64_t revision, const RxPolicy&) {
+        ++rx_policy_mutations;
+        return PolicyUpdateResult{PolicyUpdateStatus::applied, revision + 1U, std::nullopt, std::nullopt};
+    };
+    callbacks.replace_tx_policy = [&](std::uint64_t revision, const TxTarget&, bool) {
+        ++tx_policy_mutations;
+        return PolicyUpdateResult{PolicyUpdateStatus::applied, revision + 1U, std::nullopt, std::nullopt};
+    };
+    callbacks.snapshot_json = []() { return "{}"; };
+    callbacks.quick_call_join = [&](const GroupRoute&) {
+        ++callback_count;
+        return RoutingCallbacks::QuickCallOutcome{next_status, next_packets_sent};
+    };
+    Dispatcher dispatcher("quick-call-run", false, std::move(callbacks));
+    const auto ready = dispatcher.ready_line(2U);
+    check(ready.find("network_subscription.quick_call_join") != std::string::npos &&
+          dispatcher.supports_quick_call(),
+          "control_ready advertises Quick Call only when a sender callback is installed");
+    StatusSnapshot snapshot{};
+    (void)dispatcher.handle(request("quick-call-run", "hello", "hello"), snapshot);
+
+    const auto join_body = request_with_parameters("quick-call-run", "join-91", "network_subscription.quick_call_join",
+        "{\"group\":{\"destination_id\":91,\"slot\":2}}");
+    const auto sent = dispatcher.handle(join_body, snapshot);
+    check(sent.json_line.find("\"result\":\"ok\"") != std::string::npos &&
+          sent.json_line.find("\"activation_status\":\"request_sent\"") != std::string::npos &&
+          sent.json_line.find("\"frames_sent\":2") != std::string::npos && callback_count == 1U,
+          "a valid explicit Quick Call reports two locally sent frames, not server confirmation");
+    const auto replay = dispatcher.handle(join_body, snapshot);
+    check(replay.json_line.find("\"replayed\":true") != std::string::npos && callback_count == 1U,
+          "same request ID and body replay the stored result without another sender callback");
+    check(rx_policy_mutations == 0U && tx_policy_mutations == 0U,
+          "dynamic activation leaves local receive rules and speech transmit policy unchanged");
+
+    const auto disconnect_body = request_with_parameters("quick-call-run", "join-4000", "network_subscription.quick_call_join",
+        "{\"group\":{\"destination_id\":4000,\"slot\":2}}");
+    const auto disconnect = dispatcher.handle(disconnect_body, snapshot);
+    check(disconnect.json_line.find("\"error\":\"invalid_or_forbidden_group\"") != std::string::npos &&
+          callback_count == 1U,
+          "TG4000 is refused before the Quick Call sender is invoked");
+    const auto bad_slot_body = request_with_parameters("quick-call-run", "join-bad-slot", "network_subscription.quick_call_join",
+        "{\"group\":{\"destination_id\":91,\"slot\":0}}");
+    const auto bad_slot = dispatcher.handle(bad_slot_body, snapshot);
+    check(bad_slot.json_line.find("\"result\":\"rejected\"") != std::string::npos && callback_count == 1U,
+          "Quick Call refuses invalid timeslots before dispatch");
+    const auto zero_group = dispatcher.handle(request_with_parameters("quick-call-run", "join-zero", "network_subscription.quick_call_join",
+        "{\"group\":{\"destination_id\":0,\"slot\":1}}"), snapshot);
+    check(zero_group.json_line.find("\"result\":\"rejected\"") != std::string::npos && callback_count == 1U,
+          "Quick Call refuses group zero before dispatch");
+    const auto oversized_group = dispatcher.handle(request_with_parameters("quick-call-run", "join-overflow", "network_subscription.quick_call_join",
+        "{\"group\":{\"destination_id\":16777216,\"slot\":1}}"), snapshot);
+    check(oversized_group.json_line.find("\"result\":\"rejected\"") != std::string::npos && callback_count == 1U,
+          "Quick Call refuses group IDs wider than 24 bits before dispatch");
+
+    next_status = RoutingCallbacks::QuickCallStatus::busy;
+    const auto busy = dispatcher.handle(request_with_parameters("quick-call-run", "join-busy", "network_subscription.quick_call_join",
+        "{\"group\":{\"destination_id\":46001,\"slot\":1}}"), snapshot);
+    check(busy.json_line.find("\"error\":\"media_busy\"") != std::string::npos && callback_count == 2U,
+          "busy Quick Call is rejected and makes no success claim");
+
+    next_status = RoutingCallbacks::QuickCallStatus::partial_send;
+    next_packets_sent = 1U;
+    const auto partial = dispatcher.handle(request_with_parameters("quick-call-run", "join-partial", "network_subscription.quick_call_join",
+        "{\"group\":{\"destination_id\":12345,\"slot\":2}}"), snapshot);
+    check(partial.json_line.find("\"error\":\"quick_call_partial_send\"") != std::string::npos &&
+          partial.json_line.find("\"result\":\"ok\"") == std::string::npos,
+          "one locally sent frame out of two is reported as failure instead of activation success");
+    const auto partial_replay = dispatcher.handle(request_with_parameters("quick-call-run", "join-partial",
+        "network_subscription.quick_call_join", "{\"group\":{\"destination_id\":12345,\"slot\":2}}"), snapshot);
+    check(partial_replay.json_line.find("\"replayed\":true") != std::string::npos && callback_count == 3U,
+          "replaying a partial-send request returns its cached failure without sending again");
+    const auto body_conflict = dispatcher.handle(request_with_parameters("quick-call-run", "join-partial",
+        "network_subscription.quick_call_join", "{\"group\":{\"destination_id\":12346,\"slot\":2}}"), snapshot);
+    check(body_conflict.json_line.find("\"error\":\"request_id_body_conflict\"") != std::string::npos && callback_count == 3U,
+          "request ID reuse with a different target does not dispatch another Quick Call");
+}
+
 void test_cache_full_sentinel_precedes_routing_mutation()
 {
     using namespace wirex::talkgroup_routing;
@@ -524,6 +614,7 @@ int main()
     test_dispatch_isolation_and_replay();
     test_strict_json_envelope();
     test_routing_commands_use_typed_backend_and_live_snapshots();
+    test_dynamic_quick_call_is_explicit_strict_and_replay_safe();
     test_cache_full_sentinel_precedes_routing_mutation();
     test_cache_capacity_reserves_shutdown();
     if (failures != 0) return 1;
