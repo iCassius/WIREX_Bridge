@@ -4,13 +4,15 @@
 
 R110 从 `main` / `cf9775f47812d2b25bc155156803ad8b2fb7ea22` 开始。Windows PowerShell 5.1 `Parser.ParseFile` 在实际 alpha.7 包的 `start-merged-test.ps1` 复现 5 个错误：无 BOM 的 UTF-8 中文消息被按 ANSI 代码页误读，随后报告字符串和括号错误。源码 `tools/start-merged-test-alpha7.ps1` 已补 UTF-8 BOM，正文未改；alpha.7 已发包保持原样。
 
-alpha.8 源码准备了根目录唯一启动命令 `start-wirex-bridge.cmd`，Start 和隔离诊断都经同一 `start-wirex-bridge.ps1 → start-ui.ps1 → ui/windows/bridge-ui.ps1` dot-source 链，保留参数转发和退出码。Windows PowerShell 5.1 source-mapped 检查通过：5 个包内脚本解析成功；唯一 CMD 经中文、空格路径运行 `PrepareOnly` 与隔离 `RoutingDiagnosticAutoTest`。无参数失败负例确认 ASCII 错误提示和原退出码 2；静态断言检查 `pause >nul` 仅位于交互式启动失败分支。该用例通过重定向 stdin 自动运行，未模拟人工按键或关闭控制台。fake-sleep 超时退出检查通过。最新私有测试索引是 `private/build-history/R110/source-mapped-startup-test-20261028-185632-545.json`，输出 SHA-256 `dff379f1d2dae49c4933110bfe92d853b5bea568dd0131522c14acc431277e3c`。这不是正式 build/package 证据。
+alpha.8 唯一启动命令 `start-wirex-bridge.cmd` 和同一 Start/隔离诊断 dot-source 链已通过 package helper。源码提交 `23680b33a6280224baf61458a5909ef68331cf8f` 的 clean full39 构建通过全部39项离线测试，warning/error为0；build `build/_work/wirex-bridge-23680b3-20261028-185941`，日志 `build/_work/r110-23680b3-clean-build.log`，EXE SHA-256 `2b31cbd62f5368dabecde23680fdce837aa2e451fed6a1feb202b3c0bde2211f`。候选包 `build/releases/v0.1.0-alpha.8` 通用内容29个文件，manifest列28项，唯一根CMD，logs为空；根审计后的 manifest SHA-256 `3c32141814b960b46be70d3aa6f33455ab04049aa056dd0012d4f6d5490f828f`，状态 `root_audit_passed`。本机包另有 manifest 外的个人 `private/user-config-directory.txt`，仅指向 `private/user-config` canonical 配置目录。
 
-R110 的路由初始化诊断异常会写入隔离结果并失败退出；此前 modal `ShowDialog()` 异常曾被 UI timer 仅记状态，后续 ACK 可能使旧 runner 错误报告 passed。新的 Start 与诊断入口走相同 WPF 脚本作用域。正式 clean full39 build 和 alpha.8 包仍待源提交后执行；之后需由 root 审核正式包并决定是否切换 `bridge-directory.txt`。当前没有推送、更新本机包指针或移动旧 build。
+Windows PowerShell 5.1 包级 helper 与 root 独立复跑均 exit 0：5 个包内 PowerShell 文件解析成功；唯一 ASCII CMD 在中文空格路径下运行 `PrepareOnly` 与隔离 `RoutingDiagnosticAutoTest`；无参数失败提示与 exit 2、fake-sleep 超时退出也通过。自动用例通过重定向 stdin，不模拟人工按键或关窗。root 另以 Native test-control 诊断验证 schema 2 hello/status/shutdown exit 0，BM、HRI、串口和音频都未启动。根审计后已将 manifest 状态改为 `root_audit_passed`，包内个人配置指针和 canonical `bridge-directory.txt` 均已指向 alpha.8，切换前 pointer 备份保存在 `private/config-backups/R110`。没有创建 ZIP 或 GitHub Release。
 
-canonical 配置三文件已在 `private/config-backups/R110` 做回滚备份，并按用户最近 alpha.7 的完整 RX/TX profile 更新；旧的 `bridge-directory.txt` 暂未切换，密码文件内容未读取或复制。build 清理仍只是一份待批准的可恢复移动清单；旧包、旧 build 和 cache 均未删除或移动。
+R110 的路由初始化诊断异常会写入隔离结果并失败退出；此前 modal `ShowDialog()` 异常曾被 UI timer 仅记状态，后续 ACK 可能使旧 runner 错误报告 passed。新的 Start 与诊断入口走相同 WPF 脚本作用域。
 
-静态研究没有修复或解释 FTX-1 机身 BUSY/TX LED；官方程序对设备的实际调用与 LED 变化还需受控运行观察。R110 没有连接 COM、音频、BrandMeister，没有做 PTT、LED 或 RF 硬件验收。详细状态见 [R110 启动故障修复与 alpha.8 准备](docs/R110_启动故障修复与alpha8准备.md)。
+canonical 配置三文件已在 `private/config-backups/R110` 做回滚备份，并按用户最近 alpha.7 的完整 RX/TX profile 更新；`bridge-directory.txt` 已切换 alpha.8，切换前备份与原文件 SHA 相同。密码文件内容未读取或复制。root 批准的 retire plan SHA-256 `504ca460a26b495f0fcafb8a031c0e2f482e1eb7bf0532e34b26d944f7e586be` 已执行：306 项、20,900 文件、2,900,948,337 字节通过 `Move-Item` 移至 `private/build-retired/R110/build`。614 条移动事件逐行解析通过，含 1 条开始记录、306 对开始/完成记录、1 条完成汇总、0 条失败；旧多行记录副本保存在 `private/build-history/R110/retire-move-journal.pretty-json-stream.txt`。没有永久删除。build 现在只保留 alpha.8 package、23680b3 clean build 和构建 log。
+
+静态研究没有修复或解释 FTX-1 机身 BUSY/TX LED；官方程序的实际调用与 LED 变化还需受控运行观察。UI `lcd_source_identity.display` 仍为 `unknown`，HRI T 记录候选不证明实际电台显示。C4FM RF 双向 codec/serializer 尚未接入运行链。R110 没有连接 COM、音频、BrandMeister，没有做 PTT、LED、LCD 或 RF 硬件验收。详细状态见 [R110 启动故障修复与 alpha.8 准备](docs/R110_启动故障修复与alpha8准备.md)。
 
 ## R105 多目标改造状态（2026-10-27）
 
