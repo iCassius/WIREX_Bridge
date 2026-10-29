@@ -21,19 +21,26 @@ if (-not $sourcePackage.StartsWith($packagePrefix, [System.StringComparison]::Or
 if (-not [System.IO.Directory]::Exists($sourcePackage)) { throw '候选包目录不存在。' }
 
 . (Join-Path $PSScriptRoot 'package-release.ps1')
-[void](Set-ReleaseVersion -Version 'v0.1.0-alpha.8')
-Assert-ReleasePackageInventory -PackageRoot $sourcePackage -Version 'v0.1.0-alpha.8' | Out-Null
+[void](Set-ReleaseVersion -Version 'v0.1.0-alpha.9')
+Assert-ReleasePackageInventory -PackageRoot $sourcePackage -Version 'v0.1.0-alpha.9' | Out-Null
 
 $rootCommand = Join-Path $sourcePackage 'start-wirex-bridge.cmd'
 if (-not [System.IO.File]::Exists($rootCommand)) { throw '候选包缺少唯一启动命令 start-wirex-bridge.cmd。' }
 $allCommands = @(Get-ChildItem -LiteralPath $sourcePackage -Recurse -File -Filter '*.cmd')
 if ($allCommands.Count -ne 1 -or -not [string]::Equals($allCommands[0].FullName, $rootCommand,
     [System.StringComparison]::OrdinalIgnoreCase)) {
-    throw 'alpha.8 包必须只包含根目录 start-wirex-bridge.cmd。'
+    throw 'alpha.9 包必须只包含根目录 start-wirex-bridge.cmd。'
+}
+$identityModule = Join-Path $sourcePackage 'ui\windows\RadioIdentity.psm1'
+if (-not [System.IO.File]::Exists($identityModule)) { throw 'alpha.9 包缺少 RadioIdentity.psm1。' }
+$identityModuleBytes = [System.IO.File]::ReadAllBytes($identityModule)
+if ($identityModuleBytes.Length -lt 3 -or $identityModuleBytes[0] -ne 0xEF -or
+    $identityModuleBytes[1] -ne 0xBB -or $identityModuleBytes[2] -ne 0xBF) {
+    throw 'alpha.9 RadioIdentity.psm1 缺少 Windows PowerShell 5.1 需要的 UTF-8 BOM。'
 }
 
-$testRoot = Join-Path $workRoot ('alpha8-launcher-test-' + [guid]::NewGuid().ToString('N'))
-$packageCopy = Join-Path $testRoot 'alpha8 package 中文 path'
+$testRoot = Join-Path $workRoot ('alpha9-launcher-test-' + [guid]::NewGuid().ToString('N'))
+$packageCopy = Join-Path $testRoot 'alpha9 package 中文 path'
 $fixtureRoot = Join-Path $testRoot 'fixture files 中文 path'
 $isolatedConfig = Join-Path $fixtureRoot 'isolated user config'
 $canonicalConfig = Join-Path $packageCopy 'private\user-config'
@@ -465,13 +472,13 @@ try {
         throw '隔离路由诊断触碰了密码指针或常规运行目录。'
     }
 
-    Write-Output ('alpha.8 包级检查通过：{0} 个 PowerShell 文件均由 Windows PowerShell 5.1 解析；唯一 ASCII CMD 经包含空格和中文的包路径进入 PrepareOnly 与隔离 RoutingDiagnosticAutoTest。' -f $scriptFiles.Count)
+    Write-Output ('alpha.9 包级检查通过：{0} 个 PowerShell 文件均由 Windows PowerShell 5.1 解析；唯一 ASCII CMD 经包含空格和中文的包路径进入 PrepareOnly 与隔离 RoutingDiagnosticAutoTest。' -f $scriptFiles.Count)
 } finally {
     if ([System.IO.Directory]::Exists($testRoot)) {
         $resolvedTestRoot = [System.IO.Path]::GetFullPath($testRoot)
         $workPrefix = $workRoot.TrimEnd('\') + '\'
         if (-not $resolvedTestRoot.StartsWith($workPrefix, [System.StringComparison]::OrdinalIgnoreCase) -or
-            -not [System.IO.Path]::GetFileName($resolvedTestRoot).StartsWith('alpha8-launcher-test-', [System.StringComparison]::Ordinal)) {
+            -not [System.IO.Path]::GetFileName($resolvedTestRoot).StartsWith('alpha9-launcher-test-', [System.StringComparison]::Ordinal)) {
             throw '测试临时目录路径校验失败，未执行清理。'
         }
         $rootInfo = New-Object System.IO.DirectoryInfo($resolvedTestRoot)

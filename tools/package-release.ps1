@@ -58,6 +58,7 @@ $script:alpha5TestNames = @($script:alpha4TestNames + 'ui_control_protocol_v2_te
 $script:alpha6TestNames = @($script:alpha5TestNames + 'talkgroup_routing_test' + 'bm_routing_lifecycle_test' + 'routing_state_test')
 $script:alpha7TestNames = @($script:alpha6TestNames)
 $script:alpha8TestNames = @($script:alpha7TestNames)
+$script:alpha9TestNames = @($script:alpha8TestNames)
 $script:activeReleaseVersion = 'v0.1.0-alpha.1'
 
 function Get-ReleaseProfile {
@@ -379,7 +380,55 @@ function Get-ReleaseProfile {
                 )
             }
         }
-        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, and v0.1.0-alpha.8 release profiles are supported.' }
+        'v0.1.0-alpha.9' {
+            $alpha8 = Get-ReleaseProfile -Version 'v0.1.0-alpha.8'
+            $alpha9SourceFiles = @($alpha8.SourceFiles | Where-Object {
+                [string]$_.Destination -cne 'README.md' -and
+                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha8.cmd' -and
+                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha8.ps1'
+            }) + @(
+                @{ Source='docs\releases\v0.1.0-alpha.9-package-README.md'; Destination='README.md' },
+                @{ Source='tools\start-wirex-bridge-alpha9.cmd'; Destination='start-wirex-bridge.cmd' },
+                @{ Source='tools\start-wirex-bridge-alpha9.ps1'; Destination='tools\start-wirex-bridge.ps1' },
+                @{ Source='ui\windows\RadioIdentity.psm1'; Destination='ui\windows\RadioIdentity.psm1' },
+                @{ Source='docs\R111_UI与音量.md'; Destination='docs\R111_UI与音量.md' },
+                @{ Source='docs\R111_BM订阅与收听优先级.md'; Destination='docs\R111_BM订阅与收听优先级.md' },
+                @{ Source='docs\R111_用户资料与电台显示.md'; Destination='docs\R111_用户资料与电台显示.md' }
+            )
+            $alpha9PackageFiles = @($alpha8.PackageFiles) + @(
+                'ui/windows/RadioIdentity.psm1',
+                'docs/R111_UI与音量.md',
+                'docs/R111_BM订阅与收听优先级.md',
+                'docs/R111_用户资料与电台显示.md'
+            )
+            $alpha9AssetMap = [ordered]@{}
+            foreach ($path in $alpha8.AssetMap.Keys) { $alpha9AssetMap[$path] = $alpha8.AssetMap[$path] }
+            $alpha9AssetMap['ui/windows/RadioIdentity.psm1'] = 'ui__windows__radio-identity.psm1'
+            $alpha9AssetMap['docs/R111_UI与音量.md'] = 'docs__r111-ui-audio.md'
+            $alpha9AssetMap['docs/R111_BM订阅与收听优先级.md'] = 'docs__r111-bm-listening-policy.md'
+            $alpha9AssetMap['docs/R111_用户资料与电台显示.md'] = 'docs__r111-radio-identity-display.md'
+            return [pscustomobject]@{
+                Version = 'v0.1.0-alpha.9'
+                TestNames = $script:alpha9TestNames
+                SourceFiles = $alpha9SourceFiles
+                PackageFiles = $alpha9PackageFiles
+                Directories = @($alpha8.Directories)
+                AssetMap = $alpha9AssetMap
+                PackageReadme = 'docs\releases\v0.1.0-alpha.9-package-README.md'
+                ReleaseScope = 'R111 DIRECT: separate local listening selection from call target selection; preserve real recent-call history, per-route DMR timeslots, transmit Color Code, explicit single-ID RadioID lookup with local cache, and user-visible volume controls'
+                NotIncluded = @(
+                    'No alpha.9 hardware acceptance for COM, audio, BrandMeister, PTT, LCD display, physical BUSY/TX LED, or RF behavior',
+                    'The FTX-1 LCD display remains unknown; the located Src CallSign field is not a verified radio-screen result',
+                    'bm_session.Profile.slot_flags defaults to 4 (simplex); software TS1/TS2 route fields do not establish FTX-1 dual-slot DMR RF or simultaneous two-slot playback',
+                    'The FTX-1 physical BUSY/TX LED behavior is unchanged; this release does not repair or explain the earlier observation',
+                    'Color Code is a DMR transmit encoding/reporting parameter, not C4FM DG-ID; receive route filters do not compare Color Code',
+                    'Quick Call can appear as an empty call in the BrandMeister Dashboard; no silent dynamic-group API is claimed',
+                    'No BrandMeister static-subscription readback is integrated; the UI does not label local RX allow_groups as server static bindings',
+                    'Multiple local routes do not create playback priority or automatic interruption of an active call'
+                )
+            }
+        }
+        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, v0.1.0-alpha.8, and v0.1.0-alpha.9 release profiles are supported.' }
     }
 }
 
@@ -613,6 +662,8 @@ function Assert-ReleasePackageInventory {
     $fixtureHash = Test-ApprovedYFixture -Path $fixturePath
     $forbidden = @($actualFiles | Where-Object {
         $_ -match '(^|/)(?:bm-device-password\.txt|connection-profile\.json|audio-settings\.json)$' -or
+        $_ -match '(^|/)(?:radio-identity-cache\.json|channel-favorites\.json|user-config-directory\.txt|test-radio-identity(?:-http-server)?\.ps1)$' -or
+        $_ -match '^private/user-config/' -or
         $_ -match '(^|/)logs/|\.log$'
     })
     if ($forbidden.Count -gt 0) { throw "发布目录含禁止文件：$($forbidden[0])" }
@@ -728,6 +779,14 @@ function Invoke-ReleasePackaging {
         New-Item -ItemType Directory -Path (Join-Path $stagingPath 'logs') -ErrorAction Stop | Out-Null
 
         $notIncludedText = @($profile.NotIncluded) -join '、'
+        $excludedPrivateFiles = @('private/bm-device-password.txt', 'connection-profile.json', 'audio-settings.json')
+        if ($Version -ceq 'v0.1.0-alpha.9') {
+            $excludedPrivateFiles += @(
+                'private/user-config-directory.txt',
+                'private/user-config/radio-identity-cache.json',
+                'private/user-config/channel-favorites.json'
+            )
+        }
         $sourceText = @"
 WIREX Bridge $Version alpha 候选
 
@@ -813,7 +872,7 @@ Release 标签候选：$Version（打包器不创建标签，也不发布 Releas
                 length_bytes = 100
                 sha256 = $fixtureHash
             }
-            excluded_private_files = @('private/bm-device-password.txt', 'connection-profile.json', 'audio-settings.json')
+            excluded_private_files = $excludedPrivateFiles
             runtime_directories = @('logs/ (empty at package creation)')
             manifest_asset_name = 'manifest.json'
             files = @($records)

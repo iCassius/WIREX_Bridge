@@ -1,5 +1,18 @@
 # WIREX Bridge：FTX-1 DIRECT 与 BrandMeister 语音桥接
 
+## R111 / alpha.9 源码集成准备
+
+当前默认用户绿色目录是 R110 验收的 `build/releases/v0.1.0-alpha.8`；alpha.9 源已冻结，clean build 和正式包尚未生成。alpha.9 包含分开的本机收听与起呼目标、真实通话记录、逐路由 TS、发射 CC 设置、单 ID RadioID 查询和本机音量显示。查询只由用户点击触发，查询缓存和频道收藏留在 canonical 配置目录；“静态”类别只整理本机收藏，程序没有读取或修改 BM 服务器订阅。音量设置与当前运行实际增益分别显示；RadioIdentity 模块已修复 Windows 网络读取 deadline 并通过根架构审查，UI 两尺寸 RenderOnly 与定向测试也已通过根审查。
+
+RadioIdentity 的 Windows 网络读取 deadline 已改为受共享时钟约束的 `ReadAsync`；PS7 与 Windows PowerShell 5.1 最新离线测试各通过 37 项断言。根会话还做过一次只读 HTTPS 单 ID 查询，收到 HTTP 200 且 ID/呼号匹配，没有写缓存或显示个人资料。alpha.9 UI 仍在集成收尾，尚未做总审查、clean build 或包验收。本机当前仍指向 alpha.8。
+
+alpha.8 TG91 收听听感正常但略小；该次运行实际增益为 1.000x、clipped samples 为 0，保存的 5.959x 与那次运行记录不同。FTX-1 机身 BUSY/TX LED 观察保留，R111 不更改 LED 或串口。LCD 实际显示仍 unknown；本轮没有连接设备、音频、BM，没有触发 PTT 或 RF。
+
+- [alpha.8 已审计交付说明](docs/releases/v0.1.0-alpha.8.md)
+- [alpha.9 包内说明草案](docs/releases/v0.1.0-alpha.9-package-README.md)
+- [alpha.9 交付说明与验收边界](docs/releases/v0.1.0-alpha.9.md)
+- [R111 alpha.9 集成总交接](docs/R111_总交接.md)
+
 ## v0.1.0-alpha.1 私有预发布
 
 私有 GitHub 预发布 [v0.1.0-alpha.1](https://github.com/iCassius/WIREX_Bridge/releases/tag/v0.1.0-alpha.1) 已于 2026-10-25 19:49:48（中国标准时间）发布，Release ID 为 423365682，源码 tag 指向 `312e7142a419566c47a335fb83a33c756aaf69f3`。该 tag 的 clean build 通过 27 项离线测试，warning/error 为 0；逐文件清单和实机验证范围见 Release 中的 `manifest.json` 与[发布说明](docs/releases/v0.1.0-alpha.1.md)。
@@ -18,7 +31,7 @@
 
 解析只接受长度恰为 55 字节且首四字节为 `DMRD` 的数据报。24-bit source/destination ID 按大端读写；超出 `0xFFFFFF` 的编码请求返回错误，不截断。flags、四个 stream ID 字节和 33 字节 payload 均按原样保留；stream ID 不转成整数，也不推断其主机序。BER 与 RSSI 是各一个原始字节。
 
-该 codec 不验证 flags 位含义、DMR Link Control、FEC、AMBE/语音编码或消息上下文。数据报解析成功只表示长度和 magic 符合本切片格式，不表示数据内容有效或可上网、可发射。
+该 codec 没有验证 flags 位含义、DMR Link Control、FEC、AMBE/语音编码或消息上下文。数据报解析只检查长度和 magic 是否符合本切片格式；数据内容的有效性、联网行为和发射行为仍未验证。
 
 这里的 codec 指数据包字段的解析与编码，不是语音 codec 或 vocoder。
 
@@ -50,11 +63,11 @@ DIRECT 单记录 envelope 的字段规则、来源和 S1-A 本地验收见 [S1-A
 
 Windows 本地诊断 CLI 的参数、固定音频格式、资源清理和验证边界见 [S1-B 本地诊断入口](docs/S1-B本地诊断入口.md)。
 
-绑定本机 COM5、WaveIn 1、WaveOut 0 的可见 HRI 监听启动器说明见[本机 HRI 诊断启动器](tools/README.md)。这是最长 120 秒的本机诊断切片，不代表双向语音验收或完整 HRI 初始化。
+绑定本机 COM5、WaveIn 1、WaveOut 0 的可见 HRI 监听启动器说明见[本机 HRI 诊断启动器](tools/README.md)。这是最长 120 秒的本机诊断切片；该切片没有验证双向语音，也没有完成 HRI 初始化。
 
 启动器还保留 `last-session-status.json` 元数据快照，用于区分正常收尾和控制台关闭后留下的未完成状态；该报告不保存音频、协议正文或设备身份。报告和启动器行为见上面的工具说明。
 
-纯函数 HRI 状态层的时序、超时和边界测试见 `tests/hri_session_test.cpp`；CLI 会话输出只表示本机观察到的有限控制交换，不代表完整初始化或人耳确认。
+纯函数 HRI 状态层的时序、超时和边界测试见 `tests/hri_session_test.cpp`；CLI 会话输出记录本机观察到的有限控制交换，尚未验证完整初始化或人耳听音。
 
 S1-T HRI T 空 header/空 AMBE 候选正文及离线验收见 [S1-T 验收文档](docs/S1-T验收.md)。
 

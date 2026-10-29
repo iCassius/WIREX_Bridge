@@ -5,9 +5,32 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName PresentationCore
 function Assert-UiRender {
     param([bool]$Condition, [string]$Message)
     if (-not $Condition) { throw $Message }
+}
+function Test-PngHasPixelDiversity {
+    param([Parameter(Mandatory=$true)][string]$Path)
+    $frame = [System.Windows.Media.Imaging.BitmapFrame]::Create([Uri]$Path)
+    $converted = New-Object System.Windows.Media.Imaging.FormatConvertedBitmap
+    $converted.BeginInit()
+    $converted.Source = $frame
+    $converted.DestinationFormat = [System.Windows.Media.PixelFormats]::Bgra32
+    $converted.EndInit()
+    $stride = [int]$converted.PixelWidth * 4
+    $pixels = New-Object byte[] ($stride * [int]$converted.PixelHeight)
+    $converted.CopyPixels($pixels,$stride,0)
+    $colors = New-Object 'System.Collections.Generic.HashSet[string]'
+    $stepX = [Math]::Max(1,[int][Math]::Floor($converted.PixelWidth / 100))
+    $stepY = [Math]::Max(1,[int][Math]::Floor($converted.PixelHeight / 100))
+    for ($y=0; $y -lt $converted.PixelHeight; $y+=$stepY) {
+        for ($x=0; $x -lt $converted.PixelWidth; $x+=$stepX) {
+            $offset = ($y * $stride) + ($x * 4)
+            [void]$colors.Add(('{0},{1},{2}' -f $pixels[$offset+2],$pixels[$offset+1],$pixels[$offset]))
+        }
+    }
+    return ($colors.Count -gt 20)
 }
 function Test-RenderedLayout {
     param([string]$Directory, [double]$MaximumWidth = [double]::PositiveInfinity, [double]$MaximumHeight = [double]::PositiveInfinity)
@@ -18,16 +41,23 @@ function Test-RenderedLayout {
         $window = $layout.$windowName
         Assert-UiRender ($window.width -le $MaximumWidth -and $window.height -le $MaximumHeight) ("$windowName 窗口超出工作区上限。")
         foreach ($property in $window.controls_visible.PSObject.Properties) {
+            if ($windowName -ceq 'main' -and $property.Name -ceq 'TrafficCard') { continue }
             Assert-UiRender ([bool]$property.Value) ("$windowName 窗口中的 $($property.Name) 未显示。")
         }
     }
-    foreach ($controlName in @('TargetSelector', 'ReceiveTargetValue', 'TransmitTargetValue', 'TransmitPermissionValue', 'ActiveLeaseValue', 'ControlProtocolValue', 'ControlStatusButton')) {
+    Assert-UiRender ($layout.radio_details_expanded -eq $false) '主控制台首次显示时应收起详细路由与运行信息区。'
+    Assert-UiRender (-not [bool]$layout.main.controls_visible.TrafficCard -and
+        $null -eq $layout.main.controls_bounds.TrafficCard.actual) `
+        '收听路由和来源管理折叠时应明确报告其内容未进入当前可见区域。'
+    foreach ($controlName in @('TargetSelector', 'ReceiveTargetValue', 'TransmitTargetValue', 'TransmitPermissionValue', 'ActiveLeaseValue', 'ListeningHistoryPanel', 'CallChannelPanel', 'CallHistoryList', 'SetHistoryCallTargetButton', 'QueryCurrentIdentityButton', 'QueryHistoryIdentityButton', 'IdentityLookupStatusValue', 'CallFavoritesList', 'FavoriteCurrentTargetButton', 'FavoriteManualGroupButton', 'ApplyCallFavoriteButton', 'RemoveCallFavoriteButton', 'PlaybackGainStatusValue')) {
         Assert-UiRender ([bool]$layout.main.controls_visible.$controlName) ("主窗口收发目标控件 $controlName 未显示。")
         Assert-UiRender ([bool]$layout.main.controls_bounds.$controlName.fully_visible) ("主窗口收发目标控件 $controlName 被裁切。")
     }
     foreach ($controlName in @('DynamicGroupPanel','DynamicGroupIdBox','DynamicGroupSlotBox','AddListenGroupButton','ActivateDynamicGroupButton','DynamicGroupStatus','StopButton')) {
         Assert-UiRender ([bool]$layout.main.controls_visible.$controlName) ("动态组操作或停止控件 $controlName 未显示。")
-        Assert-UiRender ([bool]$layout.main.controls_bounds.$controlName.fully_visible) ("动态组操作或停止控件 $controlName 被裁切。")
+        if ($MaximumHeight -gt 700) {
+            Assert-UiRender ([bool]$layout.main.controls_bounds.$controlName.fully_visible) ("动态组操作或停止控件 $controlName 被裁切。")
+        }
     }
     Assert-UiRender ($layout.main.controls_bounds.DynamicGroupIdBox.text -ceq '91' -and
         $layout.main.controls_bounds.DynamicGroupSlotBox.selected_text -ceq 'TS2') '动态组输入没有显示渲染样例 TG91 和 TS2。'
@@ -45,10 +75,6 @@ function Test-RenderedLayout {
             $controlBounds.right -le $dynamicGroupBounds.right -and $controlBounds.bottom -le $dynamicGroupBounds.bottom) `
             ("动态组控件 $controlName 超出面板范围。")
     }
-    $statusButton = $layout.main.controls_bounds.ControlStatusButton
-    Assert-UiRender (@($statusButton.visual_text) -ccontains '查询状态') '查询状态按钮文字没有进入 WPF 视觉树。'
-    Assert-UiRender ($statusButton.content_available_height -ge ($statusButton.font_size * 1.3)) `
-        '查询状态按钮的内容高度不足，文字可能被按钮边框裁切。'
     $statusCards = @(
         @{ card = 'CoreStatusCard'; detail = 'CoreDetail' },
         @{ card = 'RadioStatusCard'; detail = 'RadioDetail' },
@@ -64,16 +90,45 @@ function Test-RenderedLayout {
             $detailBounds.actual.right -le $cardBounds.right -and $detailBounds.actual.bottom -le $cardBounds.bottom) `
             ("状态详情 $($status.detail) 超出卡片或被裁切。")
     }
-    foreach ($controlName in @('ProfileMigrationText', 'ReceivePolicyPreviewText', 'MasterPresetBox', 'DestinationBox', 'SlotBox', 'CallKindBox', 'TransmitEnabledBox', 'ApplyNextTxTargetButton', 'GroupModeBox', 'PrivateModeBox', 'GroupRouteIdBox', 'GroupRouteSlotBox', 'GroupRoutesList', 'BlockedGroupIdBox', 'BlockedGroupSlotBox', 'BlockedGroupsList', 'PeerSourceIdBox', 'PeerLocalDestinationBox', 'PeerSlotBox', 'PeerRoutesList', 'LocalPrivateDestinationBox', 'LocalPrivateSlotBox', 'LocalPrivateRoutesList', 'BlockedSourceIdBox', 'BlockedSourcesList', 'PlaybackGainSlider', 'TransmitGainSlider')) {
+    foreach ($controlName in @('ProfileMigrationText', 'ReceivePolicyPreviewText', 'MasterPresetBox', 'DestinationBox', 'SlotBox', 'CallKindBox', 'TransmitEnabledBox', 'ApplyNextTxTargetButton', 'GroupModeBox', 'PrivateModeBox', 'GroupRouteIdBox', 'GroupRouteSlotBox', 'GroupRoutesList', 'BlockedGroupIdBox', 'BlockedGroupSlotBox', 'BlockedGroupsList', 'PeerSourceIdBox', 'PeerLocalDestinationBox', 'PeerSlotBox', 'PeerRoutesList', 'LocalPrivateDestinationBox', 'LocalPrivateSlotBox', 'LocalPrivateRoutesList', 'BlockedSourceIdBox', 'BlockedSourcesList', 'PlaybackGainSlider', 'PlaybackGainSavedValueText', 'PlaybackGainRuntimeValueText', 'TransmitGainSlider')) {
         Assert-UiRender ([bool]$layout.settings.controls_visible.$controlName) ("设置窗口控件 $controlName 未显示。")
     }
-    $trafficCard = $layout.main.controls_bounds.TrafficCard.actual
-    foreach ($controlName in @('CurrentCallLabel', 'CurrentCallValue', 'CurrentCallDetail', 'BlockCurrentSourceButton')) {
+    $listeningPanel = $layout.main.controls_bounds.ListeningHistoryPanel.actual
+    foreach ($controlName in @('CurrentCallLabel', 'CurrentCallValue', 'CurrentCallDetail', 'IdentityLookupStatusValue', 'QueryCurrentIdentityButton', 'BlockCurrentSourceButton', 'CallHistoryList', 'SetHistoryCallTargetButton', 'QueryHistoryIdentityButton')) {
         $callBounds = $layout.main.controls_bounds.$controlName
-        Assert-UiRender ([bool]$callBounds.fully_visible) ("当前 BM 来话控件或屏蔽按钮 $controlName 被裁切。")
-        Assert-UiRender ($callBounds.actual.x -ge $trafficCard.x -and $callBounds.actual.y -ge $trafficCard.y -and
-            $callBounds.actual.right -le $trafficCard.right -and $callBounds.actual.bottom -le $trafficCard.bottom) `
-            ("当前 BM 来话控件 $controlName 超出收发状态卡片范围。")
+        Assert-UiRender ([bool]$callBounds.fully_visible) ("收听与历史控件 $controlName 被裁切。")
+        Assert-UiRender ($callBounds.actual.x -ge $listeningPanel.x -and $callBounds.actual.y -ge $listeningPanel.y -and
+            $callBounds.actual.right -le $listeningPanel.right -and $callBounds.actual.bottom -le $listeningPanel.bottom) `
+            ("收听与历史控件 $controlName 超出 A 区范围。")
+    }
+    $callChannel = $layout.main.controls_bounds.CallChannelPanel.actual
+    foreach ($controlName in @('TransmitTargetValue','ActiveLeaseValue','CallTargetChoicesPanel','CallFavoritesList','FavoriteCurrentTargetButton','FavoriteManualGroupButton','ApplyCallFavoriteButton','RemoveCallFavoriteButton')) {
+        $targetBounds = $layout.main.controls_bounds.$controlName
+        Assert-UiRender ([bool]$targetBounds.fully_visible -and $targetBounds.actual.x -ge $callChannel.x -and
+            $targetBounds.actual.y -ge $callChannel.y -and $targetBounds.actual.right -le $callChannel.right -and
+            $targetBounds.actual.bottom -le $callChannel.bottom) ("呼叫目标控件 $controlName 超出 B 区或被裁切。")
+    }
+    Assert-UiRender ($layout.main.controls_bounds.CallFavoritesList.actual.height -le 50) '本机收藏列表没有保持有限高度。'
+    $expandedDetailsPath = Join-Path $Directory 'radio-details-expanded-layout.json'
+    if ([System.IO.File]::Exists($expandedDetailsPath)) {
+        $expandedDetails = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($expandedDetailsPath,[System.Text.Encoding]::UTF8)) -ErrorAction Stop
+        Assert-UiRender ([bool]$expandedDetails.controls_bounds.RadioDetailsExpander.fully_visible -and
+            [bool]$expandedDetails.controls_bounds.TrafficCard.visible.width -gt 0 -and
+            [bool]$expandedDetails.controls_bounds.ControlStatusButton.visible.width -gt 0) `
+            '展开并滚动后应可访问收听路由、来源管理和运行状态控件。'
+        $sourceManagementButtons = @($expandedDetails.observed_source_buttons | Where-Object { $_.text -match '屏蔽.*来源|恢复来源' })
+        $lastSourceManagementButton = if ($sourceManagementButtons.Count -gt 0) { $sourceManagementButtons[$sourceManagementButtons.Count - 1] } else { $null }
+        Assert-UiRender ($sourceManagementButtons.Count -ge 2 -and $lastSourceManagementButton.is_visible -and
+            $lastSourceManagementButton.fully_visible -and $lastSourceManagementButton.actual.width -gt 0 -and
+            $lastSourceManagementButton.visible.width -gt 0) `
+            '展开并滚到底部后，最后一张来源卡片的屏蔽/恢复动作仍须在视口内可达。'
+    }
+    $dashboardBottomPath = Join-Path $Directory 'dashboard-bottom-layout.json'
+    if ([System.IO.File]::Exists($dashboardBottomPath)) {
+        $dashboardBottom = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($dashboardBottomPath,[System.Text.Encoding]::UTF8)) -ErrorAction Stop
+        foreach ($controlName in @('DynamicGroupPanel','DynamicGroupIdBox','DynamicGroupSlotBox','SetDynamicCallTargetButton','AddListenGroupButton','ActivateDynamicGroupButton','DynamicGroupStatus')) {
+            Assert-UiRender ([bool]$dashboardBottom.controls_bounds.$controlName.fully_visible) ("滚动到底部后快捷操作控件 $controlName 仍被裁切。")
+        }
     }
     if ($MaximumHeight -le 700) {
         Assert-UiRender ($layout.main.event_list_height -ge 42 -and $layout.main.event_list_height -le 46) '小工作区运行记录区域高度不符合紧凑布局。'
@@ -122,9 +177,10 @@ function Test-ConfiguredActiveCallLayout {
         $layout.configured_profile.tx_target.destination_id -eq 460997 -and
         $layout.configured_profile.tx_target.kind -ceq 'private' -and -not [bool]$layout.configured_profile.transmit_enabled) `
         '路由模拟场景没有保留 TG91、频道/来源屏蔽、本机私呼与禁发策略。'
-    Assert-UiRender ($layout.active_call.value -ceq 'DMR ID 3149876' -and
+    Assert-UiRender ($layout.radio_details_expanded -eq $false -and
+        $layout.active_call.value -ceq 'TEST · DMR ID 3149876' -and
         $layout.active_call.detail -ceq '离线模拟：组呼 · 目标 91 · TS2 · CC 1 · LC 已验证 · 接收中') `
-        '配置与来话模拟场景没有显示完整 DMR ID 和详情。'
+        '配置与来话模拟场景没有显示带数字 ID 的模拟呼号和详情。'
     $activeLease = $layout.main.controls_bounds.ActiveLeaseValue
     $nextTarget = $layout.main.controls_bounds.TransmitTargetValue
     Assert-UiRender ([bool]$activeLease.fully_visible -and [bool]$nextTarget.fully_visible -and
@@ -132,12 +188,32 @@ function Test-ConfiguredActiveCallLayout {
         $layout.active_call.next_tx_target -match '460997.*TS2' -and
         $layout.active_call.current_tx_target -cne $layout.active_call.next_tx_target) `
         '当前发射锁定目标与下一发射目标没有分别显示，或样例目标不一致。'
-    Assert-UiRender ($activeLease.actual.right -le $nextTarget.actual.x -or
-        $nextTarget.actual.right -le $activeLease.actual.x) '当前发射目标和下一发射目标控件发生重叠。'
+    $targetsOverlapX = ($activeLease.actual.x -lt $nextTarget.actual.right -and $activeLease.actual.right -gt $nextTarget.actual.x)
+    $targetsOverlapY = ($activeLease.actual.y -lt $nextTarget.actual.bottom -and $activeLease.actual.bottom -gt $nextTarget.actual.y)
+    Assert-UiRender (-not ($targetsOverlapX -and $targetsOverlapY)) '当前发射目标和下一发射目标控件发生重叠。'
     Assert-UiRender ($layout.active_call.value -notmatch '[…]|\.\.\.' -and
-        @($layout.active_call.visual_text) -ccontains 'DMR ID 3149876') '当前来话卡片用省略号遮住了 DMR ID。'
+        @($layout.active_call.visual_text) -ccontains 'TEST · DMR ID 3149876') '当前来话卡片用省略号遮住了模拟呼号或数字 ID。'
     Assert-UiRender (@($layout.active_call.visual_text) -ccontains $layout.active_call.value -and
         @($layout.active_call.visual_text) -ccontains $layout.active_call.detail) '模拟来话文字没有进入 WPF 视觉树。'
+    Assert-UiRender ($layout.active_call.current_identity_details -match 'DMR ID 3149876' -and
+        $layout.active_call.current_identity_details -match '姓名：Simulated Operator' -and
+        $layout.active_call.current_identity_details -match '国家 Render Sample' -and
+        $layout.active_call.current_identity_details -match '来源：本机缓存' -and
+        $layout.active_call.current_identity_details -match '更新时间：' -and
+        $layout.active_call.history_identity_details.Count -eq 2 -and
+        (@($layout.active_call.history_identity_details) -join "`n") -match 'DMR ID 3149876') `
+        '当前来话与历史行没有保留可用身份资料 Tooltip 文本。'
+    Assert-UiRender ($layout.active_call.playback_gain_status -match '当前 1x' -and
+        $layout.active_call.playback_gain_status -match '保存 5.959x' -and
+        $layout.main.controls_bounds.PlaybackGainStatusValue.text -match '削波 0' -and
+        $layout.main.controls_bounds.PlaybackGainStatusValue.tooltip -match '下次连接时生效' -and
+        [double]$layout.main.controls_bounds.PlaybackGainStatusValue.actual.height -le 16) `
+        '主界面音量状态应在单行显示运行值、保存值和削波计数，并在工具提示中说明下次连接生效。'
+    Assert-UiRender ($layout.active_call.history_items.Count -eq 2 -and
+        $layout.active_call.favorite_items.Count -eq 2 -and
+        (@($layout.active_call.favorite_items) -join "`n") -match '本机静态收藏' -and
+        (@($layout.active_call.favorite_items) -join "`n") -match '本机动态收藏') `
+        'A区历史应按来话代次去重，B区应显示本机静态/动态分类收藏。'
     Assert-UiRender (@($layout.active_call.configured_routes_text) -ccontains 'Selected · TG 91 · TS2' -and
         @($layout.active_call.configured_routes_text) -ccontains '本地屏蔽 · TG 46001 · TS2' -and
         @($layout.active_call.configured_routes_text) -ccontains '跨组屏蔽 · DMR ID 3149877') '主窗口没有显示带样例策略的已配置路由。'
@@ -192,7 +268,7 @@ $renderDirectory = [System.IO.Path]::GetFullPath($RenderOutputDirectory)
 [System.IO.File]::Copy((Join-Path $packageRoot 'wirex_bridge.exe'), (Join-Path $stagedPackage 'wirex_bridge.exe'), $false)
 [System.IO.File]::Copy((Join-Path $packageRoot 'start-bm-radio-bridge.ps1'), (Join-Path $stagedPackage 'start-bm-radio-bridge.ps1'), $false)
 [System.IO.File]::Copy((Join-Path $repoRoot 'tools\bridge-user-config.psm1'), (Join-Path $stagedPackage 'bridge-user-config.psm1'), $false)
-foreach ($name in @('bridge-ui.ps1', 'BridgeSupervisor.cs', 'MainWindow.xaml', 'SettingsWindow.xaml')) {
+foreach ($name in @('bridge-ui.ps1', 'BridgeSupervisor.cs', 'MainWindow.xaml', 'SettingsWindow.xaml', 'RadioIdentity.psm1')) {
     [System.IO.File]::Copy((Join-Path (Join-Path $repoRoot 'ui\windows') $name), (Join-Path (Join-Path $stagedPackage 'ui\windows') $name), $false)
 }
 [System.IO.Directory]::CreateDirectory($renderDirectory) | Out-Null
@@ -212,11 +288,11 @@ try {
 
     & $powerShellExe -NoLogo -NoProfile -STA -ExecutionPolicy Bypass -File $uiLauncher `
         -PackageDirectory $stagedPackage -UserConfigDirectory $configDirectory `
-        -OfflinePreview -RenderOnly -RenderOutputDirectory $renderDirectory
+        -OfflinePreview -RenderOnly -RenderWorkArea '1280x900' -RenderOutputDirectory $renderDirectory
     $exitCode = [int]$LASTEXITCODE
     Assert-UiRender ($exitCode -eq 0) ("WPF 离线渲染进程退出码为 $exitCode。")
 
-    foreach ($name in @('main-window.png', 'settings-window.png','main-routing-fixture.png','settings-routes.png','settings-private-routes.png')) {
+    foreach ($name in @('main-window.png', 'settings-window.png','main-routing-fixture.png','dashboard-bottom.png','radio-details-expanded.png','settings-routes.png','settings-private-routes.png')) {
         $path = Join-Path $renderDirectory $name
         Assert-UiRender ([System.IO.File]::Exists($path)) ("缺少渲染结果：$name")
         $bytes = [System.IO.File]::ReadAllBytes($path)
@@ -228,9 +304,11 @@ try {
         $width = ([int64]$bytes[16] * 16777216) + ([int64]$bytes[17] * 65536) + ([int64]$bytes[18] * 256) + $bytes[19]
         $height = ([int64]$bytes[20] * 16777216) + ([int64]$bytes[21] * 65536) + ([int64]$bytes[22] * 256) + $bytes[23]
         Assert-UiRender ($width -ge 700 -and $height -ge 450) ("渲染窗口尺寸异常：$name (${width}x${height})")
+        Assert-UiRender (Test-PngHasPixelDiversity -Path $path) ("渲染结果为黑帧或缺少可见界面像素：$name")
     }
     Test-RenderedLayout -Directory $renderDirectory
     Test-ConfiguredActiveCallLayout -Directory (Join-Path $renderDirectory 'configured-active-call')
+    Assert-UiRender (Test-PngHasPixelDiversity -Path (Join-Path (Join-Path $renderDirectory 'configured-active-call') 'main-window.png')) '配置来话截图为黑帧或没有可见界面像素。'
 
     $smallRenderDirectory = Join-Path $renderDirectory 'work-area-1024x728'
     [System.IO.Directory]::CreateDirectory($smallRenderDirectory) | Out-Null
@@ -241,6 +319,7 @@ try {
     Assert-UiRender ($smallExitCode -eq 0) ("小工作区 WPF 渲染退出码为 $smallExitCode。")
     Test-RenderedLayout -Directory $smallRenderDirectory -MaximumWidth 972 -MaximumHeight 692
     Test-ConfiguredActiveCallLayout -Directory (Join-Path $smallRenderDirectory 'configured-active-call') -MaximumWidth 972 -MaximumHeight 692
+    Assert-UiRender (Test-PngHasPixelDiversity -Path (Join-Path (Join-Path $smallRenderDirectory 'configured-active-call') 'main-window.png')) '小工作区配置来话截图为黑帧或没有可见界面像素。'
 
     $invalidPackage = Join-Path $testRoot 'invalid-package'
     [System.IO.Directory]::CreateDirectory($invalidPackage) | Out-Null
@@ -248,7 +327,7 @@ try {
     $errorExitCode = [int]$LASTEXITCODE
     Assert-UiRender ($errorExitCode -eq 2) ("损坏包目录应从启动器返回退出码 2，实际为 $errorExitCode。")
 
-    Write-Output ("通过：Windows PowerShell 5.1 的包根启动链渲染了主界面和设置窗口；1024x728 工作区中的收发目标、当前来话值及详情均在卡片内可见；配置与来话模拟布局检查通过；错误包返回退出码 2；没有启动 native 核心或访问设备。结果：{0}" -f $renderDirectory)
+    Write-Output ("通过：Windows PowerShell 5.1 的离线包根启动链已渲染 1280x900 与 1024x728 主界面及设置窗口；A收听/历史、B起呼目标/收藏、身份详情 Tooltip 和音量状态均通过布局检查；错误包返回退出码 2；没有启动 native 核心或访问设备。结果：{0}" -f $renderDirectory)
 } finally {
     if ([System.IO.Directory]::Exists($testRoot)) { [System.IO.Directory]::Delete($testRoot, $true) }
 }

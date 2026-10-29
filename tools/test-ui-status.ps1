@@ -22,6 +22,24 @@ $found = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.L
 Assert-UiStatus ($found.Count -eq $wantedFunctions.Count) '没有找到状态记录验证函数。'
 foreach ($functionAst in $found) { Invoke-Expression $functionAst.Extent.Text }
 
+function Update-UiPlaybackGainDisplay {
+    param([object]$Record=$null)
+}
+function Add-UiCallHistoryRecord {
+    param([Parameter(Mandatory=$true)][object]$Record)
+}
+function Update-UiIdentityActionState { }
+function Update-DynamicGroupControls { }
+function Complete-UiIdentityQuery { }
+function Format-UiRadioIdentity {
+    param([Parameter(Mandatory=$true)][uint64]$RadioId)
+    return ('DMR ID ' + $RadioId.ToString([Globalization.CultureInfo]::InvariantCulture))
+}
+function Format-UiRadioIdentityDetails {
+    param([Parameter(Mandatory=$true)][uint64]$RadioId,[AllowNull()][object]$Identity=$null)
+    return ('DMR ID ' + $RadioId.ToString([Globalization.CultureInfo]::InvariantCulture))
+}
+
 $valid = [pscustomobject][ordered]@{
     run_id = '4120-78123'
     seq = [int64]1
@@ -161,6 +179,10 @@ Assert-UiStatus (-not (Test-UiRunRecordAcceptance -Record $copy -ExpectedProcess
 function Set-MainText {
     param([string]$Name, [string]$Text)
     $script:mockUiFields[$Name] = $Text
+}
+function Get-UiControl {
+    param([Parameter(Mandatory=$true)][string]$Name)
+    return $null
 }
 function Add-UiEvent {
     param([string]$Text)

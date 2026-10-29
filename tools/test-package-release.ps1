@@ -54,6 +54,7 @@ Assert-True (Test-ReleaseVersion -Value 'v0.1.0-alpha.2') 'alpha.2 明确版本�
 Assert-True (Test-ReleaseVersion -Value 'v0.1.0-alpha.3') 'alpha.3 明确版本允许'
 Assert-True (Test-ReleaseVersion -Value 'v0.1.0-alpha.4') 'alpha.4 明确版本允许'
 Assert-True (Test-ReleaseVersion -Value 'v0.1.0-alpha.5') 'alpha.5 明确版本允许'
+Assert-True (Test-ReleaseVersion -Value 'v0.1.0-alpha.9') 'alpha.9 明确版本允许'
 Assert-True (-not (Test-ReleaseVersion -Value 'v0.1.0')) '正式版本格式不能混入 alpha 标签'
 Assert-True (-not (Test-ReleaseVersion -Value 'v0.2.0-alpha.1')) '未登记的 alpha 版本必须拒绝'
 Assert-True (-not (Test-ReleaseVersion -Value 'V0.1.0-ALPHA.1')) '版本匹配区分大小写'
@@ -474,6 +475,98 @@ Assert-True ($alpha8ReadmeText.Contains('start-wirex-bridge.cmd') -and
     -not $alpha8ReadmeText.Contains('test-control.cmd')) `
     'alpha.8 README points users to one command and documents the local-only configuration boundary'
 
+$alpha9Profile = Get-ReleaseProfile -Version 'v0.1.0-alpha.9'
+[void](Set-ReleaseVersion -Version 'v0.1.0-alpha.9')
+$alpha9NotIncluded = @($alpha9Profile.NotIncluded)
+Assert-True (@($alpha9NotIncluded | Where-Object { $_ -match 'slot_flags defaults to 4 \(simplex\)' }).Count -eq 1 -and
+    @($alpha9NotIncluded | Where-Object { $_ -match 'dual-slot DMR RF or simultaneous two-slot playback' }).Count -eq 1 -and
+    @($alpha9NotIncluded | Where-Object { $_ -match 'not C4FM DG-ID' }).Count -eq 1) `
+    'alpha.9 release scope separates software timeslot fields and DMR CC from unverified FTX-1 dual-slot RF and C4FM DG-ID'
+$alpha9Files = @(Get-ExpectedReleasePackageFiles)
+$alpha9Tests = @(Get-ExpectedReleaseTests)
+Assert-Equal $alpha9Files.Count ($alpha8Files.Count + 4) 'alpha.9 只增加 RadioIdentity runtime 模块和三份 R111 文档'
+Assert-Equal $alpha9Tests.Count 39 'alpha.9 沿用 alpha.8 的 39 项 C++ 离线测试'
+Assert-True ([string]::Join('|', $alpha9Tests) -ceq [string]::Join('|', $alpha8Tests)) `
+    'alpha.9 keeps the complete alpha.8 C++ test order'
+Assert-True (@($alpha9Files | Where-Object { [string]$_ -match '\.cmd$' }).Count -eq 1 -and
+    $alpha9Files -ccontains 'start-wirex-bridge.cmd' -and
+    $alpha9Files -ccontains 'tools/start-wirex-bridge.ps1') `
+    'alpha.9 keeps one root CMD and one technical PowerShell launcher'
+foreach ($requiredPath in @(
+    'ui/windows/RadioIdentity.psm1',
+    'docs/R111_UI与音量.md',
+    'docs/R111_BM订阅与收听优先级.md',
+    'docs/R111_用户资料与电台显示.md'
+)) {
+    Assert-True ($alpha9Files -ccontains $requiredPath) "alpha.9 package includes $requiredPath"
+}
+foreach ($forbiddenPath in @('tools/test-radio-identity.ps1','tools/test-radio-identity-http-server.ps1',
+    'radio-identity-cache.json','channel-favorites.json',
+    'private/user-config-directory.txt','connection-profile.json','audio-settings.json','bm-device-password.txt')) {
+    Assert-True (-not ($alpha9Files -contains $forbiddenPath)) "alpha.9 package excludes private/developer file $forbiddenPath"
+}
+foreach ($mapping in @(
+    @{ Source='docs\releases\v0.1.0-alpha.9-package-README.md'; Destination='README.md' },
+    @{ Source='tools\start-wirex-bridge-alpha9.cmd'; Destination='start-wirex-bridge.cmd' },
+    @{ Source='tools\start-wirex-bridge-alpha9.ps1'; Destination='tools\start-wirex-bridge.ps1' },
+    @{ Source='ui\windows\RadioIdentity.psm1'; Destination='ui\windows\RadioIdentity.psm1' },
+    @{ Source='docs\R111_UI与音量.md'; Destination='docs\R111_UI与音量.md' },
+    @{ Source='docs\R111_BM订阅与收听优先级.md'; Destination='docs\R111_BM订阅与收听优先级.md' },
+    @{ Source='docs\R111_用户资料与电台显示.md'; Destination='docs\R111_用户资料与电台显示.md' }
+)) {
+    Assert-True (@($alpha9Profile.SourceFiles | Where-Object {
+        [string]$_.Source -ceq $mapping.Source -and [string]$_.Destination -ceq $mapping.Destination
+    }).Count -eq 1) "alpha.9 source mapping is fixed: $($mapping.Source)"
+}
+foreach ($pair in @(
+    @{ Path='ui/windows/RadioIdentity.psm1'; Name='ui__windows__radio-identity.psm1' },
+    @{ Path='docs/R111_UI与音量.md'; Name='docs__r111-ui-audio.md' },
+    @{ Path='docs/R111_BM订阅与收听优先级.md'; Name='docs__r111-bm-listening-policy.md' },
+    @{ Path='docs/R111_用户资料与电台显示.md'; Name='docs__r111-radio-identity-display.md' }
+)) {
+    Assert-True ((Get-ReleaseAssetName -RelativePath $pair.Path) -ceq $pair.Name) `
+        "alpha.9 fixed ASCII asset mapping $($pair.Path)"
+}
+$alpha9CmdPath = Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha9.cmd'
+$alpha9CmdBytes = [System.IO.File]::ReadAllBytes($alpha9CmdPath)
+Assert-True (@($alpha9CmdBytes | Where-Object { $_ -gt 127 }).Count -eq 0) 'alpha.9 CMD source contains ASCII only'
+$alpha9CmdText = [System.Text.Encoding]::ASCII.GetString($alpha9CmdBytes)
+Assert-True ($alpha9CmdText.Contains('powershell.exe -NoLogo -NoProfile -STA -ExecutionPolicy Bypass') -and
+    $alpha9CmdText.Contains('"%~dp0tools\start-wirex-bridge.ps1" %*') -and
+    $alpha9CmdText.Contains('exit /b %_wirex_exit%') -and $alpha9CmdText.Contains("`r`n") -and
+    -not $alpha9CmdText.Replace("`r`n", '').Contains("`n")) `
+    'alpha.9 CMD preserves the alpha.8 argument, path, and exit-code forwarding contract'
+$alpha9LauncherPath = Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha9.ps1'
+$alpha9LauncherBytes = [System.IO.File]::ReadAllBytes($alpha9LauncherPath)
+Assert-True ($alpha9LauncherBytes.Length -ge 3 -and $alpha9LauncherBytes[0] -eq 0xEF -and
+    $alpha9LauncherBytes[1] -eq 0xBB -and $alpha9LauncherBytes[2] -eq 0xBF) `
+    'alpha.9 technical entry has a UTF-8 BOM for Windows PowerShell 5.1'
+$alpha9Tokens = $null
+$alpha9ParseErrors = $null
+[System.Management.Automation.Language.Parser]::ParseFile(
+    $alpha9LauncherPath, [ref]$alpha9Tokens, [ref]$alpha9ParseErrors) | Out-Null
+Assert-True ($alpha9ParseErrors.Count -eq 0) `
+    ('alpha.9 technical entry parses; parse errors={0}' -f $alpha9ParseErrors.Count)
+$alpha9LauncherText = [System.IO.File]::ReadAllText($alpha9LauncherPath, [System.Text.Encoding]::UTF8)
+Assert-True ($alpha9LauncherText.Contains('alpha.9') -and -not $alpha9LauncherText.Contains('alpha.8')) `
+    'alpha.9 startup failure text uses the current package version'
+$alpha9ReadmeMap = @($alpha9Profile.SourceFiles | Where-Object { [string]$_.Destination -ceq 'README.md' })
+Assert-Equal $alpha9ReadmeMap.Count 1 'alpha.9 has exactly one package README'
+$alpha9ReadmeText = [System.IO.File]::ReadAllText(
+    (Join-Path $repositoryRoot $alpha9ReadmeMap[0].Source), [System.Text.Encoding]::UTF8)
+Assert-True ($alpha9ReadmeText.Contains('RadioID 查询只在用户点击') -and
+    $alpha9ReadmeText.Contains('radio-identity-cache.json') -and
+    $alpha9ReadmeText.Contains('最近 50 条真实通话记录') -and
+    $alpha9ReadmeText.Contains('不按 CC 过滤') -and
+    $alpha9ReadmeText.Contains('FTX-1 屏幕上的实际内容仍未知')) `
+    'alpha.9 README documents implemented boundaries and keeps identity cache local'
+$alpha9IdentityText = [System.IO.File]::ReadAllText(
+    (Join-Path $repositoryRoot 'docs\R111_用户资料与电台显示.md'), [System.Text.Encoding]::UTF8)
+Assert-True ($alpha9IdentityText.Contains('UserConfigDirectory') -and
+    -not $alpha9IdentityText.Contains('%LOCALAPPDATA%') -and
+    $alpha9IdentityText.Contains('呼号显示实现路径（待实机确认）')) `
+    'alpha.9 identity guide uses the canonical cache path and keeps LCD confirmation pending'
+
 [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.1')
 Assert-Throws { Get-ReleaseAssetName -RelativePath 'start-ui.cmd' } 'alpha.1 不接受 alpha.2 UI asset'
 Assert-True ((Get-ReleaseAssetName -RelativePath 'docs/连接配置.md') -ceq 'docs__connection-profile.md') `
@@ -640,6 +733,63 @@ try {
         -Text ((ConvertTo-Json -InputObject $packageManifest -Depth 8) + "`n")
     Assert-True ((Assert-ReleasePackageInventory -PackageRoot $packageRoot) -eq $null) `
         '合成固定目录清单结构通过；没有创建发布包'
+
+    [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.9')
+    $alpha9InventoryProfile = Get-ReleaseProfile -Version 'v0.1.0-alpha.9'
+    $alpha9InventoryRoot = Join-Path $testRoot 'synthetic-alpha9-package'
+    New-Item -ItemType Directory -Path $alpha9InventoryRoot -Force | Out-Null
+    foreach ($relativeDirectory in $alpha9InventoryProfile.Directories) {
+        New-Item -ItemType Directory -Path (Join-Path $alpha9InventoryRoot $relativeDirectory.Replace('/', '\')) -Force | Out-Null
+    }
+    foreach ($relativePath in ($alpha9InventoryProfile.PackageFiles | Where-Object { $_ -cne 'manifest.json' })) {
+        $fullPath = Join-Path $alpha9InventoryRoot $relativePath.Replace('/', '\')
+        $parent = Split-Path -Parent $fullPath
+        if (-not [System.IO.Directory]::Exists($parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+        if ($relativePath -ceq 'private/device-y.bin') {
+            Copy-Item -LiteralPath $approvedFixturePath -Destination $fullPath
+        } else {
+            Write-Utf8NoBom -Path $fullPath -Text ('synthetic alpha.9 inventory fixture: ' + $relativePath)
+        }
+    }
+    $alpha9InventoryRecords = @()
+    foreach ($relativePath in ($alpha9InventoryProfile.PackageFiles | Where-Object { $_ -cne 'manifest.json' } | Sort-Object)) {
+        $fullPath = Join-Path $alpha9InventoryRoot $relativePath.Replace('/', '\')
+        $item = Get-Item -LiteralPath $fullPath
+        $alpha9InventoryRecords += ,([ordered]@{
+            path = $relativePath
+            asset_name = [string]$alpha9InventoryProfile.AssetMap[$relativePath]
+            length_bytes = [long]$item.Length
+            sha256 = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            source = 'synthetic alpha.9 inventory fixture'
+        })
+    }
+    $alpha9InventoryManifest = [ordered]@{
+        schema_version = 1
+        package_status = 'awaiting_root_audit'
+        version = 'v0.1.0-alpha.9'
+        tag_candidate = 'v0.1.0-alpha.9'
+        manifest_asset_name = 'manifest.json'
+        approved_y_fixture = [ordered]@{
+            path = 'private/device-y.bin'
+            length_bytes = 100
+            sha256 = $approvedFixtureHash
+        }
+        files = $alpha9InventoryRecords
+    }
+    Write-Utf8NoBom -Path (Join-Path $alpha9InventoryRoot 'manifest.json') `
+        -Text ((ConvertTo-Json -InputObject $alpha9InventoryManifest -Depth 8) + "`n")
+    Assert-True ((Assert-ReleasePackageInventory -PackageRoot $alpha9InventoryRoot -Version 'v0.1.0-alpha.9') -eq $null) `
+        'alpha.9 synthetic package inventory includes the runtime identity module and R111 docs'
+    $cacheDirectory = Join-Path $alpha9InventoryRoot 'private\user-config'
+    New-Item -ItemType Directory -Path $cacheDirectory -Force | Out-Null
+    Write-Utf8NoBom -Path (Join-Path $cacheDirectory 'radio-identity-cache.json') -Text '{}'
+    Assert-Throws { Assert-ReleasePackageInventory -PackageRoot $alpha9InventoryRoot -Version 'v0.1.0-alpha.9' } `
+        'alpha.9 package inventory rejects a local RadioID cache'
+    Remove-Item -LiteralPath $cacheDirectory -Recurse -Force -ErrorAction Stop
+    New-Item -ItemType Directory -Path $cacheDirectory -Force | Out-Null
+    Write-Utf8NoBom -Path (Join-Path $cacheDirectory 'channel-favorites.json') -Text '{}'
+    Assert-Throws { Assert-ReleasePackageInventory -PackageRoot $alpha9InventoryRoot -Version 'v0.1.0-alpha.9' } `
+        'alpha.9 package inventory rejects user-maintained channel favorites'
 
     $alpha2PackageRoot = Join-Path $testRoot 'package-alpha2'
     Copy-Item -LiteralPath $packageRoot -Destination $alpha2PackageRoot -Recurse

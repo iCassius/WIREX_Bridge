@@ -1,5 +1,15 @@
 # WIREX Bridge 交接入口
 
+## R111 alpha.9 集成当前状态（2026-10-29）
+
+本轮从 `main` / `d2c098452247f26fbe8a0d23d84b5c1f415ce747` 开始。RadioIdentity 模块与两份研究/测试说明已在提交 `222f71dea9b704f94329bb777ff7b32fc088e8df` 冻结并推送到 `origin/main`；UI 已冻结并通过根会话审查。UI、alpha.9 发布 profile、用户说明和交接材料的剩余部分仍在工作树中，尚未提交。本机尚未执行 alpha.9 clean build 或正式包生成，alpha.8 仍是验收版本。详细要求、文件责任、开放问题和交付顺序见 [R111 alpha.9 集成总交接](docs/R111_总交接.md)。
+
+R111 UI 实施者负责的主窗口、设置页、`bridge-ui.ps1`、目标/状态/渲染测试和 `docs/R111_UI与音量.md` 已冻结。PS5.1/PS7 目标测试、状态测试、路由动作、路由诊断和生命周期测试通过；1280×900、1024×728 RenderOnly 结果已查看，1024 音量摘要无裁切，截图在 `build/_work/ui-render-r111-final`。路由诊断实际启动隔离 Native 诊断进程并用内存 sink；它没有连接 BM、COM、电台音频或射频。BM 身份模块已将网络流读取改为共享 deadline 下的 `ReadAsync`，PS7 与 Windows PowerShell 5.1 最新离线测试各通过 37 项断言。根会话另用 PS5.1 对公开 RadioID SourceID 做了一次真实 HTTPS 单 ID 查询，返回 HTTP 200 且 ID/呼号匹配；未写缓存，也未输出用户个人资料。该查询检查了 HTTP 响应解析和 ID 匹配；没有访问 BM、电台或音频链路。模块仅由用户明确点击后查询单个 DMR ID；缓存写到 canonical `UserConfigDirectory/radio-identity-cache.json`。用户频道收藏在 `UserConfigDirectory/channel-favorites.json`，其中 `static` 只用于本机分类，程序没有查询或修改服务器订阅。缓存、收藏、`test-radio-identity.ps1` 和 `test-radio-identity-http-server.ps1` 都不能进入通用发行包。
+
+本任务负责 alpha.9 package/publisher/downloader profile、相应离线清单测试、R111 用户包 README/release notes 与本交接。alpha.9 profile 保留 alpha.8 唯一 `start-wirex-bridge.cmd` 调用链，随包增加 RadioIdentity 运行模块和三份 R111 说明；个人 cache、favorites、配置与密码明确排除。RadioIdentity 模块和研究文档已通过根架构审查，并以 `222f71d` 提交；UI 也已冻结并审查。package/publisher/downloader 离线测试各通过 403/83/1304 项。剩余 UI 与发布集成尚未提交，clean full39 和正式 package helper 也尚未运行。本机当前 alpha.8 指针不变。
+
+当前反馈的验收边界：alpha.8 TG91 听感正常但略小；该次真实运行增益为 1.000x、clipping 计数为 0，保存的 5.959x 未反映为那次的播放增益。保留此前机身 LED 观察，但 R111 不改机身 BUSY/TX LED 或串口行为。多路由的显示顺序不设置优先级；单一媒体 owner 播放来话时，新流不会抢断或排队补播。TS 按路由保存，CC 仅用于 DMR 发射编码/上报，接收过滤不按 CC。RadioID 只由用户明确查询单个 ID。FTX-1 LCD 显示仍未知；本轮没有连接 COM、音频、BM，没有触发 PTT 或 RF。
+
 ## R110 alpha.8 当前交接（2026-10-29）
 
 R110 从 `main` / `cf9775f47812d2b25bc155156803ad8b2fb7ea22` 开始。Windows PowerShell 5.1 `Parser.ParseFile` 在实际 alpha.7 包的 `start-merged-test.ps1` 复现 5 个错误：无 BOM 的 UTF-8 中文消息被按 ANSI 代码页误读，随后报告字符串和括号错误。源码 `tools/start-merged-test-alpha7.ps1` 已补 UTF-8 BOM，正文未改；alpha.7 已发包保持原样。
@@ -74,7 +84,7 @@ E3 network-only 对照使用 `BI7KGD`/Gateway ID `461135501`，RPTC 元数据为
 
 完整产品目标是让 FTX-1 接入 BrandMeister，并支持两种同等重要、分别验收的真实用途：FTX-1 个人终端（DIRECT；本机手咪上行，网络语音由本机扬声器播放，不因网络下行自动做 RF 发射）和本地 C4FM RF 节点（附近 C4FM 电台经 FTX-1 进入网络，网络语音经 FTX-1 发出）。电脑音频是诊断辅助，不是第三种产品用途。S1-E 是较早的本地双向语音测试里程碑；BM codec、网络和个人终端 native 桥接已通过 26 项离线测试、便携包审计和一通真实 DIRECT 语音闭环验收；长时间运行、断网恢复和其他产品用途仍需分别验证。C4FM RF 节点的设计与实测另行推进。
 
-S1-E native 实现提交为 `732e418bf5b60a99790b00c692601bc95fb1b43c`，随后文档澄清提交为 `df62855c2dd77c5716d3dabffe92211ea6e679b8`。基础会话持续监听，并由操作者按 F/M/C/Q 操作：F 使用固定 WAV，M 先录入最多 8 秒 PC 麦克风内存片段再下行，C 取消当前操作，Q 收尾退出。单一 native 进程独占 HRI COM、WaveIn 和 WaveOut；多轮操作串行进行。主动运行窗口最多 120 秒，首次收尾另有不超过 3 秒的一次性停止/清理预算。S1-E 尚未进行电台实机验证，不代表完整冷启动、BrandMeister、RF 或 UI 已通过。
+S1-E native 实现提交为 `732e418bf5b60a99790b00c692601bc95fb1b43c`，随后文档澄清提交为 `df62855c2dd77c5716d3dabffe92211ea6e679b8`。基础会话持续监听，并由操作者按 F/M/C/Q 操作：F 使用固定 WAV，M 先录入最多 8 秒 PC 麦克风内存片段再下行，C 取消当前操作，Q 收尾退出。单一 native 进程独占 HRI COM、WaveIn 和 WaveOut；多轮操作串行进行。主动运行窗口最多 120 秒，首次收尾另有不超过 3 秒的一次性停止/清理预算。S1-E 尚未连接电台实测；完整冷启动、BrandMeister、RF 与 UI 都未在该切片中验证。
 
 实现边界、8 项离线测试、无设备安全失败路径与下一步验收见 [`docs/S1-E本地会话验收.md`](docs/S1-E本地会话验收.md) 和 [`docs/交接与阶段同步.md`](docs/交接与阶段同步.md)。从 `app` Git 根目录用 Windows PowerShell 5.1 重复构建并运行测试：
 

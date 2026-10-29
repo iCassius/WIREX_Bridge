@@ -29,7 +29,8 @@ function Test-ReleaseTag {
     return ($Tag -ceq 'v0.1.0-alpha.1' -or $Tag -ceq 'v0.1.0-alpha.2' -or
         $Tag -ceq 'v0.1.0-alpha.3' -or $Tag -ceq 'v0.1.0-alpha.4' -or
         $Tag -ceq 'v0.1.0-alpha.5' -or $Tag -ceq 'v0.1.0-alpha.6' -or
-        $Tag -ceq 'v0.1.0-alpha.7' -or $Tag -ceq 'v0.1.0-alpha.8')
+        $Tag -ceq 'v0.1.0-alpha.7' -or $Tag -ceq 'v0.1.0-alpha.8' -or
+        $Tag -ceq 'v0.1.0-alpha.9')
 }
 
 function Get-ExpectedReleaseTests {
@@ -65,7 +66,8 @@ function Get-ExpectedReleaseTests {
         'v0.1.0-alpha.6' { return @((Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.5') + 'talkgroup_routing_test' + 'bm_routing_lifecycle_test' + 'routing_state_test') }
         'v0.1.0-alpha.7' { return @(Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.6') }
         'v0.1.0-alpha.8' { return @(Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.7') }
-        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, and v0.1.0-alpha.8 are supported.' }
+        'v0.1.0-alpha.9' { return @(Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.8') }
+        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, v0.1.0-alpha.8, and v0.1.0-alpha.9 are supported.' }
     }
 }
 
@@ -172,7 +174,15 @@ function Get-ExpectedReleaseFiles {
             $alpha8 += [pscustomobject]@{ Path='tools/start-wirex-bridge.ps1'; AssetName='tools__start-wirex-bridge.ps1'; MaximumBytes=1048576L }
             return $alpha8
         }
-        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, and v0.1.0-alpha.8 are supported.' }
+        'v0.1.0-alpha.9' {
+            $alpha9 = @(Get-ExpectedReleaseFiles -Tag 'v0.1.0-alpha.8')
+            $alpha9 += [pscustomobject]@{ Path='ui/windows/RadioIdentity.psm1'; AssetName='ui__windows__radio-identity.psm1'; MaximumBytes=1048576L }
+            $alpha9 += [pscustomobject]@{ Path='docs/R111_UI与音量.md'; AssetName='docs__r111-ui-audio.md'; MaximumBytes=4194304L }
+            $alpha9 += [pscustomobject]@{ Path='docs/R111_BM订阅与收听优先级.md'; AssetName='docs__r111-bm-listening-policy.md'; MaximumBytes=4194304L }
+            $alpha9 += [pscustomobject]@{ Path='docs/R111_用户资料与电台显示.md'; AssetName='docs__r111-radio-identity-display.md'; MaximumBytes=4194304L }
+            return $alpha9
+        }
+        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, v0.1.0-alpha.8, and v0.1.0-alpha.9 are supported.' }
     }
 }
 
@@ -361,6 +371,12 @@ function Test-ManifestDocument {
     foreach ($required in @('private/bm-device-password.txt', 'connection-profile.json', 'audio-settings.json')) {
         if ($excluded -cnotcontains $required) { throw 'manifest 未明确排除私有配置文件。' }
     }
+    if ($RequestedTag -ceq 'v0.1.0-alpha.9') {
+        foreach ($required in @('private/user-config-directory.txt', 'private/user-config/radio-identity-cache.json',
+            'private/user-config/channel-favorites.json')) {
+            if ($excluded -cnotcontains $required) { throw 'alpha.9 manifest 未明确排除本机 RadioID 缓存与个人路径指针。' }
+        }
+    }
 
     $records = @($Manifest.files)
     $expectedFiles = @(Get-ExpectedReleaseFiles -Tag $RequestedTag)
@@ -446,7 +462,7 @@ function Test-BuildProvenanceDocument {
 
 function Select-ReleaseCandidate {
     param([object[]]$Releases, [Parameter(Mandatory=$true)][string]$RequestedTag, [switch]$AllowDraft)
-    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, and v0.1.0-alpha.8 are supported.' }
+    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, v0.1.0-alpha.8, and v0.1.0-alpha.9 are supported.' }
     $matches = @($Releases | Where-Object { [string]$_.tag_name -ceq $RequestedTag })
     if ($matches.Count -ne 1) { throw 'GitHub Release 列表中没有唯一匹配的 tag。' }
     $release = $matches[0]
@@ -617,7 +633,7 @@ function New-GitHubApiUri {
     )
     switch ($Kind) {
         'tag' {
-            if (-not (Test-ReleaseTag -Tag $Tag)) { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, and v0.1.0-alpha.8 are supported.' }
+            if (-not (Test-ReleaseTag -Tag $Tag)) { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, v0.1.0-alpha.8, and v0.1.0-alpha.9 are supported.' }
             return [Uri]($script:githubApiRoot + '/releases/tags/' + $Tag)
         }
         'list' {
@@ -820,7 +836,7 @@ function Invoke-ReleaseDownload {
     param([Parameter(Mandatory=$true)][string]$RequestedTag,
           [Parameter(Mandatory=$true)][string]$OutputDirectory,
           [switch]$AllowDraft)
-    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, and v0.1.0-alpha.8 are supported.' }
+    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, v0.1.0-alpha.8, and v0.1.0-alpha.9 are supported.' }
     $context = Get-DownloadDestinationContext -Destination $OutputDirectory
     $token = Get-GitCredentialToken
     $stagingCreated = $false

@@ -41,6 +41,7 @@ $script:alpha5TestNames = @($script:alpha3TestNames + 'ui_control_protocol_v2_te
 $script:alpha6TestNames = @($script:alpha5TestNames + 'talkgroup_routing_test' + 'bm_routing_lifecycle_test' + 'routing_state_test')
 $script:alpha7TestNames = @($script:alpha6TestNames)
 $script:alpha8TestNames = @($script:alpha7TestNames)
+$script:alpha9TestNames = @($script:alpha8TestNames)
 
 function Set-PublishProfile {
     param([Parameter(Mandatory=$true)][string]$Tag)
@@ -178,7 +179,20 @@ function Set-PublishProfile {
             $script:expectedDirectories = @($alpha7.Directories) + 'tools'
             $script:expectedTestNames = $script:alpha8TestNames
         }
-        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, and v0.1.0-alpha.8 release profiles are supported.' }
+        'v0.1.0-alpha.9' {
+            $alpha8 = Set-PublishProfile -Tag 'v0.1.0-alpha.8'
+            $assetMap = [ordered]@{}
+            foreach ($path in $alpha8.AssetPathMap.Keys) { $assetMap[$path] = $alpha8.AssetPathMap[$path] }
+            $assetMap['ui/windows/RadioIdentity.psm1'] = 'ui__windows__radio-identity.psm1'
+            $assetMap['docs/R111_UI与音量.md'] = 'docs__r111-ui-audio.md'
+            $assetMap['docs/R111_BM订阅与收听优先级.md'] = 'docs__r111-bm-listening-policy.md'
+            $assetMap['docs/R111_用户资料与电台显示.md'] = 'docs__r111-radio-identity-display.md'
+            $script:publishTag = $Tag
+            $script:assetPathMap = $assetMap
+            $script:expectedDirectories = @($alpha8.Directories)
+            $script:expectedTestNames = $script:alpha9TestNames
+        }
+        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, v0.1.0-alpha.8, and v0.1.0-alpha.9 release profiles are supported.' }
     }
     return [pscustomobject]@{
         Tag = $script:publishTag

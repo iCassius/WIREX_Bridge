@@ -117,18 +117,18 @@
               <Grid.ColumnDefinitions><ColumnDefinition Width="2*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
               <StackPanel><TextBlock Text="服务器预设" Foreground="#AAB5BA"/><ComboBox x:Name="MasterPresetBox" SelectedIndex="1"><ComboBoxItem Content="BM China 4602 · 43.129.83.124:62031" Tag="bm-china-4602"/><ComboBoxItem Content="自定义服务器" Tag="custom"/></ComboBox></StackPanel>
               <StackPanel Grid.Column="1"><TextBlock Text="UDP 端口" Foreground="#AAB5BA"/><TextBox x:Name="MasterPortBox"/></StackPanel>
-              <StackPanel Grid.Column="2"><TextBlock Text="发射目标 ID" Foreground="#AAB5BA"/><TextBox x:Name="DestinationBox"/></StackPanel>
+              <StackPanel Grid.Column="2"><TextBlock Text="起呼目标 ID" Foreground="#AAB5BA"/><TextBox x:Name="DestinationBox"/></StackPanel>
             </Grid>
             <StackPanel><TextBlock Text="Master IPv4 / 主机名" Foreground="#AAB5BA"/><TextBox x:Name="MasterBox"/></StackPanel>
             <Grid>
               <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
               <StackPanel><TextBlock Text="时隙" Foreground="#AAB5BA"/><ComboBox x:Name="SlotBox" SelectedIndex="1"><ComboBoxItem Content="TS1" Tag="1"/><ComboBoxItem Content="TS2" Tag="2"/></ComboBox></StackPanel>
-              <StackPanel Grid.Column="1"><TextBlock Text="Color Code" Foreground="#AAB5BA"/><TextBox x:Name="ColorCodeBox"/></StackPanel>
+              <StackPanel Grid.Column="1"><TextBlock Text="DMR Color Code（发射编码）" Foreground="#AAB5BA"/><TextBox x:Name="ColorCodeBox"/></StackPanel>
               <StackPanel Grid.Column="2"><TextBlock Text="呼叫类型" Foreground="#AAB5BA"/><ComboBox x:Name="CallKindBox" SelectedIndex="0"><ComboBoxItem Content="组呼" Tag="group"/><ComboBoxItem Content="单呼" Tag="private"/></ComboBox></StackPanel>
             </Grid>
-            <Button x:Name="ApplyNextTxTargetButton" Content="设为下一发射目标" HorizontalAlignment="Left" MinWidth="180"/>
+            <Button x:Name="ApplyNextTxTargetButton" Content="设为起呼目标" HorizontalAlignment="Left" MinWidth="180"/>
             <CheckBox x:Name="TransmitEnabledBox" Content="允许向 BrandMeister 发射" IsChecked="True" Foreground="#EDF1F2" Margin="0,2,0,0"/>
-            <TextBlock Text="TG91 与 TG46001 是只收组呼；它们不能设为发射目标。接收策略与下一发射目标可分别调整。" Foreground="#9DA8AD" TextWrapping="Wrap" Margin="0,4,0,0"/>
+            <TextBlock Text="DMR Color Code 是全局发射编码（0–15）；接收策略不会按此字段过滤。TG91 与 TG46001 保持本机收听用途。接收策略和起呼目标分别调整。" Foreground="#9DA8AD" TextWrapping="Wrap" Margin="0,4,0,0"/>
           </StackPanel>
         </Border>
         <Border Background="#20252A" BorderBrush="#3A4248" BorderThickness="1" Padding="14" Margin="0,0,0,10">
@@ -209,15 +209,17 @@
             <TextBlock Text="音量" FontSize="14" FontWeight="Bold" Margin="0,0,0,8"/>
             <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
               <StackPanel>
-                <DockPanel><TextBlock Text="BM 到电台播放增益" Foreground="#AAB5BA"/><TextBlock x:Name="PlaybackGainValueText" DockPanel.Dock="Right" Foreground="#8CC9A1" FontWeight="Bold" Margin="0,0,10,0"/></DockPanel>
+                <DockPanel><TextBlock Text="BM → 电台 PCM 播放增益" Foreground="#AAB5BA"/><TextBlock x:Name="PlaybackGainValueText" DockPanel.Dock="Right" Foreground="#8CC9A1" FontWeight="Bold" Margin="0,0,10,0"/></DockPanel>
                 <Slider x:Name="PlaybackGainSlider" Minimum="0.25" Maximum="16" Value="1"/>
+                <TextBlock x:Name="PlaybackGainSavedValueText" Text="已保存：读取中" Foreground="#AAB5BA" FontSize="10"/>
+                <TextBlock x:Name="PlaybackGainRuntimeValueText" Text="本次运行：等待核心报告" Foreground="#AAB5BA" FontSize="10" Margin="0,2,0,0"/>
               </StackPanel>
               <StackPanel Grid.Column="1">
-                <DockPanel><TextBlock Text="手咪到 BM 发送增益" Foreground="#AAB5BA"/><TextBlock x:Name="TransmitGainValueText" DockPanel.Dock="Right" Foreground="#8CC9A1" FontWeight="Bold" Margin="0,0,10,0"/></DockPanel>
+                <DockPanel><TextBlock Text="手咪 → BM PCM 发送增益" Foreground="#AAB5BA"/><TextBlock x:Name="TransmitGainValueText" DockPanel.Dock="Right" Foreground="#8CC9A1" FontWeight="Bold" Margin="0,0,10,0"/></DockPanel>
                 <Slider x:Name="TransmitGainSlider" Minimum="0.25" Maximum="16" Value="16"/>
               </StackPanel>
             </Grid>
-            <TextBlock Text="保存后，下次连接时使用新设置。默认值：播放 1x，发送 16x。" Foreground="#9DA8AD"/>
+            <TextBlock Text="滑块编辑待保存的 PCM 增益；保存后写入 audio-settings.json，并在下次连接启动时由核心读取。当前播放增益与已保存数值分开显示。软件增益范围 0.25x–16x，削波计数会显示在主窗口音频状态。" Foreground="#9DA8AD" TextWrapping="Wrap" Margin="0,4,0,0"/>
           </StackPanel>
         </Border>
         <Border Background="#20252A" BorderBrush="#3A4248" BorderThickness="1" Padding="14">

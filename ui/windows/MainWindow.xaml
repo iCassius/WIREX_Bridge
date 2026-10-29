@@ -100,7 +100,7 @@
     <Grid.RowDefinitions>
       <RowDefinition Height="Auto"/>
       <RowDefinition Height="Auto"/>
-      <RowDefinition Height="108"/>
+      <RowDefinition Height="Auto" MinHeight="108"/>
       <RowDefinition Height="*"/>
       <RowDefinition Height="Auto"/>
     </Grid.RowDefinitions>
@@ -125,69 +125,139 @@
         <StackPanel><TextBlock Text="FTX-1 / HRI" Foreground="#9DA8AD" FontSize="11"/><TextBlock x:Name="RadioValue" Text="未知" FontSize="18" FontWeight="Bold" Margin="0,7,0,3"/><TextBlock x:Name="RadioDetail" Text="串口与 HRI 等待核心报告" Foreground="#9DA8AD" FontSize="11"/></StackPanel>
       </Border>
       <Border x:Name="AudioStatusCard" Background="#20252A" BorderBrush="#3A4248" BorderThickness="1" Padding="12" Margin="0,0,7,0">
-        <StackPanel><TextBlock Text="音频" Foreground="#9DA8AD" FontSize="11"/><TextBlock x:Name="AudioValue" Text="未知" FontSize="18" FontWeight="Bold" Margin="0,7,0,3"/><TextBlock x:Name="AudioDetail" Text="WaveIn / WaveOut 等待核心报告" Foreground="#9DA8AD" FontSize="11"/></StackPanel>
+        <StackPanel><TextBlock Text="音频" Foreground="#9DA8AD" FontSize="11"/><TextBlock x:Name="AudioValue" Text="未知" FontSize="18" FontWeight="Bold" Margin="0,5,0,2"/><TextBlock x:Name="AudioDetail" Text="WaveIn / WaveOut 等待核心报告" Foreground="#9DA8AD" FontSize="10"/><TextBlock x:Name="PlaybackGainStatusValue" Text="当前 未知 · 保存 未知 · 削波 未知" Foreground="#8CC9A1" FontSize="9" Margin="0,2,0,0" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/></StackPanel>
       </Border>
       <Border x:Name="BmStatusCard" Background="#20252A" BorderBrush="#3A4248" BorderThickness="1" Padding="12">
         <StackPanel><TextBlock Text="BrandMeister" Foreground="#9DA8AD" FontSize="11"/><TextBlock x:Name="BmValue" Text="未知" FontSize="18" FontWeight="Bold" Margin="0,7,0,3"/><TextBlock x:Name="BmDetail" Text="连接状态等待核心报告" Foreground="#9DA8AD" FontSize="11"/></StackPanel>
       </Border>
     </UniformGrid>
-    <Border x:Name="DashboardPanel" Grid.Row="3" Background="#20252A" BorderBrush="#3A4248" BorderThickness="1" Padding="18" Margin="0,0,0,10">
+    <Border x:Name="DashboardPanel" Grid.Row="3" Background="#20252A" BorderBrush="#3A4248" BorderThickness="1" Padding="8" Margin="0,0,0,10">
+      <ScrollViewer x:Name="DashboardScrollViewer" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
       <Grid>
-        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-        <Grid Grid.Row="0">
-          <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="360"/></Grid.ColumnDefinitions>
-          <StackPanel><TextBlock Text="当前运行 / 下一发射" Foreground="#9DA8AD" FontSize="10"/><TextBlock x:Name="TargetValue" Text="尚未设置" FontSize="18" FontWeight="Bold" Margin="0,2,0,0"/><TextBlock x:Name="ReceiveTargetValue" Text="接收：等待配置" Foreground="#8CC9A1" FontSize="12" Margin="0,1,0,0"/><TextBlock x:Name="TransmitTargetValue" Text="下一发射目标：等待配置" Foreground="#8CC9A1" FontSize="12" Margin="0,1,0,0"/><TextBlock x:Name="TransmitPermissionValue" Text="发射许可：等待配置" Foreground="#E1AE53" FontSize="11" Margin="0,1,0,0"/><TextBlock x:Name="RoutingRevisionValue" Text="本机媒体状态：等待核心报告" Foreground="#9DA8AD" FontSize="10" Margin="0,1,0,0"/></StackPanel>
-          <StackPanel Grid.Column="1"><TextBlock Text="下一发射目标" Foreground="#9DA8AD" FontSize="11"/><ComboBox x:Name="TargetSelector" Height="36" SelectedIndex="3">
-            <ComboBoxItem Content="中国鹦鹉 · 私呼 460997" Tag="parrot-cn"/>
-            <ComboBoxItem Content="全球收听 · TG91" Tag="listen-91"/>
-            <ComboBoxItem Content="本地收听 · TG46001" Tag="listen-46001"/>
-            <ComboBoxItem Content="使用已保存目标" Tag="custom"/>
-          </ComboBox><TextBlock x:Name="ActiveLeaseValue" Text="当前发射目标：无" Foreground="#E1AE53" FontSize="11" Margin="0,2,0,0"/></StackPanel>
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+        <Grid Grid.Row="0" Margin="0,0,0,8">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="1.1*"/><ColumnDefinition Width="1*"/></Grid.ColumnDefinitions>
+          <Border x:Name="ListeningHistoryPanel" Grid.Column="0" Background="#191E21" BorderBrush="#46545A" BorderThickness="1" Padding="10" Margin="0,0,6,0">
+            <Grid>
+              <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+              <TextBlock Text="A · 当前收听与历史" FontSize="14" FontWeight="Bold" Margin="0,0,0,4"/>
+              <TextBlock x:Name="ReceiveTargetValue" Grid.Row="1" Text="当前收听：等待配置" Foreground="#8CC9A1" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,5"/>
+              <StackPanel Grid.Row="2" Margin="0,0,0,5">
+                <TextBlock x:Name="CurrentCallLabel" Text="当前 BM 来话" Foreground="#9DA8AD" FontSize="10"/>
+                <TextBlock x:Name="CurrentCallValue" Text="状态等待本次运行报告" FontSize="15" FontWeight="Bold" Margin="0,1,0,0" ToolTip="悬停查看可用的姓名、地区、资料来源和更新时间。"/>
+                <TextBlock x:Name="CurrentCallDetail" Text="当前没有可显示的活动来话。" Foreground="#9DA8AD" FontSize="10" TextWrapping="Wrap"/>
+                <TextBlock x:Name="IdentityLookupStatusValue" Text="呼号资料：使用缓存或显示 DMR ID" Foreground="#AAB5BA" FontSize="9" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                <WrapPanel>
+                  <Button x:Name="QueryCurrentIdentityButton" Content="查询当前来话资料" Padding="6,2" Margin="0,2,4,0" IsEnabled="False" ToolTip="查询当前来源ID的单条Radio ID资料；结果写入本机缓存。"/>
+                  <Button x:Name="BlockCurrentSourceButton" Content="本机屏蔽当前发话源" Padding="6,2" Margin="0,2,0,0" IsEnabled="False"/>
+                </WrapPanel>
+              </StackPanel>
+              <Grid Grid.Row="3" Margin="0,2,0,4">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                <StackPanel><TextBlock Text="最近来话" Foreground="#9DA8AD" FontSize="10"/><TextBlock x:Name="RecentCaller" Text="—" FontSize="14" FontWeight="Bold" Margin="0,1,0,0"/><TextBlock x:Name="RecentCallDetail" Text="当前会话没有来话记录" Foreground="#9DA8AD" FontSize="10" TextWrapping="Wrap"/></StackPanel>
+                <StackPanel Grid.Column="1" Margin="8,0,0,0"><TextBlock Text="HRI 来源标签" Foreground="#9DA8AD" FontSize="10"/><TextBlock x:Name="HriSourceIdentityValue" Text="等待本次运行报告" FontSize="12" FontWeight="Bold" Margin="0,1,0,0"/><TextBlock x:Name="RadioDisplayValue" Text="FTX-1 屏幕：未知" Foreground="#E1AE53" FontSize="10" Margin="0,2,0,0"/></StackPanel>
+              </Grid>
+              <DockPanel Grid.Row="4" LastChildFill="True" Margin="0,1,0,2">
+                <TextBlock Text="来话历史 · 最多 50 条" FontSize="10" FontWeight="Bold" VerticalAlignment="Top" Margin="0,2,8,2" DockPanel.Dock="Top"/>
+                <ListBox x:Name="CallHistoryList" Height="60" DisplayMemberPath="text">
+                  <ListBox.ItemContainerStyle>
+                    <Style TargetType="ListBoxItem"><Setter Property="ToolTip" Value="{Binding identity_details}"/></Style>
+                  </ListBox.ItemContainerStyle>
+                </ListBox>
+              </DockPanel>
+              <Grid Grid.Row="5">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                <Button x:Name="SetHistoryCallTargetButton" Content="设为呼叫目标" Width="98" Height="28" HorizontalAlignment="Left" VerticalAlignment="Top" Padding="5,2" Margin="0,1,5,0" IsEnabled="False" ToolTip="按所选来话的来源或组号设置呼叫目标，并保留原时隙。"/>
+                <Button x:Name="QueryHistoryIdentityButton" Grid.Column="1" Content="查询历史资料" Width="92" Height="28" HorizontalAlignment="Left" VerticalAlignment="Top" Padding="5,2" Margin="0,1,5,0" IsEnabled="False" ToolTip="查询所选历史来源ID的单条Radio ID资料；结果写入本机缓存。"/>
+                <DockPanel Grid.Column="2" LastChildFill="True">
+                  <TextBlock Text="本次运行事件" FontSize="9" FontWeight="Bold" VerticalAlignment="Top" Margin="0,2,0,1" DockPanel.Dock="Top"/>
+                  <ListBox x:Name="EventList" Height="42"/>
+                </DockPanel>
+              </Grid>
+            </Grid>
+          </Border>
+          <Border x:Name="CallChannelPanel" Grid.Column="1" Background="#191E21" BorderBrush="#46545A" BorderThickness="1" Padding="10" Margin="6,0,0,0">
+            <StackPanel>
+              <TextBlock Text="B · 当前呼叫频道" FontSize="14" FontWeight="Bold" Margin="0,0,0,4"/>
+              <TextBlock x:Name="TargetValue" Text="尚未设置" Foreground="#9DA8AD" FontSize="10"/>
+              <TextBlock x:Name="TransmitTargetValue" Text="下一起呼目标：等待配置" Foreground="#8CC9A1" FontSize="15" FontWeight="Bold" Margin="0,2,0,0" TextWrapping="Wrap"/>
+              <TextBlock x:Name="TransmitPermissionValue" Text="发射许可：等待配置" Foreground="#E1AE53" FontSize="10" Margin="0,1,0,0"/>
+              <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
+                <TextBlock Text="预设" Foreground="#9DA8AD" FontSize="10" VerticalAlignment="Center"/>
+                <ComboBox x:Name="TargetSelector" Height="32" Width="260" SelectedIndex="1">
+                  <ComboBoxItem Content="鹦鹉私呼 · 460997 · TS2" Tag="parrot-cn"/>
+                  <ComboBoxItem Content="当前已保存频道" Tag="custom"/>
+                </ComboBox>
+              </StackPanel>
+              <TextBlock Text="选择后提交起呼目标设置；核心确认后生效于后续起呼。当前通话保持原锁定目标。" Foreground="#9DA8AD" FontSize="9" TextWrapping="Wrap" Margin="0,1,0,0"/>
+              <TextBlock Text="本机已配置组 · 快速设为呼叫目标" Foreground="#9DA8AD" FontSize="10" FontWeight="Bold" Margin="0,5,0,1"/>
+              <ScrollViewer MaxHeight="54" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"><WrapPanel x:Name="CallTargetChoicesPanel" MinHeight="25"/></ScrollViewer>
+              <TextBlock Text="分类由本机用户维护；本版未读取服务器绑定列表" Foreground="#9DA8AD" FontSize="10" FontWeight="Bold" Margin="0,4,0,1"/>
+              <Grid Margin="0,0,0,1">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="92"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                <TextBlock Text="分类" Foreground="#9DA8AD" FontSize="9" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                <ComboBox x:Name="FavoriteCategorySelector" Grid.Column="1" Height="25" SelectedIndex="0" Margin="0,0,4,0">
+                  <ComboBoxItem Content="普通" Tag="normal"/><ComboBoxItem Content="动态" Tag="dynamic"/><ComboBoxItem Content="静态" Tag="static"/>
+                </ComboBox>
+                <TextBox x:Name="FavoriteLabelBox" Grid.Column="2" Height="25" Padding="5,2" Margin="0" ToolTip="可选的本机收藏名称，最多 40 个字符。"/>
+              </Grid>
+              <WrapPanel Margin="-2,0,0,0">
+                <Button x:Name="FavoriteCurrentTargetButton" Content="收藏当前起呼目标" Padding="5,2" Margin="2" IsEnabled="False"/>
+                <Button x:Name="FavoriteManualGroupButton" Content="收藏输入TG/TS" Padding="5,2" Margin="2"/>
+              </WrapPanel>
+              <ListBox x:Name="CallFavoritesList" Height="48" DisplayMemberPath="text"/>
+              <WrapPanel Margin="-2,0,0,0">
+                <Button x:Name="ApplyCallFavoriteButton" Content="设为呼叫目标" Padding="5,2" Margin="2" IsEnabled="False"/>
+                <Button x:Name="RemoveCallFavoriteButton" Content="删除收藏" Padding="5,2" Margin="2" IsEnabled="False"/>
+                <TextBlock x:Name="ChannelFavoritesStatusValue" Text="收藏仅保存在本机用户配置中。" Foreground="#AAB5BA" FontSize="9" TextWrapping="Wrap" VerticalAlignment="Center" Margin="4,1"/>
+              </WrapPanel>
+                <TextBlock x:Name="ActiveLeaseValue" Text="活动通话锁定目标：无" Foreground="#E1AE53" FontSize="10" TextWrapping="Wrap" Margin="0,2,0,0"/>
+              <TextBlock x:Name="RoutingRevisionValue" Text="本机媒体状态：等待核心报告" Foreground="#9DA8AD" FontSize="9" Margin="0,1,0,0"/>
+              <TextBlock x:Name="CallTargetStatusValue" Text="目标设置状态：等待选择" Foreground="#AAB5BA" FontSize="9" TextWrapping="Wrap" Margin="0,2,0,0"/>
+            </StackPanel>
+          </Border>
         </Grid>
-        <Border x:Name="DynamicGroupPanel" Grid.Row="1" Background="#191E21" BorderBrush="#46545A" BorderThickness="1" Padding="4" Margin="0,6,0,0">
+        <Border x:Name="DynamicGroupPanel" Grid.Row="1" Background="#191E21" BorderBrush="#46545A" BorderThickness="1" Padding="5" Margin="0,0,0,8">
           <Grid>
-            <Grid.ColumnDefinitions><ColumnDefinition Width="2.1*"/><ColumnDefinition Width="1.3*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="2.2*"/></Grid.ColumnDefinitions>
+            <Grid.ColumnDefinitions><ColumnDefinition Width="1.8*"/><ColumnDefinition Width="1.1*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="1.4*"/></Grid.ColumnDefinitions>
             <StackPanel Grid.Column="0" VerticalAlignment="Center">
-              <TextBlock Text="动态组控制" FontWeight="Bold" FontSize="12"/>
-              <TextBlock x:Name="DynamicGroupHelpText" Text="本机收听与一次空组呼激活分开操作。" Foreground="#9DA8AD" FontSize="10"/>
+              <TextBlock Text="TG / TS 快速操作" FontWeight="Bold" FontSize="11"/>
+              <TextBlock x:Name="DynamicGroupHelpText" Text="收听、呼叫目标与动态组请求分别操作。" Foreground="#9DA8AD" FontSize="9"/>
             </StackPanel>
             <Grid Grid.Column="1" VerticalAlignment="Center">
               <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
               <TextBlock Text="TG" Foreground="#AAB5BA" FontSize="10" VerticalAlignment="Center" Margin="3,0,5,0"/>
               <TextBox x:Name="DynamicGroupIdBox" Grid.Column="1" Background="#20252A" Foreground="#EDF1F2" BorderBrush="#536169" BorderThickness="1" Padding="7,4" ToolTip="手动输入组呼 TG；范围 1 到 16777215" VerticalAlignment="Center"/>
             </Grid>
-            <ComboBox x:Name="DynamicGroupSlotBox" Grid.Column="2" SelectedIndex="1" Width="82" VerticalAlignment="Center" Margin="4,0">
+            <ComboBox x:Name="DynamicGroupSlotBox" Grid.Column="2" SelectedIndex="1" Width="74" VerticalAlignment="Center" Margin="3,0">
               <ComboBoxItem Content="TS1" Tag="1"/><ComboBoxItem Content="TS2" Tag="2"/>
             </ComboBox>
-            <Button x:Name="AddListenGroupButton" Grid.Column="3" Content="加入本机收听" MinWidth="108" Padding="7,4" Margin="4,0" IsEnabled="False" ToolTip="只更新本机 RX 允许规则，不发送网络控制包。"/>
-            <Button x:Name="ActivateDynamicGroupButton" Grid.Column="4" Content="激活动态组" MinWidth="108" Padding="7,4" Margin="4,0" IsEnabled="False" ToolTip="只发送一次无语音 Quick Call；不会启用语音发射许可。"/>
-            <TextBlock x:Name="DynamicGroupStatus" Grid.Column="5" Text="可加入本机收听，或发送动态组激活请求。" Foreground="#AAB5BA" FontSize="10" TextWrapping="Wrap" VerticalAlignment="Center" Margin="6,0,0,0"/>
+            <Button x:Name="SetDynamicCallTargetButton" Grid.Column="3" Content="设为呼叫目标" MinWidth="102" Padding="6,4" Margin="3,0" IsEnabled="False" ToolTip="通过核心设置下一呼叫目标，不发起呼叫。"/>
+            <Button x:Name="AddListenGroupButton" Grid.Column="4" Content="加入本机收听" MinWidth="102" Padding="6,4" Margin="3,0" IsEnabled="False" ToolTip="将此组加入本机接收策略。"/>
+            <Button x:Name="ActivateDynamicGroupButton" Grid.Column="5" Content="激活动态组" MinWidth="92" Padding="6,4" Margin="3,0" IsEnabled="False" ToolTip="发送一次动态组激活请求。"/>
+            <TextBlock x:Name="DynamicGroupStatus" Grid.Column="6" Text="目标设置和动态组激活会分别显示核心结果。" Foreground="#AAB5BA" FontSize="9" TextWrapping="Wrap" VerticalAlignment="Center" Margin="5,0,0,0"/>
           </Grid>
         </Border>
-        <Grid Grid.Row="2" Margin="0,12,0,10">
-          <Grid.ColumnDefinitions><ColumnDefinition Width="0.95*"/><ColumnDefinition Width="1.25*"/><ColumnDefinition Width="1.3*"/><ColumnDefinition Width="1.4*"/><ColumnDefinition Width="0.95*"/></Grid.ColumnDefinitions>
-          <Border Grid.Column="0" Background="#191E21" BorderBrush="#343D42" BorderThickness="1" Padding="10" Margin="0,0,7,0">
-      <StackPanel><TextBlock Text="最近来话" Foreground="#9DA8AD" FontSize="11"/><TextBlock x:Name="RecentCaller" Text="—" FontSize="20" FontWeight="Bold" Margin="0,8,0,3"/><TextBlock x:Name="RecentCallDetail" Text="当前会话没有来话记录" Foreground="#9DA8AD" TextWrapping="Wrap"/><TextBlock Text="HRI 来源标签" Foreground="#9DA8AD" FontSize="11" Margin="0,10,0,0"/><TextBlock x:Name="HriSourceIdentityValue" Text="等待本次运行报告" FontSize="13" FontWeight="Bold" Margin="0,3,0,0"/><TextBlock x:Name="RadioDisplayValue" Text="FTX-1 屏幕：未知" Foreground="#E1AE53" FontSize="11" Margin="0,4,0,0"/></StackPanel>
+        <Expander x:Name="RadioDetailsExpander" Grid.Row="2" IsExpanded="False" Margin="0,0,0,0" Background="#191E21" Foreground="#EDF1F2" BorderBrush="#46545A" BorderThickness="1">
+          <Expander.Header><TextBlock Text="收听路由、来源管理与运行详情" FontSize="11" FontWeight="Bold"/></Expander.Header>
+        <Grid Margin="0,4,0,0">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="0.95*"/><ColumnDefinition Width="1.1*"/><ColumnDefinition Width="1.75*"/><ColumnDefinition Width="0.95*"/></Grid.ColumnDefinitions>
+          <Border x:Name="TrafficCard" Grid.Column="0" Background="#191E21" BorderBrush="#343D42" BorderThickness="1" Padding="8" Margin="0,0,6,0">
+            <StackPanel><TextBlock Text="收发状态" Foreground="#9DA8AD" FontSize="10"/><TextBlock x:Name="TrafficValue" Text="等待核心状态" FontSize="15" FontWeight="Bold" Margin="0,3,0,1"/><TextBlock x:Name="TrafficDetail" Text="运行状态根据本次核心报告更新。" Foreground="#9DA8AD" FontSize="10" TextWrapping="Wrap"/><TextBlock x:Name="RadioStateValue" Text="电台状态：未知" Foreground="#E1AE53" FontSize="10" Margin="0,4,0,0"/></StackPanel>
           </Border>
-          <Border x:Name="TrafficCard" Grid.Column="1" Background="#191E21" BorderBrush="#343D42" BorderThickness="1" Padding="6" Margin="7,0">
-            <StackPanel><TextBlock Text="收发状态" Foreground="#9DA8AD" FontSize="11"/><TextBlock x:Name="TrafficValue" Text="等待核心状态" FontSize="18" FontWeight="Bold" Margin="0,3,0,1"/><TextBlock x:Name="TrafficDetail" Text="下一发射目标可独立于本机收听策略设置。" Foreground="#9DA8AD" TextWrapping="Wrap"/><TextBlock x:Name="RadioStateValue" Text="电台状态：未知" Foreground="#E1AE53" FontSize="11" Margin="0,4,0,0"/><TextBlock x:Name="CurrentCallLabel" Text="当前 BM 来话" Foreground="#9DA8AD" FontSize="11" Margin="0,3,0,0"/><TextBlock x:Name="CurrentCallValue" Text="状态等待本次运行报告" FontSize="14" FontWeight="Bold" Margin="0,0,0,0"/><TextBlock x:Name="CurrentCallDetail" Text="当前没有可显示的活动来话。" Foreground="#9DA8AD" TextWrapping="Wrap"/><Button x:Name="BlockCurrentSourceButton" Content="本机屏蔽当前发话源" Padding="6,3" Margin="0,2,0,0" IsEnabled="False"/></StackPanel>
+          <Border Grid.Column="1" Background="#191E21" BorderBrush="#343D42" BorderThickness="1" Padding="8" Margin="6,0">
+            <DockPanel LastChildFill="True"><TextBlock Text="本机接收路由" Foreground="#9DA8AD" FontSize="10" DockPanel.Dock="Top" Margin="0,0,0,5"/><ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"><StackPanel x:Name="ConfiguredRoutesPanel"/></ScrollViewer></DockPanel>
           </Border>
-          <Border Grid.Column="2" Background="#191E21" BorderBrush="#343D42" BorderThickness="1" Padding="10" Margin="7,0,0,0">
-            <DockPanel LastChildFill="True"><TextBlock Text="已配置接收路由" Foreground="#9DA8AD" FontSize="11" DockPanel.Dock="Top" Margin="0,0,0,5"/><ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"><StackPanel x:Name="ConfiguredRoutesPanel"/></ScrollViewer></DockPanel>
+          <Border Grid.Column="2" Background="#191E21" BorderBrush="#343D42" BorderThickness="1" Padding="8" Margin="6,0">
+            <DockPanel LastChildFill="True"><TextBlock Text="核心本次运行观察到的来源" Foreground="#9DA8AD" FontSize="10" DockPanel.Dock="Top" Margin="0,0,0,4"/><TextBlock Text="BM 来源分类以核心或服务器查询结果为准。" Foreground="#9DA8AD" FontSize="9" TextWrapping="Wrap" DockPanel.Dock="Bottom" Margin="0,4,0,0"/><ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"><StackPanel x:Name="ObservedSourcesPanel"/></ScrollViewer></DockPanel>
           </Border>
-          <Border Grid.Column="3" Background="#191E21" BorderBrush="#343D42" BorderThickness="1" Padding="10" Margin="7,0,0,0">
-            <DockPanel LastChildFill="True"><TextBlock Text="核心本次运行观察到的来源" Foreground="#9DA8AD" FontSize="11" DockPanel.Dock="Top" Margin="0,0,0,4"/><TextBlock Text="BM 来源：未知；本地停止收听只过滤本机，不会停止 BM 转发。" Foreground="#9DA8AD" FontSize="10" TextWrapping="Wrap" DockPanel.Dock="Bottom" Margin="0,4,0,0"/><ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"><StackPanel x:Name="ObservedSourcesPanel"/></ScrollViewer></DockPanel>
-          </Border>
-          <Border Grid.Column="4" Background="#191E21" BorderBrush="#343D42" BorderThickness="1" Padding="10" Margin="7,0,0,0">
-        <StackPanel><TextBlock Text="运行会话" Foreground="#9DA8AD" FontSize="11"/><TextBlock x:Name="RunValue" Text="未启动" FontSize="16" FontWeight="Bold" Margin="0,8,0,3"/><TextBlock x:Name="FreshnessValue" Text="没有状态报告" Foreground="#9DA8AD" TextWrapping="Wrap"/><TextBlock x:Name="ControlProtocolValue" Text="控制协议：等待" Foreground="#E1AE53" TextWrapping="Wrap" FontSize="11" Margin="0,5,0,3"/><Button x:Name="ControlStatusButton" Content="查询状态" Height="26" Padding="8,1" HorizontalAlignment="Left" MinWidth="84" IsEnabled="False"/></StackPanel>
+          <Border Grid.Column="3" Background="#191E21" BorderBrush="#343D42" BorderThickness="1" Padding="8" Margin="6,0,0,0">
+            <StackPanel><TextBlock Text="运行会话" Foreground="#9DA8AD" FontSize="10"/><TextBlock x:Name="RunValue" Text="未启动" FontSize="15" FontWeight="Bold" Margin="0,6,0,3"/><TextBlock x:Name="FreshnessValue" Text="没有状态报告" Foreground="#9DA8AD" FontSize="10" TextWrapping="Wrap"/><TextBlock x:Name="ControlProtocolValue" Text="控制协议：等待" Foreground="#E1AE53" TextWrapping="Wrap" FontSize="10" Margin="0,4,0,3"/><Button x:Name="ControlStatusButton" Content="查询状态" Height="26" Padding="8,1" HorizontalAlignment="Left" MinWidth="84" IsEnabled="False"/></StackPanel>
           </Border>
         </Grid>
-        <Grid Grid.Row="3">
-          <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-          <TextBlock Text="运行记录" FontSize="12" FontWeight="Bold" VerticalAlignment="Top" Margin="0,5,14,0"/>
-          <ListBox x:Name="EventList" Grid.Column="1" Height="94"/>
-        </Grid>
+        </Expander>
       </Grid>
+      </ScrollViewer>
     </Border>
     <Grid Grid.Row="4">
       <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>

@@ -27,7 +27,7 @@ $script:releaseAssetRedirectHosts = @(
 )
 $script:assertionCount = 0
 $downloadProfiles = @{}
-foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8')) {
+foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9')) {
     $downloadProfiles[$tag] = [pscustomobject]@{
         Files = @(Get-ExpectedReleaseFiles -Tag $tag)
         Tests = @(Get-ExpectedReleaseTests -Tag $tag)
@@ -65,6 +65,11 @@ function New-TestManifest {
             sha256 = $hash
             source = "source commit $commit`: $($expected.Path)"
         })
+    }
+    $excludedPrivateFiles = @('private/bm-device-password.txt', 'connection-profile.json', 'audio-settings.json')
+    if ($Tag -ceq 'v0.1.0-alpha.9') {
+        $excludedPrivateFiles += @('private/user-config-directory.txt', 'private/user-config/radio-identity-cache.json',
+            'private/user-config/channel-favorites.json')
     }
     return [pscustomobject]@{
         schema_version = 1
@@ -104,7 +109,7 @@ function New-TestManifest {
             length_bytes = 100
             sha256 = $script:approvedYFixtureSha256
         }
-        excluded_private_files = @('private/bm-device-password.txt', 'connection-profile.json', 'audio-settings.json')
+        excluded_private_files = $excludedPrivateFiles
         runtime_directories = @('logs/ (empty at package creation)')
         manifest_asset_name = 'manifest.json'
         files = $records
@@ -232,6 +237,58 @@ Assert-True (@($alpha8Validated.Files | Where-Object {
 }).Count -eq 0) 'alpha.8 contains no additional CMD entry points'
 Assert-True (Test-ReleaseTag -Tag 'v0.1.0-alpha.8') 'alpha.8 is an explicitly supported release tag'
 Assert-Throws { Test-ManifestDocument -Manifest $alpha8Manifest -RequestedTag 'v0.1.0-alpha.7' } 'alpha.8 manifest is rejected for alpha.7 tag'
+$alpha9Manifest = New-TestManifest -Tag 'v0.1.0-alpha.9'
+$alpha9Validated = Test-ManifestDocument -Manifest $alpha9Manifest -RequestedTag 'v0.1.0-alpha.9'
+Assert-True ($alpha9Validated.Files.Count -eq 32) 'alpha.9 inventory adds RadioIdentity runtime and three R111 documents to alpha.8'
+Assert-True (@($alpha9Manifest.build.passed_tests).Count -eq 39 -and
+    [string]::Join('|', @($alpha9Manifest.build.passed_tests)) -ceq
+        [string]::Join('|', @($alpha8Manifest.build.passed_tests))) `
+    'alpha.9 retains the exact 39 alpha.8 C++ tests in order'
+foreach ($mapping in @(
+    @{ Path='ui/windows/RadioIdentity.psm1'; AssetName='ui__windows__radio-identity.psm1' },
+    @{ Path='docs/R111_UI与音量.md'; AssetName='docs__r111-ui-audio.md' },
+    @{ Path='docs/R111_BM订阅与收听优先级.md'; AssetName='docs__r111-bm-listening-policy.md' },
+    @{ Path='docs/R111_用户资料与电台显示.md'; AssetName='docs__r111-radio-identity-display.md' }
+)) {
+    Assert-True (@($alpha9Validated.Files | Where-Object {
+        $_.path -ceq $mapping.Path -and $_.asset_name -ceq $mapping.AssetName
+    }).Count -eq 1) "alpha.9 maps $($mapping.Path) to a fixed ASCII asset"
+}
+Assert-True (@($alpha9Validated.Files | Where-Object {
+    $_.path -match '(?i)(radio-identity-cache\.json|channel-favorites\.json|test-radio-identity(?:-http-server)?\.ps1|private/user-config/)'
+}).Count -eq 0) 'alpha.9 allowlist contains neither local identity cache nor developer/private configuration files'
+Assert-True (@($alpha9Manifest.excluded_private_files | Where-Object {
+    $_ -ceq 'private/user-config-directory.txt' -or
+    $_ -ceq 'private/user-config/radio-identity-cache.json' -or
+    $_ -ceq 'private/user-config/channel-favorites.json'
+}).Count -eq 3) 'alpha.9 manifest explicitly names local pointer, identity cache, and channel favorites exclusions'
+Assert-True (Test-ReleaseTag -Tag 'v0.1.0-alpha.9') 'alpha.9 is an explicitly supported release tag'
+Assert-Throws { Test-ManifestDocument -Manifest $alpha9Manifest -RequestedTag 'v0.1.0-alpha.8' } 'alpha.9 manifest is rejected for alpha.8 tag'
+$missingAlpha9CacheExclusion = New-TestManifest -Tag 'v0.1.0-alpha.9'
+$missingAlpha9CacheExclusion.excluded_private_files = @('private/bm-device-password.txt', 'connection-profile.json', 'audio-settings.json')
+Assert-Throws { Test-ManifestDocument -Manifest $missingAlpha9CacheExclusion -RequestedTag 'v0.1.0-alpha.9' } `
+    'alpha.9 downloader rejects manifest without explicit local cache exclusions'
+$invalidAlpha9 = New-TestManifest -Tag 'v0.1.0-alpha.9'
+$invalidAlpha9.files += [pscustomobject]@{
+    path='radio-identity-cache.json'; asset_name='radio-identity-cache.json'; length_bytes=1
+    sha256=('0' * 64); source='synthetic forbidden cache'
+}
+Assert-Throws { Test-ManifestDocument -Manifest $invalidAlpha9 -RequestedTag 'v0.1.0-alpha.9' } `
+    'alpha.9 downloader rejects personal RadioID cache from the manifest'
+$invalidAlpha9Favorites = New-TestManifest -Tag 'v0.1.0-alpha.9'
+$invalidAlpha9Favorites.files += [pscustomobject]@{
+    path='channel-favorites.json'; asset_name='channel-favorites.json'; length_bytes=1
+    sha256=('0' * 64); source='synthetic forbidden local favorites'
+}
+Assert-Throws { Test-ManifestDocument -Manifest $invalidAlpha9Favorites -RequestedTag 'v0.1.0-alpha.9' } `
+    'alpha.9 downloader rejects user-maintained channel favorites from the manifest'
+$invalidAlpha9TestHelper = New-TestManifest -Tag 'v0.1.0-alpha.9'
+$invalidAlpha9TestHelper.files += [pscustomobject]@{
+    path='tools/test-radio-identity-http-server.ps1'; asset_name='tools__test-radio-identity-http-server.ps1'
+    length_bytes=1; sha256=('0' * 64); source='synthetic local test helper'
+}
+Assert-Throws { Test-ManifestDocument -Manifest $invalidAlpha9TestHelper -RequestedTag 'v0.1.0-alpha.9' } `
+    'alpha.9 downloader rejects the local HTTP test helper from the manifest'
 
 $invalid = New-TestManifest; $invalid.package_status = 'awaiting_root_audit'
 Assert-Throws { Test-ManifestDocument -Manifest $invalid -RequestedTag 'v0.1.0-alpha.1' } 'unreviewed package status is rejected'
@@ -279,6 +336,8 @@ $publishedAlpha7 = [pscustomobject]@{ tag_name='v0.1.0-alpha.7'; draft=$false; p
 Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha7) -RequestedTag 'v0.1.0-alpha.7').tag_name -ceq 'v0.1.0-alpha.7') 'alpha.7 is selected by exact tag'
 $publishedAlpha8 = [pscustomobject]@{ tag_name='v0.1.0-alpha.8'; draft=$false; prerelease=$true }
 Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha8) -RequestedTag 'v0.1.0-alpha.8').tag_name -ceq 'v0.1.0-alpha.8') 'alpha.8 is selected by exact tag'
+$publishedAlpha9 = [pscustomobject]@{ tag_name='v0.1.0-alpha.9'; draft=$false; prerelease=$true }
+Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha9) -RequestedTag 'v0.1.0-alpha.9').tag_name -ceq 'v0.1.0-alpha.9') 'alpha.9 is selected by exact tag'
 
 $goodAssets = New-TestAssetList -Manifest $validManifest
 $release = [pscustomobject]@{ assets=$goodAssets; target_commitish=[string]$validManifest.source.commit }
@@ -421,7 +480,7 @@ try {
 
 . (Join-Path $PSScriptRoot 'package-release.ps1')
 . (Join-Path $PSScriptRoot 'publish-release.ps1')
-foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8')) {
+foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9')) {
     $packageProfile = Set-ReleaseVersion -Version $tag
     $packagePaths = @($packageProfile.PackageFiles | Where-Object { $_ -cne 'manifest.json' })
     $downloadFiles = @($downloadProfiles[$tag].Files)
