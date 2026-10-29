@@ -10,7 +10,17 @@
 
 开发顺序：P0 查清是否可读取真实 Node Mode/RX-TX 调制；若读不到就把 `unknown` 记入内部日志，主界面隐藏无读值字段，通过已有有效操作收集人工确认，不暗切 Node Mode，也不宣称软件锁定物理 DIRECT 或禁止 RF。明确 `BM transmit_enabled` 只约束 BM 网络上行，并单独定义 AP 射频转发许可与 DIRECT 确认。保留官方指示灯行为，不追求“网络呼入亮蓝灯”；通话方向显示真实 BM/HRI 字段。P1 沿现有音频链验收 BM→FTX-1→FM RF 与 FM RF→FTX-1→BM 两个方向，核对 TG91 只监听语义、RX 来源是否经 AP 转发、目标/组选择、PTT 释放、超时和回灌；不新写电脑 FM/IQ 调制器，也不重复已通过的手咪 DIRECT 双向回声。用户已确认 AP 模式下网络语音可经电台 RF 输出，空口验收仍需届时确定可观察的接收手段；当前不要求 MMDVM 或第二台电台。P2 独立查明 C4FM 的 AMBE/帧与元数据后再验证 RF，不从 FM 推断数字通过。
 
-LCD 保留为核心功能目标，继续并行推进而不阻挡声路/RF 实现和验收。先确认显示行为属于 USB HRI、PC 端 PDN 还是普通 RF 节点，并确定模式、触发与字段；普通 RF 节点列表不直接套到 HRI/DIRECT。R114 的 `sent` 仅说明 Native 完整写出 T 帧，用户仍观察到 LCD 内容区空白；不再重复同一 mode 4 十字节字段尝试。本轮没有发布新包。
+LCD 已按用户最新决定改为独立实验方向，不作为 alpha.12 主线，也不阻挡 CAT、声路或 RF 工作。用户在 DIRECT/HRI 环境观察到没有来话或列表内容、底部软键无响应，红色指示灯与 Bridge 环境相同；这些现象没有映射到具体底层故障。R114 记录的 Native T 帧完整写出不证明 LCD 已绘制；不再重复同一 mode 4 十字节字段尝试。详细离线研究见 [R116 LCD 实验报告](../research/r116/lcd-lab/R116_LCD实验性独立逆向报告.md)。
+
+## R116 alpha.12 CAT 控制接入（2026-10-30）
+
+alpha.12 增加 FTX-1 CAT-1 单操作查询与设置：MAIN/SUB 频率、无线机模式和 PC 功率控制值可查询；MAIN 频率、无线机模式和 PC 值可设置。每次设置前核对 ID0840 与 TX0，发送一次后读回，不自动重试。设置 MAIN 频率或模式会先停止 Bridge 核心，完成后保持断开；应用功率还需最近 3 秒内核心状态空闲、无活动通话、接收媒体空闲或已过滤且队列为空。CAT 手册没有 HRI MODE 或 Node Mode 指令，本版不显示这两项自动切换，也不猜 EX 地址。
+
+电台偏好使用本机 UserConfigDirectory 中的 radio-control-preferences.json；打开设置窗不会创建文件，只有用户保存时才写。初始偏好为 COM11、38400/8N2、25 W。Windows 未枚举出 COM11 时不会创建假的设备项。期望功率不会在启动、查询或保存偏好时自动发送。通用发行包清单排除此文件。R112 网络音频指标与 R113 历史文档保留。
+
+CAT fake 测试在 PowerShell 7 和 Windows PowerShell 5.1 各通过 52 项断言。UI 的 `tools/test-ui-radio-cat.ps1` 用 fake callback 验证真实 WPF 控件和操作生命周期，在 PS5 STA 与 PS7 STA 均通过；根会话另以 Windows PowerShell 5.1 独立运行退出码 0。RenderOnly 在两种窗口尺寸、缺少 CAT 模块和坏偏好文件场景均通过，根会话完成视检；现有 UI status/lifecycle 检查也通过，status 检查新增的 stub 仅补齐局部依赖，没有放宽断言。发行包 profile 沿用 40 项 Native 测试；package-release 合成断言 516 项、download-release 1783 项、publish-release 离线断言 109 项均通过。
+
+根会话最近一次 Windows PowerShell 5.1.26100.8737 的 COM11、38400/8N2 查询返回来源 `FTX-1 CAT-1`、ID0840、MAIN FM、SPA-1 功率路径设定 25 W，FA/FB 均读回；清理为 `closed`、错误为 `null`，CAT 配置写入次数为 0。该查询没有执行任何设置命令。HRI MODE 与 WIRES-X Node Mode 仍未实现 CAT 写控制。clean build、alpha.12 本机测试包和包级启动检查尚未完成；没有生成 ZIP、Git tag 或 GitHub Release。完整接线见 [R116 总交接](docs/R116_总交接.md)、[CAT 实现说明](docs/R116_CAT能力与控制实现.md)、[电台控制界面说明](docs/R116_电台控制界面.md) 和 [alpha.12 本机测试版记录](docs/releases/v0.1.0-alpha.12.md)。
 
 ## R114 alpha.11 LCD 实测与日志审计（2026-10-30）
 

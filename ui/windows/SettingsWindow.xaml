@@ -201,6 +201,49 @@
             <StackPanel><TextBlock Text="电台音频输出" Foreground="#AAB5BA"/><ComboBox x:Name="WaveOutEndpointBox"/></StackPanel>
           </StackPanel>
         </Border>
+        <Border x:Name="RadioCatPanel" Background="#20252A" BorderBrush="#3A4248" BorderThickness="1" Padding="10" Margin="0,0,0,6" Visibility="Collapsed">
+          <StackPanel>
+            <TextBlock Text="FTX-1 CAT-1 电台设置" FontSize="13" FontWeight="Bold" Margin="0,0,0,3"/>
+            <Grid>
+              <Grid.ColumnDefinitions><ColumnDefinition Width="2*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+              <StackPanel><TextBlock Text="CAT-1 串口" Foreground="#AAB5BA"/><ComboBox x:Name="CatPortBox"/></StackPanel>
+              <StackPanel Grid.Column="1"><TextBlock Text="波特率" Foreground="#AAB5BA"/><ComboBox x:Name="CatBaudRateBox"><ComboBoxItem Content="4800" Tag="4800"/><ComboBoxItem Content="9600" Tag="9600"/><ComboBoxItem Content="19200" Tag="19200"/><ComboBoxItem Content="38400" Tag="38400"/><ComboBoxItem Content="115200" Tag="115200"/></ComboBox></StackPanel>
+              <StackPanel Grid.Column="2"><TextBlock Text="停止位" Foreground="#AAB5BA"/><ComboBox x:Name="CatStopBitsBox"><ComboBoxItem Content="1" Tag="One"/><ComboBoxItem Content="2" Tag="Two"/></ComboBox></StackPanel>
+              <Button x:Name="ReadRadioButton" Grid.Column="3" Content="读取电台" VerticalAlignment="Bottom" MinWidth="100" Margin="0,3,0,6"/>
+            </Grid>
+            <TextBlock x:Name="CatOperationStatusText" Text="" Foreground="#9DA8AD" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,5" Visibility="Collapsed"/>
+            <StackPanel x:Name="CatObservedPanel" Visibility="Collapsed" Margin="0,0,0,5">
+              <TextBlock x:Name="CatRadioIdentityText" Text="" Foreground="#9DA8AD" FontSize="10" TextWrapping="Wrap"/>
+              <TextBlock x:Name="CatObservedMainModeText" Text="" Foreground="#8CC9A1" FontSize="11" Margin="0,1,0,0"/>
+              <TextBlock x:Name="CatObservedSubModeText" Text="" Foreground="#9DA8AD" FontSize="10" Margin="0,1,0,0"/>
+              <TextBlock x:Name="CatObservedFrequencyText" Text="" Foreground="#8CC9A1" FontSize="11" Margin="0,1,0,0"/>
+              <TextBlock x:Name="CatObservedPowerText" Text="" Foreground="#8CC9A1" FontSize="11" Margin="0,1,0,0"/>
+            </StackPanel>
+            <TextBlock Text="MAIN 调制模式" FontWeight="Bold" Margin="0,3,0,1"/>
+            <Grid>
+              <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+              <ComboBox x:Name="CatMainModeBox" SelectedIndex="-1">
+                <ComboBoxItem Content="FM" Tag="FM"/><ComboBoxItem Content="FM-N" Tag="FM-N"/>
+                <ComboBoxItem Content="C4FM-DN" Tag="C4FM-DN"/><ComboBoxItem Content="C4FM-VW" Tag="C4FM-VW"/>
+              </ComboBox>
+              <Button x:Name="ApplyCatModeButton" Grid.Column="1" Content="应用 MAIN 模式" MinWidth="150"/>
+            </Grid>
+            <TextBlock Text="MAIN VFO 频率（MHz）" FontWeight="Bold" Margin="0,3,0,1"/>
+            <Grid>
+              <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+              <TextBox x:Name="CatMainFrequencyMHzBox"/>
+              <Button x:Name="ApplyCatFrequencyButton" Grid.Column="1" Content="应用 MAIN 频率" MinWidth="150"/>
+            </Grid>
+            <Grid Margin="0,4,0,0">
+              <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <StackPanel>
+                  <TextBlock x:Name="CatDesiredPowerText" Text="目标功率 25 W" Foreground="#8CC9A1" FontWeight="Bold" Margin="0,0,10,0"/>
+                <Slider x:Name="CatPowerSlider" Minimum="5" Maximum="50" Value="25" IsSnapToTickEnabled="True" TickFrequency="1" SmallChange="1" LargeChange="5"/>
+              </StackPanel>
+              <Button x:Name="ApplyCatPowerButton" Grid.Column="1" Content="应用功率" MinWidth="120" VerticalAlignment="Center"/>
+            </Grid>
+          </StackPanel>
+        </Border>
         <Border Background="#20252A" BorderBrush="#3A4248" BorderThickness="1" Padding="10" Margin="0,0,0,6">
           <StackPanel>
             <TextBlock Text="音量 · 下次连接生效" FontSize="13" FontWeight="Bold" Margin="0,0,0,5"/>

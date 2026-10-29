@@ -64,6 +64,7 @@ $script:alpha11TestNames = @(
     $script:alpha10TestNames[0..5] + 'radio_identity_cache_test' +
     $script:alpha10TestNames[6..($script:alpha10TestNames.Count - 1)]
 )
+$script:alpha12TestNames = @($script:alpha11TestNames)
 $script:activeReleaseVersion = 'v0.1.0-alpha.1'
 
 function Get-ReleaseProfile {
@@ -537,7 +538,50 @@ function Get-ReleaseProfile {
                 NotIncluded = $alpha11NotIncluded
             }
         }
-        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.11 release profiles are supported.' }
+        'v0.1.0-alpha.12' {
+            $alpha11 = Get-ReleaseProfile -Version 'v0.1.0-alpha.11'
+            $alpha12SourceFiles = @($alpha11.SourceFiles | Where-Object {
+                [string]$_.Destination -cne 'README.md' -and
+                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha11.cmd' -and
+                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha11.ps1'
+            }) + @(
+                @{ Source='docs\releases\v0.1.0-alpha.12-package-README.md'; Destination='README.md' },
+                @{ Source='tools\start-wirex-bridge-alpha12.cmd'; Destination='start-wirex-bridge.cmd' },
+                @{ Source='tools\start-wirex-bridge-alpha12.ps1'; Destination='tools/start-wirex-bridge.ps1' },
+                @{ Source='ui\windows\RadioCat.psm1'; Destination='ui\windows\RadioCat.psm1' },
+                @{ Source='docs\R116_CAT能力与控制实现.md'; Destination='docs\R116_CAT能力与控制实现.md' },
+                @{ Source='docs\R116_电台控制界面.md'; Destination='docs\R116_电台控制界面.md' }
+            )
+            $alpha12PackageFiles = @($alpha11.PackageFiles) + @(
+                'ui/windows/RadioCat.psm1',
+                'docs/R116_CAT能力与控制实现.md',
+                'docs/R116_电台控制界面.md'
+            )
+            $alpha12AssetMap = [ordered]@{}
+            foreach ($path in $alpha11.AssetMap.Keys) { $alpha12AssetMap[$path] = $alpha11.AssetMap[$path] }
+            $alpha12AssetMap['ui/windows/RadioCat.psm1'] = 'ui__windows__radio-cat.psm1'
+            $alpha12AssetMap['docs/R116_CAT能力与控制实现.md'] = 'docs__r116-cat-controls.md'
+            $alpha12AssetMap['docs/R116_电台控制界面.md'] = 'docs__r116-radio-controls-ui.md'
+            $alpha12NotIncluded = @($alpha11.NotIncluded | ForEach-Object {
+                ([string]$_).Replace('alpha.11', 'alpha.12')
+            })
+            $alpha12NotIncluded += @(
+                'HRI MODE and Node Mode cannot be switched by a documented CAT command; no guessed EX address is exposed',
+                'The FTX-1 LCD remains experimental and is not an alpha.12 product feature; no incoming-call or list contents were observed in the documented DIRECT/HRI checks'
+            )
+            return [pscustomobject]@{
+                Version = 'v0.1.0-alpha.12'
+                TestNames = $script:alpha12TestNames
+                SourceFiles = $alpha12SourceFiles
+                PackageFiles = $alpha12PackageFiles
+                Directories = @($alpha11.Directories)
+                AssetMap = $alpha12AssetMap
+                PackageReadme = 'docs\releases\v0.1.0-alpha.12-package-README.md'
+                ReleaseScope = 'R116 DIRECT: user-triggered CAT queries and readback-checked MAIN frequency, radio mode, and PC power-control settings using documented FTX-1 CAT commands'
+                NotIncluded = $alpha12NotIncluded
+            }
+        }
+        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.12 release profiles are supported.' }
     }
 }
 
@@ -910,6 +954,15 @@ function Invoke-ReleasePackaging {
                 'private/user-config/radio-identity-cache.json',
                 'private/user-config/channel-favorites.json',
                 'private/user-config/password-file-path.txt'
+            )
+        }
+        if ($Version -ceq 'v0.1.0-alpha.12') {
+            $excludedPrivateFiles += @(
+                'private/user-config-directory.txt',
+                'private/user-config/radio-identity-cache.json',
+                'private/user-config/channel-favorites.json',
+                'private/user-config/password-file-path.txt',
+                'private/user-config/radio-control-preferences.json'
             )
         }
         $sourceText = @"

@@ -615,6 +615,67 @@ try {
         'alpha.11 publisher rejects a personal password-path file in the generic package'
     Remove-Item -LiteralPath $alpha11PrivateDirectory -Recurse -Force -ErrorAction Stop
 
+    $alpha12Root = Join-Path $testRoot 'package-alpha12'
+    Copy-Item -LiteralPath $alpha11Root -Destination $alpha12Root -Recurse
+    $alpha12Profile = Set-PublishProfile -Tag 'v0.1.0-alpha.12'
+    foreach ($relativePath in @('ui/windows/RadioCat.psm1', 'docs/R116_CAT能力与控制实现.md', 'docs/R116_电台控制界面.md')) {
+        $fullPath = Join-Path $alpha12Root $relativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+        $parent = Split-Path -Parent $fullPath
+        if (-not [System.IO.Directory]::Exists($parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+        if ($relativePath -ceq 'ui/windows/RadioCat.psm1') {
+            [System.IO.File]::WriteAllText($fullPath, 'Export-ModuleMember -Function @()', [System.Text.UTF8Encoding]::new($true))
+        } else {
+            Write-Utf8NoBom -Path $fullPath -Text ('synthetic alpha.12 package content: ' + $relativePath)
+        }
+    }
+    $alpha12ReadmePath = Join-Path $alpha12Root 'README.md'
+    Write-Utf8NoBom -Path $alpha12ReadmePath -Text 'synthetic alpha.12 package README'
+    $alpha12LauncherPath = Join-Path $alpha12Root 'tools\start-wirex-bridge.ps1'
+    $alpha12LauncherText = [System.IO.File]::ReadAllText($alpha12LauncherPath, [System.Text.Encoding]::UTF8)
+    Write-Utf8NoBom -Path $alpha12LauncherPath -Text $alpha12LauncherText.Replace('alpha.11', 'alpha.12')
+
+    $alpha12ManifestPath = Join-Path $alpha12Root 'manifest.json'
+    $alpha12Manifest = [System.IO.File]::ReadAllText($alpha12ManifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $alpha12Manifest.files = @($alpha12Manifest.files | Where-Object {
+        [string]$_.path -cne 'README.md' -and [string]$_.path -cne 'tools/start-wirex-bridge.ps1'
+    })
+    foreach ($relativePath in @('README.md', 'tools/start-wirex-bridge.ps1',
+        'ui/windows/RadioCat.psm1', 'docs/R116_CAT能力与控制实现.md', 'docs/R116_电台控制界面.md')) {
+        $fullPath = Join-Path $alpha12Root $relativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+        $item = Get-Item -LiteralPath $fullPath
+        $alpha12Manifest.files += ,([ordered]@{
+            path = $relativePath
+            asset_name = (Get-PublishAssetName -RelativePath $relativePath)
+            length_bytes = [long]$item.Length
+            sha256 = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            source = 'synthetic test content'
+        })
+    }
+    $alpha12Manifest.version = 'v0.1.0-alpha.12'
+    $alpha12Manifest.tag_candidate = 'v0.1.0-alpha.12'
+    $alpha12Manifest | Add-Member -MemberType NoteProperty -Name release_scope -Value 'R116 DIRECT: documented CAT queries and controls' -Force
+    $alpha12Manifest.build.passed_test_count = $alpha12Profile.TestNames.Count
+    $alpha12Manifest.build.passed_tests = @($alpha12Profile.TestNames)
+    $alpha12Manifest.excluded_private_files = @($alpha12Manifest.excluded_private_files) + 'private/user-config/radio-control-preferences.json'
+    $validAlpha12ManifestJson = ConvertTo-Json -InputObject $alpha12Manifest -Depth 12
+    Write-Utf8NoBom -Path $alpha12ManifestPath -Text ($validAlpha12ManifestJson + [Environment]::NewLine)
+    $alpha12Package = Assert-PublishPackage -PackageRoot $alpha12Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.12'
+    Assert-True ($alpha12Package.Assets.Count -eq ($alpha11Package.Assets.Count + 3)) 'alpha.12 publisher accepts exactly three new assets and the inherited manifest'
+    Assert-True ($alpha12Profile.AssetPathMap.Count -eq ($alpha11Profile.AssetPathMap.Count + 3)) 'alpha.12 publisher inherits the complete alpha.11 allowlist and adds three exact paths'
+    Assert-True (@($alpha12Package.Assets | Where-Object { $_.Name -ceq 'ui__windows__radio-cat.psm1' }).Count -eq 1 -and
+        @($alpha12Package.Assets | Where-Object { $_.Name -like 'docs__r116-*' }).Count -eq 2 -and
+        @($alpha12Package.Assets | Where-Object { $_.Name -ceq 'docs__r112-a-network-audio-metrics.md' }).Count -eq 1 -and
+        @($alpha12Package.Assets | Where-Object { $_.Name -like 'docs__r113-*' }).Count -eq 2) 'alpha.12 retains R112/R113 assets and adds the CAT module plus two R116 guides'
+    Assert-True ($alpha12Package.Manifest.build.passed_tests.Count -eq 40 -and
+        [string]::Join('|', @($alpha12Package.Manifest.build.passed_tests)) -ceq [string]::Join('|', @($alpha11Profile.TestNames))) 'alpha.12 publisher retains the exact 40-test Native inventory'
+    Assert-True (@($alpha12Package.Manifest.excluded_private_files | Where-Object { [string]$_ -ceq 'private/user-config/radio-control-preferences.json' }).Count -eq 1) 'alpha.12 manifest declares local radio-control preferences as excluded'
+    Assert-Throws { Assert-PublishPackage -PackageRoot $alpha12Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.11' } 'alpha.12 package cannot pass the alpha.11 profile'
+    $alpha12PrivateDirectory = Join-Path $alpha12Root 'private\user-config'
+    New-Item -ItemType Directory -Path $alpha12PrivateDirectory -Force | Out-Null
+    Write-Utf8NoBom -Path (Join-Path $alpha12PrivateDirectory 'radio-control-preferences.json') -Text '{"defaultPowerWatts":25}'
+    Assert-Throws { Assert-PublishPackage -PackageRoot $alpha12Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.12' } 'alpha.12 publisher rejects a personal radio-control preference file'
+    Remove-Item -LiteralPath $alpha12PrivateDirectory -Recurse -Force -ErrorAction Stop
+
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.9')
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.1')
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.1')
@@ -746,7 +807,7 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $preflightRepo 'tools') -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $preflightRepo 'docs/releases') -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'download-release.ps1') -Destination (Join-Path $preflightRepo 'tools/download-release.ps1')
-    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11')) {
+    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12')) {
         Write-Utf8NoBom -Path (Join-Path $preflightRepo ('docs/releases/' + $tag + '.md')) -Text ('Synthetic offline release notes for ' + $tag + "`n")
     }
     $gitInit = @(& git -C $preflightRepo init --quiet 2>&1)
@@ -755,7 +816,7 @@ try {
         @('config', 'user.name', 'WIREX Offline Test'),
         @('config', 'user.email', 'wirex-offline-test@example.invalid'),
         @('remote', 'add', 'origin', $script:repositoryUrl),
-        @('add', '--', 'tools/download-release.ps1', 'docs/releases/v0.1.0-alpha.1.md', 'docs/releases/v0.1.0-alpha.2.md', 'docs/releases/v0.1.0-alpha.3.md', 'docs/releases/v0.1.0-alpha.4.md', 'docs/releases/v0.1.0-alpha.5.md', 'docs/releases/v0.1.0-alpha.6.md', 'docs/releases/v0.1.0-alpha.7.md', 'docs/releases/v0.1.0-alpha.8.md', 'docs/releases/v0.1.0-alpha.9.md', 'docs/releases/v0.1.0-alpha.10.md', 'docs/releases/v0.1.0-alpha.11.md'),
+        @('add', '--', 'tools/download-release.ps1', 'docs/releases/v0.1.0-alpha.1.md', 'docs/releases/v0.1.0-alpha.2.md', 'docs/releases/v0.1.0-alpha.3.md', 'docs/releases/v0.1.0-alpha.4.md', 'docs/releases/v0.1.0-alpha.5.md', 'docs/releases/v0.1.0-alpha.6.md', 'docs/releases/v0.1.0-alpha.7.md', 'docs/releases/v0.1.0-alpha.8.md', 'docs/releases/v0.1.0-alpha.9.md', 'docs/releases/v0.1.0-alpha.10.md', 'docs/releases/v0.1.0-alpha.11.md', 'docs/releases/v0.1.0-alpha.12.md'),
         @('commit', '--quiet', '-m', 'offline publisher preflight fixture')
     )) {
         $previousErrorActionPreference = $ErrorActionPreference
@@ -768,7 +829,7 @@ try {
     $preflightCommit = [string](@(& git -C $preflightRepo rev-parse HEAD 2>$null)[0]).Trim()
     if ($LASTEXITCODE -ne 0 -or $preflightCommit -cnotmatch '^[0-9a-f]{40}$') { throw 'Could not identify the temporary offline commit.' }
     New-Item -ItemType Directory -Path (Join-Path $preflightRepo 'build/_work') -Force | Out-Null
-    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11')) {
+    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12')) {
         $sourcePackage = switch ($tag) {
             'v0.1.0-alpha.1' { $packageRoot; break }
             'v0.1.0-alpha.2' { $alpha2Root; break }
@@ -781,6 +842,7 @@ try {
             'v0.1.0-alpha.9' { $alpha9Root; break }
             'v0.1.0-alpha.10' { $alpha10Root; break }
             'v0.1.0-alpha.11' { $alpha11Root; break }
+            'v0.1.0-alpha.12' { $alpha12Root; break }
         }
         $targetPackage = Join-Path $preflightRepo ('build/releases/' + $tag)
         $targetParent = Split-Path -Parent $targetPackage
@@ -798,6 +860,7 @@ try {
             'v0.1.0-alpha.9' { $validAlpha9ManifestJson; break }
             'v0.1.0-alpha.10' { $validAlpha10ManifestJson; break }
             'v0.1.0-alpha.11' { $validAlpha11ManifestJson; break }
+            'v0.1.0-alpha.12' { $validAlpha12ManifestJson; break }
         }
         $preflightManifest = $sourceManifestText | ConvertFrom-Json
         $preflightManifest.source.commit = $preflightCommit
@@ -817,7 +880,7 @@ try {
         $script:credentialAttempted = $true
         throw 'OFFLINE_TEST_CREDENTIAL_ACCESS_BLOCKED'
     }
-    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11')) {
+    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12')) {
         $script:preflightBoundaryReached = $false
         $boundaryMessage = ''
         try {

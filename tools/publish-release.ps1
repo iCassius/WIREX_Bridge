@@ -47,6 +47,7 @@ $script:alpha11TestNames = @(
     $script:alpha10TestNames[0..5] + 'radio_identity_cache_test' +
     $script:alpha10TestNames[6..($script:alpha10TestNames.Count - 1)]
 )
+$script:alpha12TestNames = @($script:alpha11TestNames)
 
 function Set-PublishProfile {
     param([Parameter(Mandatory=$true)][string]$Tag)
@@ -233,7 +234,19 @@ function Set-PublishProfile {
             $script:expectedDirectories = @($alpha10.Directories)
             $script:expectedTestNames = $script:alpha11TestNames
         }
-        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.11 release profiles are supported.' }
+        'v0.1.0-alpha.12' {
+            $alpha11 = Set-PublishProfile -Tag 'v0.1.0-alpha.11'
+            $assetMap = [ordered]@{}
+            foreach ($path in $alpha11.AssetPathMap.Keys) { $assetMap[$path] = $alpha11.AssetPathMap[$path] }
+            $assetMap['ui/windows/RadioCat.psm1'] = 'ui__windows__radio-cat.psm1'
+            $assetMap['docs/R116_CAT能力与控制实现.md'] = 'docs__r116-cat-controls.md'
+            $assetMap['docs/R116_电台控制界面.md'] = 'docs__r116-radio-controls-ui.md'
+            $script:publishTag = $Tag
+            $script:assetPathMap = $assetMap
+            $script:expectedDirectories = @($alpha11.Directories)
+            $script:expectedTestNames = $script:alpha12TestNames
+        }
+        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.12 release profiles are supported.' }
     }
     return [pscustomobject]@{
         Tag = $script:publishTag

@@ -763,6 +763,76 @@ Assert-True ($alpha11ReadmeText.Contains('SrcCallSign') -and
 Assert-True (-not $alpha11ReadmeText.Contains('屏显已完成') -and
     -not $alpha11ReadmeText.Contains('实机通过')) 'alpha.11 package README makes no LCD or device pass claim'
 
+$alpha12Profile = Get-ReleaseProfile -Version 'v0.1.0-alpha.12'
+[void](Set-ReleaseVersion -Version 'v0.1.0-alpha.12')
+$alpha12Files = @(Get-ExpectedReleasePackageFiles)
+$alpha12Tests = @(Get-ExpectedReleaseTests)
+Assert-True ([string]$alpha12Profile.ReleaseScope -like 'R116 DIRECT:*') 'alpha.12 release metadata stays within documented DIRECT CAT controls'
+$alpha12NotIncluded = @($alpha12Profile.NotIncluded)
+Assert-True (@($alpha12NotIncluded | Where-Object { [string]$_ -like 'HRI MODE and Node Mode cannot be switched by a documented CAT command*' }).Count -eq 1 -and
+    @($alpha12NotIncluded | Where-Object { [string]$_ -like 'The FTX-1 LCD remains experimental*' }).Count -eq 1) 'alpha.12 profile keeps undocumented HRI switches unavailable and LCD outside the main release scope'
+Assert-Equal $alpha12Files.Count ($alpha11Files.Count + 3) 'alpha.12 adds exactly RadioCat and two R116 documents to all alpha.11 files'
+Assert-True ([string]::Join('|', $alpha12Tests) -ceq [string]::Join('|', $alpha11Tests) -and
+    [string]::Join('|', $builderTestNames) -ceq [string]::Join('|', $alpha12Tests)) 'alpha.12 reuses exactly the existing 40 Native tests in their original order'
+foreach ($requiredPath in @(
+    'ui/windows/RadioIdentity.psm1',
+    'ui/windows/RadioCat.psm1',
+    'docs/R112_A_网络音频指标.md',
+    'docs/R113_LCD核心实现.md',
+    'docs/R113_身份与LCD接线.md',
+    'docs/R116_CAT能力与控制实现.md',
+    'docs/R116_电台控制界面.md'
+)) {
+    Assert-True ($alpha12Files -ccontains $requiredPath) "alpha.12 package includes $requiredPath"
+}
+Assert-True (@($alpha12Files | Where-Object { [string]$_ -like 'docs/R112_A_*' -or [string]$_ -like 'docs/R113_*' }).Count -eq 3) 'alpha.12 preserves the R112 network metrics and both historical R113 documents'
+Assert-True (-not ($alpha12Files -ccontains 'private/user-config/radio-control-preferences.json')) 'alpha.12 never puts local radio-control preferences in the generic package'
+Assert-True (@($alpha12Profile.SourceFiles | Where-Object {
+    [string]$_.Source -ceq 'ui\windows\RadioCat.psm1' -and
+    [string]$_.Destination -ceq 'ui\windows\RadioCat.psm1'
+}).Count -eq 1) 'alpha.12 source mapping includes RadioCat exactly once'
+$alpha12CmdPath = Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha12.cmd'
+$alpha12CmdBytes = [System.IO.File]::ReadAllBytes($alpha12CmdPath)
+Assert-True (@($alpha12CmdBytes | Where-Object { $_ -gt 127 }).Count -eq 0) 'alpha.12 CMD source contains ASCII only'
+$alpha11CmdText = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes((Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha11.cmd')))
+Assert-True ([System.Text.Encoding]::ASCII.GetString($alpha12CmdBytes) -ceq $alpha11CmdText) 'alpha.12 CMD preserves path, argument and exit-code forwarding behavior'
+$alpha12LauncherPath = Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha12.ps1'
+$alpha12LauncherBytes = [System.IO.File]::ReadAllBytes($alpha12LauncherPath)
+Assert-True ($alpha12LauncherBytes.Length -ge 3 -and $alpha12LauncherBytes[0] -eq 0xEF -and
+    $alpha12LauncherBytes[1] -eq 0xBB -and $alpha12LauncherBytes[2] -eq 0xBF) 'alpha.12 technical entry has a UTF-8 BOM for Windows PowerShell 5.1'
+$alpha12LauncherTokens = $null
+$alpha12LauncherErrors = $null
+[System.Management.Automation.Language.Parser]::ParseFile($alpha12LauncherPath, [ref]$alpha12LauncherTokens, [ref]$alpha12LauncherErrors) | Out-Null
+Assert-True ($alpha12LauncherErrors.Count -eq 0) ('alpha.12 technical entry parses; parse errors={0}' -f $alpha12LauncherErrors.Count)
+$alpha12LauncherText = [System.IO.File]::ReadAllText($alpha12LauncherPath, [System.Text.Encoding]::UTF8)
+$alpha11LauncherText = [System.IO.File]::ReadAllText((Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha11.ps1'), [System.Text.Encoding]::UTF8)
+Assert-True ($alpha12LauncherText -ceq $alpha11LauncherText.Replace('alpha.11', 'alpha.12')) 'alpha.12 technical entry changes only its version-specific startup failure text'
+Assert-True (@($alpha12Profile.SourceFiles | Where-Object {
+    [string]$_.Source -ceq 'tools\start-wirex-bridge-alpha11.cmd' -or
+    [string]$_.Source -ceq 'tools\start-wirex-bridge-alpha11.ps1'
+}).Count -eq 0) 'alpha.12 source profile does not retain the alpha.11 launcher'
+$radioCatSourcePath = Join-Path $repositoryRoot 'ui\windows\RadioCat.psm1'
+$radioCatSourceBytes = [System.IO.File]::ReadAllBytes($radioCatSourcePath)
+Assert-True ($radioCatSourceBytes.Length -ge 3 -and $radioCatSourceBytes[0] -eq 0xEF -and
+    $radioCatSourceBytes[1] -eq 0xBB -and $radioCatSourceBytes[2] -eq 0xBF) 'alpha.12 RadioCat module has a UTF-8 BOM for Windows PowerShell 5.1'
+$radioCatTokens = $null
+$radioCatParseErrors = $null
+[System.Management.Automation.Language.Parser]::ParseFile($radioCatSourcePath, [ref]$radioCatTokens, [ref]$radioCatParseErrors) | Out-Null
+Assert-True ($radioCatParseErrors.Count -eq 0) ('alpha.12 RadioCat module parses; parse errors={0}' -f $radioCatParseErrors.Count)
+foreach ($mapping in @(
+    @{ Path='ui/windows/RadioCat.psm1'; Name='ui__windows__radio-cat.psm1' },
+    @{ Path='docs/R116_CAT能力与控制实现.md'; Name='docs__r116-cat-controls.md' },
+    @{ Path='docs/R116_电台控制界面.md'; Name='docs__r116-radio-controls-ui.md' }
+)) {
+    Assert-True ((Get-ReleaseAssetName -RelativePath $mapping.Path) -ceq $mapping.Name) "alpha.12 fixed ASCII asset mapping $($mapping.Path)"
+}
+Assert-True ([string]$alpha12Profile.PackageReadme -ceq 'docs\releases\v0.1.0-alpha.12-package-README.md') 'alpha.12 profile selects its versioned package README'
+$alpha12ReadmeText = [System.IO.File]::ReadAllText((Join-Path $repositoryRoot $alpha12Profile.PackageReadme), [System.Text.Encoding]::UTF8)
+Assert-True ($alpha12ReadmeText.Contains('radio-control-preferences.json') -and $alpha12ReadmeText.Contains('25 W') -and
+    $alpha12ReadmeText.Contains('HRI MODE') -and $alpha12ReadmeText.Contains('WIRES-X Node Mode') -and
+    $alpha12ReadmeText.Contains('不作为 alpha.12 主线功能')) 'alpha.12 README documents local preference defaults, unavailable HRI switches and experimental LCD scope'
+Assert-True (-not $alpha12ReadmeText.Contains('屏显已完成') -and -not $alpha12ReadmeText.Contains('实机通过')) 'alpha.12 README makes no LCD or device pass claim'
+
 [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.1')
 Assert-Throws { Get-ReleaseAssetName -RelativePath 'start-ui.cmd' } 'alpha.1 不接受 alpha.2 UI asset'
 Assert-True ((Get-ReleaseAssetName -RelativePath 'docs/连接配置.md') -ceq 'docs__connection-profile.md') `
@@ -1100,6 +1170,61 @@ try {
     Write-Utf8NoBom -Path (Join-Path $alpha11PrivateDirectory 'password-file-path.txt') -Text 'synthetic test path only'
     Assert-Throws { Assert-ReleasePackageInventory -PackageRoot $alpha11InventoryRoot -Version 'v0.1.0-alpha.11' } `
         'alpha.11 package inventory rejects a local password-path file'
+
+    [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.12')
+    $alpha12InventoryProfile = Get-ReleaseProfile -Version 'v0.1.0-alpha.12'
+    $alpha12InventoryRoot = Join-Path $testRoot 'synthetic-alpha12-package'
+    New-Item -ItemType Directory -Path $alpha12InventoryRoot -Force | Out-Null
+    foreach ($relativeDirectory in $alpha12InventoryProfile.Directories) {
+        New-Item -ItemType Directory -Path (Join-Path $alpha12InventoryRoot $relativeDirectory.Replace('/', '\')) -Force | Out-Null
+    }
+    foreach ($relativePath in ($alpha12InventoryProfile.PackageFiles | Where-Object { $_ -cne 'manifest.json' })) {
+        $fullPath = Join-Path $alpha12InventoryRoot $relativePath.Replace('/', '\')
+        $parent = Split-Path -Parent $fullPath
+        if (-not [System.IO.Directory]::Exists($parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+        if ($relativePath -ceq 'private/device-y.bin') {
+            Copy-Item -LiteralPath $approvedFixturePath -Destination $fullPath
+        } else {
+            Write-Utf8NoBom -Path $fullPath -Text ('synthetic alpha.12 inventory fixture: ' + $relativePath)
+        }
+    }
+    $alpha12InventoryRecords = @()
+    foreach ($relativePath in ($alpha12InventoryProfile.PackageFiles | Where-Object { $_ -cne 'manifest.json' } | Sort-Object)) {
+        $fullPath = Join-Path $alpha12InventoryRoot $relativePath.Replace('/', '\')
+        $item = Get-Item -LiteralPath $fullPath
+        $alpha12InventoryRecords += ,([ordered]@{
+            path = $relativePath
+            asset_name = [string]$alpha12InventoryProfile.AssetMap[$relativePath]
+            length_bytes = [long]$item.Length
+            sha256 = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            source = 'synthetic alpha.12 inventory fixture'
+        })
+    }
+    $alpha12InventoryManifest = [ordered]@{
+        schema_version = 1
+        package_status = 'awaiting_root_audit'
+        version = 'v0.1.0-alpha.12'
+        tag_candidate = 'v0.1.0-alpha.12'
+        manifest_asset_name = 'manifest.json'
+        approved_y_fixture = [ordered]@{
+            path = 'private/device-y.bin'
+            length_bytes = 100
+            sha256 = $approvedFixtureHash
+        }
+        excluded_private_files = @(
+            'private/bm-device-password.txt', 'connection-profile.json', 'audio-settings.json',
+            'private/user-config-directory.txt', 'private/user-config/radio-identity-cache.json',
+            'private/user-config/channel-favorites.json', 'private/user-config/password-file-path.txt',
+            'private/user-config/radio-control-preferences.json'
+        )
+        files = $alpha12InventoryRecords
+    }
+    Write-Utf8NoBom -Path (Join-Path $alpha12InventoryRoot 'manifest.json') -Text ((ConvertTo-Json -InputObject $alpha12InventoryManifest -Depth 8) + [Environment]::NewLine)
+    Assert-True ((Assert-ReleasePackageInventory -PackageRoot $alpha12InventoryRoot -Version 'v0.1.0-alpha.12') -eq $null) 'alpha.12 synthetic inventory accepts the exact CAT module/docs and declares local preference exclusion'
+    $alpha12PrivateDirectory = Join-Path $alpha12InventoryRoot 'private\user-config'
+    New-Item -ItemType Directory -Path $alpha12PrivateDirectory -Force | Out-Null
+    Write-Utf8NoBom -Path (Join-Path $alpha12PrivateDirectory 'radio-control-preferences.json') -Text '{"defaultPowerWatts":25}'
+    Assert-Throws { Assert-ReleasePackageInventory -PackageRoot $alpha12InventoryRoot -Version 'v0.1.0-alpha.12' } 'alpha.12 inventory rejects a personal radio-control preference file'
 
     $alpha2PackageRoot = Join-Path $testRoot 'package-alpha2'
     Copy-Item -LiteralPath $packageRoot -Destination $alpha2PackageRoot -Recurse

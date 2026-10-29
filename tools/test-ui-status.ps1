@@ -42,6 +42,7 @@ function Set-UiIdentityRowVisibility {
     $script:mockIdentityRows[$Row] = if ($null -eq $Visibility) { 'Visible' } else { [string]$Visibility }
 }
 function Update-DynamicGroupControls { }
+function Update-UiRadioCatControls { }
 function Complete-UiIdentityQuery { }
 function Format-UiRadioIdentity {
     param([Parameter(Mandatory=$true)][uint64]$RadioId)

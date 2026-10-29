@@ -84,11 +84,26 @@ if (-not [System.IO.File]::Exists($script:modulePath)) { throw '缺少本机配�
 $script:supervisorSource = Join-Path $script:uiRoot 'BridgeSupervisor.cs'
 $script:mainXamlPath = Join-Path $script:uiRoot 'MainWindow.xaml'
 $script:settingsXamlPath = Join-Path $script:uiRoot 'SettingsWindow.xaml'
+$script:radioCatModulePath = Join-Path $script:uiRoot 'RadioCat.psm1'
+$script:radioCatModuleAvailable = [System.IO.File]::Exists($script:radioCatModulePath)
+$script:radioCatModuleLoadError = ''
 foreach ($path in @($script:supervisorSource, $script:mainXamlPath, $script:settingsXamlPath)) {
     if (-not [System.IO.File]::Exists($path)) { throw "缺少桌面界面文件：$path" }
 }
 
 Import-Module -Name $script:modulePath -Force
+if ($script:radioCatModuleAvailable) {
+    try {
+        Import-Module -Name $script:radioCatModulePath -Force
+        foreach ($commandName in @('Invoke-Ftx1CatOperation','New-Ftx1CatModeCommand','New-Ftx1CatFrequencyCommand',
+                'New-Ftx1CatPowerCommand','ConvertFrom-Ftx1CatFrame')) {
+            if (-not (Get-Command -Name $commandName -ErrorAction SilentlyContinue)) { throw "CAT 模块缺少 $commandName。" }
+        }
+    } catch {
+        $script:radioCatModuleAvailable = $false
+        $script:radioCatModuleLoadError = $_.Exception.Message
+    }
+}
 $validatedDiagnosticDirectory = if ($RoutingDiagnostic) {
     Test-UiRoutingDiagnosticConfigDirectory -Directory $UserConfigDirectory -PackageRoot $script:packageRoot -RequireFixture:$RoutingDiagnosticAutoTest
 } else { $UserConfigDirectory }
@@ -155,6 +170,40 @@ $script:deviceDiscoveryRestartPending = $false
 $script:deviceDiscoveryStopReason = ''
 $script:deviceDiscoveryStopStartedUtc = [DateTime]::MinValue
 $script:closingAfterDeviceDiscovery = $false
+$script:radioControlPreferencesPath = Join-Path $script:configDirectory 'radio-control-preferences.json'
+$script:radioControlPreferences = [pscustomobject][ordered]@{
+    schema_version = 1
+    cat_port = 'COM11'
+    baud_rate = 38400
+    stop_bits = 'Two'
+    desired_power_watts = 25
+}
+$script:radioControlPreferencesError = ''
+$script:radioCatOperationPowerShell = $null
+$script:radioCatOperationAsync = $null
+$script:radioCatOperationStopAsync = $null
+$script:radioCatOperationStartedUtc = [DateTime]::MinValue
+$script:radioCatOperationStopStartedUtc = [DateTime]::MinValue
+$script:radioCatOperationOwnerWindow = $null
+$script:radioCatOperationKind = ''
+$script:radioCatOperationPortName = ''
+$script:radioCatOperationBaudRate = 0
+$script:radioCatOperationStopBits = ''
+$script:radioCatObservedConnectionKey = ''
+$script:radioCatObservedPortName = ''
+$script:radioCatOperationCancelled = $false
+$script:radioCatOperationCancelReason = ''
+$script:radioCatCloseSettingsAfterOperation = $false
+$script:radioCatCloseMainAfterOperation = $false
+$script:radioCatResult = $null
+$script:radioCatObserved = $null
+$script:radioCatLastOperationStatus = ''
+$script:radioCatPowerPreferenceDirty = $false
+$script:radioCatPowerNeedsUserChoice = $false
+$script:loadingRadioCatSettings = $false
+$script:activeHriPortName = ''
+$script:radioModeApplyAfterStop = $null
+$script:radioModePreviousHriPortName = ''
 $script:statusStream = $null
 $script:statusPath = ''
 $script:preparedRunDirectory = ''
@@ -385,6 +434,7 @@ function Get-WpfWindowLayoutInfo {
                 $evidence | Add-Member -NotePropertyName content_available_height -NotePropertyValue ([double](
                     $control.ActualHeight - $control.Padding.Top - $control.Padding.Bottom -
                     $control.BorderThickness.Top - $control.BorderThickness.Bottom))
+                $evidence | Add-Member -NotePropertyName is_enabled -NotePropertyValue ([bool]$control.IsEnabled)
                 $evidence | Add-Member -NotePropertyName font_size -NotePropertyValue ([double]$control.FontSize)
                 $evidence | Add-Member -NotePropertyName visual_text -NotePropertyValue @(Get-UiVisualTextValues -Root $control)
             }
@@ -408,6 +458,13 @@ function Get-WpfWindowLayoutInfo {
                     [string]$control.SelectedItem.Content
                 } else { '' }
                 $evidence | Add-Member -NotePropertyName selected_text -NotePropertyValue $selectedText
+                $evidence | Add-Member -NotePropertyName is_enabled -NotePropertyValue ([bool]$control.IsEnabled)
+            }
+            if ($control -is [System.Windows.Controls.Slider]) {
+                $evidence | Add-Member -NotePropertyName value -NotePropertyValue ([double]$control.Value)
+                $evidence | Add-Member -NotePropertyName minimum -NotePropertyValue ([double]$control.Minimum)
+                $evidence | Add-Member -NotePropertyName maximum -NotePropertyValue ([double]$control.Maximum)
+                $evidence | Add-Member -NotePropertyName is_enabled -NotePropertyValue ([bool]$control.IsEnabled)
             }
             if ($name -ceq 'DynamicGroupPanel') {
                 $evidence | Add-Member -NotePropertyName visual_text -NotePropertyValue @(Get-UiVisualTextValues -Root $control)
@@ -3401,7 +3458,7 @@ function Get-UiSerialOptions {
 function Set-UiDeviceComboOptions {
     param([Parameter(Mandatory=$true)][System.Windows.Controls.ComboBox]$Combo,
         [Parameter(Mandatory=$true)][object[]]$Options,
-        [Parameter(Mandatory=$true)][string]$SelectedValue)
+        [Parameter(Mandatory=$true)][AllowEmptyString()][string]$SelectedValue)
     $Combo.Items.Clear()
     $selectedContainer = $null
     foreach ($option in $Options) {
@@ -3450,6 +3507,755 @@ function Set-SettingsDeviceControls {
     $discoveryControl = Get-SettingsControl 'DeviceDiscoveryText'
     $discoveryControl.Text = $discoveryText
     $discoveryControl.Visibility = if ($discoveryText) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+    Set-UiRadioCatDeviceControls
+}
+
+function Get-UiDefaultRadioControlPreferences {
+    return [pscustomobject][ordered]@{
+        schema_version = 1
+        cat_port = 'COM11'
+        baud_rate = 38400
+        stop_bits = 'Two'
+        desired_power_watts = 25
+    }
+}
+
+function Read-UiRadioControlPreferences {
+    param([Parameter(Mandatory=$true)][string]$Path)
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    if (-not [System.IO.File]::Exists($fullPath)) { return Get-UiDefaultRadioControlPreferences }
+    if ((New-Object System.IO.FileInfo($fullPath)).Length -gt 4096) { throw '电台控制偏好文件超过 4 KiB。' }
+    $json = [System.IO.File]::ReadAllText($fullPath, [System.Text.Encoding]::UTF8)
+    try { $document = ConvertFrom-Json -InputObject $json -ErrorAction Stop }
+    catch { throw '电台控制偏好 JSON 无效。' }
+    if ($document -isnot [System.Management.Automation.PSCustomObject]) { throw '电台控制偏好必须是 JSON 对象。' }
+    $expected = @('schema_version','cat_port','baud_rate','stop_bits','desired_power_watts')
+    $actual = @($document.PSObject.Properties | ForEach-Object { [string]$_.Name })
+    if ($actual.Count -ne $expected.Count -or @($expected | Where-Object { $actual -cnotcontains $_ }).Count -gt 0 -or
+        @($actual | Where-Object { $expected -cnotcontains $_ }).Count -gt 0) {
+        throw '电台控制偏好字段不完整或包含未知字段。'
+    }
+    if ($document.schema_version -is [bool] -or [int]$document.schema_version -ne 1 -or
+        $document.cat_port -isnot [string] -or $document.cat_port -notmatch '^COM[1-9][0-9]{0,2}$' -or
+        $document.baud_rate -is [bool] -or [int]$document.baud_rate -notin @(4800,9600,19200,38400,115200) -or
+        $document.stop_bits -isnot [string] -or $document.stop_bits -cnotin @('One','Two') -or
+        $document.desired_power_watts -is [bool] -or [int]$document.desired_power_watts -lt 5 -or
+        [int]$document.desired_power_watts -gt 50) {
+        throw '电台控制偏好包含无效端口、串口格式或期望功率。'
+    }
+    return [pscustomobject][ordered]@{
+        schema_version = 1
+        cat_port = $document.cat_port.ToUpperInvariant()
+        baud_rate = [int]$document.baud_rate
+        stop_bits = [string]$document.stop_bits
+        desired_power_watts = [int]$document.desired_power_watts
+    }
+}
+
+function Write-UiRadioControlPreferences {
+    param([Parameter(Mandatory=$true)][string]$Path,[Parameter(Mandatory=$true)][object]$Preferences)
+    if ($Preferences.cat_port -isnot [string] -or $Preferences.cat_port -notmatch '^COM[1-9][0-9]{0,2}$' -or
+        [int]$Preferences.baud_rate -notin @(4800,9600,19200,38400,115200) -or
+        [string]$Preferences.stop_bits -cnotin @('One','Two') -or
+        [int]$Preferences.desired_power_watts -lt 5 -or [int]$Preferences.desired_power_watts -gt 50) {
+        throw '电台控制偏好值超出允许范围。'
+    }
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $directory = [System.IO.Path]::GetDirectoryName($fullPath)
+    if (-not [System.IO.Directory]::Exists($directory)) { throw '电台控制偏好目录不存在。' }
+    $temporaryPath = $fullPath + '.tmp-' + [guid]::NewGuid().ToString('N')
+    $backupPath = $fullPath + '.bak-' + [guid]::NewGuid().ToString('N')
+    $record = [pscustomobject][ordered]@{
+        schema_version = 1
+        cat_port = [string]$Preferences.cat_port
+        baud_rate = [int]$Preferences.baud_rate
+        stop_bits = [string]$Preferences.stop_bits
+        desired_power_watts = [int]$Preferences.desired_power_watts
+    }
+    try {
+        [System.IO.File]::WriteAllText($temporaryPath, ((ConvertTo-Json -InputObject $record -Depth 3) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+        if ([System.IO.File]::Exists($fullPath)) { [System.IO.File]::Replace($temporaryPath, $fullPath, $backupPath) }
+        else { [System.IO.File]::Move($temporaryPath, $fullPath) }
+    } finally {
+        if ([System.IO.File]::Exists($temporaryPath)) { [System.IO.File]::Delete($temporaryPath) }
+        if ([System.IO.File]::Exists($backupPath)) { [System.IO.File]::Delete($backupPath) }
+    }
+}
+
+function Set-UiRadioCatDeviceControls {
+    if (-not $script:settingsWindow -or -not $script:radioCatModuleAvailable) { return }
+    $portControl = Get-SettingsControl 'CatPortBox'
+    $baudControl = Get-SettingsControl 'CatBaudRateBox'
+    $stopBitsControl = Get-SettingsControl 'CatStopBitsBox'
+    if (-not $script:radioControlPreferences) { $script:radioControlPreferences = Get-UiDefaultRadioControlPreferences }
+
+    $allPorts = if ($script:deviceCatalog) { @($script:deviceCatalog.serial_ports) } else { @() }
+    $hriPorts = if ($script:deviceCatalog) { @($script:deviceCatalog.hri_ports) } else { @() }
+    $options = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($port in @($allPorts | Sort-Object PortName)) {
+        $portName = [string]$port.PortName
+        $hriMatch = @($hriPorts | Where-Object { [string]::Equals([string]$_.PortName,$portName,[System.StringComparison]::OrdinalIgnoreCase) }).Count -gt 0
+        $friendlyName = if ([string]::IsNullOrWhiteSpace([string]$port.FriendlyName)) { $portName } else { [string]$port.FriendlyName }
+        $label = if ($hriMatch -or [bool]$port.IsHri) { 'HRI · ' + $portName } else { $friendlyName + ' · ' + $portName }
+        [void]$options.Add((New-UiDeviceOption -Label $label -Value $portName -IsAvailable (-not $hriMatch -and -not [bool]$port.IsHri) -Kind $(if ($hriMatch -or [bool]$port.IsHri) { 'hri' } else { 'cat_candidate' })))
+    }
+    $savedPort = [string]$script:radioControlPreferences.cat_port
+    if (@($options | Where-Object { [string]::Equals([string]$_.Value,$savedPort,[System.StringComparison]::OrdinalIgnoreCase) }).Count -eq 0) {
+        $label = '选择 CAT 串口'
+        [void]$options.Add((New-UiDeviceOption -Label $label -Value '' -IsAvailable $false -Kind 'missing'))
+    }
+    $selectedPort = if (@($options | Where-Object { [string]::Equals([string]$_.Value,$savedPort,[System.StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) { $savedPort } else { '' }
+    Set-UiDeviceComboOptions -Combo $portControl -Options $options.ToArray() -SelectedValue $selectedPort
+    $baudControl.SelectedItem = @($baudControl.Items | Where-Object { [int]$_.Tag -eq [int]$script:radioControlPreferences.baud_rate })[0]
+    $stopBitsControl.SelectedItem = @($stopBitsControl.Items | Where-Object { [string]$_.Tag -ceq [string]$script:radioControlPreferences.stop_bits })[0]
+    Update-UiRadioCatControls
+}
+
+function Get-UiRadioCatProperty {
+    param([AllowNull()][object]$InputObject,[Parameter(Mandatory=$true)][string]$Name)
+    if ($null -eq $InputObject) { return $null }
+    $property = $InputObject.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+}
+
+function Set-UiRadioCatText {
+    param([Parameter(Mandatory=$true)][string]$Name,[AllowEmptyString()][string]$Text)
+    if (-not $script:settingsWindow) { return }
+    $control = Get-SettingsControl $Name
+    if ($control -is [System.Windows.Controls.TextBlock] -or $control -is [System.Windows.Controls.TextBox]) {
+        $control.Text = $Text
+    }
+}
+
+function Get-UiRadioCatSelectedPort {
+    if (-not $script:settingsWindow -or -not $script:radioCatModuleAvailable) { return $null }
+    $item = (Get-SettingsControl 'CatPortBox').SelectedItem
+    if ($item -isnot [System.Windows.Controls.ComboBoxItem] -or $null -eq $item.Tag) { return $null }
+    if (-not [bool]$item.Tag.IsAvailable -or [string]$item.Tag.Kind -ceq 'hri') { return $null }
+    return [string]$item.Tag.Value
+}
+
+function Get-UiRadioCatConnectionKey {
+    $port = Get-UiRadioCatSelectedPort
+    if (-not $port) { return '' }
+    $baudItem = (Get-SettingsControl 'CatBaudRateBox').SelectedItem
+    $stopBitsItem = (Get-SettingsControl 'CatStopBitsBox').SelectedItem
+    if ($baudItem -isnot [System.Windows.Controls.ComboBoxItem] -or $stopBitsItem -isnot [System.Windows.Controls.ComboBoxItem]) { return '' }
+    return ('{0}|{1}|{2}' -f $port.ToUpperInvariant(),[int]$baudItem.Tag,[string]$stopBitsItem.Tag)
+}
+
+function Get-UiHriPortName {
+    if ($script:activeHriPortName -match '^COM[1-9][0-9]{0,2}$') { return $script:activeHriPortName.ToUpperInvariant() }
+    foreach ($profile in @($script:activeProfile,$script:effectiveProfile,$script:storedProfile)) {
+        if ($profile -and $profile.devices -and [string]$profile.devices.serial_port -match '^COM[1-9][0-9]{0,2}$') {
+            return ([string]$profile.devices.serial_port).ToUpperInvariant()
+        }
+    }
+    if ($script:deviceCatalog -and @($script:deviceCatalog.hri_ports).Count -eq 1) {
+        $port = [string]$script:deviceCatalog.hri_ports[0].PortName
+        if ($port -match '^COM[1-9][0-9]{0,2}$') { return $port.ToUpperInvariant() }
+    }
+    return ''
+}
+
+function Test-UiRadioCatRunIdle {
+    param([switch]$RequireFreshStatus)
+    if (-not $script:supervisor -or $script:supervisor.HasExited) { return $true }
+    if (-not $script:latestStatus -or $script:lastStatusUtc -eq [DateTime]::MinValue) { return $false }
+    if ($RequireFreshStatus -or $script:supervisor) {
+        if (([DateTime]::UtcNow - $script:lastStatusUtc).TotalMilliseconds -gt 3000) { return $false }
+    }
+    $status = $script:latestStatus
+    foreach ($name in @('ptt_gate_ready','ptt_gate_tx_active','ptt_last_state','current_call_valid','receive_media_state',
+            'rx_queue_bursts','rx_queue_playback_frames','rx_queue_unconfirmed_playback_frames','rx_buffered_receive_frames')) {
+        if ($null -eq $status.PSObject.Properties[$name]) { return $false }
+    }
+    if ($status.ptt_gate_ready -isnot [bool] -or $status.ptt_gate_tx_active -isnot [bool] -or
+        $status.current_call_valid -isnot [bool] -or [string]$status.ptt_last_state -cne 'released' -or
+        [bool]$status.ptt_gate_tx_active -or [bool]$status.current_call_valid -or
+        [string]$status.receive_media_state -cnotin @('idle','filtered') -or -not [bool]$status.ptt_gate_ready) { return $false }
+    foreach ($name in @('rx_queue_bursts','rx_queue_playback_frames','rx_queue_unconfirmed_playback_frames','rx_buffered_receive_frames')) {
+        $value = [uint64]0
+        if ($status.PSObject.Properties[$name].Value -is [bool] -or
+            -not [uint64]::TryParse([string]$status.PSObject.Properties[$name].Value,[Globalization.NumberStyles]::None,
+                [Globalization.CultureInfo]::InvariantCulture,[ref]$value) -or $value -ne 0) { return $false }
+    }
+    return $true
+}
+
+function Get-UiRadioCatObservedValue {
+    param([AllowNull()][object]$Observed,[Parameter(Mandatory=$true)][string]$Name)
+    $field = Get-UiRadioCatProperty -InputObject $Observed -Name $Name
+    if ($null -eq $field) { return $null }
+    $value = Get-UiRadioCatProperty -InputObject $field -Name 'value'
+    $source = Get-UiRadioCatProperty -InputObject $field -Name 'source'
+    $updated = Get-UiRadioCatProperty -InputObject $field -Name 'updated_at_utc'
+    if ($null -eq $value -or [string]::IsNullOrWhiteSpace([string]$source) -or [string]::IsNullOrWhiteSpace([string]$updated)) { return $null }
+    $parsedTime = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse([string]$updated,[Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::AssumeUniversal,[ref]$parsedTime)) { return $null }
+    return [pscustomobject]@{ value=$value; source=[string]$source; updated_at_utc=$parsedTime.ToUniversalTime() }
+}
+
+function Merge-UiRadioCatObserved {
+    param([AllowNull()][object]$Existing,[AllowNull()][object]$Fresh)
+    if ($null -eq $Existing) { return $Fresh }
+    if ($null -eq $Fresh) { return $Existing }
+    $merged = [ordered]@{}
+    foreach ($property in $Existing.PSObject.Properties) { $merged[[string]$property.Name] = $property.Value }
+    foreach ($property in $Fresh.PSObject.Properties) {
+        $field = $property.Value
+        if ($null -eq $field -or $null -eq $field.PSObject.Properties['value']) { continue }
+        if ($null -eq $field.value -or [string]::IsNullOrWhiteSpace([string]$field.source) -or
+            [string]::IsNullOrWhiteSpace([string]$field.updated_at_utc)) { continue }
+        $merged[[string]$property.Name] = $field
+    }
+    return [pscustomobject]$merged
+}
+
+function Format-UiRadioCatUtcTime {
+    param([Parameter(Mandatory=$true)][DateTimeOffset]$Value)
+    return $Value.ToLocalTime().ToString('HH:mm:ss',[Globalization.CultureInfo]::InvariantCulture)
+}
+
+function Format-UiFrequencyMHz {
+    param([Parameter(Mandatory=$true)][long]$FrequencyHz)
+    return ([decimal]$FrequencyHz / [decimal]1000000).ToString('0.######',[Globalization.CultureInfo]::InvariantCulture)
+}
+
+function Set-UiRadioCatPowerSliderRange {
+    param([Parameter(Mandatory=$true)][ValidateRange(5,50)][int]$Maximum)
+    if (-not $script:radioControlPreferences) { return }
+    $slider = Get-SettingsControl 'CatPowerSlider'
+    $targetWatts = [int]$script:radioControlPreferences.desired_power_watts
+    $needsChoice = ($targetWatts -gt $Maximum)
+    $wasLoading = [bool]$script:loadingRadioCatSettings
+    $oldTag = $slider.Tag
+    try {
+        $script:loadingRadioCatSettings = $true
+        $slider.Tag = '__radio_cat_programmatic__'
+        $slider.Minimum = 5
+        $slider.Maximum = [double]$Maximum
+        $script:radioCatPowerNeedsUserChoice = $needsChoice
+        $slider.Value = if ($needsChoice) { 5.0 } else { [double]$targetWatts }
+    } finally {
+        $slider.Tag = $oldTag
+        $script:loadingRadioCatSettings = $wasLoading
+    }
+    $text = if ($needsChoice) {
+        '目标功率 {0} W；当前范围 5–{1} W，请选定合法值后应用' -f $targetWatts,$Maximum
+    } else { '目标功率 {0} W' -f $targetWatts }
+    Set-UiRadioCatText -Name 'CatDesiredPowerText' -Text $text
+}
+
+function ConvertFrom-UiFrequencyMHz {
+    param([Parameter(Mandatory=$true)][string]$Text)
+    $value = $Text.Trim()
+    if ($value -cnotmatch '^(?:0|[1-9][0-9]*)(?:\.[0-9]{1,6})?$') {
+        throw 'MAIN VFO 频率必须使用 MHz 十进制数，最多 6 位小数。'
+    }
+    $mhz = [decimal]0
+    if (-not [decimal]::TryParse($value,[Globalization.NumberStyles]::AllowDecimalPoint,
+            [Globalization.CultureInfo]::InvariantCulture,[ref]$mhz)) { throw 'MAIN VFO 频率数值无效。' }
+    $hzDecimal = $mhz * [decimal]1000000
+    if ($hzDecimal -ne [decimal]::Truncate($hzDecimal) -or $hzDecimal -lt 30000 -or $hzDecimal -gt 470000000) {
+        throw 'MAIN VFO 频率必须是整数 Hz，范围为 0.030000 到 470 MHz。'
+    }
+    return [long]$hzDecimal
+}
+
+function Update-UiRadioCatObservationDisplay {
+    if (-not $script:settingsWindow) { return }
+    $panel = Get-SettingsControl 'CatObservedPanel'
+    if (-not $script:radioCatObserved) {
+        $panel.Visibility = [System.Windows.Visibility]::Collapsed
+        return
+    }
+    $id = Get-UiRadioCatObservedValue -Observed $script:radioCatObserved -Name 'radio_id'
+    $mainMode = Get-UiRadioCatObservedValue -Observed $script:radioCatObserved -Name 'main_mode'
+    $subMode = Get-UiRadioCatObservedValue -Observed $script:radioCatObserved -Name 'sub_mode'
+    $mainFrequency = Get-UiRadioCatObservedValue -Observed $script:radioCatObserved -Name 'main_frequency_hz'
+    $power = Get-UiRadioCatObservedValue -Observed $script:radioCatObserved -Name 'power'
+    $visibleValues = 0
+    if ($id) {
+        Set-UiRadioCatText -Name 'CatRadioIdentityText' -Text ('CAT-1 {0} · ID {1} · {2} · 读取 {3}' -f [string]$script:radioCatObservedPortName,[string]$id.value,$id.source,(Format-UiRadioCatUtcTime $id.updated_at_utc))
+        $visibleValues++
+    }
+    if ($mainMode) {
+        Set-UiRadioCatText -Name 'CatObservedMainModeText' -Text ('MAIN 模式：{0} · {1} · {2}' -f [string]$mainMode.value.mode,$mainMode.source,(Format-UiRadioCatUtcTime $mainMode.updated_at_utc))
+        $visibleValues++
+        $modeBox = Get-SettingsControl 'CatMainModeBox'
+        $modeBox.SelectedItem = @($modeBox.Items | Where-Object { [string]$_.Tag -ceq [string]$mainMode.value.mode })[0]
+    }
+    if ($subMode) {
+        Set-UiRadioCatText -Name 'CatObservedSubModeText' -Text ('SUB 模式：{0} · {1} · {2}' -f [string]$subMode.value.mode,$subMode.source,(Format-UiRadioCatUtcTime $subMode.updated_at_utc))
+        $visibleValues++
+    }
+    if ($mainFrequency) {
+        $frequencyMHz = Format-UiFrequencyMHz -FrequencyHz ([long]$mainFrequency.value)
+        Set-UiRadioCatText -Name 'CatObservedFrequencyText' -Text ('MAIN VFO：{0} MHz · {1} · {2}' -f $frequencyMHz,$mainFrequency.source,(Format-UiRadioCatUtcTime $mainFrequency.updated_at_utc))
+        if ([string]::IsNullOrWhiteSpace((Get-SettingsControl 'CatMainFrequencyMHzBox').Text)) {
+            (Get-SettingsControl 'CatMainFrequencyMHzBox').Text = $frequencyMHz
+        }
+        $visibleValues++
+    }
+    if ($power) {
+        $value = $power.value
+        Set-UiRadioCatText -Name 'CatObservedPowerText' -Text ('电台功率设定：{0} {1} W · {2} · {3}' -f [string]$value.path,[int]$value.watts,$power.source,(Format-UiRadioCatUtcTime $power.updated_at_utc))
+        $visibleValues++
+        $capabilities = Get-UiRadioCatProperty -InputObject $script:radioCatResult -Name 'capabilities'
+        $powerCapability = Get-UiRadioCatProperty -InputObject $capabilities -Name 'set_power'
+        $maximum = Get-UiRadioCatProperty -InputObject $powerCapability -Name 'maximum_watts'
+        if ($maximum -is [int] -or $maximum -is [long]) {
+            Set-UiRadioCatPowerSliderRange -Maximum ([int]$maximum)
+        }
+    }
+    $panel.Visibility = if ($visibleValues -gt 0) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+}
+
+function Update-UiRadioCatControls {
+    if (-not $script:settingsWindow) { return }
+    $panel = Get-SettingsControl 'RadioCatPanel'
+    $panel.Visibility = if ($script:radioCatModuleAvailable) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+    if (-not $script:radioCatModuleAvailable) { return }
+    if ($script:radioControlPreferencesError) {
+        foreach ($name in @('CatPortBox','CatBaudRateBox','CatStopBitsBox','ReadRadioButton','CatMainModeBox','ApplyCatModeButton',
+                'CatMainFrequencyMHzBox','ApplyCatFrequencyButton','CatPowerSlider','ApplyCatPowerButton')) {
+            (Get-SettingsControl $name).IsEnabled = $false
+        }
+        return
+    }
+    $busy = ($script:radioCatOperationPowerShell -or $script:radioModeApplyAfterStop -or $script:stopTask -or
+        $script:preparationStarted -or $script:prepareStopAsync)
+    foreach ($name in @('CatPortBox','CatBaudRateBox','CatStopBitsBox','CatMainModeBox',
+            'CatMainFrequencyMHzBox','CatPowerSlider')) {
+        (Get-SettingsControl $name).IsEnabled = -not $busy
+    }
+    $port = Get-UiRadioCatSelectedPort
+    $portReady = ($port -and $script:deviceDiscoveryState -eq 'ready')
+    $connectionKey = Get-UiRadioCatConnectionKey
+    $observationMatchesConnection = ($connectionKey -and $script:radioCatObservedConnectionKey -and
+        [string]::Equals($connectionKey,$script:radioCatObservedConnectionKey,[StringComparison]::OrdinalIgnoreCase))
+    $hriPort = Get-UiHriPortName
+    $portConflict = $portReady -and $hriPort -and [string]::Equals($port,$hriPort,[StringComparison]::OrdinalIgnoreCase)
+    (Get-SettingsControl 'ReadRadioButton').IsEnabled = (-not $busy -and $portReady -and -not $portConflict)
+
+    $idle = Test-UiRadioCatRunIdle -RequireFreshStatus
+    $modeBox = Get-SettingsControl 'CatMainModeBox'
+    $modeSelected = ($modeBox.SelectedItem -is [System.Windows.Controls.ComboBoxItem] -and
+        [string]$modeBox.SelectedItem.Tag -cin @('FM','FM-N','C4FM-DN','C4FM-VW'))
+    $frequencyHz = [long]0
+    $frequencyValid = $false
+    try { $frequencyHz = ConvertFrom-UiFrequencyMHz -Text (Get-SettingsControl 'CatMainFrequencyMHzBox').Text; $frequencyValid = $true } catch { }
+    $buttonText = if ($script:supervisor -and -not $script:supervisor.HasExited) { '断开并应用 MAIN 模式' } else { '应用 MAIN 模式' }
+    (Get-SettingsControl 'ApplyCatModeButton').Content = $buttonText
+    (Get-SettingsControl 'ApplyCatModeButton').IsEnabled = (-not $busy -and $portReady -and -not $portConflict -and $modeSelected -and $observationMatchesConnection -and $idle)
+    $frequencyButtonText = if ($script:supervisor -and -not $script:supervisor.HasExited) { '断开并应用 MAIN 频率' } else { '应用 MAIN 频率' }
+    (Get-SettingsControl 'ApplyCatFrequencyButton').Content = $frequencyButtonText
+    (Get-SettingsControl 'ApplyCatFrequencyButton').IsEnabled = (-not $busy -and $portReady -and -not $portConflict -and $frequencyValid -and $observationMatchesConnection -and $idle)
+
+    $powerAllowed = $false
+    $powerMaximum = 50
+    $powerCapability = $null
+    $currentPower = $null
+    if ($script:radioCatResult) {
+        $powerCapability = Get-UiRadioCatProperty -InputObject (Get-UiRadioCatProperty -InputObject $script:radioCatResult -Name 'capabilities') -Name 'set_power'
+        $maximum = Get-UiRadioCatProperty -InputObject $powerCapability -Name 'maximum_watts'
+        $currentPower = Get-UiRadioCatObservedValue -Observed $script:radioCatObserved -Name 'power'
+        if ($currentPower -and ($maximum -is [int] -or $maximum -is [long])) { $powerMaximum = [int]$maximum }
+    }
+    Set-UiRadioCatPowerSliderRange -Maximum $powerMaximum
+    if ($script:radioCatResult) {
+        $maximum = Get-UiRadioCatProperty -InputObject $powerCapability -Name 'maximum_watts'
+        if ([string]$script:radioCatResult.status -ceq 'confirmed' -and
+            $powerCapability -and [bool]$powerCapability.available -and $currentPower -and $observationMatchesConnection -and ($maximum -is [int] -or $maximum -is [long])) {
+            $powerMaximum = [int]$maximum
+            $powerAllowed = ([int](Get-SettingsControl 'CatPowerSlider').Value -ge 5 -and
+                [int](Get-SettingsControl 'CatPowerSlider').Value -le $powerMaximum -and
+                (-not ($script:supervisor -and -not $script:supervisor.HasExited) -or $idle))
+        }
+    }
+    (Get-SettingsControl 'CatPowerSlider').IsEnabled = -not $busy
+    (Get-SettingsControl 'ApplyCatPowerButton').IsEnabled = (-not $busy -and $portReady -and -not $portConflict -and
+        $observationMatchesConnection -and $powerAllowed -and -not $script:radioCatPowerNeedsUserChoice)
+    if ($script:radioCatOperationKind) {
+        Set-UiRadioCatText -Name 'CatOperationStatusText' -Text ('CAT-1 操作中：{0}' -f $script:radioCatOperationKind)
+        (Get-SettingsControl 'CatOperationStatusText').Visibility = [System.Windows.Visibility]::Visible
+    }
+}
+
+function Request-StopUiRadioCatOperation {
+    param([string]$Reason)
+    if (-not $script:radioCatOperationPowerShell -or -not $script:radioCatOperationAsync) { return $false }
+    if ($script:radioCatOperationStopAsync) { return $true }
+    $script:radioCatOperationCancelled = $true
+    $script:radioCatOperationCancelReason = if ($Reason) { $Reason } else { 'cancelled' }
+    $script:radioCatOperationStopStartedUtc = [DateTime]::UtcNow
+    try {
+        $script:radioCatOperationStopAsync = $script:radioCatOperationPowerShell.BeginStop($null,$null)
+    } catch {
+        if ($script:radioCatOperationAsync.IsCompleted) { return $true }
+        throw
+    }
+    return $true
+}
+
+function Test-UiRadioCatResult {
+    param([Parameter(Mandatory=$true)][object]$Result,[Parameter(Mandatory=$true)][string]$ExpectedOperation,[Parameter(Mandatory=$true)][string]$ExpectedPort)
+    if ($Result -isnot [System.Management.Automation.PSCustomObject]) { return $false }
+    $required = @('schema_version','operation','status','source','port_name','port_role','started_at_utc','updated_at_utc',
+        'desired','prior','observed','capabilities','cleanup_status','error_code','error_message')
+    $actual = @($Result.PSObject.Properties | ForEach-Object { [string]$_.Name })
+    if ($actual.Count -ne $required.Count -or @($required | Where-Object { $actual -cnotcontains $_ }).Count -gt 0 -or
+        @($actual | Where-Object { $required -cnotcontains $_ }).Count -gt 0) { return $false }
+    if ($Result.schema_version -is [bool] -or [int]$Result.schema_version -ne 1 -or
+        [string]$Result.operation -cne $ExpectedOperation -or
+        [string]$Result.status -cnotin @('confirmed','busy','identity_mismatch','rejected','mismatch','unknown') -or
+        [string]$Result.port_role -cne 'CAT-1' -or
+        -not [string]::Equals([string]$Result.port_name,$ExpectedPort,[StringComparison]::OrdinalIgnoreCase) -or
+        [string]$Result.cleanup_status -cnotin @('closed','close_failed','not_opened')) { return $false }
+    if ([string]$Result.status -ceq 'confirmed' -and [string]$Result.cleanup_status -cne 'closed') { return $false }
+    return $true
+}
+
+function Test-UiRadioCatFreshPowerObservation {
+    param([Parameter(Mandatory=$true)][object]$Result)
+    if ([string]$Result.cleanup_status -cne 'closed' -or
+        [string]$Result.source -cnotin @('FTX-1 CAT-1','CAT test transport') -or
+        -not [string]::Equals([string]$Result.port_name,[string]$script:radioCatOperationPortName,[StringComparison]::OrdinalIgnoreCase)) { return $false }
+    $observed = Get-UiRadioCatProperty -InputObject $Result -Name 'observed'
+    $identity = Get-UiRadioCatProperty -InputObject $observed -Name 'radio_id'
+    $power = Get-UiRadioCatProperty -InputObject $observed -Name 'power'
+    if (-not $identity -or -not $power -or [string](Get-UiRadioCatProperty -InputObject $identity -Name 'source') -cne [string]$Result.source -or
+        [string](Get-UiRadioCatProperty -InputObject $power -Name 'source') -cne [string]$Result.source) { return $false }
+    $identityValue = Get-UiRadioCatProperty -InputObject $identity -Name 'value'
+    $powerValue = Get-UiRadioCatProperty -InputObject $power -Name 'value'
+    if ([string]$identityValue -cne '0840' -or -not $powerValue) { return $false }
+    $path = [string](Get-UiRadioCatProperty -InputObject $powerValue -Name 'path')
+    $watts = Get-UiRadioCatProperty -InputObject $powerValue -Name 'watts'
+    if ($path -cnotin @('FieldHead','Spa1') -or $watts -isnot [int] -or [int]$watts -lt 5 -or [int]$watts -gt 50) { return $false }
+
+    $start = [DateTimeOffset]::MinValue
+    $finish = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse([string]$Result.started_at_utc,[Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::AssumeUniversal,[ref]$start) -or
+        -not [DateTimeOffset]::TryParse([string]$Result.updated_at_utc,[Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::AssumeUniversal,[ref]$finish) -or $finish -lt $start) { return $false }
+    foreach ($field in @($identity,$power)) {
+        $updated = [DateTimeOffset]::MinValue
+        if (-not [DateTimeOffset]::TryParse([string](Get-UiRadioCatProperty -InputObject $field -Name 'updated_at_utc'),
+                [Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::AssumeUniversal,[ref]$updated) -or
+            $updated -lt $start -or $updated -gt $finish.AddSeconds(2)) { return $false }
+    }
+    $capabilities = Get-UiRadioCatProperty -InputObject $Result -Name 'capabilities'
+    $powerCapability = Get-UiRadioCatProperty -InputObject $capabilities -Name 'set_power'
+    $activePath = [string](Get-UiRadioCatProperty -InputObject $powerCapability -Name 'active_path')
+    $maximum = Get-UiRadioCatProperty -InputObject $powerCapability -Name 'maximum_watts'
+    $expectedMaximum = if ($path -ceq 'FieldHead') { 10 } else { 50 }
+    return ($powerCapability -and $activePath -ceq $path -and $maximum -is [int] -and [int]$maximum -eq $expectedMaximum)
+}
+
+function Start-UiRadioCatOperation {
+    param(
+        [Parameter(Mandatory=$true)][ValidateSet('query','setPower','setMode','setFrequency')][string]$Operation,
+        [int]$PowerWatts,
+        [string]$Mode,
+        [long]$FrequencyHz,
+        [ValidateSet('Main')][string]$Side='Main',
+        [string]$HriPortNameOverride,
+        [string]$PortNameOverride,
+        [int]$BaudRateOverride,
+        [string]$StopBitsOverride
+    )
+    if (-not $script:radioCatModuleAvailable) { throw 'FTX-1 CAT-1 模块当前不可用。' }
+    if ($script:radioCatOperationPowerShell) { throw '另一项 CAT-1 操作尚未结束。' }
+    if ($script:preparationStarted -or $script:prepareStopAsync) { throw '核心正在准备或取消连接；请等待设备检查完成。' }
+    $port = if ($PSBoundParameters.ContainsKey('PortNameOverride')) { [string]$PortNameOverride } else { Get-UiRadioCatSelectedPort }
+    if (-not $port) { throw '请选择设备枚举中已发现且不是 HRI 的 CAT-1 端口。' }
+    if ($port -notmatch '^COM[1-9][0-9]{0,2}$' -or $script:deviceDiscoveryState -ne 'ready' -or -not $script:deviceCatalog) {
+        throw 'CAT-1 端口必须来自本次成功的设备枚举。'
+    }
+    $enumeratedCandidate = @($script:deviceCatalog.serial_ports | Where-Object {
+        [string]::Equals([string]$_.PortName,$port,[StringComparison]::OrdinalIgnoreCase)
+    })
+    $enumeratedHri = @($script:deviceCatalog.hri_ports | Where-Object {
+        [string]::Equals([string]$_.PortName,$port,[StringComparison]::OrdinalIgnoreCase)
+    })
+    if ($enumeratedCandidate.Count -ne 1 -or $enumeratedHri.Count -gt 0) { throw '所选 CAT-1 端口没有通过当前设备枚举或被识别为 HRI。' }
+    $hriPort = if ($PSBoundParameters.ContainsKey('HriPortNameOverride')) { [string]$HriPortNameOverride } else { Get-UiHriPortName }
+    if ($hriPort -and [string]::Equals($port,$hriPort,[StringComparison]::OrdinalIgnoreCase)) {
+        throw ('CAT-1 与 HRI 不能共用 {0}。' -f $port)
+    }
+    if ($Operation -cin @('setPower','setMode','setFrequency') -and -not (Test-UiRadioCatRunIdle -RequireFreshStatus)) {
+        throw '核心状态未确认电台空闲；设置操作已取消。'
+    }
+    if ($Operation -cin @('setMode','setFrequency') -and $script:supervisor -and -not $script:supervisor.HasExited) {
+        throw '请先停止 HRI 会话，再应用 MAIN 调制或频率。'
+    }
+    $baud = if ($PSBoundParameters.ContainsKey('BaudRateOverride')) { [int]$BaudRateOverride } else { [int](Get-UiComboTag -Combo (Get-SettingsControl 'CatBaudRateBox')) }
+    $stopBits = if ($PSBoundParameters.ContainsKey('StopBitsOverride')) { [string]$StopBitsOverride } else { [string](Get-UiComboTag -Combo (Get-SettingsControl 'CatStopBitsBox')) }
+    if ($baud -notin @(4800,9600,19200,38400,115200) -or $stopBits -cnotin @('One','Two')) {
+        throw 'CAT-1 串口格式不在模块允许范围内。'
+    }
+    $arguments = @{
+        Operation = $Operation
+        PortName = $port
+        PortRole = 'CAT-1'
+        HriPortName = $hriPort
+        BaudRate = $baud
+        StopBits = $stopBits
+        TimeoutMs = 2500
+    }
+    if ($Operation -ceq 'setPower') { $arguments.PowerWatts = $PowerWatts }
+    if ($Operation -ceq 'setMode') { $arguments.Side = $Side; $arguments.Mode = $Mode }
+    if ($Operation -ceq 'setFrequency') { $arguments.Side = $Side; $arguments.FrequencyHz = $FrequencyHz }
+
+    $script:radioCatOperationKind = $Operation
+    $script:radioCatOperationPortName = $port
+    $script:radioCatOperationBaudRate = $baud
+    $script:radioCatOperationStopBits = $stopBits
+    $script:radioCatOperationCancelled = $false
+    $script:radioCatOperationCancelReason = ''
+    $script:radioCatOperationStopAsync = $null
+    $script:radioCatOperationStartedUtc = [DateTime]::UtcNow
+    $script:radioCatOperationStopStartedUtc = [DateTime]::MinValue
+    $script:radioCatOperationOwnerWindow = $script:settingsWindow
+    $script:radioCatOperationPowerShell = [System.Management.Automation.PowerShell]::Create()
+    $worker = {
+        param([string]$ModulePath,[hashtable]$OperationParameters)
+        $ErrorActionPreference = 'Stop'
+        Import-Module -Name $ModulePath -Force
+        Invoke-Ftx1CatOperation @OperationParameters
+    }
+    try {
+        [void]$script:radioCatOperationPowerShell.AddScript($worker.ToString()).AddArgument($script:radioCatModulePath).AddArgument($arguments)
+        $script:radioCatOperationAsync = $script:radioCatOperationPowerShell.BeginInvoke()
+        Set-UiRadioCatText -Name 'CatOperationStatusText' -Text ('正在执行 CAT-1 {0}；本次操作最多 2.5 秒，不会自动重试。' -f $Operation)
+        (Get-SettingsControl 'CatOperationStatusText').Visibility = [System.Windows.Visibility]::Visible
+        Update-UiRadioCatControls
+    } catch {
+        if ($script:radioCatOperationPowerShell) { $script:radioCatOperationPowerShell.Dispose() }
+        $script:radioCatOperationPowerShell = $null
+        $script:radioCatOperationAsync = $null
+        $script:radioCatOperationKind = ''
+        throw
+    }
+}
+
+function Complete-UiRadioCatOperation {
+    if (-not $script:radioCatOperationPowerShell -or -not $script:radioCatOperationAsync) { return $false }
+    if ($script:radioCatOperationKind -ceq 'setPower' -and -not $script:radioCatOperationCancelled -and
+        -not (Test-UiRadioCatRunIdle -RequireFreshStatus)) {
+        $script:radioCatOperationCancelled = $true
+        $script:radioCatOperationCancelReason = 'core_status_stale_or_busy'
+        if (-not $script:radioCatOperationAsync.IsCompleted) {
+            try { Request-StopUiRadioCatOperation -Reason $script:radioCatOperationCancelReason | Out-Null }
+            catch { Add-UiEvent '核心空闲状态过期，取消 CAT 功率操作失败' }
+        }
+    }
+    if (-not $script:radioCatOperationStopAsync -and -not $script:radioCatOperationAsync.IsCompleted -and
+        ([DateTime]::UtcNow - $script:radioCatOperationStartedUtc).TotalMilliseconds -ge 3000) {
+        try { Request-StopUiRadioCatOperation -Reason 'deadline' | Out-Null }
+        catch { Add-UiEvent 'CAT-1 操作超出期限，已请求关闭串口' }
+        return $false
+    }
+    if ($script:radioCatOperationStopAsync) {
+        if (-not $script:radioCatOperationStopAsync.IsCompleted) {
+            if (([DateTime]::UtcNow - $script:radioCatOperationStopStartedUtc).TotalMilliseconds -ge 3000 -and
+                ($script:closingAfterStop -or $script:radioCatCloseMainAfterOperation -or $script:radioCatCloseSettingsAfterOperation)) {
+                Add-UiEvent 'CAT-1 取消后 3 秒仍未确认串口清理；安全退出界面'
+                [System.Environment]::Exit(2)
+            }
+            return $false
+        }
+    } elseif (-not $script:radioCatOperationAsync.IsCompleted) { return $false }
+
+    $result = $null
+    $failure = ''
+    try {
+        if ($script:radioCatOperationStopAsync) {
+            try { $script:radioCatOperationPowerShell.EndStop($script:radioCatOperationStopAsync) } catch { }
+        }
+        try {
+            $output = $script:radioCatOperationPowerShell.EndInvoke($script:radioCatOperationAsync)
+            if ($output.Count -gt 0) { $result = $output[$output.Count - 1] }
+        } catch { $failure = $_.Exception.Message }
+        if (-not $failure -and $script:radioCatOperationPowerShell.HadErrors) {
+            $failure = @($script:radioCatOperationPowerShell.Streams.Error | ForEach-Object { $_.Exception.Message }) -join '；'
+        }
+    } finally {
+        if ($script:radioCatOperationPowerShell) { $script:radioCatOperationPowerShell.Dispose() }
+        $script:radioCatOperationPowerShell = $null
+        $script:radioCatOperationAsync = $null
+        $script:radioCatOperationStopAsync = $null
+        $script:radioCatOperationStopStartedUtc = [DateTime]::MinValue
+    }
+    $operation = $script:radioCatOperationKind
+    $port = [string]$script:radioCatOperationPortName
+    $baud = [int]$script:radioCatOperationBaudRate
+    $stopBits = [string]$script:radioCatOperationStopBits
+    if ($script:radioCatOperationCancelled) {
+        $failure = 'CAT-1 操作已取消；设置结果未知，不会自动重试。'
+        $script:radioCatLastOperationStatus = 'unknown'
+        $script:radioCatObserved = $null
+        $script:radioCatObservedPortName = ''
+        $script:radioCatObservedConnectionKey = ''
+        $script:radioCatResult = $null
+    } elseif (-not $failure -and $result -and (Test-UiRadioCatResult -Result $result -ExpectedOperation $operation -ExpectedPort $port)) {
+        if ([string]$result.cleanup_status -cne 'closed' -and [string]$result.status -ne 'rejected') {
+            $failure = 'CAT-1 串口关闭状态未确认；本次结果未知。'
+            $script:radioCatLastOperationStatus = 'unknown'
+            $script:radioCatObserved = $null
+            $script:radioCatObservedPortName = ''
+            $script:radioCatObservedConnectionKey = ''
+            $script:radioCatResult = $null
+        } elseif ([string]$result.status -ceq 'confirmed') {
+            $script:radioCatObserved = Merge-UiRadioCatObserved -Existing $script:radioCatObserved -Fresh $result.observed
+            $script:radioCatObservedPortName = $port
+            $script:radioCatObservedConnectionKey = ('{0}|{1}|{2}' -f $port.ToUpperInvariant(),$baud,$stopBits)
+            if ($operation -cin @('query','setPower')) { $script:radioCatResult = $result }
+            else { $script:radioCatResult = $null }
+            $script:radioCatLastOperationStatus = 'confirmed'
+        } else {
+            $failure = if ($result.error_message) { [string]$result.error_message } else { 'CAT-1 未确认本次设置。' }
+            $script:radioCatLastOperationStatus = [string]$result.status
+            if (Test-UiRadioCatFreshPowerObservation -Result $result) {
+                $script:radioCatObserved = Merge-UiRadioCatObserved -Existing $null -Fresh $result.observed
+                $script:radioCatObservedPortName = $port
+                $script:radioCatObservedConnectionKey = ('{0}|{1}|{2}' -f $port.ToUpperInvariant(),$baud,$stopBits)
+                $script:radioCatResult = $result
+            } else {
+                $script:radioCatObserved = $null
+                $script:radioCatObservedPortName = ''
+                $script:radioCatObservedConnectionKey = ''
+                $script:radioCatResult = $null
+            }
+        }
+    } elseif (-not $failure) {
+        $failure = 'CAT-1 返回的数据结构或端口身份不符合界面合同。'
+        $script:radioCatLastOperationStatus = 'unknown'
+        $script:radioCatObserved = $null
+        $script:radioCatObservedPortName = ''
+        $script:radioCatObservedConnectionKey = ''
+        $script:radioCatResult = $null
+    } elseif ($script:radioCatLastOperationStatus -ne 'confirmed') {
+        $script:radioCatObserved = $null
+        $script:radioCatObservedPortName = ''
+        $script:radioCatObservedConnectionKey = ''
+        $script:radioCatResult = $null
+    }
+    if ($script:settingsWindow) {
+        if ($script:radioCatOperationCancelled) {
+            Set-UiRadioCatText -Name 'CatOperationStatusText' -Text $failure
+        } elseif ($script:radioCatLastOperationStatus -ceq 'confirmed') {
+            $stamp = Get-UiRadioCatObservedValue -Observed $script:radioCatObserved -Name 'radio_id'
+            $timeText = if ($stamp) { Format-UiRadioCatUtcTime -Value $stamp.updated_at_utc } else { '时间未知' }
+            Set-UiRadioCatText -Name 'CatOperationStatusText' -Text ('CAT-1 {0} 已读回确认 · {1} · 串口已关闭' -f $operation,$timeText)
+        } else {
+            Set-UiRadioCatText -Name 'CatOperationStatusText' -Text ('CAT-1 {0}：{1}' -f $script:radioCatLastOperationStatus,$failure)
+        }
+        (Get-SettingsControl 'CatOperationStatusText').Visibility = [System.Windows.Visibility]::Visible
+        Update-UiRadioCatObservationDisplay
+        Update-UiRadioCatControls
+    }
+    $script:radioCatOperationKind = ''
+    $script:radioCatOperationPortName = ''
+    $script:radioCatOperationBaudRate = 0
+    $script:radioCatOperationStopBits = ''
+    $script:radioCatOperationCancelled = $false
+    $script:radioCatOperationCancelReason = ''
+    $script:radioCatOperationOwnerWindow = $null
+    $script:radioCatOperationStopStartedUtc = [DateTime]::MinValue
+    if ($script:radioModePreviousHriPortName) { $script:radioModePreviousHriPortName = '' }
+    if ($script:radioCatCloseSettingsAfterOperation -and $script:settingsWindow) {
+        $script:radioCatCloseSettingsAfterOperation = $false
+        $script:settingsWindow.Close()
+    }
+    if ($script:radioCatCloseMainAfterOperation) {
+        $script:radioCatCloseMainAfterOperation = $false
+        $script:allowWindowClose = $true
+        if ($script:mainWindow) { $script:mainWindow.Close() }
+    }
+    return $true
+}
+
+function Invoke-UiRadioModeOrFrequencyApply {
+    param([ValidateSet('setMode','setFrequency')][string]$Operation)
+    if (-not $script:radioCatObserved) { throw '请先读取电台当前 CAT 状态。' }
+    if (-not (Get-UiRadioCatConnectionKey) -or -not [string]::Equals((Get-UiRadioCatConnectionKey),$script:radioCatObservedConnectionKey,[StringComparison]::OrdinalIgnoreCase)) {
+        throw 'CAT-1 端口或串口参数已更改；请重新读取电台状态。'
+    }
+    if (-not (Test-UiRadioCatRunIdle -RequireFreshStatus)) { throw '核心尚未确认电台空闲；请在来话和手咪发送结束后重试。' }
+    if ($Operation -ceq 'setMode') {
+        $selected = (Get-SettingsControl 'CatMainModeBox').SelectedItem
+        if ($selected -isnot [System.Windows.Controls.ComboBoxItem] -or [string]$selected.Tag -cnotin @('FM','FM-N','C4FM-DN','C4FM-VW')) { throw '请选择明确的 MAIN 调制模式。' }
+        $request = [pscustomobject]@{ operation='setMode'; side='Main'; mode=[string]$selected.Tag }
+    } else {
+        $frequencyHz = ConvertFrom-UiFrequencyMHz -Text (Get-SettingsControl 'CatMainFrequencyMHzBox').Text
+        $request = [pscustomobject]@{ operation='setFrequency'; side='Main'; frequency_hz=[long]$frequencyHz }
+    }
+    $catPort = Get-UiRadioCatSelectedPort
+    if (-not $catPort) { throw '请选择设备枚举中已发现且不是 HRI 的 CAT-1 端口。' }
+    $hriPort = Get-UiHriPortName
+    if ($hriPort -and [string]::Equals($catPort,$hriPort,[StringComparison]::OrdinalIgnoreCase)) {
+        throw ('CAT-1 与 HRI 不能共用 {0}。' -f $catPort)
+    }
+    $baud = [int](Get-UiComboTag -Combo (Get-SettingsControl 'CatBaudRateBox'))
+    $stopBits = [string](Get-UiComboTag -Combo (Get-SettingsControl 'CatStopBitsBox'))
+    $request | Add-Member -NotePropertyName cat_port -NotePropertyValue $catPort
+    $request | Add-Member -NotePropertyName hri_port -NotePropertyValue $hriPort
+    $request | Add-Member -NotePropertyName baud_rate -NotePropertyValue $baud
+    $request | Add-Member -NotePropertyName stop_bits -NotePropertyValue $stopBits
+    if ($script:supervisor -and -not $script:supervisor.HasExited) {
+        if ($script:radioCatOperationPowerShell -or $script:stopTask -or $script:preparationStarted) { throw '当前有连接或 CAT 操作正在收尾。' }
+        $script:radioModePreviousHriPortName = Get-UiHriPortName
+        $script:radioModeApplyAfterStop = $request
+        $script:closingAfterStop = $false
+        $script:reconnectAfterStop = $false
+        $script:stopTask = $script:supervisor.StopAsync(5000)
+        Set-MainText -Name 'FooterText' -Text '正在停止 HRI；确认核心退出并释放串口后应用 CAT 设置。'
+        (Get-SettingsControl 'CatOperationStatusText').Text = '正在停止 HRI。确认停止前不会写入调制或频率。'
+        (Get-SettingsControl 'CatOperationStatusText').Visibility = [System.Windows.Visibility]::Visible
+        Update-UiRadioCatControls
+        return
+    }
+    if ($Operation -ceq 'setMode') {
+        Start-UiRadioCatOperation -Operation $Operation -Side $request.side -Mode $request.mode -HriPortNameOverride $request.hri_port `
+            -PortNameOverride $request.cat_port -BaudRateOverride $request.baud_rate -StopBitsOverride $request.stop_bits
+    } else {
+        Start-UiRadioCatOperation -Operation $Operation -Side $request.side -FrequencyHz ([long]$request.frequency_hz) -HriPortNameOverride $request.hri_port `
+            -PortNameOverride $request.cat_port -BaudRateOverride $request.baud_rate -StopBitsOverride $request.stop_bits
+    }
+}
+
+function Invoke-UiRadioCatAction {
+    param([ValidateSet('query','setPower','setMode','setFrequency')][string]$Operation)
+    try {
+        switch -CaseSensitive ($Operation) {
+            'query' { Start-UiRadioCatOperation -Operation 'query' }
+            'setPower' {
+                if ($script:radioCatPowerNeedsUserChoice) { throw '目标功率超出电台当前范围；请先明确选择合法值。' }
+                $watts = [int]$script:radioControlPreferences.desired_power_watts
+                $capability = Get-UiRadioCatProperty -InputObject (Get-UiRadioCatProperty -InputObject $script:radioCatResult -Name 'capabilities') -Name 'set_power'
+                $maximum = Get-UiRadioCatProperty -InputObject $capability -Name 'maximum_watts'
+                if (-not $script:radioCatResult -or [string]$script:radioCatResult.status -cne 'confirmed' -or
+                    -not $capability -or -not [bool]$capability.available -or
+                    ($maximum -isnot [int] -and $maximum -isnot [long]) -or $watts -lt 5 -or $watts -gt [int]$maximum) {
+                    throw '请重新读取电台并选择当前路径允许的目标功率。'
+                }
+                Start-UiRadioCatOperation -Operation 'setPower' -PowerWatts $watts
+            }
+            'setMode' { Invoke-UiRadioModeOrFrequencyApply -Operation 'setMode' }
+            'setFrequency' { Invoke-UiRadioModeOrFrequencyApply -Operation 'setFrequency' }
+        }
+    } catch {
+        if ($script:settingsWindow) {
+            Set-UiRadioCatText -Name 'CatOperationStatusText' -Text $_.Exception.Message
+            (Get-SettingsControl 'CatOperationStatusText').Visibility = [System.Windows.Visibility]::Visible
+        }
+    }
+    Update-UiRadioCatControls
 }
 
 function Complete-UiDeviceDiscovery {
@@ -4358,8 +5164,18 @@ function Invoke-ObservedRoutingAction {
 function Set-SettingsWindowFields {
     $profileError = ''
     $audioError = ''
+    $radioPreferencesError = ''
     try { $script:storedProfile = Read-BridgeUserConnectionProfile -Path $script:profilePath }
     catch { $script:storedProfile = $null; $profileError = $_.Exception.Message }
+    $script:radioControlPreferencesError = ''
+    if ($script:radioCatModuleAvailable) {
+        try { $script:radioControlPreferences = Read-UiRadioControlPreferences -Path $script:radioControlPreferencesPath }
+        catch {
+            $script:radioControlPreferences = Get-UiDefaultRadioControlPreferences
+            $radioPreferencesError = $_.Exception.Message
+            $script:radioControlPreferencesError = $radioPreferencesError
+        }
+    } else { $script:radioControlPreferences = Get-UiDefaultRadioControlPreferences }
     Update-CallTargetChoices
     try { $audio = Read-BridgeAudioSettings -Path $script:audioSettingsPath }
     catch { $audio = $null; $audioError = $_.Exception.Message }
@@ -4398,6 +5214,33 @@ function Set-SettingsWindowFields {
     foreach ($name in $fields.Keys) { (Get-SettingsControl $name).Text = [string]$fields[$name] }
     (Get-SettingsControl 'PlaybackGainSlider').Value = [double]$audio.RadioPlaybackGainMilli / 1000.0
     (Get-SettingsControl 'TransmitGainSlider').Value = [double]$audio.MicTransmitGainMilli / 1000.0
+    $script:loadingRadioCatSettings = $true
+    $powerSlider = Get-SettingsControl 'CatPowerSlider'
+    $oldPowerSliderTag = $powerSlider.Tag
+    try {
+        $script:radioCatPowerPreferenceDirty = $false
+        $script:radioCatPowerNeedsUserChoice = $false
+        $powerSlider.Tag = '__radio_cat_programmatic__'
+        $powerSlider.Minimum = 5
+        $powerSlider.Maximum = 50
+        $powerSlider.Value = [double]$script:radioControlPreferences.desired_power_watts
+    } finally {
+        $powerSlider.Tag = $oldPowerSliderTag
+        $script:loadingRadioCatSettings = $false
+    }
+    Set-UiRadioCatText -Name 'CatDesiredPowerText' -Text ('目标功率 {0} W' -f $script:radioControlPreferences.desired_power_watts)
+    (Get-SettingsControl 'CatMainModeBox').SelectedIndex = -1
+    (Get-SettingsControl 'CatMainFrequencyMHzBox').Text = ''
+    $script:radioCatResult = $null
+    $script:radioCatObserved = $null
+    $script:radioCatObservedConnectionKey = ''
+    $script:radioCatObservedPortName = ''
+    $script:radioCatLastOperationStatus = ''
+    Update-UiRadioCatObservationDisplay
+    if ($radioPreferencesError -and $script:radioCatModuleAvailable) {
+        Set-UiRadioCatText -Name 'CatOperationStatusText' -Text '电台控制偏好无法读取；CAT设置保存已停用，其他设置仍可使用。'
+        (Get-SettingsControl 'CatOperationStatusText').Visibility = [System.Windows.Visibility]::Visible
+    }
     Set-GainValueLabel -SliderName 'PlaybackGainSlider' -LabelName 'PlaybackGainValueText'
     Set-GainValueLabel -SliderName 'TransmitGainSlider' -LabelName 'TransmitGainValueText'
     Set-SettingsDeviceControls
@@ -4438,6 +5281,7 @@ function Set-SettingsWindowFields {
         (Get-SettingsControl 'SettingsErrorText').Text = ''
     }
     (Get-SettingsControl 'SettingsErrorText').Visibility = if ($profileError -or $audioError) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+    Update-UiRadioCatControls
 }
 
 function Read-SettingsUnsignedField {
@@ -4566,6 +5410,17 @@ function Initialize-SettingsWindow {
         $script:settingsWindow = $null
         if ($closedSettingsWindow) { Invalidate-UiDeviceDiscoveryForWindow -Window $closedSettingsWindow }
     })
+    $script:settingsWindow.Add_Closing({
+        param($sender,$eventArgs)
+        if ($script:radioCatOperationPowerShell -and [object]::ReferenceEquals($script:radioCatOperationOwnerWindow,$script:settingsWindow)) {
+            $eventArgs.Cancel = $true
+            $script:radioCatCloseSettingsAfterOperation = $true
+            try { Request-StopUiRadioCatOperation -Reason 'settings_closed' | Out-Null }
+            catch { Set-UiRadioCatText -Name 'CatOperationStatusText' -Text 'CAT-1 操作取消失败；设置窗保持打开。' }
+            return
+        }
+        if ($script:radioModeApplyAfterStop) { $script:radioModeApplyAfterStop = $null; $script:radioModePreviousHriPortName = '' }
+    })
     (Get-SettingsControl 'CancelSettingsButton').Add_Click({ Cancel-SettingsWindow })
     (Get-SettingsControl 'MasterPresetBox').Add_SelectionChanged({
         if ($script:loadingSettings) { return }
@@ -4587,6 +5442,28 @@ function Initialize-SettingsWindow {
     })
     (Get-SettingsControl 'PlaybackGainSlider').Add_ValueChanged({ Set-GainValueLabel -SliderName 'PlaybackGainSlider' -LabelName 'PlaybackGainValueText' })
     (Get-SettingsControl 'TransmitGainSlider').Add_ValueChanged({ Set-GainValueLabel -SliderName 'TransmitGainSlider' -LabelName 'TransmitGainValueText' })
+    (Get-SettingsControl 'CatPowerSlider').Add_ValueChanged({
+        param($sender,$eventArgs)
+        $slider = if ($sender -is [System.Windows.Controls.Slider]) { $sender } else { Get-SettingsControl 'CatPowerSlider' }
+        if ([string]$slider.Tag -ceq '__radio_cat_programmatic__') { return }
+        $watts = [int][Math]::Round([double]$slider.Value,[MidpointRounding]::AwayFromZero)
+        if (-not $script:loadingRadioCatSettings) {
+            $script:radioCatPowerPreferenceDirty = $true
+            $script:radioCatPowerNeedsUserChoice = $false
+            $script:radioControlPreferences.desired_power_watts = $watts
+        }
+        Set-UiRadioCatText -Name 'CatDesiredPowerText' -Text ('目标功率 {0} W' -f $watts)
+        Update-UiRadioCatControls
+    })
+    (Get-SettingsControl 'CatPortBox').Add_SelectionChanged({ Update-UiRadioCatControls })
+    (Get-SettingsControl 'CatBaudRateBox').Add_SelectionChanged({ Update-UiRadioCatControls })
+    (Get-SettingsControl 'CatStopBitsBox').Add_SelectionChanged({ Update-UiRadioCatControls })
+    (Get-SettingsControl 'CatMainModeBox').Add_SelectionChanged({ Update-UiRadioCatControls })
+    (Get-SettingsControl 'CatMainFrequencyMHzBox').Add_TextChanged({ Update-UiRadioCatControls })
+    (Get-SettingsControl 'ReadRadioButton').Add_Click({ Invoke-UiRadioCatAction -Operation 'query' })
+    (Get-SettingsControl 'ApplyCatPowerButton').Add_Click({ Invoke-UiRadioCatAction -Operation 'setPower' })
+    (Get-SettingsControl 'ApplyCatModeButton').Add_Click({ Invoke-UiRadioCatAction -Operation 'setMode' })
+    (Get-SettingsControl 'ApplyCatFrequencyButton').Add_Click({ Invoke-UiRadioCatAction -Operation 'setFrequency' })
     (Get-SettingsControl 'RefreshDevicesButton').Add_Click({
         if ($RoutingDiagnostic) { Start-UiDeviceDiscovery; return }
         if ($script:deviceDiscoveryPowerShell -or $script:deviceAudioQuery) { return }
@@ -4622,8 +5499,16 @@ function Initialize-SettingsWindow {
             (Get-SettingsControl $name).IsEnabled = $false
         }
     }
-    elseif ($RenderOnly) { (Get-SettingsControl 'DeviceDiscoveryText').Text = '离线渲染；未读取本机设备。' }
+    elseif ($RenderOnly) {
+        $script:deviceDiscoveryState = 'offline'
+        $script:deviceCatalog = $null
+        (Get-SettingsControl 'DeviceDiscoveryText').Text = '离线渲染；未读取本机设备。'
+        Set-SettingsDeviceControls
+    }
     else { Start-UiDeviceDiscovery }
+    if (-not $script:radioCatModuleAvailable -and $script:radioCatModuleLoadError) {
+        (Get-SettingsControl 'RadioCatPanel').Visibility = [System.Windows.Visibility]::Collapsed
+    }
 }
 
 function Show-SettingsWindow {
@@ -4641,6 +5526,16 @@ function Show-SettingsWindow {
 
 function Cancel-SettingsWindow {
     $script:txEditorDirty = $false
+    if ($script:radioCatOperationPowerShell) {
+        $script:radioCatCloseSettingsAfterOperation = $true
+        try { Request-StopUiRadioCatOperation -Reason 'settings_cancelled' | Out-Null }
+        catch { Set-UiRadioCatText -Name 'CatOperationStatusText' -Text 'CAT-1 操作取消失败；设置窗保持打开。' }
+        return
+    }
+    if ($script:radioModeApplyAfterStop) {
+        $script:radioModeApplyAfterStop = $null
+        $script:radioModePreviousHriPortName = ''
+    }
     if (-not $script:pendingRoutingMutation) {
         $script:routingDraftAfterTimeout = $null
         $script:routingDraftPreservedAfterTimeout = $false
@@ -4669,6 +5564,9 @@ function Test-UiAutoEndpointResolvable {
 
 function Save-SettingsFromWindow {
     try {
+        if ($script:radioCatOperationPowerShell -or $script:radioModeApplyAfterStop -or $script:stopTask) {
+            throw '请等待 CAT-1 操作或核心停止流程结束后再保存设置。'
+        }
         $writeProfile = [bool]$script:profileWriteAllowed
         $profile = $script:storedProfile
         if ($script:profileEditable) {
@@ -4740,8 +5638,48 @@ function Save-SettingsFromWindow {
             if (-not [System.IO.File]::Exists($passwordCandidate)) { throw '所选 BM 密码文件当前不存在。' }
         }
 
+        $writeRadioPreferences = $false
+        $radioPreferencesToSave = $null
+        $radioPreferencesSkipMessage = ''
+        if ($script:radioCatModuleAvailable -and -not $script:radioControlPreferencesError) {
+            $radioPort = [string]$script:radioControlPreferences.cat_port
+            if ($script:deviceDiscoveryState -eq 'ready') {
+                $portContainer = (Get-SettingsControl 'CatPortBox').SelectedItem
+                if ($portContainer -isnot [System.Windows.Controls.ComboBoxItem] -or $null -eq $portContainer.Tag -or
+                    -not [bool]$portContainer.Tag.IsAvailable -or [string]$portContainer.Tag.Kind -ceq 'hri') {
+                    $radioPreferencesSkipMessage = 'CAT-1 偏好未保存：未发现有效的非 HRI 串口。'
+                } else {
+                    $radioPort = [string]$portContainer.Tag.Value
+                    $hriPort = Get-UiHriPortName
+                    if ($hriPort -and [string]::Equals($radioPort,$hriPort,[StringComparison]::OrdinalIgnoreCase)) {
+                        $radioPreferencesSkipMessage = 'CAT-1 偏好未保存：CAT-1 与 HRI 不能共用同一串口。'
+                    }
+                }
+            }
+            if (-not $radioPreferencesSkipMessage) {
+                $hriPort = Get-UiHriPortName
+                if ($hriPort -and [string]::Equals($radioPort,$hriPort,[StringComparison]::OrdinalIgnoreCase)) {
+                    $radioPreferencesSkipMessage = 'CAT-1 偏好未保存：CAT-1 与 HRI 不能共用同一串口。'
+                }
+            }
+            $baudItem = (Get-SettingsControl 'CatBaudRateBox').SelectedItem
+            $stopBitsItem = (Get-SettingsControl 'CatStopBitsBox').SelectedItem
+            if (-not $radioPreferencesSkipMessage -and $baudItem -is [System.Windows.Controls.ComboBoxItem] -and
+                $stopBitsItem -is [System.Windows.Controls.ComboBoxItem]) {
+                $desiredWatts = [int]$script:radioControlPreferences.desired_power_watts
+                $radioPreferencesToSave = [pscustomobject][ordered]@{
+                    cat_port = $radioPort
+                    baud_rate = [int]$baudItem.Tag
+                    stop_bits = [string]$stopBitsItem.Tag
+                    desired_power_watts = $desiredWatts
+                }
+                $writeRadioPreferences = $true
+            }
+        }
+
         $saveFiles = if ($writeProfile) { @($script:profilePath, $script:audioSettingsPath, $script:passwordPointerPath) } `
             else { @($script:audioSettingsPath, $script:passwordPointerPath) }
+        if ($writeRadioPreferences) { $saveFiles += $script:radioControlPreferencesPath }
         $transactionId = [guid]::NewGuid().ToString('N')
         $backupRecords = @()
         try {
@@ -4754,6 +5692,7 @@ function Save-SettingsFromWindow {
             if ($writeProfile) { Write-BridgeUserConnectionProfile -Path $script:profilePath -Profile $profile }
             Write-BridgeAudioSettings -Path $script:audioSettingsPath -RadioPlaybackGainMilli $playbackMilli `
                 -MicTransmitGainMilli $transmitMilli
+            if ($writeRadioPreferences) { Write-UiRadioControlPreferences -Path $script:radioControlPreferencesPath -Preferences $radioPreferencesToSave }
             if ($passwordCandidate) {
                 $temporaryPath = $script:passwordPointerPath + '.tmp-' + [guid]::NewGuid().ToString('N')
                 $backupPath = $script:passwordPointerPath + '.bak-' + [guid]::NewGuid().ToString('N')
@@ -4795,7 +5734,16 @@ function Save-SettingsFromWindow {
         } else {
             (Get-SettingsControl 'SettingsErrorText').Text = '设置已保存'
         }
+        if ($writeRadioPreferences) {
+            $script:radioControlPreferences = [pscustomobject][ordered]@{
+                schema_version=1; cat_port=[string]$radioPreferencesToSave.cat_port
+                baud_rate=[int]$radioPreferencesToSave.baud_rate; stop_bits=[string]$radioPreferencesToSave.stop_bits
+                desired_power_watts=[int]$radioPreferencesToSave.desired_power_watts
+            }
+            $script:radioCatPowerPreferenceDirty = $false
+        }
         (Get-SettingsControl 'SettingsErrorText').Visibility = [System.Windows.Visibility]::Visible
+        if ($radioPreferencesSkipMessage) { Add-UiEvent $radioPreferencesSkipMessage }
         $script:savedPlaybackGainMilli = [uint32]$playbackMilli
         Update-UiPlaybackGainDisplay -Record $script:latestStatus
         $pendingProfile = $script:storedProfile
@@ -5239,6 +6187,12 @@ function Complete-BridgePreparation {
         $script:statusPath = $validatedPreparation.StatusPath
         $script:supervisor = New-Object WirexBridge.Ui.BridgeSupervisor
         $script:supervisor.Start($validatedPreparation.Executable, $validatedPreparation.Arguments, $script:releaseDirectory, 2)
+        $radioPortArgumentIndex = [Array]::IndexOf([string[]]$validatedPreparation.Arguments,'--port')
+        $script:activeHriPortName = ''
+        if ($radioPortArgumentIndex -ge 0 -and $radioPortArgumentIndex + 1 -lt $validatedPreparation.Arguments.Count) {
+            $preparedRadioPort = [string]$validatedPreparation.Arguments[$radioPortArgumentIndex + 1]
+            if ($preparedRadioPort -match '^COM[1-9][0-9]{0,2}$') { $script:activeHriPortName = $preparedRadioPort.ToUpperInvariant() }
+        }
         Set-UiControlStatus -Text '控制协议：等待 v2 control_ready' -Confirmed $false
         $script:activeTargetTag = $script:preparedTargetTag
         $script:activeTargetLabel = $script:preparedTargetLabel
@@ -5258,6 +6212,7 @@ function Complete-BridgePreparation {
         Set-MainText -Name 'FooterText' -Text ''
         Add-UiEvent '核心进程已启动'
     } catch {
+        $script:activeHriPortName = ''
         Set-OfflineDisplay -Reason ('连接准备失败：' + $_.Exception.Message)
         Set-MainText -Name 'FooterText' -Text '请打开设置检查配置，再重新启动。'
         Set-ConnectionButtonState
@@ -5499,6 +6454,13 @@ function Apply-StatusRecord {
     $visibleEvent = Get-VisibleUiEventText -EventName ([string]$Record.event)
     if ($visibleEvent) { Add-UiEvent $visibleEvent }
     Update-DynamicGroupControls
+    if ($script:settingsWindow) {
+        if ($script:radioCatOperationKind -ceq 'setPower' -and -not (Test-UiRadioCatRunIdle -RequireFreshStatus)) {
+            try { Request-StopUiRadioCatOperation -Reason 'core_no_longer_idle' | Out-Null } catch { }
+            Set-UiRadioCatText -Name 'CatOperationStatusText' -Text '核心状态不再空闲，已请求取消 CAT 功率设置；读回确认前结果未知。'
+        }
+        Update-UiRadioCatControls
+    }
 }
 
 function Read-StatusUpdates {
@@ -5540,6 +6502,13 @@ function Read-StatusUpdates {
 function Set-StaleDisplay {
     if ($script:lastStatusUtc -eq [DateTime]::MinValue) { return }
     if (([DateTime]::UtcNow - $script:lastStatusUtc).TotalSeconds -le 3) { return }
+    if ($script:radioCatOperationKind -ceq 'setPower' -and -not (Test-UiRadioCatRunIdle -RequireFreshStatus)) {
+        if (-not $script:radioCatOperationCancelled) {
+            try { Request-StopUiRadioCatOperation -Reason 'core_status_stale' | Out-Null }
+            catch { Add-UiEvent '核心状态过期，取消 CAT 功率操作失败' }
+            Set-UiRadioCatText -Name 'CatOperationStatusText' -Text '核心空闲状态已过期，已请求取消 CAT 功率设置；读回确认前结果未知。'
+        }
+    }
     Set-MainText -Name 'CoreValue' -Text '状态过期'
     Set-MainText -Name 'CoreDetail' -Text ''
     Set-MainText -Name 'RadioValue' -Text ''
@@ -5564,12 +6533,19 @@ function Set-StaleDisplay {
     Update-UiReceiveMetricsDisplay -Record $null
     Update-DynamicGroupControls
     Update-UiIdentityActionState
+    Update-UiRadioCatControls
 }
 
 function Request-StopAndExit {
     Clear-UiIdentityQueryQueue
     $script:closingAfterStop = $true
     $script:reconnectAfterStop = $false
+    $script:radioModeApplyAfterStop = $null
+    $script:radioModePreviousHriPortName = ''
+    if ($script:radioCatOperationPowerShell) {
+        try { Request-StopUiRadioCatOperation -Reason 'stop_and_exit' | Out-Null }
+        catch { Add-UiEvent 'CAT-1 取消请求失败；继续执行核心停止流程' }
+    }
     if ($script:identityQuery -and -not $script:identityQuery.stop_async) {
         $script:closingAfterIdentityQuery = $true
         Stop-UiIdentityQuery -Query $script:identityQuery -Reason 'stop_and_exit'
@@ -5587,6 +6563,10 @@ function Request-StopAndExit {
         Set-MainText -Name 'FooterText' -Text ''
         $script:stopTask = $script:supervisor.StopAsync(5000)
         Set-ConnectionButtonState
+        return
+    }
+    if ($script:radioCatOperationPowerShell) {
+        $script:radioCatCloseMainAfterOperation = $true
         return
     }
     $script:allowWindowClose = $true
@@ -5626,6 +6606,10 @@ function Complete-PreparedPipelineWithoutLaunch {
         $script:prepareStopStartedUtc = [DateTime]::MinValue
     }
     if ($script:closingAfterStop) {
+        if ($script:radioCatOperationPowerShell) {
+            $script:radioCatCloseMainAfterOperation = $true
+            return
+        }
         $script:allowWindowClose = $true
         $script:mainWindow.Close()
     } elseif ($script:reconnectAfterStop) {
@@ -5677,6 +6661,10 @@ function Complete-PreparationStop {
         $script:prepareStopStartedUtc = [DateTime]::MinValue
     }
     if ($wasClosing) {
+        if ($script:radioCatOperationPowerShell) {
+            $script:radioCatCloseMainAfterOperation = $true
+            return
+        }
         $script:allowWindowClose = $true
         $script:mainWindow.Close()
         return
@@ -5697,16 +6685,63 @@ function Complete-BridgeStop {
         $script:stopTask = $null
         $script:reconnectAfterStop = $false
         $script:closingAfterStop = $false
+        $script:radioModeApplyAfterStop = $null
+        $script:radioModePreviousHriPortName = ''
         (Get-UiControl 'StopButton').IsEnabled = $true
         Set-ConnectionButtonState
+        if ($script:settingsWindow) {
+            Set-UiRadioCatText -Name 'CatOperationStatusText' -Text 'HRI 核心没有退出；取消本次 MAIN 调制/频率设置。'
+            Update-UiRadioCatControls
+        }
         return $true
     }
     if ($script:supervisor) { $script:supervisor.Dispose(); $script:supervisor = $null }
     if ($script:statusStream) { $script:statusStream.Dispose(); $script:statusStream = $null }
     $script:stopTask = $null
     if ($script:closingAfterStop) {
+        $script:radioModeApplyAfterStop = $null
+        $script:radioModePreviousHriPortName = ''
+        if ($script:radioCatOperationPowerShell) {
+            $script:radioCatCloseMainAfterOperation = $true
+            return $true
+        }
         $script:allowWindowClose = $true
         $script:mainWindow.Close()
+        return $true
+    }
+    if ($script:radioModeApplyAfterStop) {
+        $request = $script:radioModeApplyAfterStop
+        $script:radioModeApplyAfterStop = $null
+        $script:closingAfterStop = $false
+        $script:reconnectAfterStop = $false
+        $script:activeHriPortName = ''
+        $script:activeTargetLabel = ''
+        $script:activeTargetTag = ''
+        $script:activeProfile = $null
+        $script:lastUiBmState = ''
+        $script:lastUiHriState = ''
+        Set-OfflineDisplay -Reason 'HRI 会话已停止；正在应用 MAIN VFO 设置，完成后保持断开。'
+        try {
+            if ($request.operation -ceq 'setMode') {
+                Start-UiRadioCatOperation -Operation 'setMode' -Side ([string]$request.side) -Mode ([string]$request.mode) `
+                    -HriPortNameOverride ([string]$request.hri_port) -PortNameOverride ([string]$request.cat_port) `
+                    -BaudRateOverride ([int]$request.baud_rate) -StopBitsOverride ([string]$request.stop_bits)
+            } elseif ($request.operation -ceq 'setFrequency') {
+                Start-UiRadioCatOperation -Operation 'setFrequency' -Side ([string]$request.side) -FrequencyHz ([long]$request.frequency_hz) `
+                    -HriPortNameOverride ([string]$request.hri_port) -PortNameOverride ([string]$request.cat_port) `
+                    -BaudRateOverride ([int]$request.baud_rate) -StopBitsOverride ([string]$request.stop_bits)
+            } else {
+                throw '断开后的 CAT 请求类型无效。'
+            }
+            (Get-UiControl 'FooterText').Text = 'HRI 保持断开；MAIN VFO 操作等待 CAT 精确读回。'
+        } catch {
+            $script:radioModePreviousHriPortName = ''
+            if ($script:settingsWindow) {
+                Set-UiRadioCatText -Name 'CatOperationStatusText' -Text ('HRI 已断开；没有执行 CAT 设置：' + $_.Exception.Message)
+            }
+            Set-MainText -Name 'FooterText' -Text 'HRI 已停止；MAIN VFO 设置未完成，可在设置中核对 CAT-1 状态。'
+            Update-UiRadioCatControls
+        }
         return $true
     }
     if ($script:reconnectAfterStop) {
@@ -5715,12 +6750,23 @@ function Complete-BridgeStop {
         $script:activeTargetLabel = ''
         $script:activeTargetTag = ''
         $script:activeProfile = $null
+        $script:activeHriPortName = ''
         $script:lastUiBmState = ''
         $script:lastUiHriState = ''
         Set-OfflineDisplay -Reason '当前连接已停止，正在连接所选目标。'
         Start-BridgeRun
         return $true
     }
+    $script:activeHriPortName = ''
+    $script:activeTargetLabel = ''
+    $script:activeTargetTag = ''
+    $script:activeProfile = $null
+    $script:lastUiBmState = ''
+    $script:lastUiHriState = ''
+    Set-OfflineDisplay -Reason 'HRI 会话已停止；没有待执行的 MAIN VFO 设置。'
+    Set-MainText -Name 'FooterText' -Text '连接已停止；可按所选目标重新连接。'
+    Set-ConnectionButtonState
+    Update-UiRadioCatControls
     return $true
 }
 
@@ -5732,6 +6778,11 @@ function On-UiTimerTick {
         if ($script:identityQuery) {
             try { Stop-UiIdentityQuery -Query $script:identityQuery -Reason 'dispatcher_error' } catch { }
         }
+    }
+    try { [void](Complete-UiRadioCatOperation) }
+    catch {
+        if ($script:settingsWindow) { Set-UiRadioCatText -Name 'CatOperationStatusText' -Text ('CAT-1 操作收尾失败：' + $_.Exception.Message) }
+        Add-UiEvent 'CAT-1 操作清理失败'
     }
     if ($script:prepareStopAsync) { Complete-PreparationStop; return }
     Complete-UiDeviceDiscovery
@@ -5808,6 +6859,7 @@ function On-UiTimerTick {
             Set-StaleDisplay
         }
     }
+    if ($script:settingsWindow) { Update-UiRadioCatControls }
 }
 
 function Save-RenderedWindow {
@@ -6025,6 +7077,17 @@ $script:mainWindow.FindName('OfflineBanner').Visibility = [Windows.Visibility]::
 })
 $script:mainWindow.Add_Closing({
     param($sender, $eventArgs)
+    if ($script:radioCatOperationPowerShell) {
+        $eventArgs.Cancel = $true
+        if (($script:supervisor -and -not $script:supervisor.HasExited) -or $script:preparationStarted -or $script:stopTask) {
+            Request-StopAndExit
+        } else {
+            $script:radioCatCloseMainAfterOperation = $true
+            try { Request-StopUiRadioCatOperation -Reason 'main_window_closed' | Out-Null }
+            catch { Add-UiEvent 'CAT-1 取消请求失败；界面保持打开直到操作结束' }
+        }
+        return
+    }
     if ($script:allowWindowClose -and -not $script:deviceDiscoveryPowerShell -and -not $script:deviceAudioQuery -and -not $script:identityQuery) { return }
     if ($script:identityQuery) {
         $eventArgs.Cancel = $true
@@ -6144,6 +7207,95 @@ if ($RenderOnly) {
     [void][System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::Render)
     $script:settingsWindow.UpdateLayout()
     Save-RenderedWindow -Window $script:settingsWindow -Path (Join-Path $renderDirectory 'settings-window.png')
+    $radioPanel = Get-SettingsControl 'RadioCatPanel'
+    if ($radioPanel.IsVisible) {
+        $radioPanel.BringIntoView()
+        [void][System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::Render)
+        $script:settingsWindow.UpdateLayout()
+        Save-RenderedWindow -Window $script:settingsWindow -Path (Join-Path $renderDirectory 'settings-radio-control.png')
+    }
+    $radioSettingsLayout = Get-WpfWindowLayoutInfo -Window $script:settingsWindow -ControlNames @(
+        'RadioCatPanel','CatPortBox','CatBaudRateBox','CatStopBitsBox','ReadRadioButton','CatOperationStatusText',
+        'CatObservedPanel','CatRadioIdentityText','CatObservedMainModeText','CatObservedSubModeText',
+        'CatObservedFrequencyText','CatObservedPowerText','CatMainModeBox','ApplyCatModeButton',
+        'CatMainFrequencyMHzBox','ApplyCatFrequencyButton','CatPowerSlider','CatDesiredPowerText','ApplyCatPowerButton'
+    )
+    $script:settingsWindow.FindName('SettingsScrollViewer').ScrollToTop()
+    $frequencySampleHz = ConvertFrom-UiFrequencyMHz -Text '0.123456'
+    $frequencyRejectsExcessPrecision = $false
+    try { [void](ConvertFrom-UiFrequencyMHz -Text '0.1234567') } catch { $frequencyRejectsExcessPrecision = $true }
+    $radioControlPreview = [pscustomobject][ordered]@{
+        module_available = [bool]$script:radioCatModuleAvailable
+        preferences_error = [bool]$script:radioControlPreferencesError
+        preferences_path_leaf = [System.IO.Path]::GetFileName($script:radioControlPreferencesPath)
+        preferences_file_exists = [System.IO.File]::Exists($script:radioControlPreferencesPath)
+        preferred_cat_port = [string]$script:radioControlPreferences.cat_port
+        preferred_baud_rate = [int]$script:radioControlPreferences.baud_rate
+        preferred_stop_bits = [string]$script:radioControlPreferences.stop_bits
+        desired_power_watts = [int](Get-SettingsControl 'CatPowerSlider').Value
+        observed_panel_visible = [bool](Get-SettingsControl 'CatObservedPanel').IsVisible
+        read_button_enabled = [bool](Get-SettingsControl 'ReadRadioButton').IsEnabled
+        apply_power_enabled = [bool](Get-SettingsControl 'ApplyCatPowerButton').IsEnabled
+        frequency_sample_hz = [long]$frequencySampleHz
+        frequency_rejects_excess_precision = [bool]$frequencyRejectsExcessPrecision
+        hri_mode_control_present = ($null -ne $script:settingsWindow.FindName('ApplyHriModeButton'))
+        node_mode_control_present = ($null -ne $script:settingsWindow.FindName('ApplyNodeModeButton'))
+    }
+    if ($script:radioCatModuleAvailable -and -not $script:radioControlPreferencesError) {
+        $oldRadioDeviceCatalog = $script:deviceCatalog
+        $oldRadioDiscoveryState = $script:deviceDiscoveryState
+        $script:deviceDiscoveryState = 'ready'
+        $script:deviceCatalog = [pscustomobject]@{
+            serial_ports = @([pscustomobject]@{ PortName='COM11'; FriendlyName='Synthetic CAT-1'; IsHri=$false })
+            hri_ports = @([pscustomobject]@{ PortName='COM5'; FriendlyName='Synthetic HRI' })
+            wave_inputs = @(); wave_outputs = @()
+        }
+        Set-UiRadioCatDeviceControls
+        $script:radioCatResult = [pscustomobject]@{
+            status = 'confirmed'
+            capabilities = [pscustomobject]@{ set_power = [pscustomobject]@{
+                available=$true; maximum_watts=10; minimum_watts=5; step_watts=1
+            } }
+        }
+        $script:radioCatObserved = [pscustomobject]@{
+            power = [pscustomobject]@{
+                value=[pscustomobject]@{ path='FieldHead'; watts=5 }
+                source='CAT fake transport'; updated_at_utc='2026-10-30T00:00:00Z'
+            }
+        }
+        $script:radioCatObservedPortName = 'COM11'
+        $script:radioCatObservedConnectionKey = 'COM11|38400|Two'
+        Update-UiRadioCatObservationDisplay
+        Update-UiRadioCatControls
+        $radioControlPreview | Add-Member -NotePropertyName fake_path1_requires_user_choice -NotePropertyValue ([bool]$script:radioCatPowerNeedsUserChoice)
+        $radioControlPreview | Add-Member -NotePropertyName fake_path1_preserves_25w_preference -NotePropertyValue ([bool]([int]$script:radioControlPreferences.desired_power_watts -eq 25))
+        $radioControlPreview | Add-Member -NotePropertyName fake_path1_slider_value -NotePropertyValue ([int](Get-SettingsControl 'CatPowerSlider').Value)
+        $radioControlPreview | Add-Member -NotePropertyName fake_path1_slider_maximum -NotePropertyValue ([int](Get-SettingsControl 'CatPowerSlider').Maximum)
+        $radioControlPreview | Add-Member -NotePropertyName fake_path1_apply_enabled -NotePropertyValue ([bool](Get-SettingsControl 'ApplyCatPowerButton').IsEnabled)
+        $script:radioCatResult = $null
+        $script:radioCatObserved = $null
+        $script:radioCatObservedPortName = ''
+        $script:radioCatObservedConnectionKey = ''
+        $script:radioCatPowerNeedsUserChoice = $false
+        $script:loadingRadioCatSettings = $true
+        $previewPowerSlider = Get-SettingsControl 'CatPowerSlider'
+        $previewPowerSliderTag = $previewPowerSlider.Tag
+        try {
+            $previewPowerSlider.Tag = '__radio_cat_programmatic__'
+            $previewPowerSlider.Minimum = 5
+            $previewPowerSlider.Maximum = 50
+            $previewPowerSlider.Value = [double]$script:radioControlPreferences.desired_power_watts
+        } finally {
+            $previewPowerSlider.Tag = $previewPowerSliderTag
+            $script:loadingRadioCatSettings = $false
+        }
+        Set-UiRadioCatText -Name 'CatDesiredPowerText' -Text ('目标功率 {0} W' -f $script:radioControlPreferences.desired_power_watts)
+        $script:deviceCatalog = $oldRadioDeviceCatalog
+        $script:deviceDiscoveryState = $oldRadioDiscoveryState
+        Set-UiRadioCatDeviceControls
+        Update-UiRadioCatObservationDisplay
+        Update-UiRadioCatControls
+    }
     $layoutInfo = [pscustomobject][ordered]@{
         render_only = [bool]$RenderOnly
         work_area_width = $script:workAreaWidth
@@ -6164,6 +7316,8 @@ if ($RenderOnly) {
         }
         radio_details_expanded = [bool](Get-UiControl 'RadioDetailsExpander').IsExpanded
     }
+    $layoutInfo | Add-Member -NotePropertyName settings_radio_controls -NotePropertyValue $radioSettingsLayout
+    $layoutInfo | Add-Member -NotePropertyName radio_controls -NotePropertyValue $radioControlPreview
     [System.IO.File]::WriteAllText((Join-Path $renderDirectory 'layout-info.json'), (ConvertTo-Json -InputObject $layoutInfo -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
 
     $simulatedConnection = [pscustomobject][ordered]@{

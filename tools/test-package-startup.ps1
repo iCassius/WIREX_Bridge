@@ -30,8 +30,8 @@ try {
     throw ('候选包 manifest.json 无法读取：{0}' -f $_.Exception.Message)
 }
 $packageVersion = [string]$packageManifest.version
-if (@('v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11') -cnotcontains $packageVersion) {
-    throw ('包级启动检查只支持 alpha.9、alpha.10 或 alpha.11；manifest.version 为：{0}' -f $packageVersion)
+if (@('v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12') -cnotcontains $packageVersion) {
+    throw ('包级启动检查只支持 alpha.9 至 alpha.12；manifest.version 为：{0}' -f $packageVersion)
 }
 $releaseProfile = Set-ReleaseVersion -Version $packageVersion
 Assert-ReleasePackageInventory -PackageRoot $sourcePackage -Version $releaseProfile.Version | Out-Null
@@ -52,6 +52,15 @@ $identityModuleBytes = [System.IO.File]::ReadAllBytes($identityModule)
 if ($identityModuleBytes.Length -lt 3 -or $identityModuleBytes[0] -ne 0xEF -or
     $identityModuleBytes[1] -ne 0xBB -or $identityModuleBytes[2] -ne 0xBF) {
     throw ($packageLabel + ' RadioIdentity.psm1 缺少 Windows PowerShell 5.1 需要的 UTF-8 BOM。')
+}
+if ($packageVersion -ceq 'v0.1.0-alpha.12') {
+    $catModule = Join-Path $sourcePackage 'ui\windows\RadioCat.psm1'
+    if (-not [System.IO.File]::Exists($catModule)) { throw 'alpha.12 包缺少 RadioCat.psm1。' }
+    $catModuleBytes = [System.IO.File]::ReadAllBytes($catModule)
+    if ($catModuleBytes.Length -lt 3 -or $catModuleBytes[0] -ne 0xEF -or
+        $catModuleBytes[1] -ne 0xBB -or $catModuleBytes[2] -ne 0xBF) {
+        throw 'alpha.12 RadioCat.psm1 缺少 Windows PowerShell 5.1 需要的 UTF-8 BOM。'
+    }
 }
 
 $testRoot = Join-Path $workRoot ($testDirectoryPrefix + [guid]::NewGuid().ToString('N'))

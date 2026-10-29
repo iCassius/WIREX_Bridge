@@ -27,7 +27,7 @@ $script:releaseAssetRedirectHosts = @(
 )
 $script:assertionCount = 0
 $downloadProfiles = @{}
-foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11')) {
+foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12')) {
     $downloadProfiles[$tag] = [pscustomobject]@{
         Files = @(Get-ExpectedReleaseFiles -Tag $tag)
         Tests = @(Get-ExpectedReleaseTests -Tag $tag)
@@ -78,6 +78,11 @@ function New-TestManifest {
     if ($Tag -ceq 'v0.1.0-alpha.11') {
         $excludedPrivateFiles += @('private/user-config-directory.txt', 'private/user-config/radio-identity-cache.json',
             'private/user-config/channel-favorites.json', 'private/user-config/password-file-path.txt')
+    }
+    if ($Tag -ceq 'v0.1.0-alpha.12') {
+        $excludedPrivateFiles += @('private/user-config-directory.txt', 'private/user-config/radio-identity-cache.json',
+            'private/user-config/channel-favorites.json', 'private/user-config/password-file-path.txt',
+            'private/user-config/radio-control-preferences.json')
     }
     return [pscustomobject]@{
         schema_version = 1
@@ -435,8 +440,37 @@ $publishedAlpha9 = [pscustomobject]@{ tag_name='v0.1.0-alpha.9'; draft=$false; p
 Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha9) -RequestedTag 'v0.1.0-alpha.9').tag_name -ceq 'v0.1.0-alpha.9') 'alpha.9 is selected by exact tag'
 $publishedAlpha10 = [pscustomobject]@{ tag_name='v0.1.0-alpha.10'; draft=$false; prerelease=$true }
 Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha10) -RequestedTag 'v0.1.0-alpha.10').tag_name -ceq 'v0.1.0-alpha.10') 'alpha.10 is selected by exact tag'
+$alpha12Manifest = New-TestManifest -Tag 'v0.1.0-alpha.12'
+$alpha12Manifest.release_scope = 'R116 DIRECT: documented CAT queries and controls'
+$alpha12Validated = Test-ManifestDocument -Manifest $alpha12Manifest -RequestedTag 'v0.1.0-alpha.12'
+$alpha11ExpectedFiles = @(Get-ExpectedReleaseFiles -Tag 'v0.1.0-alpha.11')
+Assert-True ($alpha12Validated.Files.Count -eq ($alpha11ExpectedFiles.Count + 3)) 'alpha.12 adds RadioCat and two R116 documents while retaining every alpha.11 file'
+$expectedAlpha12Tests = @(Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.11')
+Assert-True (@($alpha12Manifest.build.passed_tests).Count -eq 40 -and [string]::Join('|', @($alpha12Manifest.build.passed_tests)) -ceq [string]::Join('|', $expectedAlpha12Tests)) 'alpha.12 pins the same 40 native tests in the alpha.11 order'
+foreach ($mapping in @(
+    @{ Path='ui/windows/RadioCat.psm1'; AssetName='ui__windows__radio-cat.psm1' },
+    @{ Path='docs/R116_CAT能力与控制实现.md'; AssetName='docs__r116-cat-controls.md' },
+    @{ Path='docs/R116_电台控制界面.md'; AssetName='docs__r116-radio-controls-ui.md' }
+)) {
+    Assert-True (@($alpha12Validated.Files | Where-Object { [string]$_.path -ceq $mapping.Path -and [string]$_.asset_name -ceq $mapping.AssetName }).Count -eq 1) "alpha.12 maps $($mapping.Path) to a fixed ASCII asset"
+}
+Assert-True (@($alpha12Validated.Files | Where-Object { [string]$_.path -match '(?i)(radio-control-preferences\.json|private/user-config/)' }).Count -eq 0) 'alpha.12 allowlist excludes all local radio-control preferences'
+Assert-True (@($alpha12Manifest.excluded_private_files | Where-Object { [string]$_ -ceq 'private/user-config/radio-control-preferences.json' }).Count -eq 1) 'alpha.12 manifest explicitly lists the local radio-control preference exclusion'
+Assert-True (Test-ReleaseTag -Tag 'v0.1.0-alpha.12') 'alpha.12 is an explicitly supported release tag'
+$missingAlpha12PreferenceExclusion = New-TestManifest -Tag 'v0.1.0-alpha.12'
+$missingAlpha12PreferenceExclusion.excluded_private_files = @('private/bm-device-password.txt', 'connection-profile.json', 'audio-settings.json')
+Assert-Throws { Test-ManifestDocument -Manifest $missingAlpha12PreferenceExclusion -RequestedTag 'v0.1.0-alpha.12' } 'alpha.12 downloader rejects a manifest without the local preference exclusion'
+$invalidAlpha12Preference = New-TestManifest -Tag 'v0.1.0-alpha.12'
+$invalidAlpha12Preference.files += [pscustomobject]@{
+    path='private/user-config/radio-control-preferences.json'; asset_name='private__user-config__radio-control-preferences.json'
+    length_bytes=1; sha256=('0' * 64); source='synthetic forbidden local preference'
+}
+Assert-Throws { Test-ManifestDocument -Manifest $invalidAlpha12Preference -RequestedTag 'v0.1.0-alpha.12' } 'alpha.12 downloader rejects a local radio-control preference file in the generic package'
+
 $publishedAlpha11 = [pscustomobject]@{ tag_name='v0.1.0-alpha.11'; draft=$false; prerelease=$true }
 Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha11) -RequestedTag 'v0.1.0-alpha.11').tag_name -ceq 'v0.1.0-alpha.11') 'alpha.11 is selected by exact tag'
+$publishedAlpha12 = [pscustomobject]@{ tag_name='v0.1.0-alpha.12'; draft=$false; prerelease=$true }
+Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha12) -RequestedTag 'v0.1.0-alpha.12').tag_name -ceq 'v0.1.0-alpha.12') 'alpha.12 is selected by exact tag'
 
 $goodAssets = New-TestAssetList -Manifest $validManifest
 $release = [pscustomobject]@{ assets=$goodAssets; target_commitish=[string]$validManifest.source.commit }
@@ -579,7 +613,7 @@ try {
 
 . (Join-Path $PSScriptRoot 'package-release.ps1')
 . (Join-Path $PSScriptRoot 'publish-release.ps1')
-foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11')) {
+foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12')) {
     $packageProfile = Set-ReleaseVersion -Version $tag
     $packagePaths = @($packageProfile.PackageFiles | Where-Object { $_ -cne 'manifest.json' })
     $downloadFiles = @($downloadProfiles[$tag].Files)

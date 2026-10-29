@@ -92,6 +92,44 @@ function Test-RenderedLayout {
     foreach ($controlName in @('SaveSettingsButton','CancelSettingsButton','PasswordPathBox','BrowsePasswordButton','MasterPresetBox','DestinationBox','SlotBox','CallKindBox','TransmitEnabledBox','ApplyNextTxTargetButton','GroupModeBox','PrivateModeBox','GroupRouteIdBox','GroupRouteSlotBox','AddGroupRouteButton','RemoveGroupRouteButton','GroupRoutesList','BlockedGroupIdBox','BlockedGroupSlotBox','AddBlockedGroupButton','RemoveBlockedGroupButton','BlockedGroupsList','PeerSourceIdBox','PeerLocalDestinationBox','PeerSlotBox','AddPeerRouteButton','PeerRoutesList','LocalPrivateDestinationBox','LocalPrivateSlotBox','AddLocalPrivateRouteButton','LocalPrivateRoutesList','BlockedSourceIdBox','AddBlockedSourceButton','BlockedSourcesList','PlaybackGainSlider','TransmitGainSlider')) {
         Assert-UiRender ([bool]$layout.settings_action_controls.controls_visible.$controlName) ("设置窗口控件 $controlName 未显示。")
     }
+    $radio = $layout.radio_controls
+    $radioPanelVisible = [bool]$layout.settings_radio_controls.controls_visible.RadioCatPanel
+    if ([bool]$radio.module_available) {
+        Assert-UiRender $radioPanelVisible 'CAT 模块可加载时，设置窗应显示 CAT 控制面板。'
+        Assert-UiRender (-not [bool]$radio.observed_panel_visible -and
+            -not [bool]$layout.settings_radio_controls.controls_visible.CatObservedPanel) 'RenderOnly 没有 CAT 读值时，实际观察字段必须隐藏。'
+        Assert-UiRender ([int]$radio.desired_power_watts -eq 25 -and [int]$layout.settings_radio_controls.controls_bounds.CatPowerSlider.maximum -eq 50 -and
+            [int]$layout.settings_radio_controls.controls_bounds.CatPowerSlider.minimum -eq 5) 'CAT 功率偏好默认值或可选范围错误。'
+        Assert-UiRender ($layout.settings_radio_controls.controls_bounds.CatDesiredPowerText.text -ceq '目标功率 25 W' -and
+            $layout.settings_radio_controls.controls_bounds.CatPortBox.selected_text -ceq '选择 CAT 串口' -and
+            [string]::IsNullOrEmpty([string]$layout.settings_radio_controls.controls_bounds.CatObservedPowerText.text)) `
+            '无 CAT 读值时应简短显示目标功率和端口选择提示，并隐藏实际功率读值。'
+        Assert-UiRender ($radio.preferred_cat_port -ceq 'COM11' -and [int]$radio.preferred_baud_rate -eq 38400 -and
+            $radio.preferred_stop_bits -ceq 'Two' -and $radio.preferences_path_leaf -ceq 'radio-control-preferences.json' -and
+            -not [bool]$radio.preferences_file_exists) 'CAT 偏好未使用隔离文件路径或 RenderOnly 意外创建了偏好文件。'
+        Assert-UiRender ([long]$radio.frequency_sample_hz -eq 123456 -and [bool]$radio.frequency_rejects_excess_precision) `
+            '频率输入必须严格转换为整数 Hz，并拒绝超过 6 位小数。'
+        Assert-UiRender ([bool]$radio.fake_path1_requires_user_choice -and [bool]$radio.fake_path1_preserves_25w_preference -and
+            [int]$radio.fake_path1_slider_value -eq 5 -and [int]$radio.fake_path1_slider_maximum -eq 10 -and
+            -not [bool]$radio.fake_path1_apply_enabled) `
+            '合成 Field Head 上限测试必须保留 25 W 偏好，并等待用户明确选择 5–10 W。'
+        Assert-UiRender (-not [bool]$radio.hri_mode_control_present -and -not [bool]$radio.node_mode_control_present) `
+            '没有 CAT 命令合同的 HRI/Node Mode 控件不应进入设置窗。'
+        foreach ($controlName in @('CatPortBox','CatBaudRateBox','CatStopBitsBox','ReadRadioButton','CatMainModeBox','ApplyCatModeButton',
+                'CatMainFrequencyMHzBox','ApplyCatFrequencyButton','CatPowerSlider','ApplyCatPowerButton')) {
+            Assert-UiRender ([bool]$layout.settings_radio_controls.controls_visible.$controlName) ("CAT 面板控件 $controlName 未显示。")
+        }
+        foreach ($controlName in @('CatPortBox','CatBaudRateBox','CatStopBitsBox','ReadRadioButton','CatMainModeBox','ApplyCatModeButton',
+                'CatMainFrequencyMHzBox','ApplyCatFrequencyButton','CatPowerSlider','ApplyCatPowerButton')) {
+            Assert-UiRender ([bool]$layout.settings_radio_controls.controls_bounds.$controlName.fully_visible) ("CAT 面板控件 $controlName 在聚焦截图中被裁切。")
+        }
+        Assert-UiRender (-not [bool]$layout.settings_radio_controls.controls_bounds.ReadRadioButton.is_enabled -and
+            -not [bool]$layout.settings_radio_controls.controls_bounds.ApplyCatPowerButton.is_enabled -and
+            [bool]$layout.settings_radio_controls.controls_bounds.CatPowerSlider.is_enabled) `
+            '离线 RenderOnly 应禁用实际 CAT 操作，同时允许调整未自动应用的功率偏好。'
+    } else {
+        Assert-UiRender (-not $radioPanelVisible -and -not [bool]$radio.observed_panel_visible) '缺少 CAT 模块时应隐藏 CAT 面板和读值。'
+    }
     $callChannel = $layout.main.controls_bounds.CallChannelPanel.actual
     foreach ($controlName in @('TargetSelector','FavoriteCurrentTargetButton','FavoriteManualGroupButton','ApplyCallFavoriteButton','RemoveCallFavoriteButton')) {
         $targetBounds = $layout.main.controls_bounds.$controlName
@@ -303,7 +341,8 @@ $renderDirectory = [System.IO.Path]::GetFullPath($RenderOutputDirectory)
 [System.IO.File]::Copy((Join-Path $packageRoot 'wirex_bridge.exe'), (Join-Path $stagedPackage 'wirex_bridge.exe'), $false)
 [System.IO.File]::Copy((Join-Path $packageRoot 'start-bm-radio-bridge.ps1'), (Join-Path $stagedPackage 'start-bm-radio-bridge.ps1'), $false)
 [System.IO.File]::Copy((Join-Path $repoRoot 'tools\bridge-user-config.psm1'), (Join-Path $stagedPackage 'bridge-user-config.psm1'), $false)
-foreach ($name in @('bridge-ui.ps1', 'BridgeSupervisor.cs', 'MainWindow.xaml', 'SettingsWindow.xaml', 'RadioIdentity.psm1')) {
+foreach ($name in @('bridge-ui.ps1', 'BridgeSupervisor.cs', 'MainWindow.xaml', 'SettingsWindow.xaml', 'RadioIdentity.psm1', 'RadioCat.psm1')) {
+    if ($name -ceq 'RadioCat.psm1' -and -not [System.IO.File]::Exists((Join-Path (Join-Path $repoRoot 'ui\windows') $name))) { continue }
     [System.IO.File]::Copy((Join-Path (Join-Path $repoRoot 'ui\windows') $name), (Join-Path (Join-Path $stagedPackage 'ui\windows') $name), $false)
 }
 [System.IO.Directory]::CreateDirectory($renderDirectory) | Out-Null
@@ -327,7 +366,7 @@ try {
     $exitCode = [int]$LASTEXITCODE
     Assert-UiRender ($exitCode -eq 0) ("WPF 离线渲染进程退出码为 $exitCode。")
 
-    foreach ($name in @('main-window.png', 'settings-window.png','main-routing-fixture.png','dashboard-bottom.png','radio-details-expanded.png','settings-routes.png','settings-private-routes.png')) {
+    foreach ($name in @('main-window.png', 'settings-window.png','settings-radio-control.png','main-routing-fixture.png','dashboard-bottom.png','radio-details-expanded.png','settings-routes.png','settings-private-routes.png')) {
         $path = Join-Path $renderDirectory $name
         Assert-UiRender ([System.IO.File]::Exists($path)) ("缺少渲染结果：$name")
         $bytes = [System.IO.File]::ReadAllBytes($path)
@@ -362,7 +401,53 @@ try {
     $errorExitCode = [int]$LASTEXITCODE
     Assert-UiRender ($errorExitCode -eq 2) ("损坏包目录应从启动器返回退出码 2，实际为 $errorExitCode。")
 
-    Write-Output ("通过：RenderOnly 已渲染 1280x900 与 1024x728 主界面及设置窗口；空数据行保持隐藏，实际样例的呼号、历史、往返、丢包 0%、增益和削波通过布局检查；错误包返回退出码 2；没有启动 native 核心或访问设备。结果：{0}" -f $renderDirectory)
+    $noCatPackage = Join-Path $testRoot 'package-without-cat'
+    [System.IO.Directory]::CreateDirectory($noCatPackage) | Out-Null
+    Copy-Item -Path (Join-Path $stagedPackage '*') -Destination $noCatPackage -Recurse
+    $noCatModulePath = Join-Path $noCatPackage 'ui\windows\RadioCat.psm1'
+    if ([System.IO.File]::Exists($noCatModulePath)) { [System.IO.File]::Delete($noCatModulePath) }
+    $noCatConfig = Join-Path $testRoot 'no-cat-user-config'
+    [System.IO.Directory]::CreateDirectory($noCatConfig) | Out-Null
+    $noCatRender = Join-Path $renderDirectory 'missing-radio-cat-module'
+    & $powerShellExe -NoLogo -NoProfile -STA -ExecutionPolicy Bypass -File $uiLauncher `
+        -PackageDirectory $noCatPackage -UserConfigDirectory $noCatConfig -OfflinePreview -RenderOnly `
+        -RenderWorkArea '1280x900' -RenderOutputDirectory $noCatRender
+    $noCatExitCode = [int]$LASTEXITCODE
+    Assert-UiRender ($noCatExitCode -eq 0) ("缺少可选 RadioCat 模块不应阻止 WPF 设置窗启动，实际退出码为 $noCatExitCode。")
+    $noCatLayout = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText((Join-Path $noCatRender 'layout-info.json'),[System.Text.Encoding]::UTF8)) -ErrorAction Stop
+    Assert-UiRender (-not [bool]$noCatLayout.radio_controls.module_available -and
+        -not [bool]$noCatLayout.settings_radio_controls.controls_visible.RadioCatPanel) `
+        '缺少 RadioCat 模块时 CAT 控件应隐藏。'
+    Assert-UiRender (-not [System.IO.File]::Exists((Join-Path $noCatConfig 'radio-control-preferences.json')) -and
+        -not [System.IO.File]::Exists((Join-Path $noCatConfig 'connection-profile.json')) -and
+        -not [System.IO.File]::Exists((Join-Path $noCatConfig 'audio-settings.json')) -and
+        -not [System.IO.File]::Exists((Join-Path $noCatConfig 'password-file-path.txt'))) `
+        '缺少 CAT 模块时 RenderOnly 不应创建或改写用户配置。'
+
+    $corruptConfig = Join-Path $testRoot 'corrupt-radio-preferences-user-config'
+    [System.IO.Directory]::CreateDirectory($corruptConfig) | Out-Null
+    $corruptPreferencesPath = Join-Path $corruptConfig 'radio-control-preferences.json'
+    $corruptPreferencesText = '{"schema_version":1,"cat_port":"COM11","baud_rate":"not-a-number","stop_bits":"Two","desired_power_watts":25}'
+    [System.IO.File]::WriteAllText($corruptPreferencesPath,$corruptPreferencesText,(New-Object System.Text.UTF8Encoding($false)))
+    $corruptRender = Join-Path $renderDirectory 'corrupt-radio-preferences'
+    & $powerShellExe -NoLogo -NoProfile -STA -ExecutionPolicy Bypass -File $uiLauncher `
+        -PackageDirectory $stagedPackage -UserConfigDirectory $corruptConfig -OfflinePreview -RenderOnly `
+        -RenderWorkArea '1280x900' -RenderOutputDirectory $corruptRender
+    $corruptExitCode = [int]$LASTEXITCODE
+    Assert-UiRender ($corruptExitCode -eq 0) ("CAT 偏好损坏不应阻止原有设置窗启动，实际退出码为 $corruptExitCode。")
+    $corruptLayout = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText((Join-Path $corruptRender 'layout-info.json'),[System.Text.Encoding]::UTF8)) -ErrorAction Stop
+    Assert-UiRender ([bool]$corruptLayout.radio_controls.preferences_error -and
+        [bool]$corruptLayout.settings_radio_controls.controls_visible.RadioCatPanel -and
+        -not [bool]$corruptLayout.settings_radio_controls.controls_bounds.CatPortBox.is_enabled -and
+        -not [bool]$corruptLayout.settings_empty_state.controls_visible.SettingsErrorText) `
+        '损坏的 CAT 偏好应只禁用 CAT 控件，并保留其他设置界面。'
+    Assert-UiRender ([System.IO.File]::ReadAllText($corruptPreferencesPath,[System.Text.Encoding]::UTF8) -ceq $corruptPreferencesText -and
+        -not [System.IO.File]::Exists((Join-Path $corruptConfig 'connection-profile.json')) -and
+        -not [System.IO.File]::Exists((Join-Path $corruptConfig 'audio-settings.json')) -and
+        -not [System.IO.File]::Exists((Join-Path $corruptConfig 'password-file-path.txt'))) `
+        '损坏偏好测试不得重写偏好文件或创建其它用户配置。'
+
+    Write-Output ("通过：RenderOnly 已渲染 1280x900 与 1024x728 主界面及设置窗口（含 CAT 聚焦图）；缺少 RadioCat 模块和损坏的独立偏好均未阻止设置窗；偏好文件/配置隔离检查通过；没有启动 native 核心或访问设备。结果：{0}" -f $renderDirectory)
 } finally {
     if ([System.IO.Directory]::Exists($testRoot)) { [System.IO.Directory]::Delete($testRoot, $true) }
 }
