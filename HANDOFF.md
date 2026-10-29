@@ -1,5 +1,17 @@
 # WIREX Bridge 交接入口
 
+## R115 FTX-1 模式范围与后续开发计划（2026-10-30）
+
+本轮仅更新文档；没有改源码、配置、发行包或操作设备。详细功能范围、手册页码、验收门槛和未来实机记录要求见 [R115 模式范围与开发计划](docs/R115_文档功能范围与后续开发计划.md)。
+
+用户报告：相同 HRI/DIRECT 下官方 WIRES-X 程序也没有 LCD 内容或图标，底部按键无反应；BM 网络来话时看到红灯；用户确认 AP 模式下网络语音可经电台 RF 输出。红灯观察不作为 RF 证据；AP 报告尚未闭合实际 Node Mode、PTT 和空中语音。用户认为 AP RADIO/AP PC 在选择电台 RF 与电脑路径，仍需结合设备实际模式核对。
+
+官方《FTX-1 WIRES-X Edition ENG 2603-B》第 29 页定义 AP RADIO、AP PC 与 DIRECT 的差别；第 8–12 页的 ALL/SEARCH/ENTER ID 属于 C4FM DG-ID、本地节点频率和 GM/X 的 RF 节点流程；第 16 页的呼号/位置显示属于含 GPS 的 C4FM DN(V/D)。第 1 页有 HRI MODE 开关；《HRI-200 Manual 2603-Q》第 23–24 页称 FTX-1 支持 HRI-200 模式，PC 设置会反映到电台并可选 RX/TX 数字或 FM；第 23 页给出进入 HRI 节点模式后的 `WIRES-X HRI` 屏显，第 76 页将来话呼号等信息列在 PC 端 `User monitoring`。用户观察没有单独记录状态字样是否出现；手册未规定 HRI/DIRECT 底部软键或 LCD 来话列表。WIRES-X Ver.2.0xx 的“仅显示已连接节点信息”说明限定在 PDN；官方节点比较页另列 FTX-1+PC full-spec 节点，PDN 说明不能代替 FTX-1 HRI/DIRECT 的屏显定义。普通数字 News/GM 流程也不属于 HRI 网络来话显示目标。《FTX-1 Basic Manual》印刷第 10 页仅定义通用 BUSY/TX 红灯为发射提示。2026-08-28 官方固件说明未列出 HRI 空屏问题，因此不能据此判定固件未完成。
+
+开发顺序：P0 查清是否可读取真实 Node Mode/RX-TX 调制；若读不到就把 `unknown` 记入内部日志，主界面隐藏无读值字段，通过已有有效操作收集人工确认，不暗切 Node Mode，也不宣称软件锁定物理 DIRECT 或禁止 RF。明确 `BM transmit_enabled` 只约束 BM 网络上行，并单独定义 AP 射频转发许可与 DIRECT 确认。保留官方指示灯行为，不追求“网络呼入亮蓝灯”；通话方向显示真实 BM/HRI 字段。P1 沿现有音频链验收 BM→FTX-1→FM RF 与 FM RF→FTX-1→BM 两个方向，核对 TG91 只监听语义、RX 来源是否经 AP 转发、目标/组选择、PTT 释放、超时和回灌；不新写电脑 FM/IQ 调制器，也不重复已通过的手咪 DIRECT 双向回声。用户已确认 AP 模式下网络语音可经电台 RF 输出，空口验收仍需届时确定可观察的接收手段；当前不要求 MMDVM 或第二台电台。P2 独立查明 C4FM 的 AMBE/帧与元数据后再验证 RF，不从 FM 推断数字通过。
+
+LCD 保留为核心功能目标，继续并行推进而不阻挡声路/RF 实现和验收。先确认显示行为属于 USB HRI、PC 端 PDN 还是普通 RF 节点，并确定模式、触发与字段；普通 RF 节点列表不直接套到 HRI/DIRECT。R114 的 `sent` 仅说明 Native 完整写出 T 帧，用户仍观察到 LCD 内容区空白；不再重复同一 mode 4 十字节字段尝试。本轮没有发布新包。
+
 ## R114 alpha.11 LCD 实测与日志审计（2026-10-30）
 
 用户确认 alpha.11 App 呼号显示正常；FTX-1 LCD 两个内容区仍为空白。截图左上角有一个红色 WIRES-X 图标，顶部另有 WIRES-X HRI、DIRECT、HRI MODE 和 FM 字样；当前没有证据把红色图标对应到具体底层故障。详细记录见 [R114 LCD 实测审计](docs/R114_LCD实测审计.md)。
