@@ -14,13 +14,19 @@ LCD 已按用户最新决定改为独立实验方向，不作为 alpha.12 主线
 
 ## R116 alpha.12 CAT 控制接入（2026-10-30）
 
-alpha.12 增加 FTX-1 CAT-1 单操作查询与设置：MAIN/SUB 频率、无线机模式和 PC 功率控制值可查询；MAIN 频率、无线机模式和 PC 值可设置。每次设置前核对 ID0840 与 TX0，发送一次后读回，不自动重试。设置 MAIN 频率或模式会先停止 Bridge 核心，完成后保持断开；应用功率还需最近 3 秒内核心状态空闲、无活动通话、接收媒体空闲或已过滤且队列为空。CAT 手册没有 HRI MODE 或 Node Mode 指令，本版不显示这两项自动切换，也不猜 EX 地址。
+alpha.12 增加 FTX-1 CAT-1 单操作查询与设置：MAIN/SUB 频率、无线机模式和 PC 功率控制值可查询；MAIN 频率、无线机模式和 PC 值可设置。每次设置前核对 ID0840 与 TX0，发送一次后读回，不自动重试。设置 MAIN 频率或模式会先停止 Bridge 核心，完成后保持断开；应用功率还需最近 3 秒内核心状态空闲、无活动通话、接收媒体空闲或已过滤且队列为空。CAT 手册没有 HRI MODE 或 Node Mode 指令，本版不显示这两项自动切换，也不猜 EX 地址。本版没有新增 RF 控制入口；用户报告 AP 模式下既有 HRI 声路可经电台 RF 输出。软件不读取或锁定 Node Mode，不能以 BM 网络上行开关证明既有电台 RF 声路关闭；该观察不构成本版 FM/C4FM RF 完整验收。若后续验证 CAT 设置写入，须处于 DIRECT/HRI；AP 声路研究另按明确的频率和功率参数规划。
 
 电台偏好使用本机 UserConfigDirectory 中的 radio-control-preferences.json；打开设置窗不会创建文件，只有用户保存时才写。初始偏好为 COM11、38400/8N2、25 W。Windows 未枚举出 COM11 时不会创建假的设备项。期望功率不会在启动、查询或保存偏好时自动发送。通用发行包清单排除此文件。R112 网络音频指标与 R113 历史文档保留。
 
 CAT fake 测试在 PowerShell 7 和 Windows PowerShell 5.1 各通过 52 项断言。UI 的 `tools/test-ui-radio-cat.ps1` 用 fake callback 验证真实 WPF 控件和操作生命周期，在 PS5 STA 与 PS7 STA 均通过；根会话另以 Windows PowerShell 5.1 独立运行退出码 0。RenderOnly 在两种窗口尺寸、缺少 CAT 模块和坏偏好文件场景均通过，根会话完成视检；现有 UI status/lifecycle 检查也通过，status 检查新增的 stub 仅补齐局部依赖，没有放宽断言。发行包 profile 沿用 40 项 Native 测试；package-release 合成断言 516 项、download-release 1783 项、publish-release 离线断言 109 项均通过。
 
-根会话最近一次 Windows PowerShell 5.1.26100.8737 的 COM11、38400/8N2 查询返回来源 `FTX-1 CAT-1`、ID0840、MAIN FM、SPA-1 功率路径设定 25 W，FA/FB 均读回；清理为 `closed`、错误为 `null`，CAT 配置写入次数为 0。该查询没有执行任何设置命令。HRI MODE 与 WIRES-X Node Mode 仍未实现 CAT 写控制。clean build、alpha.12 本机测试包和包级启动检查尚未完成；没有生成 ZIP、Git tag 或 GitHub Release。完整接线见 [R116 总交接](docs/R116_总交接.md)、[CAT 实现说明](docs/R116_CAT能力与控制实现.md)、[电台控制界面说明](docs/R116_电台控制界面.md) 和 [alpha.12 本机测试版记录](docs/releases/v0.1.0-alpha.12.md)。
+根会话最近一次 Windows PowerShell 5.1.26100.8737 的 COM11、38400/8N2 查询返回来源 `FTX-1 CAT-1`、ID0840、MAIN FM、SPA-1 功率路径设定 25 W，FA/FB 均读回；清理为 `closed`、错误为 `null`，CAT 配置写入次数为 0。该查询没有执行任何设置命令。HRI MODE 与 WIRES-X Node Mode 仍未实现 CAT 写控制。
+
+完整 clean build 已通过：commit `059610c0585a68403b06c64c4f662a815782fa90`，provenance 为 `source_tree_clean=true`、`compile_only=false`、`result=passed`；40 项 Native 测试按 profile 顺序全部通过，编译 warning/error 为 0。构建目录 `build/_work/wirex-bridge-059610c-20261029-214258`，日志 `build/_work/alpha12-clean-build-059610c-20261030-054258.log`，EXE SHA-256 `87215708e9f98d143d476fe0202ed58718de4755f24c4e9ddcbe98244256a64c`，长度 968192 字节。
+
+alpha.12 本机测试包位于 `build/releases/v0.1.0-alpha.12`，profile 的 35 项资产与 manifest 完全匹配；加入 manifest 外的个人 `private/user-config-directory.txt` 后共 37 个物理文件。根只读包审已通过，manifest 的 `package_status` 为 `root_audit_passed`，SHA-256 为 `fe6669abd331ef4e6539a80009a6f3a16ff2ff0d86c4ded53ad2904aa45338af`。获批 Y fixture 为 100 字节且 SHA-256 与固定值相同。个人 overlay 指向 canonical `private/user-config`；canonical `bridge-directory.txt` 已切换到 alpha.12，切换前原始字节备份位于 `private/config-backups/R116/bridge-directory.before-alpha12.txt`，长度 36 字节、SHA-256 `2c96e5c52917133123551638ba541bc169fb9489fedd4ec60b5ebf5223aa2228`。`connection-profile.json`、`audio-settings.json`、`password-file-path.txt` 的 SHA-256 仍分别为 `e4f053bdd1c9f08380cda7c2d3efc77877f7e15ae8c2538a40cf85221fa821ec`、`aa91098ae5cb5fe76d44b9e5062917bce922ed7c94f65214ee587574b283fe51`、`bb7cbf045f4057b191fbea0ee3127511f201a86cb748c95a25911f26cf0ab2ae`；没有创建 `radio-control-preferences.json`。通用包不含本机 RadioID 缓存、频道收藏或密码文件。`tools/test-package-startup.ps1` 由 Windows PowerShell 5.1 实际运行并以退出码 0 结束；包内 CMD 经 PS5.1 进入 PrepareOnly 与隔离 RoutingDiagnosticAutoTest。新包 EXE 的 `test-control.ps1` 与 `test-ui-control-v2.ps1` 均通过，只运行本地协议/路由诊断，没有启动 BM、HRI、串口、音频或 RF。没有生成 ZIP、Git tag 或 GitHub Release。完整接线见 [R116 总交接](docs/R116_总交接.md)、[CAT 实现说明](docs/R116_CAT能力与控制实现.md)、[电台控制界面说明](docs/R116_电台控制界面.md) 和 [alpha.12 本机测试版记录](docs/releases/v0.1.0-alpha.12.md)。
+
+根批准的归档计划 SHA-256 为 `835c995092c0242f5cfd78bc206ff4ccc1433b27a5b5c231501be550c305448f`；执行记录位于 `private/build-history/R116/retire-journal-alpha12.jsonl`，SHA-256 为 `ea4a9ce0fe8e78edbdf02dcadcd616e6d4d0678b1181d36147a9eee186d2739b`。计划内 5 项、254 个文件、43,065,413 字节已用 `Move-Item -LiteralPath` 移入 `private/build-retired/R116/build/` 镜像；源目录均已消失，目标逐文件长度、SHA-256 与计划树摘要一致，没有永久删除文件。alpha.11 包、旧 b05c3a6 构建与日志以及两组 R116 UI 测试产物均在该镜像中；新的 alpha.12 构建、日志和本机测试包未移动。
 
 ## R114 alpha.11 LCD 实测与日志审计（2026-10-30）
 
