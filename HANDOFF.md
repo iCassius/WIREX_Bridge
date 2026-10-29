@@ -4,15 +4,15 @@
 
 用户确认 alpha.10 上 FTX-1 收听和鹦鹉回放正常。这项确认只涉及听音与鹦鹉路径；FTX-1 LCD 来话呼号显示仍待实物观察，R113 不把软件状态或 Native ACK 记作屏幕验收。当前工作只接入 RadioID 缓存到 Native 的后续来话呼号映射，不修改路由、用户配置、密码路径或音量。
 
-## R113 alpha.11 源码与本机候选准备（2026-10-29）
+## R113 alpha.11 源码与本机测试版（2026-10-29）
 
 Native/UI 实现已由作者冻结；独立代码审查未发现 P1/P2 问题，并按审查意见修正了 `lcd_source_identity` 的通话代次说明。呼号字段已实际接入后续来话的现有 mode 4 T90 起始记录；真实 LCD 绘制仍待本轮用户目视测试。活动通话内的映射更新只影响后续通话，不发送第二条 T，也不热写活动记录。
 
-当前已有 dirty 开发构建的 40 项 Native 离线测试通过，以及 Windows PowerShell 5.1 下 `test-control`、`test-ui-control-v2`、`test-ui-status` 和 WPF→Native 身份管道检查通过。发行器离线合成检查为 package 486、publisher 101、downloader 1620 项断言通过；它们没有生成发行包或启动 EXE。clean HEAD 构建、alpha.11 包级启动检查和最终包审仍待本轮完成。详细证据与后续补录位置见 [R113 总交接](docs/R113_总交接.md)。
+alpha.11 已从干净源码提交 `b05c3a65cb725d75364e4e8189e13f1257707369` 构建，40 项 Native 离线测试全部通过（新增 `radio_identity_cache_test` 位于 `hri_lcd_identity_candidate_test` 之后），编译警告/错误均为 0。构建目录为 `build/_work/wirex-bridge-b05c3a6-20261029-132957`，完整日志为 `build/_work/R113-alpha11-clean-build-b05c3a6.log`。alpha.11 本机包位于 `build/releases/v0.1.0-alpha.11`，独立包审通过后 `package_status=root_audit_passed`；最终 manifest SHA-256 为 `93298af7365b1ab2da4b39ce0945fa4f739bc3c09cfe6386ce9d409281bd6e72`。Windows PowerShell 5.1 包启动链、针对包内 EXE 的 `test-control` 和真实 WPF→Native `test-ui-control-v2` 均通过。协议诊断确认 BM、HRI、串口及音频没有启动；未连接真实设备或网络。发行器离线合成检查为 package 486、publisher 101、downloader 1620 项断言通过，它们没有生成其他发行包或启动 EXE。alpha11 personal overlay 指向原 canonical 配置目录；canonical `bridge-directory.txt` 已切换到 alpha11，旧指针原始字节备份 SHA-256 为 `9793193b85f25bf11412b335839f028ee7578f87f31baefba847fe1409b7cb2c`。三项连接/音量/密码路径文件的哈希保持不变，未读密码正文，也未重建 RadioID cache。详细哈希与每项证据见 [R113 总交接](docs/R113_总交接.md)。
 
-alpha.11 profile 将 alpha10 的身份查询与 UI 精简文档替换为两份 R113 接线说明，保留未变的 R112 网络音频指标说明；唯一启动入口仍是包根目录 `start-wirex-bridge.cmd`。RadioID 缓存、频道收藏、连接/音量配置、密码和密码路径不进入通用包。用户目录指针仍保持 alpha10；包审通过前保护该包和现有配置不变。没有创建 ZIP、Git tag 或 GitHub Release。
+alpha.11 profile 将 alpha10 的身份查询与 UI 精简文档替换为两份 R113 接线说明，保留未变的 R112 网络音频指标说明；唯一启动入口仍是包根目录 `start-wirex-bridge.cmd`。通用包排除 RadioID 缓存、频道收藏、连接/音量配置、密码和密码路径。独立包审通过后，本机包增加一份不在 manifest 中的 `private/user-config-directory.txt`，目录共有34个文件。alpha10 包已保存在可恢复路径 `private/build-retired/R113/build/releases/v0.1.0-alpha.10`，移动前后文件哈希相同；恢复核对方法见 [R113 总交接](docs/R113_总交接.md)。没有创建 ZIP、Git tag 或 GitHub Release。呼号字段已接入现有来话起始记录；FTX-1 LCD 的真实绘制待本轮用户目视测试。
 
-下一步仅在既有 DIRECT/WIRES-X HRI 与旧 Bridge 用户环境中观察已缓存呼号来话的真实 LCD；另核对首次缓存未命中仍显示数字 ID、后续已解析映射供下一通来话使用及通话结束后的屏幕变化。不新增设备、不改变 RF/数字模式，也不把串口完整写出记录写成屏显通过。
+下一步仅在既有 DIRECT/WIRES-X HRI 与旧 Bridge 用户环境中观察已缓存呼号来话的真实 LCD；根会话确认当前五个 fresh 缓存可预置，ID `460997` 没有呼号，按现有 TG91 来话观察呼号显示，不用鹦鹉路径验证。未命中缓存时程序发送数字 ID 标签；屏幕实际显示待用户观察。另核对后续已解析映射供下一通来话使用及通话结束后的屏幕变化。不新增设备、不改变 RF/数字模式；Native `sent` 状态只说明完整写出，电台实际显示待用户观察。
 
 ## R112-A alpha10 集成状态（2026-10-29）
 
