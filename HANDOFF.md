@@ -2,13 +2,15 @@
 
 ## R111 alpha.9 集成当前状态（2026-10-29）
 
-本轮从 `main` / `d2c098452247f26fbe8a0d23d84b5c1f415ce747` 开始。RadioIdentity 模块与研究说明提交为 `222f71dea9b704f94329bb777ff7b32fc088e8df`；UI 与 alpha.9 发布集成提交为 `e7ec9a0fb2bae24a6157099d33ada2c127a495d1`；音量与 RF 状态文案修正提交为 `c4597e900df1cbc46b68e9202cd7023fca68fa07`。三项提交已在本机 `main`；稍后按用户授权普通推送。根已审查并冻结源码。clean build 和正式包尚未生成，alpha.8 仍是验收版本。详细交付状态见 [R111 alpha.9 集成总交接](docs/R111_总交接.md)。
+本轮从 `main` / `d2c098452247f26fbe8a0d23d84b5c1f415ce747` 开始。RadioIdentity、UI/发布集成和文案修正分别经 `222f71d`、`e7ec9a0`、`c4597e9` 提交；最终交接文档提交 `15e60753f201d92937d5ca3ccaf3d5ee0d29c313`。这些提交已普通推送到 `origin/main`，本机 `main` 与远端均为 `15e60753`，源码工作树干净。clean full39、alpha.9 通用包和唯一 CMD 包级检查均已通过，alpha.9 是当前验收包。详细证据见 [R111 alpha.9 集成总交接](docs/R111_总交接.md) 与 [alpha.9 构建和交付审计](docs/R111_alpha9_最终交付审计.md)。
 
 R111 UI 实施者负责的主窗口、设置页、`bridge-ui.ps1`、目标/状态/渲染测试和 `docs/R111_UI与音量.md` 已冻结。PS5.1/PS7 目标测试、状态测试、路由动作、路由诊断和生命周期测试通过；1280×900、1024×728 RenderOnly 结果已查看，1024 音量摘要无裁切，截图在 `build/_work/ui-render-r111-final`。路由诊断实际启动隔离 Native 诊断进程并用内存 sink；它没有连接 BM、COM、电台音频或射频。BM 身份模块已将网络流读取改为共享 deadline 下的 `ReadAsync`，PS7 与 Windows PowerShell 5.1 最新离线测试各通过 37 项断言。根会话另用 PS5.1 对公开 RadioID SourceID 做了一次真实 HTTPS 单 ID 查询，返回 HTTP 200 且 ID/呼号匹配；未写缓存，也未输出用户个人资料。该查询检查了 HTTP 响应解析和 ID 匹配；没有访问 BM、电台或音频链路。模块仅由用户明确点击后查询单个 DMR ID；缓存写到 canonical `UserConfigDirectory/radio-identity-cache.json`。用户频道收藏在 `UserConfigDirectory/channel-favorites.json`，其中 `static` 只用于本机分类，程序没有查询或修改服务器订阅。缓存、收藏、`test-radio-identity.ps1` 和 `test-radio-identity-http-server.ps1` 都不能进入通用发行包。
 
-本任务负责 alpha.9 package/publisher/downloader profile、相应离线清单测试、R111 用户包 README/release notes 与本交接。alpha.9 profile 保留 alpha.8 唯一 `start-wirex-bridge.cmd` 调用链，随包增加 RadioIdentity 运行模块和三份 R111 说明；个人 cache、favorites、配置与密码明确排除。RadioIdentity 模块、UI 和发布集成已分别提交为 `222f71d`、`e7ec9a0` 和 `c4597e9`，并通过根源码审查。package/publisher/downloader 离线测试各通过 403/83/1304 项。clean full39 和正式 package helper 尚未运行。本机当前 alpha.8 指针不变。
+alpha.9 profile 保留唯一 `start-wirex-bridge.cmd` 调用链，增加 RadioIdentity 运行模块和三份 R111 说明；个人 cache、favorites、配置与密码不在通用包。package/publisher/downloader 离线测试分别通过 403、83、1304 项。clean full39 通过 39/39 项；正式包含32条manifest资产记录，root审核状态为 `root_audit_passed`，包级PS5.1启动检查通过。根已复跑 helper，Native `test-control` 的 schema 2 hello/status/shutdown 也通过；这些是隔离诊断，没有连接 BM、真实 COM、电台音频或 RF。
 
-当前反馈的验收边界：alpha.8 TG91 听感正常但略小；该次真实运行增益为 1.000x、clipping 计数为 0，保存的 5.959x 未反映为那次的播放增益。保留此前机身 LED 观察，但 R111 不改机身 BUSY/TX LED 或串口行为。多路由的显示顺序不设置优先级；单一媒体 owner 播放来话时，新流不会抢断或排队补播。TS 按路由保存，CC 仅用于 DMR 发射编码/上报，接收过滤不按 CC。RadioID 只由用户明确查询单个 ID。FTX-1 LCD 显示仍未知；本轮没有连接 COM、音频、BM，没有触发 PTT 或 RF。
+alpha.8 TG91 听感正常但略小；该次会话启动记录带有效增益 1.000x、clipped samples 为 0。canonical `audio-settings.json` 在该会话启动约61秒后才保存为5.959x，因此这次播放没有使用后保存的值；alpha.9 的设置提示修改后重连生效。R111 保持机身 BUSY/TX LED 与串口行为不变。多路由排列不形成优先级，当前媒体 owner 忙时新流不抢断也不排队补播。TS 按路由保存；CC 仅用于 DMR 发射编码/上报，接收不按 CC 过滤。RadioID 只在用户显式操作时查询单个 ID。FTX-1 LCD 实际显示仍未知；C4FM RF 双向 codec/serializer 尚未接入运行链，尚未完成实现。未连接真实 COM、音频或 BM，未触发 PTT 或 RF。
+
+本机 alpha.9 包的 `private/user-config-directory.txt` 指向 canonical `private/user-config`；canonical `bridge-directory.txt` 已切换到 alpha.9。切换前版本指针原样备份在 `private/config-backups/R111/bridge-directory.before-alpha9.txt`，SHA-256 为 `93a4d757d768b2c6c85cfe807f5ade3c74d5c73cd66b53c674d70ace0e48d4e5`。连接 profile、音量设置和密码路径文件的内容未读取或修改；三文件哈希在归档前后保持一致。获批的 retire plan `a27acd1b1b4bf4b5e7e9eabdb6a2a4288b3799ecb27d03d619a13fc9de17d522` 已用 `Move-Item` 将7项、264个文件和72个目录移至 `private/build-retired/R111/build` 镜像；journal 有16条逐行JSON记录，SHA-256 为 `b64b7f7c80c43729d385e91b863a718c3d6eab29c679327ea5021710365c2d48`。build 现在仅保留 alpha.9、15e6075 clean build 和构建日志，没有永久删除。通用包 README 对 C4FM RF 仅写未经硬件验证，没有明确指出 codec/serializer 还未接入；本机仓库交接已明确该实现缺口，后续若更新通用 README 需重新审查并重建包。
 
 ## R110 alpha.8 当前交接（2026-10-29）
 
