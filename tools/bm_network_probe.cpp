@@ -4,8 +4,8 @@
  * 仅显式传入 --run-network-only 时，才会向源码内固定的 BM 4602 IPv4 地址发送
  * Homebrew 控制包，整个会话最多 15 秒。它读取仓库根目录
  * private/bm-device-password.txt，并使用
- * 生产 Session/UdpTransport；只发送 RPTL、RPTK、RPTC，以及仅在 Session ready
- * 后发送 RPTCL。它不打开 COM/WinMM，不操作 PTT/RF，不发送 RPTO、TG、DMRD
+ * 生产 Session/UdpTransport；发送 RPTL、RPTK、RPTC 和 RPTPING 心跳，只有
+ * Session ready 后才发送 RPTCL。它不打开 COM/WinMM，不操作 PTT/RF，不发送 RPTO、TG、DMRD
  * 或语音，不写入日志文件。
  *
  * 无参数或 --help 只显示用法，不读密码、不创建 socket。只有显式的
@@ -251,8 +251,10 @@ bool send_queued(Session& session,
     for (auto& item : outbound) {
         const auto tag = prefix(item.bytes.data(), item.bytes.size());
         const std::string tag_string(tag);
-        if (item.kind != PacketKind::control || tag == "UNKNOWN" ||
-            !sent_prefixes.insert(tag_string).second) {
+        const bool is_control = item.kind == PacketKind::control;
+        const bool is_keepalive = item.kind == PacketKind::keepalive;
+        if ((!is_control && !is_keepalive) || tag == "UNKNOWN" ||
+            (is_control && !sent_prefixes.insert(tag_string).second)) {
             if (!item.bytes.empty()) {
                 erase_bytes(item.bytes.data(), item.bytes.size());
             }
@@ -260,13 +262,17 @@ bool send_queued(Session& session,
         }
         std::cout << "TX prefix=" << tag << " len=" << item.bytes.size() << '\n';
         const bool sent = transport.send(item.bytes.data(), item.bytes.size());
-        if (!item.bytes.empty()) {
-            erase_bytes(item.bytes.data(), item.bytes.size());
-        }
         if (!sent) {
+            if (!item.bytes.empty()) {
+                erase_bytes(item.bytes.data(), item.bytes.size());
+            }
             std::cout << "TX_RESULT prefix=" << tag << " result=failed\n";
             session.transport_lost(elapsed_ms(origin));
             return false;
+        }
+        session.record_outbound_sent(item, elapsed_ms(origin));
+        if (!item.bytes.empty()) {
+            erase_bytes(item.bytes.data(), item.bytes.size());
         }
         std::cout << "TX_RESULT prefix=" << tag << " result=sent\n";
     }

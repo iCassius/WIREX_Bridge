@@ -394,6 +394,8 @@ ReceiveResult Receiver::ingest(const dmrd::Datagram& datagram, Receiver::Clock::
             }
             const auto delta = static_cast<std::uint8_t>(datagram.sequence - state.last_sequence);
             if (state.has_sequence && (delta == 0U || delta >= 128U)) {
+                result.sequence = SequenceObservation{true, false, delta == 0U, delta != 0U,
+                                                      false, false, state.call, 0U};
                 if (!state.link_control_validated) {
                     state.link_control_validated = true;
                     state.call.color_code = decoded_lc.color_code;
@@ -425,6 +427,8 @@ ReceiveResult Receiver::ingest(const dmrd::Datagram& datagram, Receiver::Clock::
                 event.missing_packets = missing;
                 append_event(result, event);
             }
+            result.sequence = SequenceObservation{true, true, false, false,
+                                                  false, false, state.call, missing};
             result.status = ReceiveStatus::accepted;
             return result;
         }
@@ -452,6 +456,8 @@ ReceiveResult Receiver::ingest(const dmrd::Datagram& datagram, Receiver::Clock::
         state.call.color_code = decoded_lc.color_code;
         state.last_sequence = datagram.sequence;
         state.last_activity = now;
+        result.sequence = SequenceObservation{true, true, false, false,
+                                              true, false, state.call, 0U};
         append_event(result, make_event(ReceiveEventKind::call_started, state.call, true, true));
         result.status = ReceiveStatus::accepted;
         return result;
@@ -475,6 +481,8 @@ ReceiveResult Receiver::ingest(const dmrd::Datagram& datagram, Receiver::Clock::
         }
         const auto delta = static_cast<std::uint8_t>(datagram.sequence - state.last_sequence);
         if (state.has_sequence && (delta == 0U || delta >= 128U)) {
+            result.sequence = SequenceObservation{true, false, delta == 0U, delta != 0U,
+                                                  false, false, state.call, 0U};
             result.status = ReceiveStatus::ignored;
             result.error = ReceiveError::stale_or_duplicate_sequence;
             return result;
@@ -484,6 +492,8 @@ ReceiveResult Receiver::ingest(const dmrd::Datagram& datagram, Receiver::Clock::
         if (state.has_sequence) {
             ended.missing_packets = sequence_gap(datagram.sequence, state.last_sequence);
         }
+        result.sequence = SequenceObservation{true, true, false, false,
+                                              false, true, state.call, ended.missing_packets};
         append_event(result, ended);
         retired_[retired_cursor_ % retired_.size()] = RetiredStream{
             true, state.call, now + options_.retired_stream_lifetime};
@@ -494,6 +504,7 @@ ReceiveResult Receiver::ingest(const dmrd::Datagram& datagram, Receiver::Clock::
     }
 
     std::uint32_t missing = 0U;
+    bool starts_call = false;
     if (state.active && same_stream_id(state.call, datagram, slot) && !same_stream(state.call, candidate)) {
         result.status = ReceiveStatus::malformed;
         result.error = ReceiveError::link_control_mismatch;
@@ -507,6 +518,8 @@ ReceiveResult Receiver::ingest(const dmrd::Datagram& datagram, Receiver::Clock::
         }
         const auto delta = static_cast<std::uint8_t>(datagram.sequence - state.last_sequence);
         if (state.has_sequence && (delta == 0U || delta >= 128U)) {
+            result.sequence = SequenceObservation{true, false, delta == 0U, delta != 0U,
+                                                  false, false, state.call, 0U};
             result.status = ReceiveStatus::ignored;
             result.error = ReceiveError::stale_or_duplicate_sequence;
             return result;
@@ -542,6 +555,7 @@ ReceiveResult Receiver::ingest(const dmrd::Datagram& datagram, Receiver::Clock::
         state = {};
         state.active = true;
         state.has_sequence = true;
+        starts_call = true;
         state.call = candidate;
         state.last_sequence = datagram.sequence;
         state.last_voice_burst_index = 0U;
@@ -562,6 +576,7 @@ ReceiveResult Receiver::ingest(const dmrd::Datagram& datagram, Receiver::Clock::
         state = {};
         state.active = true;
         state.has_sequence = true;
+        starts_call = true;
         state.call = candidate;
         state.last_sequence = datagram.sequence;
         state.last_voice_burst_index = 0U;
@@ -590,6 +605,8 @@ ReceiveResult Receiver::ingest(const dmrd::Datagram& datagram, Receiver::Clock::
     voice_event.voice = dmr_signal::decode_voice_burst(datagram.payload);
     voice_event.voice_burst_index = voice_index;
     voice_event.missing_packets = missing;
+    result.sequence = SequenceObservation{true, true, false, false,
+                                          starts_call, false, state.call, missing};
     append_event(result, voice_event);
 
     if (incoming_kind == IncomingKind::voice) {

@@ -179,6 +179,8 @@ bool Session::start(Profile&& profile, const Endpoint& master, std::uint64_t now
         return false;
     }
 
+    clear_rtt();
+
     // 将凭据复制到唯一的运行期缓冲区，随后清除调用方结构中的原始内容。
     password_ = profile.password;
     secure_erase(profile.password);
@@ -506,6 +508,23 @@ InputResult Session::on_datagram(const std::uint8_t* bytes,
             return InputResult::rejected_malformed;
         }
         last_pong_ms_ = now_ms;
+        if (rtt_pending_) {
+            if (now_ms >= rtt_sent_at_ms_ && now_ms < rtt_expires_at_ms_) {
+                const auto sample = now_ms - rtt_sent_at_ms_;
+                rtt_last_ms_ = sample;
+                if (rtt_sample_count_ == 0U || sample < rtt_min_ms_) rtt_min_ms_ = sample;
+                if (rtt_sample_count_ == 0U || sample > rtt_max_ms_) rtt_max_ms_ = sample;
+                if (rtt_sum_ms_ <= std::numeric_limits<std::uint64_t>::max() - sample) {
+                    rtt_sum_ms_ += sample;
+                } else {
+                    rtt_sum_ms_ = std::numeric_limits<std::uint64_t>::max();
+                }
+                if (rtt_sample_count_ != std::numeric_limits<std::uint64_t>::max()) {
+                    ++rtt_sample_count_;
+                }
+            }
+            rtt_pending_ = false;
+        }
         return InputResult::accepted;
     }
 
@@ -545,15 +564,23 @@ void Session::tick(std::uint64_t now_ms)
             enter_backoff(Failure::pong_timeout, now_ms);
             return;
         }
+        if (rtt_pending_ && now_ms >= rtt_expires_at_ms_) {
+            rtt_pending_ = false;
+        }
         if (now_ms >= next_ping_ms_) {
+            if (rtt_pending_) {
+                next_ping_ms_ = rtt_expires_at_ms_;
+                return;
+            }
             std::vector<std::uint8_t> ping;
             ping.reserve(11U);
             ping.insert(ping.end(), {'R', 'P', 'T', 'P', 'I', 'N', 'G'});
             append_id(ping, profile_.gateway_id);
-            if (!queue_control(std::move(ping))) {
+            if (outbound_.size() >= max_queued_datagrams) {
                 enter_backoff(Failure::outbound_queue_full, now_ms);
                 return;
             }
+            outbound_.push_back(OutboundDatagram{master_, std::move(ping), PacketKind::keepalive});
             next_ping_ms_ = after(now_ms, keepalive_interval_ms);
         }
         return;
@@ -591,6 +618,7 @@ void Session::stop(std::uint64_t)
     }
 
     const bool was_ready = state_ == State::ready;
+    clear_rtt();
     clear_application_queues();
     for (auto& item : outbound_) {
         secure_erase(item.bytes);
@@ -609,6 +637,21 @@ void Session::stop(std::uint64_t)
     }
     clear_secret();
     state_ = State::stopped;
+}
+
+void Session::record_outbound_sent(const OutboundDatagram& packet,
+                                   std::uint64_t now_ms) noexcept
+{
+    if (packet.kind != PacketKind::keepalive || state_ != State::ready ||
+        packet.target != master_ || packet.bytes.size() != 11U ||
+        !starts_with(packet.bytes.data(), packet.bytes.size(), "RPTPING", 7U) ||
+        !id_matches(packet.bytes.data() + 7U, profile_.gateway_id)) {
+        return;
+    }
+    if (rtt_pending_ && now_ms < rtt_expires_at_ms_) return;
+    rtt_pending_ = true;
+    rtt_sent_at_ms_ = now_ms;
+    rtt_expires_at_ms_ = after(now_ms, keepalive_interval_ms);
 }
 
 bool Session::send_dmrd(const std::uint8_t* bytes,
@@ -651,7 +694,7 @@ std::vector<OutboundDatagram> Session::take_outbound()
 
 Snapshot Session::snapshot() const noexcept
 {
-    return Snapshot{state_,
+    Snapshot result{state_,
                     last_failure_,
                     state_ == State::backoff ? retry_at_ms_
                     : state_ == State::ready ? next_ping_ms_
@@ -660,6 +703,15 @@ Snapshot Session::snapshot() const noexcept
                     outbound_.size(),
                     inbound_.size(),
                     consecutive_failures_};
+    result.rtt_valid = rtt_sample_count_ != 0U;
+    result.rtt_last_ms = rtt_last_ms_;
+    result.rtt_sample_count = rtt_sample_count_;
+    result.rtt_min_ms = rtt_min_ms_;
+    result.rtt_avg_ms = rtt_sample_count_ == 0U
+        ? 0.0
+        : static_cast<double>(rtt_sum_ms_) / static_cast<double>(rtt_sample_count_);
+    result.rtt_max_ms = rtt_max_ms_;
+    return result;
 }
 
 void Session::enter_backoff(Failure failure, std::uint64_t now_ms)
@@ -668,6 +720,7 @@ void Session::enter_backoff(Failure failure, std::uint64_t now_ms)
         return;
     }
     clear_application_queues();
+    clear_rtt();
     for (auto& item : outbound_) {
         secure_erase(item.bytes);
     }
@@ -706,6 +759,18 @@ void Session::clear_secret() noexcept
 void Session::clear_last_control_packet() noexcept
 {
     secure_erase(last_control_packet_);
+}
+
+void Session::clear_rtt() noexcept
+{
+    rtt_pending_ = false;
+    rtt_sent_at_ms_ = 0U;
+    rtt_expires_at_ms_ = 0U;
+    rtt_last_ms_ = 0U;
+    rtt_sample_count_ = 0U;
+    rtt_min_ms_ = 0U;
+    rtt_max_ms_ = 0U;
+    rtt_sum_ms_ = 0U;
 }
 
 Failure Session::timeout_failure() const noexcept

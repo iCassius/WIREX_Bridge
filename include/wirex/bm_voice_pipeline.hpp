@@ -132,6 +132,20 @@ struct ReceiveResult {
     Error error{Error::none};
 };
 
+struct DmrdSequenceStats {
+    bool call_valid{};
+    std::uint64_t call_received{};
+    std::uint64_t call_missing{};
+    std::uint64_t call_expected{};
+    bool call_loss_complete{};
+    bool session_valid{};
+    std::uint64_t session_received{};
+    std::uint64_t session_missing{};
+    std::uint64_t session_expected{};
+    std::uint64_t session_duplicate{};
+    std::uint64_t session_out_of_order{};
+};
+
 struct Snapshot {
     TxState tx_state{TxState::idle};
     RxState rx_state{RxState::idle};
@@ -148,6 +162,7 @@ struct Snapshot {
     bool receive_color_code_known{};
     // EOT 后本地播放队列可能仍在排空；UI 的当前网络话者应在此为 true 时清除。
     bool receive_network_ended{};
+    DmrdSequenceStats dmrd_sequence{};
 };
 
 enum class ReceiveHriStartDecision : std::uint8_t {
@@ -296,6 +311,7 @@ private:
     [[nodiscard]] std::size_t buffered_rx_frames() const noexcept;
     [[nodiscard]] Error process_receive_result(const dmr_call::ReceiveResult& result,
                                               TimePoint now);
+    void record_dmrd_sequence(const dmr_call::SequenceObservation& observation) noexcept;
     void clear_rx_media() noexcept;
     [[nodiscard]] Error timeout_rx_start() noexcept;
     void finish_rx_if_drained() noexcept;
@@ -359,6 +375,8 @@ private:
     bool rx_color_code_known_{};
     bool rx_upsampler_finished_{};
     std::uint64_t rx_accepted_voice_bursts_{};
+    DmrdSequenceStats dmrd_sequence_stats_{};
+    dmr_call::CallConfig dmrd_sequence_call_{};
     TimePoint next_rx_due_{};
     TimePoint rx_start_deadline_{};
     TimePoint last_now_{};

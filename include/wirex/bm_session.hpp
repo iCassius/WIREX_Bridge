@@ -75,6 +75,7 @@ enum class Failure {
 
 enum class PacketKind {
     control,
+    keepalive,
     application,
 };
 
@@ -109,6 +110,12 @@ struct Snapshot {
     std::size_t queued_outbound{};
     std::size_t queued_inbound{};
     std::uint32_t consecutive_failures{};
+    bool rtt_valid{};
+    std::uint64_t rtt_last_ms{};
+    std::uint64_t rtt_sample_count{};
+    std::uint64_t rtt_min_ms{};
+    double rtt_avg_ms{};
+    std::uint64_t rtt_max_ms{};
 };
 
 // 无 socket 的 Homebrew/MMDVM 登录和 DMRD 状态机；时间由调用方按单调毫秒传入。
@@ -130,6 +137,9 @@ public:
     void tick(std::uint64_t now_ms);
     void transport_lost(std::uint64_t now_ms);
     void stop(std::uint64_t now_ms);
+
+    // 仅在 UDP 发送接口确认成功后调用此方法。
+    void record_outbound_sent(const OutboundDatagram& packet, std::uint64_t now_ms) noexcept;
 
     // 仅 ready 状态接受 DMRD；收发两侧都检查固定 55 字节帧。调用方负责经 UDP 收发结果。
     [[nodiscard]] bool send_dmrd(const std::uint8_t* bytes,
@@ -153,6 +163,7 @@ private:
     void clear_application_queues() noexcept;
     void clear_secret() noexcept;
     void clear_last_control_packet() noexcept;
+    void clear_rtt() noexcept;
     [[nodiscard]] Failure timeout_failure() const noexcept;
 
     State state_{State::idle};
@@ -170,6 +181,14 @@ private:
     std::uint64_t retry_at_ms_{};
     std::uint64_t last_pong_ms_{};
     std::uint64_t next_ping_ms_{};
+    bool rtt_pending_{};
+    std::uint64_t rtt_sent_at_ms_{};
+    std::uint64_t rtt_expires_at_ms_{};
+    std::uint64_t rtt_last_ms_{};
+    std::uint64_t rtt_sample_count_{};
+    std::uint64_t rtt_min_ms_{};
+    std::uint64_t rtt_max_ms_{};
+    std::uint64_t rtt_sum_ms_{};
     std::uint32_t consecutive_failures_{};
 };
 

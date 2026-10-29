@@ -91,6 +91,30 @@ std::vector<wirex::bm::OutboundDatagram> start(Session& session,
     return session.take_outbound();
 }
 
+void complete_login(Session& session, std::uint64_t now_ms)
+{
+    (void)session.take_outbound();
+    const auto salt = challenge();
+    check(session.on_datagram(salt.data(), salt.size(), master, now_ms + 1U) == InputResult::accepted,
+          "accept login challenge in RTT test");
+    (void)session.take_outbound();
+    const auto auth_ack = acknowledgement(gateway_id);
+    check(session.on_datagram(auth_ack.data(), auth_ack.size(), master, now_ms + 2U) == InputResult::accepted,
+          "accept authentication acknowledgement in RTT test");
+    (void)session.take_outbound();
+    const auto config_ack = acknowledgement(gateway_id);
+    check(session.on_datagram(config_ack.data(), config_ack.size(), master, now_ms + 3U) == InputResult::accepted,
+          "accept config acknowledgement in RTT test");
+    check(session.snapshot().state == State::ready, "RTT test login reaches ready state");
+}
+
+std::vector<std::uint8_t> pong()
+{
+    auto bytes = packet("MSTPONG");
+    append_id(bytes, gateway_id);
+    return bytes;
+}
+
 void check_config_packet(const std::vector<std::uint8_t>& bytes)
 {
     check(bytes.size() == 302U, "RPTC has exactly 302 bytes");
@@ -327,6 +351,70 @@ void test_transport_loss_clears_queued_application_data()
           "transport loss clears application queues");
 }
 
+void test_keepalive_rtt_uses_successful_send_and_expires()
+{
+    Session session;
+    const auto initial = profile();
+    check(session.start(Profile(initial), master, 0U), "start RTT session");
+    complete_login(session, 0U);
+    check(!session.snapshot().rtt_valid, "RTT is unavailable before an exchange");
+
+    session.tick(10003U);
+    auto ping = session.take_outbound();
+    check(ping.size() == 1U && ping[0].kind == PacketKind::keepalive &&
+              std::string(ping[0].bytes.begin(), ping[0].bytes.begin() + 7) == "RPTPING",
+          "ready session queues a separately tagged keepalive ping");
+    // 模拟UDP发送失败：不回调成功发送记录，随后由断线清除此连接的RTT统计。
+    session.transport_lost(10004U);
+    check(!session.snapshot().rtt_valid && session.snapshot().rtt_sample_count == 0U,
+          "unsent keepalive produces no RTT sample");
+
+    session.tick(11004U);
+    complete_login(session, 11004U);
+    session.tick(21007U);
+    ping = session.take_outbound();
+    check(ping.size() == 1U && ping[0].kind == PacketKind::keepalive,
+          "keepalive resumes after reconnect");
+    session.record_outbound_sent(ping[0], 21010U);
+    const auto response = pong();
+    check(session.on_datagram(response.data(), response.size(), master, 21250U) == InputResult::accepted,
+          "accept matching-protocol PONG after a sent ping");
+    auto snapshot = session.snapshot();
+    check(snapshot.rtt_valid && snapshot.rtt_last_ms == 240U && snapshot.rtt_sample_count == 1U &&
+              snapshot.rtt_min_ms == 240U && snapshot.rtt_max_ms == 240U && snapshot.rtt_avg_ms == 240.0,
+          "RTT starts at successful UDP send and ends at PONG receipt");
+
+    session.tick(31007U);
+    ping = session.take_outbound();
+    check(ping.size() == 1U, "second RTT probe is queued");
+    session.record_outbound_sent(ping[0], 31010U);
+    check(session.on_datagram(response.data(), response.size(), master, 41010U) == InputResult::accepted,
+          "late PONG still refreshes BM liveness");
+    snapshot = session.snapshot();
+    check(snapshot.rtt_sample_count == 1U && snapshot.rtt_last_ms == 240U,
+          "expired PONG does not enter RTT statistics");
+
+    session.tick(41010U);
+    ping = session.take_outbound();
+    check(ping.size() == 1U && ping[0].kind == PacketKind::keepalive,
+          "probe scheduling resumes after an expired sample window");
+    session.record_outbound_sent(ping[0], 41012U);
+    check(session.on_datagram(response.data(), response.size(), master, 41100U) == InputResult::accepted,
+          "next PONG yields a fresh sample");
+    snapshot = session.snapshot();
+    check(snapshot.rtt_sample_count == 2U && snapshot.rtt_last_ms == 88U &&
+              snapshot.rtt_min_ms == 88U && snapshot.rtt_max_ms == 240U && snapshot.rtt_avg_ms == 164.0,
+          "valid RTT summary includes only unexpired successful-send samples");
+
+    session.transport_lost(42000U);
+    check(!session.snapshot().rtt_valid && session.snapshot().rtt_sample_count == 0U,
+          "disconnect clears RTT values and pending sample");
+    session.tick(43000U);
+    complete_login(session, 43000U);
+    check(!session.snapshot().rtt_valid && session.snapshot().rtt_sample_count == 0U,
+          "reconnected session starts with RTT unavailable");
+}
+
 void test_malformed_rejection_timeout_and_stop()
 {
     {
@@ -432,6 +520,7 @@ int main()
     test_application_queue_limit();
     test_ready_ack_wrong_id();
     test_transport_loss_clears_queued_application_data();
+    test_keepalive_rtt_uses_successful_send_and_expires();
     std::cout << "All BM session state-machine checks passed.\n";
     return EXIT_SUCCESS;
 }

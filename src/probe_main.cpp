@@ -5004,6 +5004,68 @@ bool append_bridge_status(std::ofstream& file, std::string_view event, std::uint
          << ",\"tx_cleanup_result\":\"" << counters.tx_cleanup_result << "\""
          << ",\"control_tx_attempted\":" << counters.control_tx_attempted
          << ",\"control_tx_succeeded\":" << counters.control_tx_succeeded
+         << ",\"bm_rtt_valid\":" << (bm_snapshot.rtt_valid ? "true" : "false")
+         << ",\"bm_rtt_last_ms\":";
+    if (bm_snapshot.rtt_valid) file << bm_snapshot.rtt_last_ms;
+    else file << "null";
+    file << ",\"bm_rtt_sample_count\":";
+    if (bm_snapshot.rtt_valid) file << bm_snapshot.rtt_sample_count;
+    else file << "null";
+    file << ",\"bm_rtt_min_ms\":";
+    if (bm_snapshot.rtt_valid) file << bm_snapshot.rtt_min_ms;
+    else file << "null";
+    file << ",\"bm_rtt_avg_ms\":";
+    if (bm_snapshot.rtt_valid) file << bm_snapshot.rtt_avg_ms;
+    else file << "null";
+    file << ",\"bm_rtt_max_ms\":";
+    if (bm_snapshot.rtt_valid) file << bm_snapshot.rtt_max_ms;
+    else file << "null";
+    file << ",\"rx_call_dmrd_valid\":"
+         << (receive_snapshot.dmrd_sequence.call_valid ? "true" : "false")
+         << ",\"rx_call_dmrd_received\":";
+    if (receive_snapshot.dmrd_sequence.call_valid) file << receive_snapshot.dmrd_sequence.call_received;
+    else file << "null";
+    file << ",\"rx_call_dmrd_missing\":";
+    if (receive_snapshot.dmrd_sequence.call_valid) file << receive_snapshot.dmrd_sequence.call_missing;
+    else file << "null";
+    file << ",\"rx_call_dmrd_expected\":";
+    if (receive_snapshot.dmrd_sequence.call_valid) file << receive_snapshot.dmrd_sequence.call_expected;
+    else file << "null";
+    file << ",\"rx_call_dmrd_loss_pct\":";
+    if (receive_snapshot.dmrd_sequence.call_valid && receive_snapshot.dmrd_sequence.call_expected != 0U) {
+        file << static_cast<double>(receive_snapshot.dmrd_sequence.call_missing) * 100.0 /
+              static_cast<double>(receive_snapshot.dmrd_sequence.call_expected);
+    } else file << "null";
+    file << ",\"rx_call_dmrd_loss_complete\":";
+    if (receive_snapshot.dmrd_sequence.call_valid) {
+        file << (receive_snapshot.dmrd_sequence.call_loss_complete ? "true" : "false");
+    } else file << "null";
+    file << ",\"rx_session_dmrd_valid\":"
+         << (receive_snapshot.dmrd_sequence.session_valid ? "true" : "false")
+         << ",\"rx_session_dmrd_received\":";
+    if (receive_snapshot.dmrd_sequence.session_valid) file << receive_snapshot.dmrd_sequence.session_received;
+    else file << "null";
+    file << ",\"rx_session_dmrd_missing\":";
+    if (receive_snapshot.dmrd_sequence.session_valid) file << receive_snapshot.dmrd_sequence.session_missing;
+    else file << "null";
+    file << ",\"rx_session_dmrd_expected\":";
+    if (receive_snapshot.dmrd_sequence.session_valid) file << receive_snapshot.dmrd_sequence.session_expected;
+    else file << "null";
+    file << ",\"rx_session_dmrd_loss_pct\":";
+    if (receive_snapshot.dmrd_sequence.session_valid && receive_snapshot.dmrd_sequence.session_expected != 0U) {
+        file << static_cast<double>(receive_snapshot.dmrd_sequence.session_missing) * 100.0 /
+              static_cast<double>(receive_snapshot.dmrd_sequence.session_expected);
+    } else file << "null";
+    file << ",\"rx_session_dmrd_duplicate\":";
+    if (receive_snapshot.dmrd_sequence.session_valid) file << receive_snapshot.dmrd_sequence.session_duplicate;
+    else file << "null";
+    file << ",\"rx_session_dmrd_out_of_order\":";
+    if (receive_snapshot.dmrd_sequence.session_valid) file << receive_snapshot.dmrd_sequence.session_out_of_order;
+    else file << "null";
+    file << ",\"rx_queue_bursts\":" << receive_snapshot.queued_rx_bursts
+         << ",\"rx_queue_playback_frames\":" << receive_snapshot.queued_playback_frames
+         << ",\"rx_queue_unconfirmed_playback_frames\":" << receive_snapshot.unconfirmed_playback_frames
+         << ",\"rx_buffered_receive_frames\":" << receive_snapshot.buffered_receive_frames
          << ",\"control_rx_datagrams\":" << counters.control_rx_datagrams
          << ",\"application_rx_datagrams\":" << counters.application_rx_datagrams
          << ",\"last_input_result\":\""
@@ -6944,7 +7006,8 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
 
     auto drain_bm_outbound = [&]() {
         for (auto& packet : bm_session.take_outbound()) {
-            if (packet.kind == wirex::bm::PacketKind::control) ++counters.control_tx_attempted;
+            if (packet.kind == wirex::bm::PacketKind::control ||
+                packet.kind == wirex::bm::PacketKind::keepalive) ++counters.control_tx_attempted;
             wirex::dmrd::DecodeResult routed_decoded{};
             bool is_routed_tx_terminator = false;
             bool is_quick_call_frame = false;
@@ -7004,7 +7067,9 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 handle_network_loss("bm_udp_send_lost");
                 return false;
             }
-            if (packet.kind == wirex::bm::PacketKind::control) ++counters.control_tx_succeeded;
+            if (packet.kind == wirex::bm::PacketKind::control ||
+                packet.kind == wirex::bm::PacketKind::keepalive) ++counters.control_tx_succeeded;
+            bm_session.record_outbound_sent(packet, elapsed_ms());
             if (is_quick_call_frame) {
                 const auto sent_index = active_quick_call_next_frame;
                 ++active_quick_call_frames_sent;

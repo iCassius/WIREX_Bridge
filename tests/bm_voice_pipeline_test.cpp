@@ -1071,6 +1071,129 @@ struct RxSource {
     return true;
 }
 
+[[nodiscard]] bool test_dmrd_sequence_statistics()
+{
+    BmVoicePipeline pipeline;
+    const auto start = TimePoint{} + 90s;
+    RxSource source;
+    wirex::dmr_call::TxPacket header{};
+    if (!require(source.start(make_call(4101U, 91U, 41U), header),
+                 "sequence test source did not create a header") ||
+        !require(pipeline.ingest_rx(header.datagram, start).error == Error::none,
+                 "sequence test pipeline rejected the initial header")) {
+        return false;
+    }
+
+    wirex::dmr_call::TxPacket first_voice{};
+    wirex::dmr_call::TxPacket second_voice{};
+    if (!require(source.voice(first_voice) && source.voice(second_voice),
+                 "sequence test source did not create voice packets")) {
+        return false;
+    }
+    if (!require(pipeline.ingest_rx(first_voice.datagram, start + 60ms).error == Error::none,
+                 "sequence test pipeline rejected the first voice packet")) {
+        return false;
+    }
+    second_voice.datagram.sequence = 4U;
+    if (!require(pipeline.ingest_rx(second_voice.datagram, start + 120ms).error == Error::none,
+                 "sequence test pipeline rejected the forward packet after a gap")) {
+        return false;
+    }
+    if (!require(pipeline.ingest_rx(second_voice.datagram, start + 121ms).protocol.sequence.duplicate,
+                 "same sequence was not observed as a duplicate")) {
+        return false;
+    }
+    auto out_of_order = second_voice.datagram;
+    out_of_order.sequence = 3U;
+    if (!require(pipeline.ingest_rx(out_of_order, start + 122ms).protocol.sequence.out_of_order,
+                 "backward sequence was not observed as out of order")) {
+        return false;
+    }
+
+    wirex::dmr_call::TxPacket terminator{};
+    if (!require(source.finish(terminator), "sequence test source did not create an EOT") ) {
+        return false;
+    }
+    terminator.datagram.sequence = 5U;
+    if (!require(pipeline.ingest_rx(terminator.datagram, start + 180ms).error == Error::none,
+                 "sequence test pipeline rejected normal EOT")) {
+        return false;
+    }
+    auto snapshot = pipeline.snapshot().dmrd_sequence;
+    if (!require(snapshot.call_valid && snapshot.call_received == 4U &&
+                 snapshot.call_missing == 2U && snapshot.call_expected == 6U &&
+                 snapshot.call_loss_complete,
+                 "per-call stats count forward packets, wrapped gaps, and normal EOT") ||
+        !require(snapshot.session_valid && snapshot.session_received == 4U &&
+                 snapshot.session_missing == 2U && snapshot.session_expected == 6U &&
+                 snapshot.session_duplicate == 1U && snapshot.session_out_of_order == 1U,
+                 "session stats keep duplicates and reordering outside the loss denominator")) {
+        return false;
+    }
+
+    pipeline.cancel_rx();
+    RxSource second_call;
+    wirex::dmr_call::TxPacket second_header{};
+    wirex::dmr_call::TxPacket second_terminator{};
+    if (!require(second_call.start(make_call(4102U, 91U, 42U), second_header),
+                 "second sequence call did not create a header") ||
+        !require(pipeline.ingest_rx(second_header.datagram, start + 500ms).error == Error::none,
+                 "pipeline rejected the next call header") ||
+        !require(second_call.finish(second_terminator), "second sequence call did not create EOT") ||
+        !require(pipeline.ingest_rx(second_terminator.datagram, start + 560ms).error == Error::none,
+                 "pipeline rejected second call EOT")) {
+        return false;
+    }
+    snapshot = pipeline.snapshot().dmrd_sequence;
+    if (!require(snapshot.call_received == 2U && snapshot.call_missing == 0U &&
+                 snapshot.call_expected == 2U && snapshot.call_loss_complete,
+                 "per-call counters reset for the next call") ||
+        !require(snapshot.session_received == 6U && snapshot.session_missing == 2U &&
+                 snapshot.session_expected == 8U && snapshot.session_duplicate == 1U &&
+                 snapshot.session_out_of_order == 1U,
+                 "session counters accumulate across calls")) {
+        return false;
+    }
+
+    BmVoicePipeline filtered_pipeline;
+    wirex::bm_voice::ReceiveFilter filter{};
+    filter.destination_id = 92U;
+    if (!require(filtered_pipeline.set_receive_filter(filter) == Error::none,
+                 "filtered-sequence test could not set its receive filter")) {
+        return false;
+    }
+    RxSource filtered_source;
+    wirex::dmr_call::TxPacket filtered_header{};
+    if (!require(filtered_source.start(make_call(4103U, 91U, 43U), filtered_header),
+                 "filtered-sequence test could not create a source") ||
+        !require(filtered_pipeline.ingest_rx(filtered_header.datagram, start).error == Error::filtered,
+                 "pipeline did not reject a nonmatching receive destination")) {
+        return false;
+    }
+    if (!require(!filtered_pipeline.snapshot().dmrd_sequence.session_valid,
+                 "filtered packet does not increment network sequence statistics")) {
+        return false;
+    }
+
+    BmVoicePipeline watchdog_pipeline;
+    RxSource watchdog_source;
+    wirex::dmr_call::TxPacket watchdog_header{};
+    wirex::dmr_call::TxPacket watchdog_voice{};
+    if (!require(watchdog_source.start(make_call(4104U, 91U, 44U), watchdog_header) &&
+                 watchdog_source.voice(watchdog_voice),
+                 "watchdog-sequence test could not create a voice-sync packet") ||
+        !require(watchdog_pipeline.ingest_rx(watchdog_voice.datagram, start).error == Error::none,
+                 "watchdog-sequence pipeline rejected its initial voice packet") ||
+        !require(watchdog_pipeline.tick(start + wirex::dmr_call::default_receive_timeout) == Error::none,
+                 "watchdog-sequence pipeline failed while closing the call")) {
+        return false;
+    }
+    snapshot = watchdog_pipeline.snapshot().dmrd_sequence;
+    return require(snapshot.call_valid && snapshot.call_received == 1U &&
+                   snapshot.call_expected == 1U && !snapshot.call_loss_complete,
+                   "watchdog leaves the observed call incomplete because its tail cannot be counted");
+}
+
 } // namespace
 
 int main()
@@ -1080,7 +1203,8 @@ int main()
         !test_independent_tg91_receive_and_private_parrot_return_filters() ||
         !test_half_duplex_collision() || !test_rx_queue_bound_cancel_and_reentry() ||
         !test_rx_missing_eot_watchdog() || !test_nonmatching_calls_do_not_interrupt_active_rx() ||
-        !test_absolute_tx_clock_with_waveinput_chunks_and_jitter()) {
+        !test_absolute_tx_clock_with_waveinput_chunks_and_jitter() ||
+        !test_dmrd_sequence_statistics()) {
         return 1;
     }
     std::cout << "BM voice pipeline offline pacing, filters, lifecycle, bounds, reset, and RX acknowledgement checks passed.\n";

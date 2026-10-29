@@ -124,6 +124,19 @@ struct ReceiveEvent {
     bool color_code_known{};
 };
 
+// ingest 对已校验的同流数据报给出一次序号分类。调用方在路由准入后
+// 消费此字段，避免把本地过滤或忙状态算成网络丢包。
+struct SequenceObservation {
+    bool valid{};
+    bool forward_packet{};
+    bool duplicate{};
+    bool out_of_order{};
+    bool starts_call{};
+    bool terminator{};
+    CallConfig call{};
+    std::uint32_t missing_packets{};
+};
+
 enum class ReceiveStatus : std::uint8_t {
     accepted,
     ignored,
@@ -147,6 +160,7 @@ enum class ReceiveError : std::uint8_t {
 struct ReceiveResult {
     ReceiveStatus status{ReceiveStatus::ignored};
     ReceiveError error{ReceiveError::none};
+    SequenceObservation sequence{};
     // ingest 最多返回旧流结束、新流开始和当前语音三项；poll 可返回双时隙各一项。
     std::array<ReceiveEvent, 3U> events{};
     std::uint8_t event_count{};

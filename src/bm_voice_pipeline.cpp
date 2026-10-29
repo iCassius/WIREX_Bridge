@@ -20,6 +20,23 @@ constexpr std::size_t max_downsampled_samples_per_push =
                                                             max_missing_bursts_to_compensate));
 }
 
+void add_saturated(std::uint64_t& value, std::uint64_t increment) noexcept
+{
+    const auto maximum = std::numeric_limits<std::uint64_t>::max();
+    value = increment > maximum - value ? maximum : value + increment;
+}
+
+[[nodiscard]] bool same_sequence_call(const dmr_call::CallConfig& left,
+                                      const dmr_call::CallConfig& right) noexcept
+{
+    return left.source_id == right.source_id &&
+           left.destination_id == right.destination_id &&
+           left.gateway_id == right.gateway_id &&
+           left.stream_id == right.stream_id &&
+           left.slot == right.slot &&
+           left.kind == right.kind;
+}
+
 } // namespace
 
 BmVoicePipeline::BmVoicePipeline()
@@ -936,6 +953,7 @@ void BmVoicePipeline::reset() noexcept
     cancel_rx();
     event_read_ = 0U;
     event_count_ = 0U;
+    dmrd_sequence_stats_ = {};
     if (router_) {
         return;
     }
@@ -963,6 +981,7 @@ Snapshot BmVoicePipeline::snapshot() const noexcept
     result.receive_link_control_validated = rx_have_link_control_;
     result.receive_color_code_known = rx_color_code_known_;
     result.receive_network_ended = rx_network_ended_;
+    result.dmrd_sequence = dmrd_sequence_stats_;
     return result;
 }
 
@@ -1362,6 +1381,7 @@ Error BmVoicePipeline::process_receive_result(const dmr_call::ReceiveResult& res
                                              TimePoint now)
 {
     (void)now;
+    record_dmrd_sequence(result.sequence);
     for (std::size_t index = 0U; index < result.event_count; ++index) {
         const auto& protocol_event = result.events[index];
         if (!filter_accepts(protocol_event.call)) {
@@ -1486,6 +1506,11 @@ Error BmVoicePipeline::process_receive_result(const dmr_call::ReceiveResult& res
             if (rx_state_ == RxState::idle) {
                 continue;
             }
+            if (dmrd_sequence_stats_.call_valid &&
+                same_sequence_call(dmrd_sequence_call_, protocol_event.call)) {
+                dmrd_sequence_stats_.call_loss_complete =
+                    protocol_event.end_reason == dmr_call::CallEndReason::terminator;
+            }
             if (router_ && active_rx_mapping_) {
                 (void)router_->rx_network_eot(active_rx_mapping_->router_generation);
             }
@@ -1518,6 +1543,49 @@ Error BmVoicePipeline::process_receive_result(const dmr_call::ReceiveResult& res
         }
     }
     return Error::none;
+}
+
+void BmVoicePipeline::record_dmrd_sequence(
+    const dmr_call::SequenceObservation& observation) noexcept
+{
+    if (!observation.valid || !filter_accepts(observation.call)) return;
+
+    if (observation.starts_call) {
+        dmrd_sequence_call_ = observation.call;
+        dmrd_sequence_stats_.call_valid = true;
+        dmrd_sequence_stats_.call_received = 0U;
+        dmrd_sequence_stats_.call_missing = 0U;
+        dmrd_sequence_stats_.call_expected = 0U;
+        dmrd_sequence_stats_.call_loss_complete = false;
+    }
+
+    if (observation.duplicate) {
+        add_saturated(dmrd_sequence_stats_.session_duplicate, 1U);
+    }
+    if (observation.out_of_order) {
+        add_saturated(dmrd_sequence_stats_.session_out_of_order, 1U);
+    }
+    if (!observation.forward_packet) return;
+
+    dmrd_sequence_stats_.session_valid = true;
+    add_saturated(dmrd_sequence_stats_.session_received, 1U);
+    add_saturated(dmrd_sequence_stats_.session_missing, observation.missing_packets);
+    add_saturated(dmrd_sequence_stats_.session_expected,
+                  static_cast<std::uint64_t>(observation.missing_packets) + 1U);
+
+    if (!dmrd_sequence_stats_.call_valid ||
+        !same_sequence_call(dmrd_sequence_call_, observation.call)) {
+        dmrd_sequence_call_ = observation.call;
+        dmrd_sequence_stats_.call_valid = true;
+        dmrd_sequence_stats_.call_received = 0U;
+        dmrd_sequence_stats_.call_missing = 0U;
+        dmrd_sequence_stats_.call_expected = 0U;
+        dmrd_sequence_stats_.call_loss_complete = false;
+    }
+    add_saturated(dmrd_sequence_stats_.call_received, 1U);
+    add_saturated(dmrd_sequence_stats_.call_missing, observation.missing_packets);
+    add_saturated(dmrd_sequence_stats_.call_expected,
+                  static_cast<std::uint64_t>(observation.missing_packets) + 1U);
 }
 
 void BmVoicePipeline::clear_rx_media() noexcept

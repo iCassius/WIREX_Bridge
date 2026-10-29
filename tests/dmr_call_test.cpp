@@ -238,6 +238,8 @@ void test_voice_sync_join_embedded_lc_and_terminator()
           end.events[0U].kind == ReceiveEventKind::call_ended &&
           end.events[0U].end_reason == CallEndReason::terminator,
           "validated terminator ends the matching stream");
+    check(end.sequence.valid && end.sequence.forward_packet && end.sequence.terminator,
+          "normal terminator is included as a forward DMRD packet");
     const auto late = rx.ingest(fixture.voice[0U], t0 + 480ms);
     check(late.status == ReceiveStatus::ignored && late.error == ReceiveError::stale_stream,
           "late voice-sync from a terminated stream cannot reopen it");
@@ -250,28 +252,40 @@ void test_sequence_gaps_and_stream_replacement()
     const auto t0 = Receiver::Clock::time_point{};
     auto start = fixture.voice[0U];
     start.sequence = 254U;
-    (void)rx.ingest(start, t0);
+    auto received = rx.ingest(start, t0);
+    check(received.sequence.valid && received.sequence.forward_packet && received.sequence.starts_call &&
+              received.sequence.call.stream_id == start.stream_id,
+          "first accepted stream packet is reported as the sequence baseline");
 
     auto next = fixture.voice[1U];
     next.sequence = 255U;
-    auto received = rx.ingest(next, t0 + 60ms);
+    received = rx.ingest(next, t0 + 60ms);
     check(received.status == ReceiveStatus::accepted && received.events[0U].missing_packets == 0U,
           "sequential packet counter advances without a gap");
+    check(received.sequence.valid && received.sequence.forward_packet &&
+              received.sequence.missing_packets == 0U,
+          "forward packet sequence observation has no missing frames");
 
     next = fixture.voice[2U];
     next.sequence = 1U;
     received = rx.ingest(next, t0 + 120ms);
     check(received.status == ReceiveStatus::accepted && received.events[0U].missing_packets == 1U,
           "8-bit sequence wrap records one lost packet");
+    check(received.sequence.forward_packet && received.sequence.missing_packets == 1U,
+          "8-bit wrap observation counts the inferred gap once");
     const auto duplicate = rx.ingest(next, t0 + 121ms);
     check(duplicate.status == ReceiveStatus::ignored && duplicate.error == ReceiveError::stale_or_duplicate_sequence,
           "duplicate sequence is ignored");
+    check(duplicate.sequence.valid && duplicate.sequence.duplicate && !duplicate.sequence.forward_packet,
+          "duplicate sequence is categorized separately from packet loss");
 
     auto old = fixture.voice[4U];
     old.sequence = 0U;
     const auto stale = rx.ingest(old, t0 + 122ms);
     check(stale.status == ReceiveStatus::ignored && stale.error == ReceiveError::stale_or_duplicate_sequence,
           "out-of-order packet behind the current sequence is ignored");
+    check(stale.sequence.valid && stale.sequence.out_of_order && !stale.sequence.forward_packet,
+          "backward sequence is categorized separately from packet loss");
 
     Receiver replace_rx;
     auto original = fixture.voice[0U];
@@ -304,6 +318,8 @@ void test_timeout_and_two_timeslots()
     check(result.event_count == 1U && result.events[0U].kind == ReceiveEventKind::call_ended &&
           result.events[0U].end_reason == CallEndReason::watchdog,
           "watchdog closes a stream at the configured 360 ms boundary");
+    check(!result.sequence.valid,
+          "watchdog supplies no sequence observation for unknown tail packets");
 
     auto ts1_call = test_call();
     ts1_call.slot = Slot::ts1;
