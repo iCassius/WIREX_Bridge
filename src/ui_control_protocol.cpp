@@ -2,6 +2,7 @@
 #include "wirex/routing_state.hpp"
 
 #include <array>
+#include <charconv>
 #include <limits>
 #include <utility>
 
@@ -9,10 +10,27 @@ namespace wirex::ui_control {
 namespace {
 
 constexpr std::string_view basic_commands_json = "[\"hello\",\"status\",\"shutdown\"]";
+constexpr std::string_view basic_identity_commands_json =
+    "[\"hello\",\"status\",\"shutdown\",\"radio_identity.cache_upsert\"]";
 constexpr std::string_view routing_commands_json =
     "[\"hello\",\"status\",\"shutdown\",\"routing.status\",\"rx_policy.replace\",\"tx_policy.replace\"]";
+constexpr std::string_view routing_identity_commands_json =
+    "[\"hello\",\"status\",\"shutdown\",\"routing.status\",\"rx_policy.replace\",\"tx_policy.replace\",\"radio_identity.cache_upsert\"]";
 constexpr std::string_view quick_call_commands_json =
     "[\"hello\",\"status\",\"shutdown\",\"routing.status\",\"rx_policy.replace\",\"tx_policy.replace\",\"network_subscription.quick_call_join\"]";
+constexpr std::string_view quick_call_identity_commands_json =
+    "[\"hello\",\"status\",\"shutdown\",\"routing.status\",\"rx_policy.replace\",\"tx_policy.replace\",\"network_subscription.quick_call_join\",\"radio_identity.cache_upsert\"]";
+
+std::string_view supported_commands_json(bool routing_enabled,
+                                         bool quick_call_enabled,
+                                         bool radio_identity_enabled) noexcept
+{
+    if (!routing_enabled) return radio_identity_enabled
+        ? basic_identity_commands_json : basic_commands_json;
+    if (quick_call_enabled) return radio_identity_enabled
+        ? quick_call_identity_commands_json : quick_call_commands_json;
+    return radio_identity_enabled ? routing_identity_commands_json : routing_commands_json;
+}
 
 bool valid_identifier(std::string_view value, std::size_t maximum) noexcept
 {
@@ -89,13 +107,24 @@ bool parse_request(std::string_view input, Request& request, strict_json::Value&
     request.command = command->string_value;
     request.parameters = envelope.find("parameters");
     const bool mutating = request.command == "rx_policy.replace" || request.command == "tx_policy.replace" ||
-        request.command == "network_subscription.quick_call_join";
+        request.command == "network_subscription.quick_call_join" ||
+        request.command == "radio_identity.cache_upsert";
     const auto expected_size = mutating ? 5U : 4U;
     if (envelope.object_value.size() != expected_size || (mutating &&
         (request.parameters == nullptr || request.parameters->type != strict_json::Value::Type::object)) ||
         (!mutating && request.parameters != nullptr)) return false;
     return valid_identifier(request.run_id, 128U) && valid_identifier(request.request_id, 128U) &&
         valid_command_name(request.command);
+}
+
+std::string expected_identity_request_id(std::uint64_t revision)
+{
+    std::array<char, 20U> decimal{};
+    const auto converted = std::to_chars(decimal.data(), decimal.data() + decimal.size(), revision);
+    if (converted.ec != std::errc{}) return {};
+    std::string result{"radioid-"};
+    result.append(decimal.data(), converted.ptr);
+    return result;
 }
 
 std::string snapshot_json(const StatusSnapshot& snapshot)
@@ -169,6 +198,7 @@ Dispatcher::Dispatcher(std::string run_id, bool diagnostic, RoutingCallbacks rou
                        static_cast<bool>(routing.replace_tx_policy) &&
                        static_cast<bool>(routing.snapshot_json)),
       quick_call_enabled_(routing_enabled_ && static_cast<bool>(routing.quick_call_join)),
+      radio_identity_enabled_(static_cast<bool>(routing.update_radio_identity)),
       routing_(std::move(routing))
 {
 }
@@ -178,8 +208,8 @@ std::string Dispatcher::ready_line(std::uint32_t process_id)
     if (ready_emitted_) return {};
     ready_emitted_ = true;
     control_seq_ = 1U;
-    const auto commands = !routing_enabled_ ? basic_commands_json :
-        (quick_call_enabled_ ? quick_call_commands_json : routing_commands_json);
+    const auto commands = supported_commands_json(
+        routing_enabled_, quick_call_enabled_, radio_identity_enabled_);
     return "{\"schema_version\":2,\"type\":\"control_ready\",\"run_id\":" +
         json_escape(run_id_) + ",\"control_seq\":1,\"process_id\":" +
         std::to_string(process_id) + ",\"control_version\":2,\"supported_commands\":" +
@@ -244,6 +274,89 @@ DispatchResult Dispatcher::handle(std::string_view json_line, const StatusSnapsh
     if (request.run_id != run_id_) {
         return {serialize_rejection(request.request_id, request.command, "stale_run_id"), false, true};
     }
+
+    // 身份缓存有独立的全局 revision 和固定 128 条 LRU，不消耗普通控制请求的 512 条重放预算。
+    if (request.command == "radio_identity.cache_upsert") {
+        std::string_view error;
+        std::string result{"rejected"};
+        bool replayed = false;
+        if (request.schema_version != 2U) {
+            error = "unsupported_schema";
+        } else if (shutdown_requested_) {
+            error = "shutdown_in_progress";
+        } else if (!hello_seen_) {
+            error = "hello_required";
+        } else if (!radio_identity_enabled_) {
+            result = "unsupported";
+            error = "command_not_supported";
+        } else {
+            const auto* parameters = request.parameters;
+            const auto* source_id = parameters != nullptr ? parameters->find("source_id") : nullptr;
+            const auto* revision = parameters != nullptr ? parameters->find("revision") : nullptr;
+            const auto* callsign = parameters != nullptr ? parameters->find("callsign") : nullptr;
+            const bool valid_callsign = callsign != nullptr &&
+                (callsign->type == strict_json::Value::Type::null_value ||
+                 (callsign->type == strict_json::Value::Type::string &&
+                  radio_identity_cache::Cache::is_valid_callsign(callsign->string_value)));
+            const bool valid_fields = parameters != nullptr && parameters->type == strict_json::Value::Type::object &&
+                parameters->object_value.size() == 3U &&
+                source_id != nullptr && source_id->type == strict_json::Value::Type::unsigned_integer &&
+                source_id->integer_value >= 1U &&
+                source_id->integer_value <= radio_identity_cache::max_source_id &&
+                revision != nullptr && revision->type == strict_json::Value::Type::unsigned_integer &&
+                revision->integer_value >= 1U && valid_callsign;
+            if (!valid_fields) {
+                error = "invalid_identity";
+            } else if (request.request_id != expected_identity_request_id(revision->integer_value)) {
+                error = "identity_request_id_mismatch";
+            } else {
+                std::optional<std::string_view> mapped_callsign;
+                if (callsign->type == strict_json::Value::Type::string) {
+                    mapped_callsign = callsign->string_value;
+                }
+                radio_identity_cache::UpsertResult update = radio_identity_cache::UpsertResult::revision_conflict;
+                try {
+                    update = routing_.update_radio_identity(
+                        static_cast<std::uint32_t>(source_id->integer_value),
+                        revision->integer_value,
+                        mapped_callsign);
+                } catch (...) {
+                    error = "identity_cache_update_failed";
+                }
+                if (error.empty()) {
+                    using Update = radio_identity_cache::UpsertResult;
+                    switch (update) {
+                    case Update::inserted:
+                    case Update::updated:
+                    case Update::removed:
+                    case Update::cleared:
+                        result = "ok";
+                        break;
+                    case Update::replayed:
+                        result = "ok";
+                        replayed = true;
+                        break;
+                    case Update::invalid_source_id:
+                    case Update::invalid_revision:
+                    case Update::invalid_callsign:
+                        error = "invalid_identity";
+                        break;
+                    case Update::stale_revision:
+                        error = "stale_identity_revision";
+                        break;
+                    case Update::revision_conflict:
+                        error = "identity_revision_conflict";
+                        break;
+                    }
+                }
+            }
+        }
+
+        std::string extra_json;
+        if (!error.empty()) extra_json = "\"error\":" + json_escape(error);
+        return {serialize_result(request.request_id, request.command, result, extra_json, replayed), false, false};
+    }
+
     const bool valid_shutdown = request.schema_version == 2U && request.command == "shutdown";
 
     const auto existing = cache_.find(request.request_id);
@@ -332,8 +445,8 @@ DispatchResult Dispatcher::handle(std::string_view json_line, const StatusSnapsh
             cached.extra_json = "\"error\":\"shutdown_in_progress\"";
         } else if (request.command == "hello") {
             cached.result = "ok";
-            const auto commands = !routing_enabled_ ? basic_commands_json :
-                (quick_call_enabled_ ? quick_call_commands_json : routing_commands_json);
+            const auto commands = supported_commands_json(
+                routing_enabled_, quick_call_enabled_, radio_identity_enabled_);
             cached.extra_json = "\"supported_commands\":" +
                 std::string(commands);
             mark_hello = true;

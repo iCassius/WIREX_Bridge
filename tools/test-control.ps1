@@ -18,6 +18,20 @@ function Assert-ProtocolValue {
     if (-not $Condition) { throw $Message }
 }
 
+function Get-ValidatedSupportedCommandSignature {
+    param(
+        [Parameter(Mandatory=$true)][object[]]$Commands,
+        [Parameter(Mandatory=$true)][string]$Label
+    )
+    $normalized = @($Commands | ForEach-Object { [string]$_ } | Sort-Object -CaseSensitive)
+    $signature = [string]::Join('|', $normalized)
+    if ($signature -cne 'hello|shutdown|status' -and
+        $signature -cne 'hello|radio_identity.cache_upsert|shutdown|status') {
+        throw ($Label + ' supported_commands 必须精确匹配旧三命令集合或已知的四命令集合；发现重复或未知命令。')
+    }
+    return $signature
+}
+
 function Read-ControlRecord {
     param([Parameter(Mandatory=$true)][int]$TimeoutSeconds)
     $lineTask = $process.StandardOutput.ReadLineAsync()
@@ -97,23 +111,17 @@ try {
     Assert-ProtocolValue -Condition ($ready.control_seq -eq 1) -Message 'control_ready control_seq 不是 1。'
     Assert-ProtocolValue -Condition ($ready.control_version -eq 2) -Message '诊断进程报告的 control_version 不是 2。'
     Assert-ProtocolValue -Condition ($ready.diagnostic -eq $true) -Message '诊断进程没有声明 diagnostic=true。'
-    $readyCommands = @($ready.supported_commands | ForEach-Object { [string]$_ })
-    Assert-ProtocolValue -Condition ($readyCommands.Count -eq 3 -and
-        @($readyCommands | Where-Object { $_ -ceq 'hello' }).Count -eq 1 -and
-        @($readyCommands | Where-Object { $_ -ceq 'status' }).Count -eq 1 -and
-        @($readyCommands | Where-Object { $_ -ceq 'shutdown' }).Count -eq 1) `
-        -Message 'control_ready 支持命令列表与本步范围不一致。'
+    $readyCommandSignature = Get-ValidatedSupportedCommandSignature `
+        -Commands @($ready.supported_commands) -Label 'control_ready'
     $script:runId = [string]$ready.run_id
     $script:lastControlSequence = [long]$ready.control_seq
     Write-Host '收到 schema 2 control_ready。'
 
     $hello = Send-ControlCommand -Command 'hello' -TimeoutSeconds 5
-    $helloCommands = @($hello.supported_commands | ForEach-Object { [string]$_ })
-    Assert-ProtocolValue -Condition ($helloCommands.Count -eq 3 -and
-        @($helloCommands | Where-Object { $_ -ceq 'hello' }).Count -eq 1 -and
-        @($helloCommands | Where-Object { $_ -ceq 'status' }).Count -eq 1 -and
-        @($helloCommands | Where-Object { $_ -ceq 'shutdown' }).Count -eq 1) `
-        -Message 'hello 响应支持命令列表与 control_ready 不一致。'
+    $helloCommandSignature = Get-ValidatedSupportedCommandSignature `
+        -Commands @($hello.supported_commands) -Label 'hello'
+    Assert-ProtocolValue -Condition ($helloCommandSignature -ceq $readyCommandSignature) `
+        -Message 'hello 响应支持命令集合与 control_ready 不一致。'
     Write-Host 'hello 往返通过。'
 
     $statusResponse = Send-ControlCommand -Command 'status' -TimeoutSeconds 5

@@ -60,6 +60,10 @@ $script:alpha7TestNames = @($script:alpha6TestNames)
 $script:alpha8TestNames = @($script:alpha7TestNames)
 $script:alpha9TestNames = @($script:alpha8TestNames)
 $script:alpha10TestNames = @($script:alpha9TestNames)
+$script:alpha11TestNames = @(
+    $script:alpha10TestNames[0..5] + 'radio_identity_cache_test' +
+    $script:alpha10TestNames[6..($script:alpha10TestNames.Count - 1)]
+)
 $script:activeReleaseVersion = 'v0.1.0-alpha.1'
 
 function Get-ReleaseProfile {
@@ -481,7 +485,59 @@ function Get-ReleaseProfile {
                 NotIncluded = $alpha10NotIncluded
             }
         }
-        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, v0.1.0-alpha.8, v0.1.0-alpha.9, and v0.1.0-alpha.10 release profiles are supported.' }
+        'v0.1.0-alpha.11' {
+            $alpha10 = Get-ReleaseProfile -Version 'v0.1.0-alpha.10'
+            $alpha11R112Paths = @(
+                'docs/R112_A_身份查询实施.md',
+                'docs/R112_A_UI精简.md'
+            )
+            $alpha11SourceFiles = @($alpha10.SourceFiles | Where-Object {
+                [string]$_.Destination -cne 'README.md' -and
+                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha10.cmd' -and
+                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha10.ps1' -and
+                $alpha11R112Paths -cnotcontains ([string]$_.Destination).Replace('\', '/')
+            }) + @(
+                @{ Source='docs\releases\v0.1.0-alpha.11-package-README.md'; Destination='README.md' },
+                @{ Source='tools\start-wirex-bridge-alpha11.cmd'; Destination='start-wirex-bridge.cmd' },
+                @{ Source='tools\start-wirex-bridge-alpha11.ps1'; Destination='tools/start-wirex-bridge.ps1' },
+                @{ Source='docs\R113_LCD核心实现.md'; Destination='docs\R113_LCD核心实现.md' },
+                @{ Source='docs\R113_身份与LCD接线.md'; Destination='docs\R113_身份与LCD接线.md' }
+            )
+            $alpha11PackageFiles = @($alpha10.PackageFiles | Where-Object {
+                $alpha11R112Paths -cnotcontains ([string]$_).Replace('\', '/')
+            }) + @(
+                'docs/R113_LCD核心实现.md',
+                'docs/R113_身份与LCD接线.md'
+            )
+            $alpha11AssetMap = [ordered]@{}
+            foreach ($path in $alpha10.AssetMap.Keys) {
+                if ($alpha11R112Paths -cnotcontains ([string]$path)) { $alpha11AssetMap[$path] = $alpha10.AssetMap[$path] }
+            }
+            $alpha11AssetMap['docs/R113_LCD核心实现.md'] = 'docs__r113-lcd-core-implementation.md'
+            $alpha11AssetMap['docs/R113_身份与LCD接线.md'] = 'docs__r113-identity-lcd-integration.md'
+            $alpha11NotIncluded = @($alpha10.NotIncluded | Where-Object {
+                [string]$_ -cne 'FTX-1 LCD source-identity display is not implemented' -and
+                [string]$_ -cne 'FM and C4FM RF transmit paths are not implemented' -and
+                [string]$_ -cne 'The FTX-1 LCD display remains unknown; the located Src CallSign field is not a verified radio-screen result'
+            } | ForEach-Object { ([string]$_).Replace('alpha.10', 'alpha.11') })
+            $alpha11NotIncluded += @(
+                'The FTX-1 LCD display result remains unknown pending direct visual confirmation; mode-4 LCD semantics are unverified',
+                'Only a later callStart can use the cached callsign in the existing mode-4 T90 SrcCallSign field; active calls receive no second T record or hot update',
+                'FM and C4FM RF transmit paths are not implemented'
+            )
+            return [pscustomobject]@{
+                Version = 'v0.1.0-alpha.11'
+                TestNames = $script:alpha11TestNames
+                SourceFiles = $alpha11SourceFiles
+                PackageFiles = $alpha11PackageFiles
+                Directories = @($alpha10.Directories)
+                AssetMap = $alpha11AssetMap
+                PackageReadme = 'docs\releases\v0.1.0-alpha.11-package-README.md'
+                ReleaseScope = 'R113 DIRECT: asynchronously transfer fresh RadioID mappings into the bounded Native identity cache and use a cached callsign only in the existing mode-4 T90 SrcCallSign field for later callStart records'
+                NotIncluded = $alpha11NotIncluded
+            }
+        }
+        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.11 release profiles are supported.' }
     }
 }
 
@@ -841,6 +897,14 @@ function Invoke-ReleasePackaging {
             )
         }
         if ($Version -ceq 'v0.1.0-alpha.10') {
+            $excludedPrivateFiles += @(
+                'private/user-config-directory.txt',
+                'private/user-config/radio-identity-cache.json',
+                'private/user-config/channel-favorites.json',
+                'private/user-config/password-file-path.txt'
+            )
+        }
+        if ($Version -ceq 'v0.1.0-alpha.11') {
             $excludedPrivateFiles += @(
                 'private/user-config-directory.txt',
                 'private/user-config/radio-identity-cache.json',

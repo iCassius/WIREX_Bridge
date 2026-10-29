@@ -1,6 +1,7 @@
 #include "wirex/hri_lcd_identity_candidate.hpp"
 
 #include "wirex/hri_call_header.hpp"
+#include "wirex/radio_identity_cache.hpp"
 
 #include <array>
 #include <charconv>
@@ -131,6 +132,43 @@ SourceIdResult overlay_source_id_label(
     result.label = label;
     result.body = start_body;
     for (std::size_t index = 0; index < header_bytes.size(); ++index) {
+        result.body[body_header_offset + index] = static_cast<std::uint8_t>((*header)[index]);
+    }
+    return result;
+}
+
+SourceIdResult overlay_source_callsign(
+    const hri_t_payload::CandidateBody& start_body,
+    std::string_view callsign) noexcept
+{
+    if (!radio_identity_cache::Cache::is_valid_callsign(callsign)) {
+        return {Error::invalid_callsign, {}, {}};
+    }
+
+    const auto expected_start = hri_t_payload::build_empty_header_empty_ambe_candidate_body(1, 1, 9U);
+    if (start_body != expected_start) {
+        return {Error::invalid_base_body, {}, {}};
+    }
+
+    SourceIdLabel label{};
+    label.fill(' ');
+    for (std::size_t index = 0U; index < callsign.size(); ++index) label[index] = callsign[index];
+
+    constexpr std::size_t body_header_offset = hri_call_header::t_body_header_offset;
+    std::array<char, hri_call_header::header_size> header_bytes{};
+    for (std::size_t index = 0U; index < header_bytes.size(); ++index) {
+        header_bytes[index] = static_cast<char>(start_body[body_header_offset + index]);
+    }
+    auto header = hri_call_header::parse_header(std::string_view(header_bytes.data(), header_bytes.size()));
+    if (!header || !hri_call_header::set_source_callsign(
+            *header, std::string_view(label.data(), label.size()))) {
+        return {Error::invalid_base_body, {}, {}};
+    }
+
+    SourceIdResult result{};
+    result.label = label;
+    result.body = start_body;
+    for (std::size_t index = 0U; index < header_bytes.size(); ++index) {
         result.body[body_header_offset + index] = static_cast<std::uint8_t>((*header)[index]);
     }
     return result;

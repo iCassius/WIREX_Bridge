@@ -1,5 +1,6 @@
 #pragma once
 
+#include "wirex/radio_identity_cache.hpp"
 #include "wirex/talkgroup_routing.hpp"
 #include "wirex/strict_json.hpp"
 
@@ -140,6 +141,8 @@ struct RoutingCallbacks {
         std::uint8_t packets_sent{};
     };
     std::function<QuickCallOutcome(const talkgroup_routing::GroupRoute&)> quick_call_join{};
+    std::function<radio_identity_cache::UpsertResult(
+        std::uint32_t, std::uint64_t, std::optional<std::string_view>)> update_radio_identity{};
     std::function<std::string()> snapshot_json{};
 };
 
@@ -156,6 +159,7 @@ public:
     [[nodiscard]] bool hello_seen() const noexcept { return hello_seen_; }
     [[nodiscard]] bool supports_routing() const noexcept { return routing_enabled_; }
     [[nodiscard]] bool supports_quick_call() const noexcept { return quick_call_enabled_; }
+    [[nodiscard]] bool supports_radio_identity() const noexcept { return radio_identity_enabled_; }
     [[nodiscard]] std::uint64_t control_seq() const noexcept { return control_seq_; }
     [[nodiscard]] std::size_t cached_result_count() const noexcept
     {
@@ -185,6 +189,7 @@ private:
     bool diagnostic_{false};
     bool routing_enabled_{false};
     bool quick_call_enabled_{false};
+    bool radio_identity_enabled_{false};
     RoutingCallbacks routing_{};
     bool ready_emitted_{false};
     bool hello_seen_{false};

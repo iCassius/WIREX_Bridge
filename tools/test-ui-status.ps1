@@ -15,6 +15,7 @@ $parseErrors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($sourcePath, [ref]$tokens, [ref]$parseErrors)
 Assert-UiStatus ($parseErrors.Count -eq 0) 'bridge-ui.ps1 PowerShell 5.1 语法解析失败。'
 $wantedFunctions = @('Test-UiSourceIdentityRecord', 'Get-UiSourceIdentityDisplay', 'Get-UiCompletedRunRecord',
+    'Get-UiNativeIdentityCallsign', 'Save-UiNativeIdentityDeferredMapping', 'Test-AndMarkUiNativeIdentityCallRefresh',
     'Get-UiRunDirectorySize', 'Invoke-UiRunLogRetention', 'Test-UiStatusRecord', 'Test-UiStatusFreshness',
     'Test-UiRunRecordAcceptance', 'Get-VisibleUiEventText', 'Apply-StatusRecord', 'Set-StaleDisplay',
     'Reset-UiControlState',
@@ -22,6 +23,8 @@ $wantedFunctions = @('Test-UiSourceIdentityRecord', 'Get-UiSourceIdentityDisplay
 $found = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wantedFunctions -ccontains $node.Name }, $true))
 Assert-UiStatus ($found.Count -eq $wantedFunctions.Count) '没有找到状态记录验证函数。'
 foreach ($functionAst in $found) { Invoke-Expression $functionAst.Extent.Text }
+Import-Module -Name (Join-Path (Join-Path $repoRoot 'ui\windows') 'RadioIdentity.psm1') -Force
+$script:radioIdentityModuleLoaded = $true
 
 function Update-UiPlaybackGainDisplay {
     param([object]$Record=$null)
@@ -87,13 +90,58 @@ $valid = [pscustomobject][ordered]@{
         receive_generation = [int64]0
         label = ''
         display = 'unknown'
+        label_kind = 'none'
+        cache_revision = [uint64]0
+        serial_write_state = 'not_sent'
     }
 }
 Assert-UiStatus (Test-UiStatusRecord $valid) '有效的 native 状态对象被拒绝。'
 
+$legacyIdentity = [pscustomobject][ordered]@{
+    prepared = $false
+    source_id = [int64]0
+    receive_generation = [int64]0
+    label = ''
+    display = 'unknown'
+}
+$legacyStatus = $valid.PSObject.Copy(); $legacyStatus.lcd_source_identity = $legacyIdentity
+Assert-UiStatus (Test-UiStatusRecord $legacyStatus) '旧五字段 HRI 来源标签状态应继续接受。'
+
+$callSignStatus = $valid.PSObject.Copy(); $callSignStatus.lcd_source_identity = [pscustomobject][ordered]@{
+    prepared = $true; source_id = [int64]1234; receive_generation = [uint64]7
+    label = 'N0TEST    '; display = 'unknown'; label_kind = 'callsign'
+    cache_revision = [uint64]3; serial_write_state = 'pending'
+}
+$callSignStatus.current_call_valid = $true; $callSignStatus.current_call_phase = 'playing'
+$callSignStatus.current_call_source_id = [int64]1234; $callSignStatus.current_call_generation = [uint64]7
+$callSignStatus.current_call_destination_id = [int64]91; $callSignStatus.current_call_slot = [int64]2
+$callSignStatus.current_call_kind = 'G'; $callSignStatus.receive_media_state = 'playing'
+Assert-UiStatus (Test-UiStatusRecord $callSignStatus) '新八字段状态应接受规范呼号标签和匹配的来源/代次。'
+
+$legacyPrepared = $callSignStatus.PSObject.Copy()
+$legacyPrepared.lcd_source_identity = [pscustomobject][ordered]@{
+    prepared = $true; source_id = [int64]1234; receive_generation = [uint64]7
+    label = 'ID1234    '; display = 'unknown'
+}
+Assert-UiStatus (Test-UiStatusRecord $legacyPrepared) '旧五字段状态的精确数字 ID 标签应继续接受。'
+$legacyCallsign = $legacyPrepared.PSObject.Copy()
+$legacyCallsign.lcd_source_identity = $legacyPrepared.lcd_source_identity.PSObject.Copy()
+$legacyCallsign.lcd_source_identity.label = 'N0TEST    '
+Assert-UiStatus (-not (Test-UiStatusRecord $legacyCallsign)) '旧五字段状态不得把呼号当作旧协议支持的身份标签。'
+
+$fallbackStatus = $callSignStatus.PSObject.Copy()
+$fallbackStatus.lcd_source_identity = [pscustomobject][ordered]@{
+    prepared = $true; source_id = [int64]1234; receive_generation = [uint64]7
+    label = 'ID1234    '; display = 'unknown'; label_kind = 'dmr_id'
+    cache_revision = [uint64]0; serial_write_state = 'attempted'
+}
+Assert-UiStatus (Test-UiStatusRecord $fallbackStatus) '新八字段状态应接受精确 DMR ID fallback 标签。'
+
 $copy = $valid.PSObject.Copy(); $copy.lcd_source_identity = $copy.lcd_source_identity.PSObject.Copy()
 $copy.lcd_source_identity.prepared = $true; $copy.lcd_source_identity.source_id = [int64]1234
 $copy.lcd_source_identity.receive_generation = [int64]7; $copy.lcd_source_identity.label = 'ID1234    '
+$copy.lcd_source_identity.label_kind = 'dmr_id'; $copy.lcd_source_identity.cache_revision = [uint64]0
+$copy.lcd_source_identity.serial_write_state = 'pending'
 $copy.current_call_valid = $true; $copy.current_call_phase = 'playing'; $copy.receive_media_state = 'playing'
 $copy.current_call_source_id = [int64]1234; $copy.current_call_destination_id = [int64]91
 $copy.current_call_slot = [int64]2; $copy.current_call_kind = 'G'; $copy.current_call_generation = [int64]7
@@ -108,18 +156,30 @@ Assert-UiStatus (Test-UiStatusRecord $draining) 'BM EOT 后、HRI 播放收尾�
 $stopping = $draining.PSObject.Copy(); $stopping.lcd_source_identity = $draining.lcd_source_identity.PSObject.Copy()
 $stopping.receive_media_state = 'stopping'
 Assert-UiStatus (Test-UiStatusRecord $stopping) 'HRI 停止确认待处理时应接受 stopping，且当前来话仍保持无效。'
-foreach ($mutation in @('bad-source', 'bad-generation', 'bad-label', 'bad-display', 'extra-field', 'bad-type')) {
-    $invalidIdentity = $copy.PSObject.Copy(); $invalidIdentity.lcd_source_identity = $copy.lcd_source_identity.PSObject.Copy()
+foreach ($mutation in @('bad-source', 'bad-generation', 'bad-label', 'bad-display', 'extra-field', 'bad-type',
+        'bad-kind', 'bad-revision', 'bad-serial-state', 'wrong-call-source', 'wrong-call-generation', 'bad-callsign')) {
+    $invalidIdentity = $callSignStatus.PSObject.Copy()
+    $invalidIdentity.lcd_source_identity = $callSignStatus.lcd_source_identity.PSObject.Copy()
     switch ($mutation) {
         'bad-source' { $invalidIdentity.lcd_source_identity.source_id = [int64]16777216 }
         'bad-generation' { $invalidIdentity.lcd_source_identity.receive_generation = [int64]0 }
-        'bad-label' { $invalidIdentity.lcd_source_identity.label = 'ID01234   ' }
+        'bad-label' { $invalidIdentity.lcd_source_identity.label = 'N0 TEST   ' }
         'bad-display' { $invalidIdentity.lcd_source_identity.display = 'displayed' }
         'extra-field' { $invalidIdentity.lcd_source_identity | Add-Member -NotePropertyName source_name -NotePropertyValue 'untrusted' }
         'bad-type' { $invalidIdentity.lcd_source_identity.prepared = 'true' }
+        'bad-kind' { $invalidIdentity.lcd_source_identity.label_kind = 'unknown' }
+        'bad-revision' { $invalidIdentity.lcd_source_identity.cache_revision = [int64]0 }
+        'bad-serial-state' { $invalidIdentity.lcd_source_identity.serial_write_state = 'written_to_radio' }
+        'wrong-call-source' { $invalidIdentity.current_call_source_id = [int64]1235 }
+        'wrong-call-generation' { $invalidIdentity.current_call_generation = [int64]8 }
+        'bad-callsign' { $invalidIdentity.lcd_source_identity.label = 'n0test    ' }
     }
     Assert-UiStatus (-not (Test-UiStatusRecord $invalidIdentity)) ("无效 HRI 来源标签字段未被拒绝：$mutation")
 }
+$missingIdentityField = $callSignStatus.PSObject.Copy()
+$missingIdentityField.lcd_source_identity = $callSignStatus.lcd_source_identity.PSObject.Copy()
+[void]$missingIdentityField.lcd_source_identity.PSObject.Properties.Remove('cache_revision')
+Assert-UiStatus (-not (Test-UiStatusRecord $missingIdentityField)) '缺少 cache_revision 的八字段状态应拒绝。'
 $unprepared = $valid.PSObject.Copy(); $unprepared.lcd_source_identity = $valid.lcd_source_identity.PSObject.Copy()
 $unprepared.lcd_source_identity.source_id = [int64]1
 Assert-UiStatus (-not (Test-UiStatusRecord $unprepared)) 'prepared=false 状态携带非零来源 ID 时应拒绝。'
@@ -241,6 +301,7 @@ $active.current_call_link_control_validated = $true; $active.current_call_color_
 $active.current_call_generation = [int64]7
 $active.lcd_source_identity = [pscustomobject][ordered]@{
     prepared = $true; source_id = [int64]1234; receive_generation = [int64]7; label = 'ID1234    '; display = 'unknown'
+    label_kind = 'dmr_id'; cache_revision = [uint64]0; serial_write_state = 'pending'
 }
 Apply-StatusRecord -Record $active
 Assert-UiStatus ($script:lastSequence -eq 3 -and $script:mockUiFields['CurrentCallValue'] -ceq 'DMR ID 1234') '活动来话没有显示数字 DMR ID。'
@@ -291,6 +352,23 @@ function Complete-UiDeviceDiscovery {}
 function Complete-BridgePreparation {}
 function Complete-BridgeStop { return $false }
 function Set-ConnectionButtonState {}
+$script:mainWindow = $null
+$script:identityNativeDeferredBySource = @{}
+$script:identityNativeDeferredOrder = New-Object 'System.Collections.Generic.List[string]'
+$script:identityNativeQueue = New-Object 'System.Collections.Generic.List[object]'
+$script:identityNativeInFlight = [pscustomobject][ordered]@{
+    request_id='radioid-6'; source_id=[uint64]901; callsign='N0PENDING'
+}
+$script:identityNativeQueue.Add([pscustomobject][ordered]@{ source_id=[uint64]902; callsign=$null })
+$script:identityNativeCapability = $true
+$script:identityNativeRunId = 'old-run'
+$script:controlRunId = 'old-run'
+Reset-UiControlState
+Assert-UiStatus ($script:identityNativeDeferredBySource.Count -eq 2 -and
+    $script:identityNativeDeferredBySource.ContainsKey('901') -and
+    $null -eq $script:identityNativeDeferredBySource['902'].callsign -and
+    $null -eq $script:identityNativeInFlight -and $script:identityNativeQueue.Count -eq 0) `
+    '新 run 初始化前应将旧 run 的 in-flight 和 queued 身份同步有界保存，包括 null 删除'
 $script:prepareStopAsync = $null
 $script:supervisor = [pscustomobject]@{ HasExited = $true }
 $script:supervisor | Add-Member -MemberType ScriptMethod -Name TryGetExitCode -Value {

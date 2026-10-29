@@ -49,8 +49,14 @@ foreach ($functionName in @('Test-UiExactControlFields','Test-UiControlUnsigned'
 }
 $legacyRoutingCommands = [string[]]@('hello','status','shutdown','routing.status','rx_policy.replace','tx_policy.replace')
 $quickCallRoutingCommands = $legacyRoutingCommands + 'network_subscription.quick_call_join'
+$identityBasicCommands = [string[]]@('hello','status','shutdown','radio_identity.cache_upsert')
+$identityRoutingCommands = $legacyRoutingCommands + 'radio_identity.cache_upsert'
+$identityQuickCallCommands = $quickCallRoutingCommands + 'radio_identity.cache_upsert'
 Assert-UiControl (Test-UiRoutingCapabilityList -Commands $legacyRoutingCommands) '界面必须继续接受旧版六命令路由核心。'
 Assert-UiControl (Test-UiRoutingCapabilityList -Commands $quickCallRoutingCommands) '界面必须识别新增Quick Call命令能力。'
+Assert-UiControl (Test-UiRoutingCapabilityList -Commands $identityBasicCommands) '界面必须识别基础 Native identity capability。'
+Assert-UiControl (Test-UiRoutingCapabilityList -Commands $identityRoutingCommands) '界面必须识别带 Native identity 的路由能力集。'
+Assert-UiControl (Test-UiRoutingCapabilityList -Commands $identityQuickCallCommands) '界面必须识别带 Native identity 的完整能力集。'
 Add-Type -Path (Join-Path $repoRoot 'ui\windows\BridgeSupervisor.cs')
 $supervisor = New-Object WirexBridge.Ui.BridgeSupervisor
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('wirex-ui-routing-control-' + [guid]::NewGuid().ToString('N'))
@@ -60,7 +66,7 @@ try {
     $supervisor.Start($NativeExecutable, [string[]]@('--routing-diagnostic','--ui-pipe','--ui-control-version','2'), $tempRoot, 2)
     $readyLine = Wait-UiControlEvent -Supervisor $supervisor -Type 'control_ready' -Command '' -RequestId '' -TimeoutMilliseconds 10000
     $ready = ConvertFrom-UiControlFrame -Json $readyLine -ExpectedProcessId $supervisor.ProcessId
-    $expectedCommands = 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join'
+    $expectedCommands = 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join,radio_identity.cache_upsert'
     Assert-UiControl ([bool]$ready.diagnostic -and $ready.control_version -eq 2 -and
         (@($ready.supported_commands) -join ',' -ceq $expectedCommands)) 'ready 必须报告 v2 本地路由诊断与完整命令集。'
     Assert-UiControl $supervisor.SetControlRunId([string]$ready.run_id) 'Supervisor 必须锁定本次进程的 run_id。'
@@ -89,6 +95,58 @@ try {
     $status = ConvertFrom-UiControlFrame -Json $statusLine -LockedRunId $ready.run_id -LastControlSequence $lastControlSequence
     Assert-UiControl ($status.result -ceq 'ok' -and $status.routing.local_source_id -eq 1) 'routing.status 必须返回当前完整快照。'
     $lastControlSequence = [uint64]$status.control_seq
+
+    $identityParameters = '{"source_id":7654321,"revision":1,"callsign":"N0TEST"}'
+    Assert-UiControl ($supervisor.SendControlCommand('radioid-1','radio_identity.cache_upsert',$identityParameters)) `
+        'Native identity 映射必须通过WPF匿名管道进入本run'
+    $identityLine = Wait-UiControlEvent -Supervisor $supervisor -Type 'control_result' `
+        -Command 'radio_identity.cache_upsert' -RequestId 'radioid-1'
+    $identityResult = ConvertFrom-UiControlFrame -Json $identityLine -LockedRunId $ready.run_id -LastControlSequence $lastControlSequence
+    Assert-UiControl ($identityResult.result -ceq 'ok' -and -not $identityResult.replayed) `
+        '首个 Native identity cache upsert 必须确认已应用'
+    $lastControlSequence = [uint64]$identityResult.control_seq
+    Assert-UiControl ($supervisor.SendControlCommand('radioid-1','radio_identity.cache_upsert',$identityParameters)) `
+        '重复的最新 identity revision 可安全重放'
+    $identityReplayLine = Wait-UiControlEvent -Supervisor $supervisor -Type 'control_result' `
+        -Command 'radio_identity.cache_upsert' -RequestId 'radioid-1'
+    $identityReplay = ConvertFrom-UiControlFrame -Json $identityReplayLine -LockedRunId $ready.run_id -LastControlSequence $lastControlSequence
+    Assert-UiControl ($identityReplay.result -ceq 'ok' -and $identityReplay.replayed) `
+        '相同最新 revision 与 payload 必须得到幂等ACK'
+    $lastControlSequence = [uint64]$identityReplay.control_seq
+    $updatedIdentityParameters = '{"source_id":7654321,"revision":2,"callsign":"N1TEST"}'
+    Assert-UiControl ($supervisor.SendControlCommand('radioid-2','radio_identity.cache_upsert',$updatedIdentityParameters)) `
+        '后续 Native identity revision 可更新同一来源ID'
+    $updatedIdentityLine = Wait-UiControlEvent -Supervisor $supervisor -Type 'control_result' `
+        -Command 'radio_identity.cache_upsert' -RequestId 'radioid-2'
+    $updatedIdentity = ConvertFrom-UiControlFrame -Json $updatedIdentityLine -LockedRunId $ready.run_id -LastControlSequence $lastControlSequence
+    Assert-UiControl ($updatedIdentity.result -ceq 'ok' -and -not $updatedIdentity.replayed) `
+        '更高 revision 必须接受更新后的合法呼号'
+    $lastControlSequence = [uint64]$updatedIdentity.control_seq
+    $removeIdentityParameters = '{"source_id":7654321,"revision":3,"callsign":null}'
+    Assert-UiControl ($supervisor.SendControlCommand('radioid-3','radio_identity.cache_upsert',$removeIdentityParameters)) `
+        '权威 not_found 或非法呼号结果必须可通过同一 Native 命令删除缓存映射'
+    $removeIdentityLine = Wait-UiControlEvent -Supervisor $supervisor -Type 'control_result' `
+        -Command 'radio_identity.cache_upsert' -RequestId 'radioid-3'
+    $removeIdentity = ConvertFrom-UiControlFrame -Json $removeIdentityLine -LockedRunId $ready.run_id -LastControlSequence $lastControlSequence
+    Assert-UiControl ($removeIdentity.result -ceq 'ok' -and -not $removeIdentity.replayed) `
+        'callsign:null tombstone 必须得到首次成功 ACK'
+    $lastControlSequence = [uint64]$removeIdentity.control_seq
+    Assert-UiControl ($supervisor.SendControlCommand('radioid-3','radio_identity.cache_upsert',$removeIdentityParameters)) `
+        'callsign:null tombstone 可用相同 request_id 和 payload 重放'
+    $removeIdentityReplayLine = Wait-UiControlEvent -Supervisor $supervisor -Type 'control_result' `
+        -Command 'radio_identity.cache_upsert' -RequestId 'radioid-3'
+    $removeIdentityReplay = ConvertFrom-UiControlFrame -Json $removeIdentityReplayLine -LockedRunId $ready.run_id -LastControlSequence $lastControlSequence
+    Assert-UiControl ($removeIdentityReplay.result -ceq 'ok' -and $removeIdentityReplay.replayed) `
+        '相同 revision 的删除重放必须幂等 ACK'
+    $lastControlSequence = [uint64]$removeIdentityReplay.control_seq
+    Assert-UiControl ($supervisor.SendControlCommand('radioid-1','radio_identity.cache_upsert',$identityParameters)) `
+        '可再次验证过期 identity revision 的拒绝路径'
+    $staleIdentityLine = Wait-UiControlEvent -Supervisor $supervisor -Type 'control_result' `
+        -Command 'radio_identity.cache_upsert' -RequestId 'radioid-1'
+    $staleIdentity = ConvertFrom-UiControlFrame -Json $staleIdentityLine -LockedRunId $ready.run_id -LastControlSequence $lastControlSequence
+    Assert-UiControl ($staleIdentity.result -ceq 'rejected' -and $staleIdentity.error -ceq 'stale_identity_revision') `
+        '旧 revision 重放必须被 Native 拒绝而不回滚新呼号'
+    $lastControlSequence = [uint64]$staleIdentity.control_seq
 
     $groups = New-Object 'System.Collections.Generic.List[object]'
     $bestPolicy = $null; $bestParameters = ''; $bestCount = 0; $bestBytes = 0

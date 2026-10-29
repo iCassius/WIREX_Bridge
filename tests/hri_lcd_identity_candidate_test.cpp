@@ -1,11 +1,14 @@
 #include "wirex/hri_lcd_identity_candidate.hpp"
 
+#include "wirex/direct_frame.hpp"
 #include "wirex/hri_call_header.hpp"
+#include "wirex/hri_t_payload.hpp"
 
 #include <array>
 #include <cstdlib>
 #include <iostream>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -120,6 +123,74 @@ void test_source_id_label_boundaries_and_scope()
           "adding a DMR test label does not relax the separate amateur callsign validator");
 }
 
+void test_source_callsign_overlay_changes_only_the_known_field()
+{
+    using namespace wirex::hri_lcd_identity_candidate;
+    constexpr std::size_t source_offset = wirex::hri_call_header::t_body_header_offset +
+        wirex::hri_call_header::source_callsign_offset;
+    const auto base = wirex::hri_t_payload::build_empty_header_empty_ambe_candidate_body(1, 1, 9U);
+
+    for (const std::string_view callsign : {"N0CALL", "BI7KGD/P", "A123456789"}) {
+        const auto result = overlay_source_callsign(base, callsign);
+        check(static_cast<bool>(result), "a normalized cached callsign creates a start-body candidate");
+        check(std::string_view(result.label.data(), callsign.size()) == callsign,
+              "the selected callsign is padded to the full ten-byte source field");
+        for (std::size_t index = callsign.size(); index < result.label.size(); ++index) {
+            check(result.label[index] == ' ', "the callsign gets fixed-width right padding");
+        }
+        for (std::size_t index = 0U; index < result.body.size(); ++index) {
+            const bool in_source_field = index >= source_offset && index < source_offset + 10U;
+            const auto expected = in_source_field
+                ? static_cast<std::uint8_t>(result.label[index - source_offset])
+                : base[index];
+            check(result.body[index] == expected,
+                  "callsign substitution changes only the ten source callsign bytes");
+        }
+        check(result.body[wirex::hri_call_header::t_body_mode_offset] == '4' &&
+                  result.body[75U] == '0' && result.body[80U] == 'F' && result.body[86U] == '3',
+              "the T90 mode, empty AMBE placeholder, and tail bytes are unchanged");
+    }
+
+    check(overlay_source_callsign(base, "n0call").error == Error::invalid_callsign,
+          "production overlay rejects lowercase input until the UI normalizes it");
+    check(overlay_source_callsign(base, "N0CALL\"").error == Error::invalid_callsign,
+          "production overlay rejects JSON-unsafe punctuation");
+    check(overlay_source_callsign(base, "4611355").error == Error::invalid_callsign,
+          "a numeric DMR ID is not accepted as a resolved callsign");
+    const auto stop = wirex::hri_t_payload::build_empty_header_empty_ambe_candidate_body(0, 1, 9U);
+    check(overlay_source_callsign(stop, "N0CALL").error == Error::invalid_base_body,
+          "resolved callsigns cannot modify the existing T0 stop candidate");
+}
+
+void test_fallback_and_callsign_candidates_have_valid_t_envelope_checksums()
+{
+    using namespace wirex::hri_lcd_identity_candidate;
+    const auto base = wirex::hri_t_payload::build_empty_header_empty_ambe_candidate_body(1, 1, 9U);
+    const auto fallback = overlay_source_id_label(base, 4611355U);
+    const auto resolved = overlay_source_callsign(base, "N0CALL");
+    check(static_cast<bool>(fallback) && static_cast<bool>(resolved),
+          "both the existing decimal fallback and resolved callsign build valid start bodies");
+
+    const auto make_frame = [](const wirex::hri_t_payload::CandidateBody& body) {
+        return wirex::direct_frame::encode(wirex::direct_frame::Record{
+            'T', std::vector<std::uint8_t>(body.begin(), body.end())});
+    };
+    const auto fallback_frame = make_frame(fallback.body);
+    const auto resolved_frame = make_frame(resolved.body);
+    check(static_cast<bool>(fallback_frame) && static_cast<bool>(resolved_frame) &&
+              fallback_frame.bytes.size() == resolved_frame.bytes.size(),
+          "the existing DIRECT T envelope is rebuilt to the same size for either source label");
+    const auto fallback_decoded = wirex::direct_frame::decode(
+        fallback_frame.bytes.data(), fallback_frame.bytes.size());
+    const auto resolved_decoded = wirex::direct_frame::decode(
+        resolved_frame.bytes.data(), resolved_frame.bytes.size());
+    check(static_cast<bool>(fallback_decoded) && static_cast<bool>(resolved_decoded) &&
+              fallback_decoded.record.type == 'T' && resolved_decoded.record.type == 'T' &&
+              fallback_decoded.record.payload == std::vector<std::uint8_t>(fallback.body.begin(), fallback.body.end()) &&
+              resolved_decoded.record.payload == std::vector<std::uint8_t>(resolved.body.begin(), resolved.body.end()),
+          "both unchanged fallback and callsign-substituted T frames pass the existing envelope checksum parser");
+}
+
 } // namespace
 
 int main()
@@ -127,6 +198,8 @@ int main()
     test_each_known_field_offset();
     test_input_rejections();
     test_source_id_label_boundaries_and_scope();
+    test_source_callsign_overlay_changes_only_the_known_field();
+    test_fallback_and_callsign_candidates_have_valid_t_envelope_checksums();
     std::cout << "All offline HRI LCD identity candidate checks passed.\n";
     return EXIT_SUCCESS;
 }

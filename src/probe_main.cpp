@@ -37,6 +37,7 @@
 #include "wirex/hri_stream_session.hpp"
 #include "wirex/hri_ptt_gate.hpp"
 #include "wirex/talkgroup_routing.hpp"
+#include "wirex/radio_identity_cache.hpp"
 #include "wirex/ui_control_protocol.hpp"
 #include "wirex/routing_state.hpp"
 #endif
@@ -4584,6 +4585,9 @@ struct BmBridgeCounters {
     std::uint32_t lcd_source_identity_source_id{};
     std::uint64_t lcd_source_identity_generation{};
     std::string lcd_source_identity_label;
+    std::string lcd_source_identity_label_kind{"none"};
+    std::uint64_t lcd_source_identity_cache_revision{};
+    std::string lcd_source_identity_serial_write_state{"not_sent"};
 };
 
 bool append_receive_filter_to_router_policy(
@@ -4792,6 +4796,14 @@ int run_control_diagnostic(bool routing_diagnostic)
     std::unique_ptr<wirex::bm_voice::BmVoicePipeline> pipeline;
     wirex::routing_state::ObservedSources observed_sources;
     wirex::ui_control::RoutingCallbacks routing_callbacks{};
+    wirex::radio_identity_cache::Cache diagnostic_identity_cache;
+    routing_callbacks.update_radio_identity = [&](std::uint32_t source_id,
+                                                   std::uint64_t revision,
+                                                   std::optional<std::string_view> callsign) {
+        return callsign.has_value()
+            ? diagnostic_identity_cache.upsert(source_id, revision, *callsign)
+            : diagnostic_identity_cache.remove(source_id, revision);
+    };
     std::size_t diagnostic_quick_call_requests = 0U;
     if (routing_diagnostic) {
         try { pipeline = std::make_unique<wirex::bm_voice::BmVoicePipeline>(); }
@@ -5115,7 +5127,10 @@ bool append_bridge_status(std::ofstream& file, std::string_view event, std::uint
          << ",\"source_id\":" << counters.lcd_source_identity_source_id
          << ",\"receive_generation\":" << counters.lcd_source_identity_generation
          << ",\"label\":\"" << counters.lcd_source_identity_label << "\""
-         << ",\"display\":\"unknown\"}"
+         << ",\"display\":\"unknown\""
+         << ",\"label_kind\":\"" << counters.lcd_source_identity_label_kind << "\""
+         << ",\"cache_revision\":" << counters.lcd_source_identity_cache_revision
+         << ",\"serial_write_state\":\"" << counters.lcd_source_identity_serial_write_state << "\"}"
          << ",\"rx_filtered_datagrams\":" << counters.rx_filtered_datagrams
          << ",\"rx_filtered_destination_id\":" << counters.rx_filtered_destination_id
          << ",\"rx_filtered_slot\":" << counters.rx_filtered_slot
@@ -5786,6 +5801,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
 
     std::unique_ptr<Pipeline> pipeline;
     std::unique_ptr<StreamSession> stream_session;
+    wirex::radio_identity_cache::Cache source_identity_cache;
     wirex::routing_state::ObservedSources observed_sources;
     try {
         pipeline = std::make_unique<Pipeline>();
@@ -5867,6 +5883,13 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                     wirex::ui_control::RoutingCallbacks::QuickCallStatus::not_ready, 0U};
             }
             return process_quick_call(group);
+        };
+        callbacks.update_radio_identity = [&](std::uint32_t source_id,
+                                               std::uint64_t revision,
+                                               std::optional<std::string_view> callsign) {
+            return callsign.has_value()
+                ? source_identity_cache.upsert(source_id, revision, *callsign)
+                : source_identity_cache.remove(source_id, revision);
         };
         callbacks.snapshot_json = [&]() {
             const auto* rx = pipeline->routed_rx_policy();
@@ -6033,6 +6056,9 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
         counters.lcd_source_identity_source_id = 0U;
         counters.lcd_source_identity_generation = 0U;
         counters.lcd_source_identity_label.clear();
+        counters.lcd_source_identity_label_kind = "none";
+        counters.lcd_source_identity_cache_revision = 0U;
+        counters.lcd_source_identity_serial_write_state = "not_sent";
     };
 
     std::uint64_t next_runtime_snapshot_ms = 1000U;
@@ -6480,11 +6506,20 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 if (action.kind == StreamActionKind::write_start_candidate &&
                     active_routed_rx_pipeline_generation) {
                     routed_rx_hri_start_attempted = true;
+                    if (counters.lcd_source_identity_prepared &&
+                        counters.lcd_source_identity_generation == *active_routed_rx_pipeline_generation) {
+                        counters.lcd_source_identity_serial_write_state = "attempted";
+                    }
                 }
                 DWORD written = 0U;
                 const BOOL wrote = WriteFile(port.get(), action.frame.data(),
                     static_cast<DWORD>(action.frame.size()), &written, nullptr);
                 const bool full = wrote != FALSE && written == action.frame.size();
+                if (action.kind == StreamActionKind::write_start_candidate &&
+                    active_routed_rx_pipeline_generation && counters.lcd_source_identity_prepared &&
+                    counters.lcd_source_identity_generation == *active_routed_rx_pipeline_generation) {
+                    counters.lcd_source_identity_serial_write_state = full ? "sent" : "failed";
+                }
                 if (!full) {
                     serial_failed = true;
                     set_failure("hri_stream_serial_write_failed");
@@ -6700,8 +6735,12 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
             status("lcd_source_identity_rejected_invalid_receive_snapshot");
             return;
         }
-        const auto lcd_identity = wirex::hri_lcd_identity_candidate::overlay_source_id_label(
-            start_body, receive_call.source_id);
+        const auto resolved_source_identity = source_identity_cache.find(receive_call.source_id);
+        const auto lcd_identity = resolved_source_identity.has_value()
+            ? wirex::hri_lcd_identity_candidate::overlay_source_callsign(
+                start_body, resolved_source_identity->callsign)
+            : wirex::hri_lcd_identity_candidate::overlay_source_id_label(
+                start_body, receive_call.source_id);
         if (!lcd_identity) {
             ++counters.rejected_calls;
             pending_receive_start = false;
@@ -6746,6 +6785,14 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
             counters.lcd_source_identity_source_id = receive_call.source_id;
             counters.lcd_source_identity_generation = pipeline_state.receive_generation;
             counters.lcd_source_identity_label.assign(lcd_identity.label.data(), lcd_identity.label.size());
+            counters.lcd_source_identity_label_kind = resolved_source_identity.has_value()
+                ? "callsign" : "dmr_id";
+            counters.lcd_source_identity_cache_revision = resolved_source_identity.has_value()
+                ? resolved_source_identity->revision : 0U;
+            counters.lcd_source_identity_serial_write_state = "pending";
+            status(resolved_source_identity.has_value()
+                ? "radio_identity_cache_hit_selected_for_receive_admission"
+                : "radio_identity_source_id_fallback_selected_for_receive_admission");
             status("lcd_source_identity_prepared_for_this_call");
         }
         service_stream_update(std::move(update));

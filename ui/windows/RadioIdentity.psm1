@@ -65,6 +65,27 @@ function ConvertTo-RadioIdentityText {
     return $text
 }
 
+function ConvertTo-RadioIdentityNativeCallsign {
+    [CmdletBinding()]
+    param([Parameter()][AllowNull()][object]$Value)
+
+    if ($null -eq $Value) { return $null }
+    $callsign = ([string]$Value).Trim()
+    if ($callsign.Length -lt 1 -or $callsign.Length -gt 10) { return $null }
+    $containsLetter = $false
+    foreach ($character in $callsign.ToCharArray()) {
+        $byte = [int][char]$character
+        if (($byte -ge 65 -and $byte -le 90) -or ($byte -ge 97 -and $byte -le 122)) {
+            $containsLetter = $true
+            continue
+        }
+        if (($byte -ge 48 -and $byte -le 57) -or $character -ceq '/' -or $character -ceq '-') { continue }
+        return $null
+    }
+    if (-not $containsLetter) { return $null }
+    return $callsign.ToUpperInvariant()
+}
+
 function ConvertTo-RadioIdentityTimestamp {
     [CmdletBinding()]
     param([Parameter()][AllowNull()][object]$Value)
@@ -238,6 +259,33 @@ function Resolve-RadioIdentity {
     }
     $status = if (Get-RadioIdentityCacheFreshness -Entry $entry) { $cachedStatus } else { 'stale' }
     return ConvertFrom-RadioIdentityCacheEntry -RadioId $RadioId -Entry $entry -Status $status
+}
+
+function Get-RadioIdentityNativeMappings {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string]$CachePath,
+        [Parameter()][ValidateRange(1, 128)][int]$Limit = $script:RadioIdentityCacheEntryLimit
+    )
+
+    $mappings = New-Object 'System.Collections.Generic.List[object]'
+    $seenIds = @{}
+    foreach ($entry in @(Read-RadioIdentityCache -CachePath $CachePath)) {
+        if ($null -eq $entry -or [string](Get-RadioIdentityProperty -InputObject $entry -Name 'status') -cne 'found') { continue }
+        $radioId = [uint32]0
+        if (-not [uint32]::TryParse([string](Get-RadioIdentityProperty -InputObject $entry -Name 'id'),
+                [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture, [ref]$radioId) -or
+            $radioId -lt 1 -or $radioId -gt $script:RadioIdentityMaxId) { continue }
+        $idKey = $radioId.ToString([Globalization.CultureInfo]::InvariantCulture)
+        if ($seenIds.ContainsKey($idKey)) { continue }
+        $seenIds[$idKey] = $true
+        if (-not (Get-RadioIdentityCacheFreshness -Entry $entry)) { continue }
+        $callsign = ConvertTo-RadioIdentityNativeCallsign (Get-RadioIdentityProperty -InputObject $entry -Name 'callsign')
+        if ($null -eq $callsign) { continue }
+        $mappings.Add([pscustomobject][ordered]@{ source_id = $radioId; callsign = $callsign })
+        if ($mappings.Count -ge $Limit) { break }
+    }
+    return $mappings.ToArray()
 }
 
 function Save-RadioIdentityCacheEntry {
@@ -636,4 +684,5 @@ function Invoke-RadioIdentityQuery {
     }
 }
 
-Export-ModuleMember -Function Get-RadioIdentityCachePath, Resolve-RadioIdentity, Invoke-RadioIdentityQuery
+Export-ModuleMember -Function Get-RadioIdentityCachePath, Resolve-RadioIdentity, Invoke-RadioIdentityQuery, `
+    ConvertTo-RadioIdentityNativeCallsign, Get-RadioIdentityNativeMappings

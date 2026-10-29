@@ -59,4 +59,10 @@ struct SourceIdResult {
     const hri_t_payload::CandidateBody& start_body,
     std::uint32_t source_id) noexcept;
 
+/// 将规范化呼号写入当前 T90 起始候选的已知 SrcCallSign 十字节字段。
+/// 函数只构造一份候选正文；串口写入和电台 LCD 显示仍由调用方分别记录。
+[[nodiscard]] SourceIdResult overlay_source_callsign(
+    const hri_t_payload::CandidateBody& start_body,
+    std::string_view callsign) noexcept;
+
 } // namespace wirex::hri_lcd_identity_candidate

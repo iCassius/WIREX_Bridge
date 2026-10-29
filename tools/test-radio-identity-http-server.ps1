@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][ValidateSet('ok', 'status', 'oversized', 'oversized_chunked', 'delay_headers', 'delay_headers_timeout', 'slow_body')][string]$Mode,
+    [Parameter(Mandatory = $true)][ValidateSet('ok', 'not_found', 'invalid_callsign', 'status', 'oversized', 'oversized_chunked', 'delay_headers', 'delay_headers_timeout', 'slow_body')][string]$Mode,
     [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string]$ReadyFile,
     [Parameter()][string]$RequestRecordFile
 )
@@ -63,6 +63,14 @@ try {
     switch ($Mode) {
         'ok' {
             $body = [Text.Encoding]::UTF8.GetBytes('{"results":[{"id":7654321,"callsign":"N0TEST"}]}')
+            Write-FakeHttpResponse -Stream $stream -StatusCode 200 -Reason 'OK' -Body $body
+        }
+        'not_found' {
+            $body = [Text.Encoding]::UTF8.GetBytes('{"results":[]}')
+            Write-FakeHttpResponse -Stream $stream -StatusCode 200 -Reason 'OK' -Body $body
+        }
+        'invalid_callsign' {
+            $body = [Text.Encoding]::UTF8.GetBytes('{"results":[{"id":7654321,"callsign":"NO CALL"}]}')
             Write-FakeHttpResponse -Stream $stream -StatusCode 200 -Reason 'OK' -Body $body
         }
         'status' {

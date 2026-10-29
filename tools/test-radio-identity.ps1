@@ -116,6 +116,36 @@ try {
     Assert-RadioIdentityTest ($resolved.status -eq 'found' -and $resolved.callsign -eq 'N0TEST') 'fresh cache resolves without a network request'
     Assert-RadioIdentityTest ($script:transportCount -eq 1) 'offline resolve leaves transport untouched'
 
+    Assert-RadioIdentityTest ((ConvertTo-RadioIdentityNativeCallsign -Value ' n0test/p-1 ') -ceq 'N0TEST/P-1') `
+        'Native callsign conversion trims and uppercases legal ASCII callsigns'
+    Assert-RadioIdentityTest ((ConvertTo-RadioIdentityNativeCallsign -Value 'n0test1234') -ceq 'N0TEST1234') `
+        'Native callsign conversion accepts exactly ten ASCII bytes'
+    foreach ($badCallsign in @('1234567','A B','N0TEST$','N0TEST12345','台北1','ſ1')) {
+        Assert-RadioIdentityTest ($null -eq (ConvertTo-RadioIdentityNativeCallsign -Value $badCallsign)) `
+            "Native callsign conversion rejects [$badCallsign]"
+    }
+    $nativeCachePath = Join-Path $testRoot 'native-mappings.json'
+    $freshUtc = [DateTimeOffset]::UtcNow.ToString('o',[Globalization.CultureInfo]::InvariantCulture)
+    $staleUtc = [DateTimeOffset]::UtcNow.AddDays(-31).ToString('o',[Globalization.CultureInfo]::InvariantCulture)
+    $nativeCache = [pscustomobject][ordered]@{
+        schema_version=1
+        entries=@(
+            [pscustomobject][ordered]@{ id=7654321; callsign='n0test/p-1'; fetched_at_utc=$freshUtc; status='found' },
+            [pscustomobject][ordered]@{ id=7654322; callsign='BAD CALL'; fetched_at_utc=$freshUtc; status='found' },
+            [pscustomobject][ordered]@{ id=7654323; callsign='N3STALE'; fetched_at_utc=$staleUtc; status='found' },
+            [pscustomobject][ordered]@{ id=7654324; callsign='N4MISS'; fetched_at_utc=$freshUtc; status='not_found' },
+            [pscustomobject][ordered]@{ id=7654325; callsign='N5VALID'; fetched_at_utc=$freshUtc; status='found' }
+        )
+    }
+    [IO.File]::WriteAllText($nativeCachePath,(ConvertTo-Json -InputObject $nativeCache -Depth 5),[Text.UTF8Encoding]::new($true))
+    $nativeMappings = @(Get-RadioIdentityNativeMappings -CachePath $nativeCachePath -Limit 128)
+    Assert-RadioIdentityTest ($nativeMappings.Count -eq 2 -and $nativeMappings[0].source_id -eq 7654321 -and
+        $nativeMappings[0].callsign -ceq 'N0TEST/P-1' -and $nativeMappings[1].source_id -eq 7654325) `
+        'Native startup mappings contain only bounded, fresh positive entries with legal callsigns'
+    $nativeMappingsLimited = @(Get-RadioIdentityNativeMappings -CachePath $nativeCachePath -Limit 1)
+    Assert-RadioIdentityTest ($nativeMappingsLimited.Count -eq 1 -and $nativeMappingsLimited[0].source_id -eq 7654321) `
+        'Native startup mapping enumeration honors its explicit entry limit'
+
     $nameFallbackId = [uint32]7654325
     $nameFallbackTransport = {
         param($Request)

@@ -30,7 +30,7 @@ function Test-ReleaseTag {
         $Tag -ceq 'v0.1.0-alpha.3' -or $Tag -ceq 'v0.1.0-alpha.4' -or
         $Tag -ceq 'v0.1.0-alpha.5' -or $Tag -ceq 'v0.1.0-alpha.6' -or
         $Tag -ceq 'v0.1.0-alpha.7' -or $Tag -ceq 'v0.1.0-alpha.8' -or
-        $Tag -ceq 'v0.1.0-alpha.9' -or $Tag -ceq 'v0.1.0-alpha.10')
+        $Tag -ceq 'v0.1.0-alpha.9' -or $Tag -ceq 'v0.1.0-alpha.10' -or $Tag -ceq 'v0.1.0-alpha.11')
 }
 
 function Get-ExpectedReleaseTests {
@@ -68,7 +68,11 @@ function Get-ExpectedReleaseTests {
         'v0.1.0-alpha.8' { return @(Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.7') }
         'v0.1.0-alpha.9' { return @(Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.8') }
         'v0.1.0-alpha.10' { return @(Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.9') }
-        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, v0.1.0-alpha.8, v0.1.0-alpha.9, and v0.1.0-alpha.10 are supported.' }
+        'v0.1.0-alpha.11' {
+            $alpha10Tests = @(Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.10')
+            return @($alpha10Tests[0..5] + 'radio_identity_cache_test' + $alpha10Tests[6..($alpha10Tests.Count - 1)])
+        }
+        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.11 are supported.' }
     }
 }
 
@@ -197,7 +201,19 @@ function Get-ExpectedReleaseFiles {
             $alpha10 += [pscustomobject]@{ Path='docs/R112_A_UI精简.md'; AssetName='docs__r112-a-ui-compact.md'; MaximumBytes=4194304L }
             return $alpha10
         }
-        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, v0.1.0-alpha.8, v0.1.0-alpha.9, and v0.1.0-alpha.10 are supported.' }
+        'v0.1.0-alpha.11' {
+            $excludedAlpha10Docs = @(
+                'docs/R112_A_身份查询实施.md',
+                'docs/R112_A_UI精简.md'
+            )
+            $alpha11 = @(Get-ExpectedReleaseFiles -Tag 'v0.1.0-alpha.10' | Where-Object {
+                $excludedAlpha10Docs -cnotcontains [string]$_.Path
+            })
+            $alpha11 += [pscustomobject]@{ Path='docs/R113_LCD核心实现.md'; AssetName='docs__r113-lcd-core-implementation.md'; MaximumBytes=4194304L }
+            $alpha11 += [pscustomobject]@{ Path='docs/R113_身份与LCD接线.md'; AssetName='docs__r113-identity-lcd-integration.md'; MaximumBytes=4194304L }
+            return $alpha11
+        }
+        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.11 are supported.' }
     }
 }
 
@@ -398,6 +414,12 @@ function Test-ManifestDocument {
             if ($excluded -cnotcontains $required) { throw 'alpha.10 manifest 未明确排除个人配置指针、RadioID 缓存、频道收藏与密码路径。' }
         }
     }
+    if ($RequestedTag -ceq 'v0.1.0-alpha.11') {
+        foreach ($required in @('private/user-config-directory.txt', 'private/user-config/radio-identity-cache.json',
+            'private/user-config/channel-favorites.json', 'private/user-config/password-file-path.txt')) {
+            if ($excluded -cnotcontains $required) { throw 'alpha.11 manifest 未明确排除个人配置指针、RadioID 缓存、频道收藏与密码路径。' }
+        }
+    }
 
     $records = @($Manifest.files)
     $expectedFiles = @(Get-ExpectedReleaseFiles -Tag $RequestedTag)
@@ -483,7 +505,7 @@ function Test-BuildProvenanceDocument {
 
 function Select-ReleaseCandidate {
     param([object[]]$Releases, [Parameter(Mandatory=$true)][string]$RequestedTag, [switch]$AllowDraft)
-    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, v0.1.0-alpha.8, v0.1.0-alpha.9, and v0.1.0-alpha.10 are supported.' }
+    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.11 are supported.' }
     $matches = @($Releases | Where-Object { [string]$_.tag_name -ceq $RequestedTag })
     if ($matches.Count -ne 1) { throw 'GitHub Release 列表中没有唯一匹配的 tag。' }
     $release = $matches[0]
@@ -654,7 +676,7 @@ function New-GitHubApiUri {
     )
     switch ($Kind) {
         'tag' {
-            if (-not (Test-ReleaseTag -Tag $Tag)) { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, v0.1.0-alpha.8, v0.1.0-alpha.9, and v0.1.0-alpha.10 are supported.' }
+            if (-not (Test-ReleaseTag -Tag $Tag)) { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.11 are supported.' }
             return [Uri]($script:githubApiRoot + '/releases/tags/' + $Tag)
         }
         'list' {
@@ -857,7 +879,7 @@ function Invoke-ReleaseDownload {
     param([Parameter(Mandatory=$true)][string]$RequestedTag,
           [Parameter(Mandatory=$true)][string]$OutputDirectory,
           [switch]$AllowDraft)
-    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, v0.1.0-alpha.8, v0.1.0-alpha.9, and v0.1.0-alpha.10 are supported.' }
+    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.11 are supported.' }
     $context = Get-DownloadDestinationContext -Destination $OutputDirectory
     $token = Get-GitCredentialToken
     $stagingCreated = $false

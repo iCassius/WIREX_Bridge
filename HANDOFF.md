@@ -1,5 +1,19 @@
 # WIREX Bridge 交接入口
 
+## R113 起点（2026-10-29）
+
+用户确认 alpha.10 上 FTX-1 收听和鹦鹉回放正常。这项确认只涉及听音与鹦鹉路径；FTX-1 LCD 来话呼号显示仍待实物观察，R113 不把软件状态或 Native ACK 记作屏幕验收。当前工作只接入 RadioID 缓存到 Native 的后续来话呼号映射，不修改路由、用户配置、密码路径或音量。
+
+## R113 alpha.11 源码与本机候选准备（2026-10-29）
+
+Native/UI 实现已由作者冻结；独立代码审查未发现 P1/P2 问题，并按审查意见修正了 `lcd_source_identity` 的通话代次说明。呼号字段已实际接入后续来话的现有 mode 4 T90 起始记录；真实 LCD 绘制仍待本轮用户目视测试。活动通话内的映射更新只影响后续通话，不发送第二条 T，也不热写活动记录。
+
+当前已有 dirty 开发构建的 40 项 Native 离线测试通过，以及 Windows PowerShell 5.1 下 `test-control`、`test-ui-control-v2`、`test-ui-status` 和 WPF→Native 身份管道检查通过。发行器离线合成检查为 package 486、publisher 101、downloader 1620 项断言通过；它们没有生成发行包或启动 EXE。clean HEAD 构建、alpha.11 包级启动检查和最终包审仍待本轮完成。详细证据与后续补录位置见 [R113 总交接](docs/R113_总交接.md)。
+
+alpha.11 profile 将 alpha10 的身份查询与 UI 精简文档替换为两份 R113 接线说明，保留未变的 R112 网络音频指标说明；唯一启动入口仍是包根目录 `start-wirex-bridge.cmd`。RadioID 缓存、频道收藏、连接/音量配置、密码和密码路径不进入通用包。用户目录指针仍保持 alpha10；包审通过前保护该包和现有配置不变。没有创建 ZIP、Git tag 或 GitHub Release。
+
+下一步仅在既有 DIRECT/WIRES-X HRI 与旧 Bridge 用户环境中观察已缓存呼号来话的真实 LCD；另核对首次缓存未命中仍显示数字 ID、后续已解析映射供下一通来话使用及通话结束后的屏幕变化。不新增设备、不改变 RF/数字模式，也不把串口完整写出记录写成屏显通过。
+
 ## R112-A alpha10 集成状态（2026-10-29）
 
 alpha10 由干净源码提交 e234a55aeff6fe2cff1985ef47fc4d94378ab474 构建。构建目录为 build/_work/wirex-bridge-e234a55-20261029-061534，clean full39 的构建日志为 build/_work/R112-A-alpha10-clean-full39-e234a55-build.log，日志 SHA-256 为 797da23c0672d0b0ef03f6bad80ba09cacbe547cc6953f00fa2b00ff2e1db930。39 项离线测试通过，编译警告和错误均为 0；EXE SHA-256 为 ffe5cda0f530595f5007ac54b2f0a3e27dfd8e1ca03c903ee328130dcb684a3d。

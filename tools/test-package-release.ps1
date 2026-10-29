@@ -79,7 +79,8 @@ Assert-True ($alpha2Tests[14] -ceq 'bounded_pipe_writer_test' -and
 $builderTestLines = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'build-bm-bridge.ps1') -Encoding UTF8 |
     Where-Object { $_ -match "^\s*@\{\s*Name='[^']+';\s*Source='tests\\" })
 $builderTestNames = @($builderTestLines | ForEach-Object { [regex]::Match($_, "Name='([^']+)'").Groups[1].Value })
-$builderAlpha3Prefix = @($builderTestNames | Select-Object -First 35)
+$builderHistoricalTestNames = @($builderTestNames | Where-Object { $_ -cne 'radio_identity_cache_test' })
+$builderAlpha3Prefix = @($builderHistoricalTestNames | Select-Object -First 35)
 Assert-True ($alpha2Tests.Count -eq 28 -and $alpha2Tests[15] -ceq 'ui_pipe_test') `
     'alpha.2 retains its historical 28-test manifest independently of the current builder'
 Assert-True ($alpha2Files -ccontains 'start-ui.cmd' -and $alpha2Files -ccontains 'start-ui.ps1' -and
@@ -114,7 +115,7 @@ Assert-True ([string]$alpha3ReadmeMap[0].Source -ceq 'docs\releases\v0.1.0-alpha
 Assert-True ($alpha3Profile.ReleaseScope -match 'per-accepted-call DMR Source ID label' -and
     @($alpha3Profile.NotIncluded | Where-Object { $_ -match 'RF node operation is not implemented' }).Count -eq 1) `
     'alpha.3 package scope states identity behavior and RF omission explicitly'
-Assert-True ($builderTestNames.Count -ge $alpha3Tests.Count) '当前 builder 保留 alpha.3 的固定历史测试前缀'
+Assert-True ($builderHistoricalTestNames.Count -ge $alpha3Tests.Count) '当前 builder 保留 alpha.3 的固定历史测试前缀'
 Assert-Equal $builderAlpha3Prefix.Count $alpha3Tests.Count 'alpha.3 固定测试列表与当前 builder 的首 35 项分开比较'
 for ($testIndex = 0; $testIndex -lt $alpha3Tests.Count; $testIndex++) {
     Assert-True ($builderAlpha3Prefix[$testIndex] -ceq $alpha3Tests[$testIndex]) `
@@ -160,12 +161,12 @@ $alpha5Files = @(Get-ExpectedReleasePackageFiles)
 $alpha5Tests = @(Get-ExpectedReleaseTests)
 Assert-Equal $alpha5Files.Count ($alpha4Files.Count + 6) 'alpha.5 在 alpha.4 运行文件上增加两份迁移/协议文档和四个测试入口文件'
 Assert-Equal $alpha5Tests.Count 36 'alpha.5 包记录原35项测试和IPC v2新测试'
-Assert-True ($builderTestNames.Count -ge $alpha5Tests.Count) '当前 builder 保留 alpha.5 的固定测试前缀'
+Assert-True ($builderHistoricalTestNames.Count -ge $alpha5Tests.Count) '当前 builder 保留 alpha.5 的固定测试前缀'
 $expectedAlpha5Tests = @($alpha4Tests + 'ui_control_protocol_v2_test')
 for ($testIndex = 0; $testIndex -lt $alpha5Tests.Count; $testIndex++) {
     Assert-True ($alpha5Tests[$testIndex] -ceq $expectedAlpha5Tests[$testIndex]) `
         "alpha.5 profile inserts the IPC v2 test without reordering historical tests at index $testIndex"
-    Assert-True ($builderTestNames[$testIndex] -ceq $expectedAlpha5Tests[$testIndex]) `
+    Assert-True ($builderHistoricalTestNames[$testIndex] -ceq $expectedAlpha5Tests[$testIndex]) `
         "alpha.5 fixed test list matches builder source order at index $testIndex"
 }
 Assert-Equal $alpha5Tests[35] 'ui_control_protocol_v2_test' 'alpha.5 appends the IPC v2 protocol test as item 36'
@@ -275,7 +276,7 @@ $alpha6Files = @(Get-ExpectedReleasePackageFiles)
 $alpha6Tests = @(Get-ExpectedReleaseTests)
 Assert-Equal $alpha6Files.Count ($alpha5Files.Count + 3) 'alpha.6 在 alpha.5 固定清单上只增加 R108 文档和两个合并入口文件'
 Assert-Equal $alpha6Tests.Count 39 'alpha.6 固定记录 39 项 C++ 离线测试'
-Assert-Equal $builderTestNames.Count $alpha6Tests.Count 'alpha.6 profile 与 builder 固定测试数量一致'
+Assert-Equal $builderHistoricalTestNames.Count $alpha6Tests.Count 'alpha.6 历史 profile 与剔除 alpha.11 新增测试后的 builder 固定测试数量一致'
 $alpha6AddedTests = @('talkgroup_routing_test', 'bm_routing_lifecycle_test', 'routing_state_test')
 for ($testIndex = 0; $testIndex -lt $alpha5Tests.Count; $testIndex++) {
     Assert-True ($alpha6Tests[$testIndex] -ceq $alpha5Tests[$testIndex]) `
@@ -284,7 +285,7 @@ for ($testIndex = 0; $testIndex -lt $alpha5Tests.Count; $testIndex++) {
 for ($testIndex = 0; $testIndex -lt $alpha6AddedTests.Count; $testIndex++) {
     $index = $alpha5Tests.Count + $testIndex
     Assert-True ($alpha6Tests[$index] -ceq $alpha6AddedTests[$testIndex] -and
-        $builderTestNames[$index] -ceq $alpha6AddedTests[$testIndex]) `
+        $builderHistoricalTestNames[$index] -ceq $alpha6AddedTests[$testIndex]) `
         "alpha.6 appends the fixed R108 test $($alpha6AddedTests[$testIndex])"
 }
 Assert-True ((Get-ReleaseProfile -Version 'v0.1.0-alpha.5').TestNames.Count -eq 36 -and
@@ -350,7 +351,7 @@ $alpha7Tests = @(Get-ExpectedReleaseTests)
 Assert-Equal $alpha7Files.Count ($alpha6Files.Count + 2) 'alpha.7 在 alpha.6 清单上只增加两份 R109 文档'
 Assert-Equal $alpha7Tests.Count 39 'alpha.7 沿用 39 项 C++ 离线测试'
 Assert-True ([string]::Join('|', $alpha7Tests) -ceq [string]::Join('|', $alpha6Tests) -and
-    $builderTestNames.Count -eq $alpha7Tests.Count) 'alpha.7 keeps the full alpha.6 test order and count'
+    $builderHistoricalTestNames.Count -eq $alpha7Tests.Count) 'alpha.7 keeps the full alpha.6 test order and count'
 foreach ($mapping in @(
     @{ Source='docs\releases\v0.1.0-alpha.7-package-README.md'; Destination='README.md' },
     @{ Source='docs\R109_下行状态与动态组修复.md'; Destination='docs\R109_下行状态与动态组修复.md' },
@@ -663,6 +664,105 @@ Assert-True ($alpha10ReadmeText.Contains('start-wirex-bridge.cmd') -and
 Assert-True (-not $alpha10ReadmeText.Contains('RadioID 查询只在用户点击')) `
     'alpha.10 package README does not repeat the alpha.9 manual-query behavior'
 
+$alpha11Profile = Get-ReleaseProfile -Version 'v0.1.0-alpha.11'
+[void](Set-ReleaseVersion -Version 'v0.1.0-alpha.11')
+Assert-True ([string]$alpha11Profile.ReleaseScope -like 'R113 DIRECT:*') `
+    'alpha.11 release metadata names the R113 DIRECT scope accepted by the release manifest validator'
+$alpha11NotIncluded = @($alpha11Profile.NotIncluded)
+Assert-True (@($alpha11NotIncluded | Where-Object {
+    [string]$_ -like 'The FTX-1 LCD display result remains unknown pending direct visual confirmation*'
+}).Count -eq 1 -and
+    @($alpha11NotIncluded | Where-Object { [string]$_ -ceq 'FM and C4FM RF transmit paths are not implemented' }).Count -eq 1 -and
+    @($alpha11NotIncluded | Where-Object { [string]$_ -ceq 'FTX-1 LCD source-identity display is not implemented' }).Count -eq 0) `
+    'alpha.11 profile keeps the physical LCD result unknown and explicitly excludes FM/C4FM RF'
+$alpha11Files = @(Get-ExpectedReleasePackageFiles)
+$alpha11Tests = @(Get-ExpectedReleaseTests)
+$expectedAlpha11BuilderNames = @($alpha11Tests)
+Assert-True ($builderTestNames.Count -eq 40 -and
+    [string]::Join('|', $builderTestNames) -ceq [string]::Join('|', $expectedAlpha11BuilderNames)) `
+    'alpha.11 test profile matches all 40 current builder entries in exact source order'
+$expectedAlpha11Tests = @($alpha10Tests[0..5] + 'radio_identity_cache_test' + $alpha10Tests[6..($alpha10Tests.Count - 1)])
+Assert-Equal $alpha11Files.Count $alpha10Files.Count 'alpha.11 用两份 R113 文档替换两份 R112 文档，文件数不变'
+Assert-Equal $alpha11Tests.Count 40 'alpha.11 includes 40 native tests'
+Assert-True ([string]::Join('|', $alpha11Tests) -ceq [string]::Join('|', $expectedAlpha11Tests)) `
+    'alpha.11 inserts radio_identity_cache_test after hri_lcd_identity_candidate_test and preserves all other tests in order'
+Assert-True (@($alpha11Files | Where-Object { [string]$_ -match '\.cmd$' }).Count -eq 1 -and
+    $alpha11Files -ccontains 'start-wirex-bridge.cmd') 'alpha.11 has exactly one root CMD entry point'
+foreach ($requiredPath in @(
+    'ui/windows/RadioIdentity.psm1',
+    'docs/R112_A_网络音频指标.md',
+    'docs/R113_LCD核心实现.md',
+    'docs/R113_身份与LCD接线.md'
+)) {
+    Assert-True ($alpha11Files -ccontains $requiredPath) "alpha.11 package includes $requiredPath"
+}
+foreach ($retiredPath in @('docs/R112_A_身份查询实施.md', 'docs/R112_A_UI精简.md')) {
+    Assert-True (-not ($alpha11Files -ccontains $retiredPath)) "alpha.11 package removes retired document $retiredPath"
+}
+Assert-True (@($alpha11Files | Where-Object { [string]$_ -like 'docs/R111_*' -or [string]$_ -like 'docs/R112_A_*' }).Count -eq 1) `
+    'alpha.11 retains only the unchanged R112 network-audio metrics guide from the older R111/R112 documents'
+foreach ($forbiddenPath in @(
+    'tools/test-radio-identity.ps1', 'tools/test-radio-identity-http-server.ps1', 'tools/test-ui-identity.ps1',
+    'radio-identity-cache.json', 'channel-favorites.json', 'password-file-path.txt',
+    'private/user-config-directory.txt', 'connection-profile.json', 'audio-settings.json', 'bm-device-password.txt'
+)) {
+    Assert-True (-not ($alpha11Files -contains $forbiddenPath)) "alpha.11 package excludes private/developer file $forbiddenPath"
+}
+foreach ($mapping in @(
+    @{ Source='tools\start-wirex-bridge-alpha11.cmd'; Destination='start-wirex-bridge.cmd' },
+    @{ Source='tools\start-wirex-bridge-alpha11.ps1'; Destination='tools/start-wirex-bridge.ps1' },
+    @{ Source='docs\R113_LCD核心实现.md'; Destination='docs\R113_LCD核心实现.md' },
+    @{ Source='docs\R113_身份与LCD接线.md'; Destination='docs\R113_身份与LCD接线.md' }
+)) {
+    Assert-True (@($alpha11Profile.SourceFiles | Where-Object {
+        [string]$_.Source -ceq $mapping.Source -and [string]$_.Destination -ceq $mapping.Destination
+    }).Count -eq 1) "alpha.11 source mapping is fixed: $($mapping.Source)"
+}
+Assert-True (@($alpha11Profile.SourceFiles | Where-Object {
+    [string]$_.Source -ceq 'tools\start-wirex-bridge-alpha10.cmd' -or
+    [string]$_.Source -ceq 'tools\start-wirex-bridge-alpha10.ps1' -or
+    [string]$_.Source -like 'docs\R112_A_身份查询实施.md' -or
+    [string]$_.Source -like 'docs\R112_A_UI精简.md'
+}).Count -eq 0) 'alpha.11 source profile excludes the alpha.10 launcher and retired identity/UI guides'
+$alpha11CmdPath = Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha11.cmd'
+$alpha11CmdBytes = [System.IO.File]::ReadAllBytes($alpha11CmdPath)
+Assert-True (@($alpha11CmdBytes | Where-Object { $_ -gt 127 }).Count -eq 0) 'alpha.11 CMD source contains ASCII only'
+Assert-True ([System.Text.Encoding]::ASCII.GetString($alpha11CmdBytes) -ceq $alpha10CmdText) `
+    'alpha.11 CMD preserves the existing path, argument and exit-code forwarding behavior'
+$alpha11LauncherPath = Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha11.ps1'
+$alpha11LauncherBytes = [System.IO.File]::ReadAllBytes($alpha11LauncherPath)
+Assert-True ($alpha11LauncherBytes.Length -ge 3 -and $alpha11LauncherBytes[0] -eq 0xEF -and
+    $alpha11LauncherBytes[1] -eq 0xBB -and $alpha11LauncherBytes[2] -eq 0xBF) `
+    'alpha.11 technical entry has a UTF-8 BOM for Windows PowerShell 5.1'
+$alpha11Tokens = $null
+$alpha11ParseErrors = $null
+[System.Management.Automation.Language.Parser]::ParseFile(
+    $alpha11LauncherPath, [ref]$alpha11Tokens, [ref]$alpha11ParseErrors) | Out-Null
+Assert-True ($alpha11ParseErrors.Count -eq 0) `
+    ('alpha.11 technical entry parses; parse errors={0}' -f $alpha11ParseErrors.Count)
+$alpha11LauncherText = [System.IO.File]::ReadAllText($alpha11LauncherPath, [System.Text.Encoding]::UTF8)
+$alpha10LauncherText = [System.IO.File]::ReadAllText($alpha10LauncherPath, [System.Text.Encoding]::UTF8)
+Assert-True ($alpha11LauncherText -ceq $alpha10LauncherText.Replace('alpha.10', 'alpha.11')) `
+    'alpha.11 technical entry changes only the version-specific startup failure text'
+foreach ($pair in @(
+    @{ Path='docs/R113_LCD核心实现.md'; Name='docs__r113-lcd-core-implementation.md' },
+    @{ Path='docs/R113_身份与LCD接线.md'; Name='docs__r113-identity-lcd-integration.md' }
+)) {
+    Assert-True ((Get-ReleaseAssetName -RelativePath $pair.Path) -ceq $pair.Name) `
+        "alpha.11 fixed ASCII asset mapping $($pair.Path)"
+}
+Assert-True ([string]$alpha11Profile.PackageReadme -ceq 'docs\releases\v0.1.0-alpha.11-package-README.md') `
+    'alpha.11 profile selects its versioned package README'
+$alpha11ReadmeText = [System.IO.File]::ReadAllText(
+    (Join-Path $repositoryRoot $alpha11Profile.PackageReadme), [System.Text.Encoding]::UTF8)
+Assert-True ($alpha11ReadmeText.Contains('SrcCallSign') -and
+    $alpha11ReadmeText.Contains('真实 LCD 绘制待本轮用户测试') -and
+    $alpha11ReadmeText.Contains('不会把 Native 的发送记录或 UI 状态显示成屏显成功') -and
+    $alpha11ReadmeText.Contains('不包含个人配置、缓存、收藏、密码或密码路径文件')) `
+    'alpha.11 package README documents the narrow field write, unknown LCD result and local-data boundary'
+Assert-True (-not $alpha11ReadmeText.Contains('屏显已完成') -and
+    -not $alpha11ReadmeText.Contains('实机通过')) 'alpha.11 package README makes no LCD or device pass claim'
+
 [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.1')
 Assert-Throws { Get-ReleaseAssetName -RelativePath 'start-ui.cmd' } 'alpha.1 不接受 alpha.2 UI asset'
 Assert-True ((Get-ReleaseAssetName -RelativePath 'docs/连接配置.md') -ceq 'docs__connection-profile.md') `
@@ -943,6 +1043,63 @@ try {
     Write-Utf8NoBom -Path (Join-Path $privateConfigDirectory 'password-file-path.txt') -Text 'synthetic test path only'
     Assert-Throws { Assert-ReleasePackageInventory -PackageRoot $alpha10InventoryRoot -Version 'v0.1.0-alpha.10' } `
         'alpha.10 package inventory rejects a local password-path file'
+
+    [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.11')
+    $alpha11InventoryProfile = Get-ReleaseProfile -Version 'v0.1.0-alpha.11'
+    $alpha11InventoryRoot = Join-Path $testRoot 'synthetic-alpha11-package'
+    New-Item -ItemType Directory -Path $alpha11InventoryRoot -Force | Out-Null
+    foreach ($relativeDirectory in $alpha11InventoryProfile.Directories) {
+        New-Item -ItemType Directory -Path (Join-Path $alpha11InventoryRoot $relativeDirectory.Replace('/', '\')) -Force | Out-Null
+    }
+    foreach ($relativePath in ($alpha11InventoryProfile.PackageFiles | Where-Object { $_ -cne 'manifest.json' })) {
+        $fullPath = Join-Path $alpha11InventoryRoot $relativePath.Replace('/', '\')
+        $parent = Split-Path -Parent $fullPath
+        if (-not [System.IO.Directory]::Exists($parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+        if ($relativePath -ceq 'private/device-y.bin') {
+            Copy-Item -LiteralPath $approvedFixturePath -Destination $fullPath
+        } else {
+            Write-Utf8NoBom -Path $fullPath -Text ('synthetic alpha.11 inventory fixture: ' + $relativePath)
+        }
+    }
+    $alpha11InventoryRecords = @()
+    foreach ($relativePath in ($alpha11InventoryProfile.PackageFiles | Where-Object { $_ -cne 'manifest.json' } | Sort-Object)) {
+        $fullPath = Join-Path $alpha11InventoryRoot $relativePath.Replace('/', '\')
+        $item = Get-Item -LiteralPath $fullPath
+        $alpha11InventoryRecords += ,([ordered]@{
+            path = $relativePath
+            asset_name = [string]$alpha11InventoryProfile.AssetMap[$relativePath]
+            length_bytes = [long]$item.Length
+            sha256 = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            source = 'synthetic alpha.11 inventory fixture'
+        })
+    }
+    $alpha11InventoryManifest = [ordered]@{
+        schema_version = 1
+        package_status = 'awaiting_root_audit'
+        version = 'v0.1.0-alpha.11'
+        tag_candidate = 'v0.1.0-alpha.11'
+        manifest_asset_name = 'manifest.json'
+        approved_y_fixture = [ordered]@{
+            path = 'private/device-y.bin'
+            length_bytes = 100
+            sha256 = $approvedFixtureHash
+        }
+        excluded_private_files = @(
+            'private/bm-device-password.txt', 'connection-profile.json', 'audio-settings.json',
+            'private/user-config-directory.txt', 'private/user-config/radio-identity-cache.json',
+            'private/user-config/channel-favorites.json', 'private/user-config/password-file-path.txt'
+        )
+        files = $alpha11InventoryRecords
+    }
+    Write-Utf8NoBom -Path (Join-Path $alpha11InventoryRoot 'manifest.json') `
+        -Text ((ConvertTo-Json -InputObject $alpha11InventoryManifest -Depth 8) + "`n")
+    Assert-True ((Assert-ReleasePackageInventory -PackageRoot $alpha11InventoryRoot -Version 'v0.1.0-alpha.11') -eq $null) `
+        'alpha.11 synthetic package inventory accepts the R113 docs and declares personal-file exclusions'
+    $alpha11PrivateDirectory = Join-Path $alpha11InventoryRoot 'private\user-config'
+    New-Item -ItemType Directory -Path $alpha11PrivateDirectory -Force | Out-Null
+    Write-Utf8NoBom -Path (Join-Path $alpha11PrivateDirectory 'password-file-path.txt') -Text 'synthetic test path only'
+    Assert-Throws { Assert-ReleasePackageInventory -PackageRoot $alpha11InventoryRoot -Version 'v0.1.0-alpha.11' } `
+        'alpha.11 package inventory rejects a local password-path file'
 
     $alpha2PackageRoot = Join-Path $testRoot 'package-alpha2'
     Copy-Item -LiteralPath $packageRoot -Destination $alpha2PackageRoot -Recurse

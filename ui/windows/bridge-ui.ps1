@@ -171,6 +171,16 @@ $script:pendingQuickCall = $null
 $script:pendingDynamicLocalListen = $null
 $script:pendingDynamicCallTarget = $null
 $script:controlDiagnostic = $false
+$script:identityNativeCapability = $false
+$script:identityNativeRunId = ''
+$script:identityNativeRevision = [uint64]0
+$script:identityNativeQueue = New-Object 'System.Collections.Generic.List[object]'
+$script:identityNativeInFlight = $null
+$script:identityNativeDeferredBySource = @{}
+$script:identityNativeDeferredOrder = New-Object 'System.Collections.Generic.List[string]'
+$script:expiredIdentityNativeRequests = @{}
+$script:identityNativeCallRefreshKeys = @{}
+$script:identityNativeCallRefreshOrder = New-Object 'System.Collections.Generic.List[string]'
 $script:controlOverflowHandled = $false
 $script:pendingControlRequests = @{}
 $script:resolvedTimedOutRoutingRequests = @{}
@@ -751,6 +761,206 @@ function Get-UiRadioIdentity {
     return $null
 }
 
+function Get-UiNativeIdentityCallsign {
+    param([Parameter()][AllowNull()][object]$Value)
+    if (-not $script:radioIdentityModuleLoaded -or
+        -not (Get-Command -Name ConvertTo-RadioIdentityNativeCallsign -ErrorAction SilentlyContinue)) { return $null }
+    return ConvertTo-RadioIdentityNativeCallsign -Value $Value
+}
+
+function Save-UiNativeIdentityDeferredMapping {
+    param([Parameter(Mandatory=$true)][object]$Mapping)
+    if (-not $script:identityNativeDeferredBySource) { $script:identityNativeDeferredBySource = @{} }
+    if ($null -eq $script:identityNativeDeferredOrder) {
+        $script:identityNativeDeferredOrder = New-Object 'System.Collections.Generic.List[string]'
+    }
+    if (-not $Mapping -or -not $Mapping.PSObject.Properties['source_id'] -or
+        -not $Mapping.PSObject.Properties['callsign']) { return $false }
+    $sourceId = [uint64]$Mapping.source_id
+    if ($sourceId -lt 1 -or $sourceId -gt 16777215) { return $false }
+    $key = $sourceId.ToString([Globalization.CultureInfo]::InvariantCulture)
+    $normalizedCallsign = if ($null -eq $Mapping.callsign) { $null } else { Get-UiNativeIdentityCallsign -Value $Mapping.callsign }
+    if ($null -ne $Mapping.callsign -and $null -eq $normalizedCallsign) { return $false }
+    $stored = [pscustomobject][ordered]@{ source_id=$sourceId; callsign=$normalizedCallsign }
+    if ($script:identityNativeDeferredBySource.ContainsKey($key)) {
+        [void]$script:identityNativeDeferredOrder.Remove($key)
+    } elseif ($script:identityNativeDeferredOrder.Count -ge 128) {
+        $evictedKey = $script:identityNativeDeferredOrder[0]
+        $script:identityNativeDeferredOrder.RemoveAt(0)
+        [void]$script:identityNativeDeferredBySource.Remove($evictedKey)
+    }
+    $script:identityNativeDeferredBySource[$key] = $stored
+    $script:identityNativeDeferredOrder.Add($key)
+    return $true
+}
+
+function Test-AndMarkUiNativeIdentityCallRefresh {
+    param([Parameter(Mandatory=$true)][string]$RunId,[Parameter(Mandatory=$true)][uint64]$Generation,
+        [Parameter(Mandatory=$true)][uint64]$SourceId)
+    if ($Generation -eq 0 -or $SourceId -lt 1 -or $SourceId -gt 16777215 -or
+        [string]::IsNullOrWhiteSpace($RunId)) { return $false }
+    if (-not $script:identityNativeCallRefreshKeys) { $script:identityNativeCallRefreshKeys = @{} }
+    if ($null -eq $script:identityNativeCallRefreshOrder) {
+        $script:identityNativeCallRefreshOrder = New-Object 'System.Collections.Generic.List[string]'
+    }
+    $key = '{0}|{1}|{2}' -f $RunId,$Generation.ToString([Globalization.CultureInfo]::InvariantCulture),
+        $SourceId.ToString([Globalization.CultureInfo]::InvariantCulture)
+    if ($script:identityNativeCallRefreshKeys.ContainsKey($key)) { return $false }
+    if ($script:identityNativeCallRefreshOrder.Count -ge 128) {
+        $oldestKey = $script:identityNativeCallRefreshOrder[0]
+        $script:identityNativeCallRefreshOrder.RemoveAt(0)
+        [void]$script:identityNativeCallRefreshKeys.Remove($oldestKey)
+    }
+    $script:identityNativeCallRefreshKeys[$key] = $true
+    $script:identityNativeCallRefreshOrder.Add($key)
+    return $true
+}
+
+function Add-UiNativeIdentityMappingToQueue {
+    param([Parameter(Mandatory=$true)][uint64]$SourceId,[Parameter()][AllowNull()][object]$Callsign,[switch]$Remove)
+    if ($SourceId -lt 1 -or $SourceId -gt 16777215) { return $false }
+    $normalizedCallsign = if ($Remove) { $null } else { Get-UiNativeIdentityCallsign -Value $Callsign }
+    if (-not $Remove -and $null -eq $normalizedCallsign) { return $false }
+    $mapping = [pscustomobject][ordered]@{ source_id=$SourceId; callsign=$normalizedCallsign }
+    if ([string]::IsNullOrWhiteSpace($script:identityNativeRunId)) {
+        return Save-UiNativeIdentityDeferredMapping -Mapping $mapping
+    }
+    if (-not $script:identityNativeCapability -or $script:identityNativeRunId -cne $script:controlRunId) {
+        [void](Save-UiNativeIdentityDeferredMapping -Mapping $mapping)
+        return $false
+    }
+    for ($index = 0; $index -lt $script:identityNativeQueue.Count; $index++) {
+        if ([uint64]$script:identityNativeQueue[$index].source_id -eq $SourceId) {
+            $script:identityNativeQueue[$index] = $mapping
+            return $true
+        }
+    }
+    if ($script:identityNativeQueue.Count -ge 128) { $script:identityNativeQueue.RemoveAt(0) }
+    $script:identityNativeQueue.Add($mapping)
+    [void](Start-NextUiNativeIdentityUpdate)
+    return $true
+}
+
+function Initialize-UiNativeIdentitySync {
+    if (-not $script:identityNativeCapability -or -not $script:controlConfirmed -or
+        [string]::IsNullOrWhiteSpace($script:controlRunId)) { return $false }
+    if ($script:identityNativeRunId -ceq $script:controlRunId) { return $true }
+    $script:identityNativeRunId = [string]$script:controlRunId
+    $script:identityNativeRevision = [uint64]0
+    $script:identityNativeQueue.Clear()
+    $script:identityNativeInFlight = $null
+    $script:expiredIdentityNativeRequests = @{}
+    if ($script:radioIdentityModuleLoaded -and
+        (Get-Command -Name Get-RadioIdentityNativeMappings -ErrorAction SilentlyContinue)) {
+        try {
+            foreach ($mapping in @(Get-RadioIdentityNativeMappings -CachePath $script:identityCachePath -Limit 128)) {
+                [void](Add-UiNativeIdentityMappingToQueue -SourceId ([uint64]$mapping.source_id) -Callsign ([string]$mapping.callsign))
+            }
+        } catch {
+            Add-UiIdentityDiagnostic -Stage 'native_cache_load' -ErrorCode 'cache_read' `
+                -ErrorType $_.Exception.GetType().FullName -Detail $_.Exception.Message
+        }
+    }
+    foreach ($key in $script:identityNativeDeferredOrder.ToArray()) {
+        if (-not $script:identityNativeDeferredBySource.ContainsKey($key)) { continue }
+        $mapping = $script:identityNativeDeferredBySource[$key]
+        [void](Add-UiNativeIdentityMappingToQueue -SourceId ([uint64]$mapping.source_id) -Callsign $mapping.callsign `
+            -Remove:($null -eq $mapping.callsign))
+    }
+    $script:identityNativeDeferredBySource = @{}
+    $script:identityNativeDeferredOrder.Clear()
+    [void](Start-NextUiNativeIdentityUpdate)
+    return $true
+}
+
+function Start-NextUiNativeIdentityUpdate {
+    if (-not $script:identityNativeCapability -or -not $script:controlConfirmed -or
+        [string]::IsNullOrWhiteSpace($script:identityNativeRunId) -or
+        $script:identityNativeRunId -cne $script:controlRunId -or
+        -not $script:supervisor -or $script:supervisor.HasExited -or
+        $script:identityNativeInFlight -or $script:identityNativeQueue.Count -eq 0) { return $false }
+    if ($script:identityNativeRevision -eq [uint64]::MaxValue) {
+        $script:identityNativeQueue.Clear()
+        return $false
+    }
+    $mapping = $script:identityNativeQueue[0]
+    $script:identityNativeQueue.RemoveAt(0)
+    $revision = [uint64]($script:identityNativeRevision + [uint64]1)
+    $requestId = 'radioid-' + $revision.ToString([Globalization.CultureInfo]::InvariantCulture)
+    $parametersJson = ConvertTo-Json -InputObject ([ordered]@{
+        source_id=[uint64]$mapping.source_id; revision=$revision; callsign=$mapping.callsign
+    }) -Depth 4 -Compress
+    $pending = [pscustomobject][ordered]@{
+        request_id=$requestId; run_id=[string]$script:identityNativeRunId
+        revision=$revision; source_id=[uint64]$mapping.source_id; callsign=$mapping.callsign
+        sent_utc=[DateTime]::UtcNow
+    }
+    $script:pendingControlRequests[$requestId] = 'radio_identity.cache_upsert'
+    $script:identityNativeInFlight = $pending
+    if (-not $script:supervisor.SendControlCommand($requestId,'radio_identity.cache_upsert',$parametersJson)) {
+        [void]$script:pendingControlRequests.Remove($requestId)
+        $script:identityNativeInFlight = $null
+        [void](Save-UiNativeIdentityDeferredMapping -Mapping $mapping)
+        foreach ($queuedMapping in $script:identityNativeQueue.ToArray()) {
+            [void](Save-UiNativeIdentityDeferredMapping -Mapping $queuedMapping)
+        }
+        $script:identityNativeQueue.Clear()
+        $script:identityNativeCapability = $false
+        return $false
+    }
+    $script:identityNativeRevision = $revision
+    return $true
+}
+
+function Complete-UiNativeIdentityUpdate {
+    param([Parameter(Mandatory=$true)][object]$Record)
+    $pending = $script:identityNativeInFlight
+    if (-not $pending -or [string]$Record.command -cne 'radio_identity.cache_upsert' -or
+        [string]$Record.request_id -cne [string]$pending.request_id -or
+        [string]$Record.run_id -cne [string]$pending.run_id -or
+        [string]$Record.run_id -cne [string]$script:identityNativeRunId) { return $false }
+    $script:identityNativeInFlight = $null
+    if ([string]$Record.result -cne 'ok') {
+        $errorCode = if ($Record.PSObject.Properties['error']) { [string]$Record.error } else { 'native_rejected' }
+        Add-UiIdentityDiagnostic -Stage 'native_cache_update' -ErrorCode $errorCode
+        [void](Save-UiNativeIdentityDeferredMapping -Mapping ([pscustomobject][ordered]@{
+            source_id=[uint64]$pending.source_id; callsign=$pending.callsign
+        }))
+        foreach ($queuedMapping in $script:identityNativeQueue.ToArray()) {
+            [void](Save-UiNativeIdentityDeferredMapping -Mapping $queuedMapping)
+        }
+        $script:identityNativeCapability = $false
+        $script:identityNativeQueue.Clear()
+        return $true
+    }
+    [void](Start-NextUiNativeIdentityUpdate)
+    return $true
+}
+
+function Expire-UiNativeIdentityUpdate {
+    $pending = $script:identityNativeInFlight
+    if (-not $pending -or -not $pending.PSObject.Properties['sent_utc'] -or
+        ([DateTime]::UtcNow - [DateTime]$pending.sent_utc).TotalSeconds -lt 5) { return $false }
+    $requestKey = ([string]$pending.run_id + '|' + [string]$pending.request_id)
+    $script:expiredIdentityNativeRequests[$requestKey] = $true
+    if ($script:expiredIdentityNativeRequests.Count -gt 128) {
+        $oldestExpired = @($script:expiredIdentityNativeRequests.Keys | Select-Object -First 1)
+        if ($oldestExpired.Count -gt 0) { [void]$script:expiredIdentityNativeRequests.Remove([string]$oldestExpired[0]) }
+    }
+    [void]$script:pendingControlRequests.Remove([string]$pending.request_id)
+    [void](Save-UiNativeIdentityDeferredMapping -Mapping ([pscustomobject][ordered]@{
+        source_id=[uint64]$pending.source_id; callsign=$pending.callsign
+    }))
+    foreach ($queuedMapping in $script:identityNativeQueue.ToArray()) {
+        [void](Save-UiNativeIdentityDeferredMapping -Mapping $queuedMapping)
+    }
+    $script:identityNativeQueue.Clear()
+    $script:identityNativeInFlight = $null
+    $script:identityNativeCapability = $false
+    Add-UiIdentityDiagnostic -Stage 'native_cache_update' -ErrorCode 'ack_timeout'
+    return $true
+}
+
 function Format-UiRadioIdentity {
     param([Parameter(Mandatory=$true)][uint64]$RadioId)
     $fallback = 'DMR ID ' + $RadioId.ToString([Globalization.CultureInfo]::InvariantCulture)
@@ -1189,6 +1399,16 @@ function Complete-UiIdentityQuery {
         $script:identityQuery = $null
         if ($identity) {
             $script:callIdentityCache[$key] = $identity
+            if ([string]$identity.status -ceq 'found') {
+                $nativeCallsign = Get-UiNativeIdentityCallsign -Value $identity.callsign
+                if ($null -eq $nativeCallsign) {
+                    [void](Add-UiNativeIdentityMappingToQueue -SourceId ([uint64]$query.radio_id) -Remove)
+                } else {
+                    [void](Add-UiNativeIdentityMappingToQueue -SourceId ([uint64]$query.radio_id) -Callsign $nativeCallsign)
+                }
+            } elseif ([string]$identity.status -ceq 'not_found') {
+                [void](Add-UiNativeIdentityMappingToQueue -SourceId ([uint64]$query.radio_id) -Remove)
+            }
             if ([string]$identity.status -cin @('found','stale')) { Clear-UiIdentityError }
             foreach ($context in $query.contexts) {
                 if (-not [string]::IsNullOrWhiteSpace([string]$context.history_key)) {
@@ -1285,6 +1505,24 @@ function Add-UiCallHistoryRecord {
     if ($sourceId -lt 1 -or $sourceId -gt 16777215) {
         Add-UiIdentityDiagnostic -Stage 'enqueue' -ErrorCode 'invalid_source_id' -ErrorType 'System.ArgumentOutOfRangeException'
         return
+    }
+    if (Test-AndMarkUiNativeIdentityCallRefresh -RunId $runId -Generation $generation -SourceId $sourceId) {
+        $cachedIdentity = $null
+        if ($script:radioIdentityModuleLoaded -and
+            (Get-Command -Name Resolve-RadioIdentity -ErrorAction SilentlyContinue)) {
+            try { $cachedIdentity = Resolve-RadioIdentity -RadioId ([uint32]$sourceId) -CachePath $script:identityCachePath }
+            catch { $cachedIdentity = $null }
+        }
+        if ($cachedIdentity -and [string]$cachedIdentity.status -ceq 'found') {
+            $nativeCallsign = Get-UiNativeIdentityCallsign -Value $cachedIdentity.callsign
+            if ($null -eq $nativeCallsign) {
+                [void](Add-UiNativeIdentityMappingToQueue -SourceId $sourceId -Remove)
+            } else {
+                [void](Add-UiNativeIdentityMappingToQueue -SourceId $sourceId -Callsign $nativeCallsign)
+            }
+        } elseif ($cachedIdentity -and [string]$cachedIdentity.status -ceq 'not_found') {
+            [void](Add-UiNativeIdentityMappingToQueue -SourceId $sourceId -Remove)
+        }
     }
     $destinationId = [uint64]$Record.current_call_destination_id
     $slot = [uint64]$Record.current_call_slot
@@ -1727,8 +1965,12 @@ function New-EffectiveTargetProfile {
 function Test-UiSourceIdentityRecord {
     param([Parameter(Mandatory=$true)][object]$Identity, [Parameter(Mandatory=$true)][object]$ParentRecord)
     if ($Identity -isnot [System.Management.Automation.PSCustomObject]) { return $false }
-    $expectedNames = @('prepared', 'source_id', 'receive_generation', 'label', 'display')
+    $legacyNames = @('prepared', 'source_id', 'receive_generation', 'label', 'display')
+    $currentNames = @('prepared', 'source_id', 'receive_generation', 'label', 'display',
+        'label_kind', 'cache_revision', 'serial_write_state')
     $actualNames = @($Identity.PSObject.Properties | ForEach-Object { [string]$_.Name })
+    $isCurrentSchema = $actualNames.Count -eq $currentNames.Count
+    $expectedNames = if ($isCurrentSchema) { $currentNames } else { $legacyNames }
     if ($actualNames.Count -ne $expectedNames.Count) { return $false }
     foreach ($name in $expectedNames) {
         if ($actualNames -cnotcontains $name) { return $false }
@@ -1752,16 +1994,46 @@ function Test-UiSourceIdentityRecord {
         if ($name -eq 'source_id') { $sourceId = $parsed } else { $generation = $parsed }
     }
 
+    $labelKind = 'dmr_id'
+    if ($isCurrentSchema) {
+        if ($Identity.label_kind -isnot [string] -or $Identity.serial_write_state -isnot [string]) { return $false }
+        $revisionProperty = $Identity.PSObject.Properties['cache_revision']
+        if ($null -eq $revisionProperty) { return $false }
+        $isRevisionNumber = $false
+        foreach ($type in $numberTypes) {
+            if ($revisionProperty.Value -is $type) { $isRevisionNumber = $true; break }
+        }
+        if (-not $isRevisionNumber) { return $false }
+        $revision = [uint64]0
+        if (-not [uint64]::TryParse([string]$revisionProperty.Value, [Globalization.NumberStyles]::None,
+                [Globalization.CultureInfo]::InvariantCulture, [ref]$revision)) { return $false }
+        $labelKind = [string]$Identity.label_kind
+        if ($Identity.serial_write_state -cnotin @('not_sent','pending','attempted','sent','failed')) { return $false }
+    }
+
     if ($Identity.prepared) {
         if ($sourceId -eq 0 -or $generation -eq 0 -or $Identity.label.Length -ne 10) { return $false }
         $decimalId = $sourceId.ToString([Globalization.CultureInfo]::InvariantCulture)
         $expectedLabel = ('ID' + $decimalId).PadRight(10, [char]' ')
-        if ($Identity.label -cne $expectedLabel) { return $false }
+        if ($isCurrentSchema) {
+            if ($Identity.serial_write_state -ceq 'not_sent' -or $labelKind -ceq 'none') { return $false }
+            if ($labelKind -ceq 'dmr_id') {
+                if ($revision -ne 0 -or $Identity.label -cne $expectedLabel) { return $false }
+            } elseif ($labelKind -ceq 'callsign') {
+                $callsign = $Identity.label.TrimEnd([char]' ')
+                if ($revision -eq 0 -or $callsign.Length -lt 1 -or $callsign.Length -gt 10 -or
+                    $Identity.label -cne $callsign.PadRight(10, [char]' ') -or
+                    $callsign -cnotmatch '^[A-Z0-9/-]+$' -or $callsign -cnotmatch '[A-Z]') { return $false }
+            } else { return $false }
+        } elseif ($Identity.label -cne $expectedLabel) { return $false }
         if ($null -ne $ParentRecord.PSObject.Properties['current_call_valid'] -and
             [bool]$ParentRecord.current_call_valid -and
             ($sourceId -ne [uint64]$ParentRecord.current_call_source_id -or
              $generation -ne [uint64]$ParentRecord.current_call_generation)) { return $false }
     } elseif ($sourceId -ne 0 -or $generation -ne 0 -or $Identity.label.Length -ne 0) {
+        return $false
+    } elseif ($isCurrentSchema -and ($labelKind -cne 'none' -or $revision -ne 0 -or
+            $Identity.serial_write_state -cne 'not_sent')) {
         return $false
     }
     return $true
@@ -2177,7 +2449,10 @@ function Test-UiRoutingCapabilityList {
     $joined = @($Commands) -join ','
     return ($joined -ceq 'hello,status,shutdown' -or
         $joined -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace' -or
-        $joined -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join')
+        $joined -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join' -or
+        $joined -ceq 'hello,status,shutdown,radio_identity.cache_upsert' -or
+        $joined -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,radio_identity.cache_upsert' -or
+        $joined -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join,radio_identity.cache_upsert')
 }
 
 function Test-UiControlSnapshot {
@@ -2241,7 +2516,8 @@ function ConvertFrom-UiControlFrame {
     }
     if ($record.type -cne 'control_result') { throw '控制协议 v2 只接受 control_ready 或 control_result。' }
     $common = @('schema_version','type','run_id','control_seq','request_id','command','result','replayed')
-    $validCommands = @('hello','status','shutdown','routing.status','rx_policy.replace','tx_policy.replace','network_subscription.quick_call_join')
+    $validCommands = @('hello','status','shutdown','routing.status','rx_policy.replace','tx_policy.replace',
+        'network_subscription.quick_call_join','radio_identity.cache_upsert')
     if ($record.command -isnot [string] -or $validCommands -cnotcontains $record.command) { throw 'control_result.command 无效。' }
     $specific = switch -CaseSensitive ([string]$record.command) {
         'hello' { @('supported_commands') }
@@ -2251,6 +2527,7 @@ function ConvertFrom-UiControlFrame {
         'rx_policy.replace' { @('routing') }
         'tx_policy.replace' { @('routing') }
         'network_subscription.quick_call_join' { @('activation_status','destination_id','slot','frames_sent') }
+        'radio_identity.cache_upsert' { @() }
     }
     if ($record.result -isnot [string] -or @('ok','unsupported','rejected') -cnotcontains $record.result) { throw 'control_result.result 无效。' }
     $requiredResultFields = if ($record.result -ceq 'ok') { $common + $specific } else { $common + @('error') }
@@ -2261,7 +2538,16 @@ function ConvertFrom-UiControlFrame {
         [uint64]$record.control_seq -le $LastControlSequence -or
         [string]::IsNullOrWhiteSpace($LockedRunId) -or $record.run_id -cne $LockedRunId) { throw 'control_result 字段、run_id 或 control_seq 无效。' }
     $requestGuid = [guid]::Empty
-    if (-not [guid]::TryParse([string]$record.request_id, [ref]$requestGuid)) { throw 'control_result.request_id 无效。' }
+    if ($record.command -ceq 'radio_identity.cache_upsert') {
+        $identityRevision = [uint64]0
+        if ([string]$record.request_id -cnotmatch '^radioid-([1-9][0-9]*)$' -or
+            -not [uint64]::TryParse($Matches[1],[Globalization.NumberStyles]::None,
+                [Globalization.CultureInfo]::InvariantCulture,[ref]$identityRevision) -or $identityRevision -eq 0) {
+            throw 'radio_identity.cache_upsert 的 request_id 无效。'
+        }
+    } elseif (-not [guid]::TryParse([string]$record.request_id, [ref]$requestGuid)) {
+        throw 'control_result.request_id 无效。'
+    }
     if ($null -ne $record.PSObject.Properties['error'] -and $record.error -isnot [string]) { throw 'control_result.error 必须是字符串。' }
     if ($record.result -cne 'ok' -and [string]::IsNullOrWhiteSpace([string]$record.error)) { throw '拒绝或不支持的响应必须说明 error。' }
     if ($record.result -ceq 'ok') {
@@ -2290,10 +2576,35 @@ function ConvertFrom-UiControlFrame {
 
 function Reset-UiControlState {
     param([string]$Text = '本机控制：等待')
+    if (-not $script:identityNativeDeferredBySource) { $script:identityNativeDeferredBySource = @{} }
+    if ($null -eq $script:identityNativeDeferredOrder) {
+        $script:identityNativeDeferredOrder = New-Object 'System.Collections.Generic.List[string]'
+    }
+    if ($null -eq $script:identityNativeQueue) {
+        $script:identityNativeQueue = New-Object 'System.Collections.Generic.List[object]'
+    }
+    if ($script:identityNativeInFlight) {
+        $pendingMapping = [pscustomobject][ordered]@{
+            source_id=[uint64]$script:identityNativeInFlight.source_id
+            callsign=$script:identityNativeInFlight.callsign
+        }
+        [void](Save-UiNativeIdentityDeferredMapping -Mapping $pendingMapping)
+    }
+    foreach ($mapping in $script:identityNativeQueue.ToArray()) {
+        if ($mapping -and $mapping.PSObject.Properties['source_id'] -and $mapping.PSObject.Properties['callsign']) {
+            [void](Save-UiNativeIdentityDeferredMapping -Mapping $mapping)
+        }
+    }
     $script:controlRunId = ''
     $script:controlLastSequence = [uint64]0
     $script:controlConfirmed = $false
     $script:controlCapabilities = ''
+    $script:identityNativeCapability = $false
+    $script:identityNativeRunId = ''
+    $script:identityNativeRevision = [uint64]0
+    $script:expiredIdentityNativeRequests = @{}
+    if ($script:identityNativeQueue) { $script:identityNativeQueue.Clear() }
+    $script:identityNativeInFlight = $null
     $script:routingCapabilities = $false
     $script:quickCallCapabilities = $false
     $script:pendingQuickCall = $null
@@ -2388,8 +2699,13 @@ function Process-UiControlEvents {
             $script:controlDiagnostic = [bool]$record.diagnostic
             $script:controlCapabilities = @($record.supported_commands) -join ','
             $script:routingCapabilities = ($script:controlCapabilities -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace' -or
-                $script:controlCapabilities -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join')
-            $script:quickCallCapabilities = ($script:controlCapabilities -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join')
+                $script:controlCapabilities -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join' -or
+                $script:controlCapabilities -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,radio_identity.cache_upsert' -or
+                $script:controlCapabilities -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join,radio_identity.cache_upsert')
+            $script:quickCallCapabilities = ($script:controlCapabilities -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join' -or
+                $script:controlCapabilities -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join,radio_identity.cache_upsert')
+            $script:identityNativeCapability = [string]$script:controlCapabilities -ceq 'hello,status,shutdown,radio_identity.cache_upsert' -or
+                ([string]$script:controlCapabilities).EndsWith(',radio_identity.cache_upsert',[StringComparison]::Ordinal)
             if ($RoutingDiagnosticAutoTest) {
                 if ($null -eq $script:settingsWindow) { Initialize-SettingsWindow }
                 (Get-SettingsControl 'DestinationBox').Text = '53000'
@@ -2413,6 +2729,13 @@ function Process-UiControlEvents {
             continue
         }
         if ($record.command -ceq 'shutdown' -and ($script:stopTask -or $script:closingAfterStop)) { continue }
+        if ($record.command -ceq 'radio_identity.cache_upsert') {
+            $expiredIdentityKey = ([string]$record.run_id + '|' + [string]$record.request_id)
+            if ($script:expiredIdentityNativeRequests.ContainsKey($expiredIdentityKey)) {
+                [void]$script:expiredIdentityNativeRequests.Remove($expiredIdentityKey)
+                continue
+            }
+        }
         if (-not $script:pendingControlRequests.ContainsKey([string]$record.request_id) -or
             $script:pendingControlRequests[[string]$record.request_id] -cne [string]$record.command) {
             if ($script:resolvedTimedOutRoutingRequests.ContainsKey([string]$record.request_id) -and
@@ -2429,6 +2752,12 @@ function Process-UiControlEvents {
         }
         if ($record.command -ceq 'routing.status' -and $script:pendingRoutingStatusRequestId -ceq [string]$record.request_id) {
             $script:pendingRoutingStatusRequestId = ''
+        }
+        if ($record.command -ceq 'radio_identity.cache_upsert') {
+            if (-not (Complete-UiNativeIdentityUpdate -Record $record)) {
+                Set-UiControlStatus -Text '核心返回了不匹配的身份缓存确认' -Confirmed $false
+            }
+            continue
         }
         if ($record.result -cne 'ok') {
             $detail = if ($record.PSObject.Properties['error']) { [string]$record.error } else { [string]$record.result }
@@ -2509,6 +2838,7 @@ function Process-UiControlEvents {
                 Update-DynamicGroupControls
                 Add-UiEvent '本机控制已确认'
                 if ($script:routingCapabilities) { Request-UiRoutingStatus }
+                if ($script:identityNativeCapability) { [void](Initialize-UiNativeIdentitySync) }
             }
             'network_subscription.quick_call_join' {
                 $pendingQuickCall = $script:pendingQuickCall
@@ -5448,6 +5778,7 @@ function On-UiTimerTick {
             if ($script:statusStream) { $script:statusStream.Dispose(); $script:statusStream = $null }
         } else {
             Process-UiControlEvents
+            [void](Expire-UiNativeIdentityUpdate)
             if ($script:pendingQuickCall -and -not [bool]$script:pendingQuickCall.timed_out -and
                 ([DateTime]::UtcNow - [DateTime]$script:pendingQuickCall.started_utc).TotalSeconds -ge 8) {
                 $script:pendingQuickCall.timed_out = $true

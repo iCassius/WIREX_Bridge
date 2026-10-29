@@ -43,6 +43,10 @@ $script:alpha7TestNames = @($script:alpha6TestNames)
 $script:alpha8TestNames = @($script:alpha7TestNames)
 $script:alpha9TestNames = @($script:alpha8TestNames)
 $script:alpha10TestNames = @($script:alpha9TestNames)
+$script:alpha11TestNames = @(
+    $script:alpha10TestNames[0..5] + 'radio_identity_cache_test' +
+    $script:alpha10TestNames[6..($script:alpha10TestNames.Count - 1)]
+)
 
 function Set-PublishProfile {
     param([Parameter(Mandatory=$true)][string]$Tag)
@@ -212,7 +216,24 @@ function Set-PublishProfile {
             $script:expectedDirectories = @($alpha9.Directories)
             $script:expectedTestNames = $script:alpha10TestNames
         }
-        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, v0.1.0-alpha.8, v0.1.0-alpha.9, and v0.1.0-alpha.10 release profiles are supported.' }
+        'v0.1.0-alpha.11' {
+            $alpha10 = Set-PublishProfile -Tag 'v0.1.0-alpha.10'
+            $assetMap = [ordered]@{}
+            $excludedAlpha10Docs = @(
+                'docs/R112_A_身份查询实施.md',
+                'docs/R112_A_UI精简.md'
+            )
+            foreach ($path in $alpha10.AssetPathMap.Keys) {
+                if ($excludedAlpha10Docs -cnotcontains ([string]$path)) { $assetMap[$path] = $alpha10.AssetPathMap[$path] }
+            }
+            $assetMap['docs/R113_LCD核心实现.md'] = 'docs__r113-lcd-core-implementation.md'
+            $assetMap['docs/R113_身份与LCD接线.md'] = 'docs__r113-identity-lcd-integration.md'
+            $script:publishTag = $Tag
+            $script:assetPathMap = $assetMap
+            $script:expectedDirectories = @($alpha10.Directories)
+            $script:expectedTestNames = $script:alpha11TestNames
+        }
+        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.11 release profiles are supported.' }
     }
     return [pscustomobject]@{
         Tag = $script:publishTag

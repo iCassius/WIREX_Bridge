@@ -32,6 +32,31 @@ std::string request_with_parameters(std::string_view run_id, std::string_view re
         std::string(command) + "\",\"parameters\":" + std::string(parameters) + "}";
 }
 
+std::string radio_identity_request(std::string_view run_id,
+                                   std::uint64_t revision,
+                                   std::uint32_t source_id,
+                                   std::string_view callsign)
+{
+    return request_with_parameters(run_id,
+        "radioid-" + std::to_string(revision),
+        "radio_identity.cache_upsert",
+        "{\"source_id\":" + std::to_string(source_id) +
+            ",\"revision\":" + std::to_string(revision) +
+            ",\"callsign\":\"" + std::string(callsign) + "\"}");
+}
+
+std::string radio_identity_clear_request(std::string_view run_id,
+                                         std::uint64_t revision,
+                                         std::uint32_t source_id)
+{
+    return request_with_parameters(run_id,
+        "radioid-" + std::to_string(revision),
+        "radio_identity.cache_upsert",
+        "{\"source_id\":" + std::to_string(source_id) +
+            ",\"revision\":" + std::to_string(revision) +
+            ",\"callsign\":null}");
+}
+
 constexpr std::string_view empty_rx_policy =
     "{\"group_mode\":\"selected\",\"private_mode\":\"disabled\",\"allow_groups\":[],"
     "\"allow_private_peers\":[],\"local_private_routes\":[],\"blocked_groups\":[],"
@@ -603,6 +628,115 @@ void test_cache_capacity_reserves_shutdown()
           "replaying an older cached result leaves the cache at its fixed capacity");
 }
 
+void test_radio_identity_upserts_use_independent_revision_and_cache_budget()
+{
+    using namespace wirex::radio_identity_cache;
+    using namespace wirex::ui_control;
+    Cache cache;
+    RoutingCallbacks callbacks{};
+    callbacks.update_radio_identity = [&](std::uint32_t source_id,
+                                          std::uint64_t revision,
+                                          std::optional<std::string_view> callsign) {
+        return callsign.has_value()
+            ? cache.upsert(source_id, revision, *callsign)
+            : cache.remove(source_id, revision);
+    };
+    Dispatcher dispatcher("run-identity", false, std::move(callbacks));
+    const auto ready = dispatcher.ready_line(9001U);
+    check(ready.find("radio_identity.cache_upsert") != std::string::npos,
+          "control_ready advertises identity upsert only when a Native callback is wired");
+
+    const auto before_hello = dispatcher.handle(
+        radio_identity_request("run-identity", 1U, 1001U, "N0CALL"), {});
+    check(before_hello.json_line.find("\"error\":\"hello_required\"") != std::string::npos &&
+              cache.size() == 0U,
+          "identity entries cannot change before the v2 hello handshake");
+    const auto hello = dispatcher.handle(request("run-identity", "hello-identity", "hello"), {});
+    check(hello.json_line.find("\"result\":\"ok\"") != std::string::npos &&
+              hello.json_line.find("radio_identity.cache_upsert") != std::string::npos,
+          "hello negotiates the same identity command that control_ready advertised");
+
+    const auto first_body = radio_identity_request("run-identity", 1U, 1001U, "N0CALL");
+    const auto first = dispatcher.handle(first_body, {});
+    check(first.json_line.find("\"result\":\"ok\"") != std::string::npos &&
+              first.json_line.find("\"replayed\":false") != std::string::npos &&
+              cache.find(1001U).has_value() && cache.find(1001U)->callsign == "N0CALL",
+          "a valid positive mapping updates the bounded Native cache");
+    const auto first_replay = dispatcher.handle(first_body, {});
+    check(first_replay.json_line.find("\"result\":\"ok\"") != std::string::npos &&
+              first_replay.json_line.find("\"replayed\":true") != std::string::npos,
+          "replaying the latest revision and payload is acknowledged idempotently");
+
+    const auto conflict = dispatcher.handle(
+        radio_identity_request("run-identity", 1U, 1001U, "W1ABC"), {});
+    check(conflict.json_line.find("\"error\":\"identity_revision_conflict\"") != std::string::npos &&
+              cache.find(1001U)->callsign == "N0CALL",
+          "the latest revision cannot replace its callsign with a different payload");
+    const auto second = dispatcher.handle(
+        radio_identity_request("run-identity", 2U, 1002U, "W1ABC"), {});
+    check(second.json_line.find("\"result\":\"ok\"") != std::string::npos,
+          "a later global revision may add another source ID");
+    const auto stale = dispatcher.handle(first_body, {});
+    check(stale.json_line.find("\"error\":\"stale_identity_revision\"") != std::string::npos &&
+              cache.find(1001U)->callsign == "N0CALL",
+          "an older replay is rejected after a later identity upsert");
+
+    const auto mismatched_request_id = request_with_parameters(
+        "run-identity", "radioid-5", "radio_identity.cache_upsert",
+        "{\"source_id\":1001,\"revision\":4,\"callsign\":\"N0CALL\"}");
+    check(dispatcher.handle(mismatched_request_id, {}).json_line.find(
+              "\"error\":\"identity_request_id_mismatch\"") != std::string::npos,
+          "request IDs bind one command to its declared global revision");
+    const auto invalid_callsign = dispatcher.handle(
+        radio_identity_request("run-identity", 3U, 1003U, "n0call"), {});
+    check(invalid_callsign.json_line.find("\"error\":\"invalid_identity\"") != std::string::npos &&
+              cache.highest_revision() == 2U,
+          "invalid lower-case input is rejected without advancing the revision fence");
+    const auto wrong_run = dispatcher.handle(
+        radio_identity_request("old-run", 3U, 1003U, "N0CALL"), {});
+    check(wrong_run.json_line.find("\"error\":\"stale_run_id\"") != std::string::npos &&
+              wrong_run.protocol_error && cache.highest_revision() == 2U,
+          "an identity frame from another Native run cannot change this run's mapping");
+
+    for (std::uint64_t revision = 3U; revision < 603U; ++revision) {
+        const auto update = dispatcher.handle(radio_identity_request(
+            "run-identity", revision,
+            static_cast<std::uint32_t>(2000U + (revision % 180U)), "N0CALL"), {});
+        check(update.json_line.find("\"result\":\"ok\"") != std::string::npos,
+              "identity commands continue after the ordinary request-cache limit");
+    }
+    check(cache.size() == max_entries && cache.highest_revision() == 602U &&
+              dispatcher.cached_result_count() == 1U,
+          "identity upserts stay within 128 mappings and consume no ordinary request-cache slots");
+    const auto deleted_body = radio_identity_clear_request("run-identity", 603U, 1001U);
+    const auto deleted = dispatcher.handle(deleted_body, {});
+    check(deleted.json_line.find("\"result\":\"ok\"") != std::string::npos &&
+              !cache.find(1001U).has_value() && cache.highest_revision() == 603U,
+          "a nullable authoritative negative update removes a prior source mapping");
+    const auto deleted_replay = dispatcher.handle(deleted_body, {});
+    check(deleted_replay.json_line.find("\"replayed\":true") != std::string::npos &&
+              deleted_replay.json_line.find("\"result\":\"ok\"") != std::string::npos,
+          "the latest null update replays as an idempotent success");
+    const auto null_conflict = dispatcher.handle(
+        radio_identity_request("run-identity", 603U, 1001U, "N0CALL"), {});
+    check(null_conflict.json_line.find("\"error\":\"identity_revision_conflict\"") != std::string::npos &&
+              !cache.find(1001U).has_value(),
+          "the latest deletion revision cannot be reused to restore an ID mapping");
+    const auto cleared_unknown = dispatcher.handle(
+        radio_identity_clear_request("run-identity", 604U, 999999U), {});
+    check(cleared_unknown.json_line.find("\"result\":\"ok\"") != std::string::npos &&
+              cache.size() == max_entries && cache.highest_revision() == 604U,
+          "a newer not-found update for an unknown ID advances the fence without changing cache size");
+    check(dispatcher.handle(radio_identity_request("run-identity", 603U, 1001U, "N0CALL"), {})
+                  .json_line.find("\"error\":\"stale_identity_revision\"") != std::string::npos &&
+              !cache.find(1001U).has_value(),
+          "a pre-deletion positive frame cannot restore the old mapping after the null update");
+    const auto status = dispatcher.handle(request("run-identity", "status-after-identities", "status"), {});
+    check(status.json_line.find("\"result\":\"ok\"") != std::string::npos &&
+              dispatcher.cached_result_count() == 2U,
+          "ordinary control commands retain their budget after hundreds of identity updates");
+}
+
 } // namespace
 
 int main()
@@ -617,6 +751,7 @@ int main()
     test_dynamic_quick_call_is_explicit_strict_and_replay_safe();
     test_cache_full_sentinel_precedes_routing_mutation();
     test_cache_capacity_reserves_shutdown();
+    test_radio_identity_upserts_use_independent_revision_and_cache_budget();
     if (failures != 0) return 1;
     std::cout << "ui_control_protocol_v2_test: all assertions passed\n";
     return 0;

@@ -172,6 +172,7 @@ try {
         'src\hri_call_header.cpp',
         'src\hri_t_record.cpp',
         'src\hri_lcd_identity_candidate.cpp',
+        'src\radio_identity_cache.cpp',
         'src\hri_stream_session.cpp',
         'src\wave_file.cpp',
         'src\pcm_gain.cpp',
@@ -198,7 +199,7 @@ try {
     $oldProbeSources = @(
         'src\probe_main.cpp', 'src\direct_frame.cpp', 'src\direct_stream.cpp',
         'src\hri_session.cpp', 'src\hri_downlink_session.cpp', 'src\hri_radio_protocol.cpp',
-        'src\hri_t_payload.cpp', 'src\hri_call_header.cpp', 'src\hri_t_record.cpp', 'src\hri_lcd_identity_candidate.cpp', 'src\wave_file.cpp', 'src\pcm_gain.cpp',
+        'src\hri_t_payload.cpp', 'src\hri_call_header.cpp', 'src\hri_t_record.cpp', 'src\hri_lcd_identity_candidate.cpp', 'src\radio_identity_cache.cpp', 'src\wave_file.cpp', 'src\pcm_gain.cpp',
         'src\console_lifecycle.cpp', 'src\session_report.cpp'
     )
     $oldProbeCommand = 'cl.exe /nologo /O2 /MT /EHsc /std:c++17 /W4 /permissive- /utf-8 /I include /Fo:{0}\ /Fe:{0}\wirex_probe.exe {1} /link winmm.lib bcrypt.lib user32.lib' -f `
@@ -213,6 +214,7 @@ try {
         @{ Name='hri_call_header_test'; Source='tests\hri_call_header_test.cpp' },
         @{ Name='hri_t_record_test'; Source='tests\hri_t_record_test.cpp' },
         @{ Name='hri_lcd_identity_candidate_test'; Source='tests\hri_lcd_identity_candidate_test.cpp' },
+        @{ Name='radio_identity_cache_test'; Source='tests\radio_identity_cache_test.cpp' },
         @{ Name='direct_stream_test'; Source='tests\direct_stream_test.cpp' },
         @{ Name='hri_session_test'; Source='tests\hri_session_test.cpp' },
         @{ Name='hri_ptt_gate_test'; Source='tests\hri_ptt_gate_test.cpp' },
