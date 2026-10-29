@@ -3708,9 +3708,13 @@ function Update-RoutingDisplays {
     } else { [void]$configured.Children.Add((New-UiSmallTextBlock -Text '读取本地配置后显示。')) }
     $observedPanel = $script:mainWindow.FindName('ObservedSourcesPanel')
     $observedPanel.Children.Clear()
-    $observedSources = if ($routing -and $routing.PSObject.Properties['observed_sources']) { @($routing.observed_sources) } else { @() }
+    $observedSources = @(
+        if ($routing -and $routing.PSObject.Properties['observed_sources']) {
+            $routing.observed_sources
+        }
+    )
     if ($observedSources.Count -gt 0) {
-        foreach ($source in @($routing.observed_sources)) {
+        foreach ($source in $observedSources) {
             $card = New-Object System.Windows.Controls.Border
             $card.Background = [Windows.Media.BrushConverter]::new().ConvertFromString('#20252A')
             $card.BorderBrush = [Windows.Media.BrushConverter]::new().ConvertFromString('#3A4248')
@@ -4512,13 +4516,16 @@ function Invoke-UiRoutingDiagnosticObservedGroupToggle {
         if ($card -isnot [System.Windows.Controls.Border] -or $card.Child -isnot [System.Windows.Controls.StackPanel]) { continue }
         $actions = @($card.Child.Children | Where-Object { $_ -is [System.Windows.Controls.Primitives.UniformGrid] }) | Select-Object -First 1
         if (-not $actions -or $actions.Children.Count -lt 1) { continue }
-        $button = $actions.Children[0]
-        $source = if ($button.Tag) { $button.Tag.Source } else { $null }
-        if ($source -and [uint64]$source.destination_id -eq $DestinationId -and [uint64]$source.slot -eq $Slot) {
-            if (-not $button.IsEnabled) { throw '观察来源卡片的组呼动作被禁用。' }
-            $eventArgs = [System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)
-            $button.RaiseEvent($eventArgs)
-            return
+        foreach ($candidate in @($actions.Children)) {
+            if ($candidate -isnot [System.Windows.Controls.Button] -or -not $candidate.Tag -or
+                [string]$candidate.Tag.Action -cne 'toggle') { continue }
+            $source = $candidate.Tag.Source
+            if ($source -and [uint64]$source.destination_id -eq $DestinationId -and [uint64]$source.slot -eq $Slot) {
+                if (-not $candidate.IsEnabled) { throw '观察来源卡片的组呼动作被禁用。' }
+                $eventArgs = [System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)
+                $candidate.RaiseEvent($eventArgs)
+                return
+            }
         }
     }
     throw '没有找到诊断用观察来源卡片的实际界面按钮。'
