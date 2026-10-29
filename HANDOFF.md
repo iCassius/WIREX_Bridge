@@ -1,14 +1,21 @@
 # WIREX Bridge 交接入口
 
-## R112-A alpha10 集成当前状态（2026-10-29）
+## R112-A alpha10 集成状态（2026-10-29）
 
-本轮从 `main` / `9c8ea32263717c861ebe5f664e55fab54bdd7774` 开始。Native 往返与接收指标阶段已提交并普通推送为 `a726472`；其余冻结的身份、UI、profile 与 release 文件正在集成。alpha10 增加来话 DMR ID 后台 RadioID 查询和查询退出收尾、BM RTT/DMRD 接收/播放队列/既有削波数据，以及单页 UI 精简。完整实施、离线证据和验收边界见 [R112-A 集成总交接](docs/R112_总交接.md)。
+alpha10 由干净源码提交 e234a55aeff6fe2cff1985ef47fc4d94378ab474 构建。构建目录为 build/_work/wirex-bridge-e234a55-20261029-061534，clean full39 的构建日志为 build/_work/R112-A-alpha10-clean-full39-e234a55-build.log，日志 SHA-256 为 797da23c0672d0b0ef03f6bad80ba09cacbe547cc6953f00fa2b00ff2e1db930。39 项离线测试通过，编译警告和错误均为 0；EXE SHA-256 为 ffe5cda0f530595f5007ac54b2f0a3e27dfd8e1ca03c903ee328130dcb684a3d。
 
-身份查询和 UI 使用 PowerShell、WPF Dispatcher、RenderOnly 与本机 HTTP 夹具验证；没有发起真实 RadioID 或 BM 查询，没有连接 COM、真实音频设备，没有触发 PTT/RF。FTX-1 LCD 呼号显示、FM RF 发射与 C4FM RF 发射链尚未实现。新窗口截图使用模拟数据：`build/_work/R112-A-ui-render/configured-active-call/main-window.png` 和 `build/_work/R112-A-ui-render/work-area-1024x728/configured-active-call/main-window.png`。alpha10 profile 会用三份 R112-A 说明替换三份已过期的 R111 发行说明；个人连接/音量配置、收藏、缓存、路径指针、密码和测试 helper 不进入通用包。
+本机测试包在 build/releases/v0.1.0-alpha.10，共 34 个文件：32 条 manifest 资产记录、manifest.json 和 manifest 外的个人 user-config-directory.txt。根审已将 package_status 更新为 root_audit_passed；manifest SHA-256 为 2774f3a956e6c4bdf1dd639be41a6ffd1c1935d8a342767807ccc58971daf8c1。用户配置指针现指向 alpha10，切换前备份为 private/config-backups/R112/bridge-directory.before-alpha10.txt，SHA-256 为 e31e4a40179313bd395e4c1bcb72c1d7e5778699ae5b2f2772e52b6c35b40797。
 
-源码 clean full39、alpha10 实际包和根包审计尚待集成提交后完成。alpha9 仍是当前可用包；在 alpha10 根审计通过前，不切换本机 `bridge-directory.txt`，不归档 alpha9。没有生成 ZIP、tag 或 GitHub Release。
+Windows PowerShell 5.1 包启动检查通过；唯一 ASCII CMD 在含中文和空格的路径下完成 PrepareOnly 和 WPF → Supervisor → Native RoutingDiagnosticAutoTest 路径检查，失败路径退出码为 2，fake-timeout 退出后没有残留。Native test-control 的 ready、hello、status、shutdown 检查也以退出码 0 结束。这些隔离检查没有启动真实 BM、HRI、COM 或音频设备。本轮没有进行 alpha10 硬件验收，也没有查询真实 RadioID 或 BrandMeister、连接电台、触发 PTT/RF。
+
+本机 canonical 配置位于 private/user-config，顶层有 17 个文件，递归共 33 个文件。三份受保护配置在切换前后哈希一致；密码文件正文未读取。RadioID 缓存保持原样，频道收藏文件原先不存在，本轮没有创建替代配置。包外 user-config-directory.txt 指向该 canonical 目录。详细验收、静态分析边界和本机归档清单见 [R112-A 集成总交接](docs/R112_总交接.md)。
+
+根批准的 cleanup-plan-alpha10-final.json 共 11 项；614 个文件、116903217 字节已镜像移动到 private/build-retired/R112/build，逐项树哈希与计划一致，没有永久删除。移动日志 SHA-256 为 e3e9f8620bfe6b607322a571a75e36b821e83216e37b11a78c98fd44918eb018。build 只保留 e234 构建、对应日志和 alpha10 包。先前 d413 的未通过发行包仍保存在独立 rejected 目录。
+
+alpha9 闪退日志没有可核对的异常文本，因此没有确认其根因。d413 包级检查发现两处问题：helper 硬编码 alpha9；Windows PowerShell 5.1 下单条 observed_sources 解包后的 .Count 为 null，诊断卡片没有生成。e234 将 observed_sources 始终保持为数组，并用 Tag.Action 定位实际按钮；基于 e234 的测试包通过包级 PS5.1 检查。未创建 ZIP、Git tag 或 GitHub Release。本文、R112 总交接和 alpha10 发布说明的提交晚于 e234 构建，三者均不在包内 manifest 映射中。
 
 ## R111 alpha.9 集成当前状态（2026-10-29）
+
 
 本轮从 `main` / `d2c098452247f26fbe8a0d23d84b5c1f415ce747` 开始。RadioIdentity、UI/发布集成和文案修正分别经 `222f71d`、`e7ec9a0`、`c4597e9` 提交；最终交接文档提交 `15e60753f201d92937d5ca3ccaf3d5ee0d29c313`。这些提交已普通推送到 `origin/main`，本机 `main` 与远端均为 `15e60753`，源码工作树干净。clean full39、alpha.9 通用包和唯一 CMD 包级检查均已通过，alpha.9 是当前验收包。详细证据见 [R111 alpha.9 集成总交接](docs/R111_总交接.md) 与 [alpha.9 构建和交付审计](docs/R111_alpha9_最终交付审计.md)。
 
