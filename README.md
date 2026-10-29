@@ -4,7 +4,7 @@
 
 当前默认用户绿色目录是 R110 验收的 `build/releases/v0.1.0-alpha.8`；alpha.9 源已冻结，clean build 和正式包尚未生成。alpha.9 包含分开的本机收听与起呼目标、真实通话记录、逐路由 TS、发射 CC 设置、单 ID RadioID 查询和本机音量显示。查询只由用户点击触发，查询缓存和频道收藏留在 canonical 配置目录；“静态”类别只整理本机收藏，程序没有读取或修改 BM 服务器订阅。音量设置与当前运行实际增益分别显示；RadioIdentity 模块已修复 Windows 网络读取 deadline 并通过根架构审查，UI 两尺寸 RenderOnly 与定向测试也已通过根审查。
 
-RadioIdentity 的 Windows 网络读取 deadline 已改为受共享时钟约束的 `ReadAsync`；PS7 与 Windows PowerShell 5.1 最新离线测试各通过 37 项断言。根会话还做过一次只读 HTTPS 单 ID 查询，收到 HTTP 200 且 ID/呼号匹配，没有写缓存或显示个人资料。alpha.9 UI 仍在集成收尾，尚未做总审查、clean build 或包验收。本机当前仍指向 alpha.8。
+RadioIdentity 的 Windows 网络读取 deadline 已改为受共享时钟约束的 `ReadAsync`；PS7 与 Windows PowerShell 5.1 最新离线测试各通过 37 项断言。根会话还做过一次只读 HTTPS 单 ID 查询，收到 HTTP 200 且 ID/呼号匹配，没有写缓存或显示个人资料。UI 两尺寸 RenderOnly 与定向测试已通过根审查，alpha.9 源码提交为 `222f71d`、`e7ec9a0` 和 `c4597e9`。clean full39、正式包与 PS5.1 包启动 helper 尚待完成；本机当前仍指向 alpha.8。
 
 alpha.8 TG91 收听听感正常但略小；该次运行实际增益为 1.000x、clipped samples 为 0，保存的 5.959x 与那次运行记录不同。FTX-1 机身 BUSY/TX LED 观察保留，R111 不更改 LED 或串口。LCD 实际显示仍 unknown；本轮没有连接设备、音频、BM，没有触发 PTT 或 RF。
 
