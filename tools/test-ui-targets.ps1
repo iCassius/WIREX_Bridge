@@ -20,6 +20,7 @@ $functionNames = @('Format-ProfileTarget', 'Format-ProfileReceiveTarget', 'Forma
     'New-UiCallTargetFromHistoryEntry', 'Get-UiCallHistoryKey', 'Format-UiTxTarget',
     'Test-UiChannelFavorite', 'Get-UiChannelFavoriteKey', 'New-UiChannelFavoriteCandidate', 'Remove-UiChannelFavoriteCandidate',
     'Read-UiChannelFavorites', 'Write-UiChannelFavorites', 'Test-UiIdentityResultMatchesCurrent',
+    'Add-UiIdentityDiagnostic', 'Set-UiIdentityError', 'Clear-UiIdentityError', 'Set-UiIdentityRowVisibility',
     'Stop-UiIdentityQuery', 'Complete-UiIdentityQueryResources', 'Format-UiRadioIdentityDetails', 'Invoke-UiSetCallTarget')
 foreach ($functionName in $functionNames) {
     $functionAst = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $functionName }, $true)
@@ -187,8 +188,9 @@ $staleIdentityDetails = Format-UiRadioIdentityDetails -RadioId 3149876 -Identity
 Assert-UiTarget ($identityDetailsText.Contains('姓名：Example Operator') -and $identityDetailsText.Contains('国家 United States') -and
     $identityDetailsText.Contains('州/省 CA') -and $identityDetailsText.Contains('城市 San Diego') -and
     $identityDetailsText.Contains('资料来源：Radio ID 单条查询') -and $identityDetailsText.Contains('更新时间：') -and
-    -not $staleIdentityDetails.Contains('州/省') -and $staleIdentityDetails.Contains('旧资料（缓存）')) `
-    '身份详情按实际可用字段显示姓名、国家/州省/城市、来源和更新时间，并明确标记旧缓存。'
+    -not $staleIdentityDetails.Contains('州/省') -and $staleIdentityDetails.Contains('DMR ID 3149876') -and
+    $staleIdentityDetails.Contains('更新时间：')) `
+    '身份详情只显示实际有值的字段，并保留原始 ID 与旧缓存更新时间。'
 
 $favoriteTarget = [pscustomobject][ordered]@{ destination_id=[uint64]53000; kind='group'; slot=[uint64]1 }
 $favoriteFirst = New-UiChannelFavoriteCandidate -Favorites @() -Target $favoriteTarget -Label '楼顶' -Category static
@@ -242,13 +244,18 @@ try {
     if ([System.IO.Directory]::Exists($favoriteTestDirectory)) { [System.IO.Directory]::Delete($favoriteTestDirectory,$true) }
 }
 
+$script:mainWindow = $null
+$script:identityDiagnosticPath = ''
+$cancelRunspace = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+$cancelRunspace.Open()
 $cancelPowerShell = [System.Management.Automation.PowerShell]::Create()
+$cancelPowerShell.Runspace = $cancelRunspace
 [void]$cancelPowerShell.AddScript('Start-Sleep -Seconds 30; "late"')
 $cancelHandle = $cancelPowerShell.BeginInvoke()
 $cancelQuery = [pscustomobject]@{
     power_shell=$cancelPowerShell; async_handle=$cancelHandle; stop_async=$null; stop_reason='';
     stop_started_utc=[DateTime]::MinValue; stop_error=''; stop_attempts=0; stop_complete=$false;
-    disposed=$false; terminal_state=''
+    owned_runspace=$cancelRunspace; result_collected=$false; disposed=$false; terminal_state=''
 }
 Stop-UiIdentityQuery -Query $cancelQuery -Reason 'test_cancel'
 $firstStopTime = $cancelQuery.stop_started_utc
@@ -259,7 +266,7 @@ for ($wait=0; $wait -lt 120 -and -not $cancelQuery.stop_async.IsCompleted; $wait
 Assert-UiTarget ($cancelQuery.stop_async.IsCompleted -and $cancelQuery.async_handle.IsCompleted) 'BeginStop应在有限时间内结束测试runspace管线。'
 try { $cancelPowerShell.EndStop($cancelQuery.stop_async) } catch { }
 Assert-UiTarget ((Complete-UiIdentityQueryResources -Query $cancelQuery) -and $cancelQuery.disposed -and
-    [string]$cancelPowerShell.Runspace.RunspaceStateInfo.State -ceq 'Closed') `
+    [string]$cancelRunspace.RunspaceStateInfo.State -ceq 'Closed') `
     '取消收尾必须等管线终止并Dispose到runspace Closed状态。'
 
 $throwingPipeline = New-Object PSObject
@@ -279,13 +286,15 @@ $uiSourceText = [System.IO.File]::ReadAllText($uiScript,[System.Text.Encoding]::
 Assert-UiTarget ($uiSourceText.Contains('Get-UiCallTargetSummaryProfile -Profile $script:storedProfile') -and
     -not $uiSourceText.Contains("New-EffectiveTargetProfile -Profile `$script:storedProfile -Target (Get-SelectedTargetTag)")) `
     '快速目标复用真实tx_policy.replace并沿用发射许可，不写入RX命令。'
-Assert-UiTarget ($uiSourceText.Contains('Invoke-RadioIdentityQuery -RadioId $RadioId -CachePath $CachePath -TimeoutSec 5') -and
+Assert-UiTarget ($uiSourceText.Contains('Invoke-RadioIdentityQuery -RadioId $RadioId -CachePath $CachePath -TimeoutSec $TimeoutSec -ApiBaseUri $ApiBaseUri') -and
     $uiSourceText.Contains('BeginInvoke()') -and $uiSourceText.Contains('EndStop(') -and
-    $uiSourceText.Contains("Runspace.RunspaceStateInfo.State")) `
+    $uiSourceText.Contains('RunspaceStateInfo.State')) `
     '资料查询须在后台runspace调用5秒HTTP模块，并观察Stop与runspace关闭状态。'
-Assert-UiTarget ($uiSourceText.Contains('cache_saved') -and $uiSourceText.Contains('本机缓存保存失败') -and
-    $mainXaml.Contains('分类由本机用户维护；本版未读取服务器绑定列表')) `
-    '查询缓存写入失败与本机收藏分类必须按真实状态说明。'
+Assert-UiTarget ($uiSourceText.Contains('cache_saved') -and $uiSourceText.Contains('本机资料缓存保存失败') -and
+    $mainXaml.Contains('x:Name="QueryCurrentIdentityButton"') -and
+    $mainXaml.Contains('x:Name="QueryHistoryIdentityButton"') -and
+    $mainXaml.Contains('x:Name="HistoryActionsPanel"')) `
+    '查询缓存写入失败应保留真实错误行，自动身份查询入口不依赖常态手动按钮。'
 
 Write-Output '通过：TX目标与RX/许可隔离、来话去重与历史目标映射、收藏64项原子读回/更新/删除、身份新鲜度保护和runspace取消收尾已校验。'
 

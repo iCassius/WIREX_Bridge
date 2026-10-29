@@ -27,7 +27,7 @@ $script:releaseAssetRedirectHosts = @(
 )
 $script:assertionCount = 0
 $downloadProfiles = @{}
-foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9')) {
+foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10')) {
     $downloadProfiles[$tag] = [pscustomobject]@{
         Files = @(Get-ExpectedReleaseFiles -Tag $tag)
         Tests = @(Get-ExpectedReleaseTests -Tag $tag)
@@ -70,6 +70,10 @@ function New-TestManifest {
     if ($Tag -ceq 'v0.1.0-alpha.9') {
         $excludedPrivateFiles += @('private/user-config-directory.txt', 'private/user-config/radio-identity-cache.json',
             'private/user-config/channel-favorites.json')
+    }
+    if ($Tag -ceq 'v0.1.0-alpha.10') {
+        $excludedPrivateFiles += @('private/user-config-directory.txt', 'private/user-config/radio-identity-cache.json',
+            'private/user-config/channel-favorites.json', 'private/user-config/password-file-path.txt')
     }
     return [pscustomobject]@{
         schema_version = 1
@@ -289,6 +293,46 @@ $invalidAlpha9TestHelper.files += [pscustomobject]@{
 }
 Assert-Throws { Test-ManifestDocument -Manifest $invalidAlpha9TestHelper -RequestedTag 'v0.1.0-alpha.9' } `
     'alpha.9 downloader rejects the local HTTP test helper from the manifest'
+$alpha10Manifest = New-TestManifest -Tag 'v0.1.0-alpha.10'
+$alpha10Validated = Test-ManifestDocument -Manifest $alpha10Manifest -RequestedTag 'v0.1.0-alpha.10'
+Assert-True ($alpha10Validated.Files.Count -eq $alpha9Validated.Files.Count) 'alpha.10 replaces three R111 documents with three R112 documents without changing the asset count'
+Assert-True (@($alpha10Manifest.build.passed_tests).Count -eq 39 -and
+    [string]::Join('|', @($alpha10Manifest.build.passed_tests)) -ceq
+        [string]::Join('|', @($alpha9Manifest.build.passed_tests))) `
+    'alpha.10 retains the exact 39 alpha.9 C++ tests in order'
+foreach ($mapping in @(
+    @{ Path='docs/R112_A_身份查询实施.md'; AssetName='docs__r112-a-identity-lookup.md' },
+    @{ Path='docs/R112_A_网络音频指标.md'; AssetName='docs__r112-a-network-audio-metrics.md' },
+    @{ Path='docs/R112_A_UI精简.md'; AssetName='docs__r112-a-ui-compact.md' }
+)) {
+    Assert-True (@($alpha10Validated.Files | Where-Object {
+        $_.path -ceq $mapping.Path -and $_.asset_name -ceq $mapping.AssetName
+    }).Count -eq 1) "alpha.10 maps $($mapping.Path) to a fixed ASCII asset"
+}
+Assert-True (@($alpha10Validated.Files | Where-Object {
+    $_.path -match '(?i)(radio-identity-cache\.json|channel-favorites\.json|password-file-path\.txt|test-ui-identity\.ps1|test-radio-identity(?:-http-server)?\.ps1|private/user-config/)'
+}).Count -eq 0) 'alpha.10 allowlist excludes personal profile, cache, favorites, password-path file and test helpers'
+Assert-True (@($alpha10Validated.Files | Where-Object { [string]$_.path -like 'docs/R111_*' }).Count -eq 0) `
+    'alpha.10 downloader excludes the three superseded R111 documents'
+Assert-True (@($alpha10Manifest.excluded_private_files | Where-Object {
+    $_ -ceq 'private/user-config-directory.txt' -or
+    $_ -ceq 'private/user-config/radio-identity-cache.json' -or
+    $_ -ceq 'private/user-config/channel-favorites.json' -or
+    $_ -ceq 'private/user-config/password-file-path.txt'
+}).Count -eq 4) 'alpha.10 manifest explicitly lists all local profile and password-path exclusions'
+Assert-True (Test-ReleaseTag -Tag 'v0.1.0-alpha.10') 'alpha.10 is an explicitly supported release tag'
+Assert-Throws { Test-ManifestDocument -Manifest $alpha10Manifest -RequestedTag 'v0.1.0-alpha.9' } 'alpha.10 manifest is rejected for alpha.9 tag'
+$missingAlpha10PrivateExclusion = New-TestManifest -Tag 'v0.1.0-alpha.10'
+$missingAlpha10PrivateExclusion.excluded_private_files = @('private/bm-device-password.txt', 'connection-profile.json', 'audio-settings.json')
+Assert-Throws { Test-ManifestDocument -Manifest $missingAlpha10PrivateExclusion -RequestedTag 'v0.1.0-alpha.10' } `
+    'alpha.10 downloader rejects manifest without personal profile and password-path exclusions'
+$invalidAlpha10PasswordPath = New-TestManifest -Tag 'v0.1.0-alpha.10'
+$invalidAlpha10PasswordPath.files += [pscustomobject]@{
+    path='private/user-config/password-file-path.txt'; asset_name='private__user-config__password-file-path.txt'
+    length_bytes=1; sha256=('0' * 64); source='synthetic forbidden password path'
+}
+Assert-Throws { Test-ManifestDocument -Manifest $invalidAlpha10PasswordPath -RequestedTag 'v0.1.0-alpha.10' } `
+    'alpha.10 downloader rejects a personal password-path file from the manifest'
 
 $invalid = New-TestManifest; $invalid.package_status = 'awaiting_root_audit'
 Assert-Throws { Test-ManifestDocument -Manifest $invalid -RequestedTag 'v0.1.0-alpha.1' } 'unreviewed package status is rejected'
@@ -338,6 +382,8 @@ $publishedAlpha8 = [pscustomobject]@{ tag_name='v0.1.0-alpha.8'; draft=$false; p
 Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha8) -RequestedTag 'v0.1.0-alpha.8').tag_name -ceq 'v0.1.0-alpha.8') 'alpha.8 is selected by exact tag'
 $publishedAlpha9 = [pscustomobject]@{ tag_name='v0.1.0-alpha.9'; draft=$false; prerelease=$true }
 Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha9) -RequestedTag 'v0.1.0-alpha.9').tag_name -ceq 'v0.1.0-alpha.9') 'alpha.9 is selected by exact tag'
+$publishedAlpha10 = [pscustomobject]@{ tag_name='v0.1.0-alpha.10'; draft=$false; prerelease=$true }
+Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha10) -RequestedTag 'v0.1.0-alpha.10').tag_name -ceq 'v0.1.0-alpha.10') 'alpha.10 is selected by exact tag'
 
 $goodAssets = New-TestAssetList -Manifest $validManifest
 $release = [pscustomobject]@{ assets=$goodAssets; target_commitish=[string]$validManifest.source.commit }
@@ -480,7 +526,7 @@ try {
 
 . (Join-Path $PSScriptRoot 'package-release.ps1')
 . (Join-Path $PSScriptRoot 'publish-release.ps1')
-foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9')) {
+foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10')) {
     $packageProfile = Set-ReleaseVersion -Version $tag
     $packagePaths = @($packageProfile.PackageFiles | Where-Object { $_ -cne 'manifest.json' })
     $downloadFiles = @($downloadProfiles[$tag].Files)

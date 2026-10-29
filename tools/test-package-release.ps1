@@ -567,6 +567,102 @@ Assert-True ($alpha9IdentityText.Contains('UserConfigDirectory') -and
     $alpha9IdentityText.Contains('呼号显示实现路径（待实机确认）')) `
     'alpha.9 identity guide uses the canonical cache path and keeps LCD confirmation pending'
 
+$alpha10Profile = Get-ReleaseProfile -Version 'v0.1.0-alpha.10'
+[void](Set-ReleaseVersion -Version 'v0.1.0-alpha.10')
+$alpha10NotIncluded = @($alpha10Profile.NotIncluded)
+Assert-True (@($alpha10NotIncluded | Where-Object { $_ -ceq 'FTX-1 LCD source-identity display is not implemented' }).Count -eq 1 -and
+    @($alpha10NotIncluded | Where-Object { $_ -ceq 'FM and C4FM RF transmit paths are not implemented' }).Count -eq 1) `
+    'alpha.10 metadata clearly records that LCD display and FM/C4FM RF transmit are not implemented'
+$alpha10Files = @(Get-ExpectedReleasePackageFiles)
+$alpha10Tests = @(Get-ExpectedReleaseTests)
+Assert-Equal $alpha10Files.Count $alpha9Files.Count 'alpha.10 用三份 R112 文档替换三份 R111 文档，文件数不变'
+Assert-Equal $alpha10Tests.Count 39 'alpha.10 沿用39项离线原生测试'
+Assert-True ([string]::Join('|', $alpha10Tests) -ceq [string]::Join('|', $alpha9Tests)) `
+    'alpha.10 keeps the complete alpha.9 native test order'
+Assert-True (@($alpha10Files | Where-Object { [string]$_ -match '\.cmd$' }).Count -eq 1 -and
+    $alpha10Files -ccontains 'start-wirex-bridge.cmd') `
+    'alpha.10 keeps exactly one root CMD entry point'
+foreach ($requiredPath in @(
+    'ui/windows/RadioIdentity.psm1',
+    'docs/R112_A_身份查询实施.md',
+    'docs/R112_A_网络音频指标.md',
+    'docs/R112_A_UI精简.md'
+)) {
+    Assert-True ($alpha10Files -ccontains $requiredPath) "alpha.10 package includes $requiredPath"
+}
+foreach ($historicalPath in @(
+    'docs/R111_UI与音量.md',
+    'docs/R111_BM订阅与收听优先级.md',
+    'docs/R111_用户资料与电台显示.md'
+)) {
+    Assert-True (-not ($alpha10Files -ccontains $historicalPath)) "alpha.10 package replaces historical guide $historicalPath"
+}
+foreach ($forbiddenPath in @(
+    'tools/test-radio-identity.ps1', 'tools/test-radio-identity-http-server.ps1', 'tools/test-ui-identity.ps1',
+    'radio-identity-cache.json', 'channel-favorites.json', 'password-file-path.txt',
+    'private/user-config-directory.txt', 'connection-profile.json', 'audio-settings.json', 'bm-device-password.txt'
+)) {
+    Assert-True (-not ($alpha10Files -contains $forbiddenPath)) "alpha.10 package excludes private/developer file $forbiddenPath"
+}
+Assert-True (@($alpha10Files | Where-Object { $_ -match '(^|/)test[^/]*\.(?:cmd|ps1)$' }).Count -eq 0) `
+    'alpha.10 package excludes every test entry script'
+foreach ($mapping in @(
+    @{ Source='tools\start-wirex-bridge-alpha10.cmd'; Destination='start-wirex-bridge.cmd' },
+    @{ Source='tools\start-wirex-bridge-alpha10.ps1'; Destination='tools/start-wirex-bridge.ps1' },
+    @{ Source='docs\R112_A_身份查询实施.md'; Destination='docs\R112_A_身份查询实施.md' },
+    @{ Source='docs\R112_A_网络音频指标.md'; Destination='docs\R112_A_网络音频指标.md' },
+    @{ Source='docs\R112_A_UI精简.md'; Destination='docs\R112_A_UI精简.md' }
+)) {
+    Assert-True (@($alpha10Profile.SourceFiles | Where-Object {
+        [string]$_.Source -ceq $mapping.Source -and [string]$_.Destination -ceq $mapping.Destination
+    }).Count -eq 1) "alpha.10 source mapping is fixed: $($mapping.Source)"
+}
+Assert-True (@($alpha10Profile.SourceFiles | Where-Object {
+    [string]$_.Source -ceq 'tools\start-wirex-bridge-alpha9.cmd' -or
+    [string]$_.Source -ceq 'tools\start-wirex-bridge-alpha9.ps1' -or
+    [string]$_.Source -ceq 'docs\releases\v0.1.0-alpha.9-package-README.md' -or
+    [string]$_.Source -like 'docs\R111_*'
+}).Count -eq 0) 'alpha.10 source profile removes alpha.9 entry and superseded R111 guides'
+$alpha10CmdPath = Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha10.cmd'
+$alpha10CmdBytes = [System.IO.File]::ReadAllBytes($alpha10CmdPath)
+Assert-True (@($alpha10CmdBytes | Where-Object { $_ -gt 127 }).Count -eq 0) 'alpha.10 CMD source contains ASCII only'
+$alpha10CmdText = [System.Text.Encoding]::ASCII.GetString($alpha10CmdBytes)
+Assert-True ($alpha10CmdText -ceq $alpha9CmdText) `
+    'alpha.10 CMD preserves alpha.9 path, argument and exit-code forwarding byte-for-byte'
+$alpha10LauncherPath = Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha10.ps1'
+$alpha10LauncherBytes = [System.IO.File]::ReadAllBytes($alpha10LauncherPath)
+Assert-True ($alpha10LauncherBytes.Length -ge 3 -and $alpha10LauncherBytes[0] -eq 0xEF -and
+    $alpha10LauncherBytes[1] -eq 0xBB -and $alpha10LauncherBytes[2] -eq 0xBF) `
+    'alpha.10 technical entry has a UTF-8 BOM for Windows PowerShell 5.1'
+$alpha10Tokens = $null
+$alpha10ParseErrors = $null
+[System.Management.Automation.Language.Parser]::ParseFile(
+    $alpha10LauncherPath, [ref]$alpha10Tokens, [ref]$alpha10ParseErrors) | Out-Null
+Assert-True ($alpha10ParseErrors.Count -eq 0) `
+    ('alpha.10 technical entry parses; parse errors={0}' -f $alpha10ParseErrors.Count)
+$alpha10LauncherText = [System.IO.File]::ReadAllText($alpha10LauncherPath, [System.Text.Encoding]::UTF8)
+Assert-True ($alpha10LauncherText -ceq $alpha9LauncherText.Replace('alpha.9', 'alpha.10')) `
+    'alpha.10 technical entry changes only the version-specific startup failure text'
+foreach ($pair in @(
+    @{ Path='docs/R112_A_身份查询实施.md'; Name='docs__r112-a-identity-lookup.md' },
+    @{ Path='docs/R112_A_网络音频指标.md'; Name='docs__r112-a-network-audio-metrics.md' },
+    @{ Path='docs/R112_A_UI精简.md'; Name='docs__r112-a-ui-compact.md' }
+)) {
+    Assert-True ((Get-ReleaseAssetName -RelativePath $pair.Path) -ceq $pair.Name) `
+        "alpha.10 fixed ASCII asset mapping $($pair.Path)"
+}
+Assert-True ([string]$alpha10Profile.PackageReadme -ceq 'docs\releases\v0.1.0-alpha.10-package-README.md') `
+    'alpha.10 profile selects its versioned package README'
+$alpha10ReadmeText = [System.IO.File]::ReadAllText(
+    (Join-Path $repositoryRoot $alpha10Profile.PackageReadme), [System.Text.Encoding]::UTF8)
+Assert-True ($alpha10ReadmeText.Contains('start-wirex-bridge.cmd') -and
+    $alpha10ReadmeText.Contains('在后台查询单条 RadioID 资料') -and
+    $alpha10ReadmeText.Contains('BM 往返、DMRD 丢包百分比') -and
+    $alpha10ReadmeText.Contains('FTX-1 LCD 呼号显示和 FM/C4FM RF 发射路径尚未实现')) `
+    'alpha.10 package README names the current entry, delivered data and unimplemented LCD/RF paths'
+Assert-True (-not $alpha10ReadmeText.Contains('RadioID 查询只在用户点击')) `
+    'alpha.10 package README does not repeat the alpha.9 manual-query behavior'
+
 [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.1')
 Assert-Throws { Get-ReleaseAssetName -RelativePath 'start-ui.cmd' } 'alpha.1 不接受 alpha.2 UI asset'
 Assert-True ((Get-ReleaseAssetName -RelativePath 'docs/连接配置.md') -ceq 'docs__connection-profile.md') `
@@ -790,6 +886,63 @@ try {
     Write-Utf8NoBom -Path (Join-Path $cacheDirectory 'channel-favorites.json') -Text '{}'
     Assert-Throws { Assert-ReleasePackageInventory -PackageRoot $alpha9InventoryRoot -Version 'v0.1.0-alpha.9' } `
         'alpha.9 package inventory rejects user-maintained channel favorites'
+
+    [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.10')
+    $alpha10InventoryProfile = Get-ReleaseProfile -Version 'v0.1.0-alpha.10'
+    $alpha10InventoryRoot = Join-Path $testRoot 'synthetic-alpha10-package'
+    New-Item -ItemType Directory -Path $alpha10InventoryRoot -Force | Out-Null
+    foreach ($relativeDirectory in $alpha10InventoryProfile.Directories) {
+        New-Item -ItemType Directory -Path (Join-Path $alpha10InventoryRoot $relativeDirectory.Replace('/', '\')) -Force | Out-Null
+    }
+    foreach ($relativePath in ($alpha10InventoryProfile.PackageFiles | Where-Object { $_ -cne 'manifest.json' })) {
+        $fullPath = Join-Path $alpha10InventoryRoot $relativePath.Replace('/', '\')
+        $parent = Split-Path -Parent $fullPath
+        if (-not [System.IO.Directory]::Exists($parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+        if ($relativePath -ceq 'private/device-y.bin') {
+            Copy-Item -LiteralPath $approvedFixturePath -Destination $fullPath
+        } else {
+            Write-Utf8NoBom -Path $fullPath -Text ('synthetic alpha.10 inventory fixture: ' + $relativePath)
+        }
+    }
+    $alpha10InventoryRecords = @()
+    foreach ($relativePath in ($alpha10InventoryProfile.PackageFiles | Where-Object { $_ -cne 'manifest.json' } | Sort-Object)) {
+        $fullPath = Join-Path $alpha10InventoryRoot $relativePath.Replace('/', '\')
+        $item = Get-Item -LiteralPath $fullPath
+        $alpha10InventoryRecords += ,([ordered]@{
+            path = $relativePath
+            asset_name = [string]$alpha10InventoryProfile.AssetMap[$relativePath]
+            length_bytes = [long]$item.Length
+            sha256 = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            source = 'synthetic alpha.10 inventory fixture'
+        })
+    }
+    $alpha10InventoryManifest = [ordered]@{
+        schema_version = 1
+        package_status = 'awaiting_root_audit'
+        version = 'v0.1.0-alpha.10'
+        tag_candidate = 'v0.1.0-alpha.10'
+        manifest_asset_name = 'manifest.json'
+        approved_y_fixture = [ordered]@{
+            path = 'private/device-y.bin'
+            length_bytes = 100
+            sha256 = $approvedFixtureHash
+        }
+        excluded_private_files = @(
+            'private/bm-device-password.txt', 'connection-profile.json', 'audio-settings.json',
+            'private/user-config-directory.txt', 'private/user-config/radio-identity-cache.json',
+            'private/user-config/channel-favorites.json', 'private/user-config/password-file-path.txt'
+        )
+        files = $alpha10InventoryRecords
+    }
+    Write-Utf8NoBom -Path (Join-Path $alpha10InventoryRoot 'manifest.json') `
+        -Text ((ConvertTo-Json -InputObject $alpha10InventoryManifest -Depth 8) + "`n")
+    Assert-True ((Assert-ReleasePackageInventory -PackageRoot $alpha10InventoryRoot -Version 'v0.1.0-alpha.10') -eq $null) `
+        'alpha.10 synthetic package inventory accepts the R112 docs and declares personal-file exclusions'
+    $privateConfigDirectory = Join-Path $alpha10InventoryRoot 'private\user-config'
+    New-Item -ItemType Directory -Path $privateConfigDirectory -Force | Out-Null
+    Write-Utf8NoBom -Path (Join-Path $privateConfigDirectory 'password-file-path.txt') -Text 'synthetic test path only'
+    Assert-Throws { Assert-ReleasePackageInventory -PackageRoot $alpha10InventoryRoot -Version 'v0.1.0-alpha.10' } `
+        'alpha.10 package inventory rejects a local password-path file'
 
     $alpha2PackageRoot = Join-Path $testRoot 'package-alpha2'
     Copy-Item -LiteralPath $packageRoot -Destination $alpha2PackageRoot -Recurse

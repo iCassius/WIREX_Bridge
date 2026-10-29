@@ -1,7 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][ValidateSet('ok', 'status', 'oversized', 'oversized_chunked', 'delay_headers', 'slow_body')][string]$Mode,
-    [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string]$ReadyFile
+    [Parameter(Mandatory = $true)][ValidateSet('ok', 'status', 'oversized', 'oversized_chunked', 'delay_headers', 'delay_headers_timeout', 'slow_body')][string]$Mode,
+    [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string]$ReadyFile,
+    [Parameter()][string]$RequestRecordFile
 )
 
 Set-StrictMode -Version 2.0
@@ -55,6 +56,9 @@ try {
     }
     $requestBytes.Dispose()
     $requestBytes = $null
+    if (-not [string]::IsNullOrWhiteSpace($RequestRecordFile)) {
+        [IO.File]::WriteAllText($RequestRecordFile,[Text.Encoding]::ASCII.GetString($header),[Text.Encoding]::ASCII)
+    }
 
     switch ($Mode) {
         'ok' {
@@ -83,6 +87,11 @@ try {
         }
         'delay_headers' {
             Start-Sleep -Milliseconds 700
+            $body = [Text.Encoding]::UTF8.GetBytes('{"ok":true}')
+            Write-FakeHttpResponse -Stream $stream -StatusCode 200 -Reason 'OK' -Body $body
+        }
+        'delay_headers_timeout' {
+            Start-Sleep -Milliseconds 6500
             $body = [Text.Encoding]::UTF8.GetBytes('{"ok":true}')
             Write-FakeHttpResponse -Stream $stream -StatusCode 200 -Reason 'OK' -Body $body
         }

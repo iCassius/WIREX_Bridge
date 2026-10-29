@@ -213,8 +213,18 @@ $script:reportedPlaybackGainMilli = $null
 $script:reportedPlaybackClippedSamples = $null
 $script:callIdentityCache = @{}
 $script:identityQuery = $null
-$script:identityQueryStopAsync = $null
+$script:identityQueryQueue = New-Object 'System.Collections.Generic.List[object]'
+$script:identityQueuedById = @{}
+$script:identityFailureCooldown = @{}
 $script:identityQuerySequence = [uint64]0
+$script:identityQueueLimit = 16
+$script:identityRequestIntervalMs = 1000
+$script:identityNextRequestUtc = [DateTime]::MinValue
+$script:identityHttpTimeoutSec = 5
+$script:identityQueueCooldownSeconds = 30
+$script:identityQueueCooldownMaxSeconds = 900
+$script:identityApiBaseUri = 'https://radioid.net/api/dmr/user/'
+$script:identityDiagnosticPath = Join-Path $script:configDirectory 'identity-query-errors.jsonl'
 $script:closingAfterIdentityQuery = $false
 $script:channelFavorites = @()
 $script:channelFavoritesLoadError = ''
@@ -256,10 +266,10 @@ function Fit-WpfWindowToWorkArea {
     if ($null -ne $Window.FindName('StatusCards') -and $script:maxWindowHeight -le 720) {
         $rootGrid = $Window.Content -as [System.Windows.Controls.Grid]
         $rootGrid.Margin = [System.Windows.Thickness]::new(12.0)
-        $rootGrid.RowDefinitions[2].Height = [System.Windows.GridLength]::new(92.0)
-        $Window.FindName('StatusCards').Margin = [System.Windows.Thickness]::new(0.0, 0.0, 0.0, 10.0)
+        $rootGrid.RowDefinitions[2].Height = [System.Windows.GridLength]::Auto
+        $Window.FindName('StatusCards').Margin = [System.Windows.Thickness]::new(0.0, 0.0, 0.0, 5.0)
         foreach ($name in @('CoreStatusCard','RadioStatusCard','AudioStatusCard','BmStatusCard')) {
-            $Window.FindName($name).Padding = [System.Windows.Thickness]::new(8.0)
+            $Window.FindName($name).Padding = [System.Windows.Thickness]::new(4.0)
         }
         $dashboard = $Window.FindName('DashboardPanel')
         $dashboard.Padding = [System.Windows.Thickness]::new(10.0)
@@ -382,9 +392,6 @@ function Get-WpfWindowLayoutInfo {
             }
             if ($control -is [System.Windows.Controls.TextBlock]) {
                 $evidence | Add-Member -NotePropertyName text -NotePropertyValue ([string]$control.Text)
-                if ($name -ceq 'PlaybackGainStatusValue' -and $control.ToolTip -is [string]) {
-                    $evidence | Add-Member -NotePropertyName tooltip -NotePropertyValue ([string]$control.ToolTip)
-                }
             }
             if ($control -is [System.Windows.Controls.ComboBox]) {
                 $selectedText = if ($control.SelectedItem -is [System.Windows.Controls.ComboBoxItem]) {
@@ -423,8 +430,40 @@ function Get-SettingsControl {
 }
 
 function Set-MainText {
-    param([Parameter(Mandatory=$true)][string]$Name, [Parameter(Mandatory=$true)][string]$Text)
-    (Get-UiControl -Name $Name).Text = $Text
+    param([Parameter(Mandatory=$true)][string]$Name, [Parameter(Mandatory=$true)][AllowEmptyString()][string]$Text)
+    $control = Get-UiControl -Name $Name
+    $value = ([string]$Text).Trim()
+    if ($Name -ceq 'FooterText') {
+        if ($value -match '已保存') { $value = '已保存' }
+        elseif ($value -notmatch '失败|超时|未能|无效|拒绝|中断|错误|请先|请打开|不能|无法|未退出|需要修正') { $value = '' }
+    }
+    if ($Name -ceq 'AudioValue' -and $value -ceq '未知') { $value = '' }
+    if ($Name -in @('CallTargetStatusValue','ChannelFavoritesStatusValue','FooterText') -and $value.Length -gt 96) {
+        $value = $value.Substring(0,93) + '…'
+    }
+    $control.Text = $value
+    if ($Name -in @('ReceiveTargetValue','TransmitTargetValue','TransmitPermissionValue','CallTargetStatusValue','ActiveLeaseValue','ChannelFavoritesStatusValue','FooterText')) {
+        $control.Visibility = if ([string]::IsNullOrWhiteSpace($value)) { [System.Windows.Visibility]::Collapsed } else { [System.Windows.Visibility]::Visible }
+    }
+    $statusCardName = switch ($Name) {
+        'CoreValue' { 'CoreStatusCard' }
+        'RadioValue' { 'RadioStatusCard' }
+        'BmValue' { 'BmStatusCard' }
+        default { '' }
+    }
+    if ($statusCardName -and $script:mainWindow) {
+        $card = $script:mainWindow.FindName($statusCardName)
+        if ($card) { $card.Visibility = if ($value) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed } }
+        $statusCards = $script:mainWindow.FindName('StatusCards')
+        if ($statusCards) {
+            $visibleCount = 0
+            foreach ($name in @('CoreStatusCard','RadioStatusCard','BmStatusCard')) {
+                $candidate = $script:mainWindow.FindName($name)
+                if ($candidate -and $candidate.Visibility -ne [System.Windows.Visibility]::Collapsed) { $visibleCount++ }
+            }
+            $statusCards.Columns = [Math]::Max(1,[Math]::Min(3,$visibleCount))
+        }
+    }
 }
 
 function Add-UiEvent {
@@ -485,26 +524,32 @@ function Set-ConnectionButtonState {
 function Set-OfflineDisplay {
     param([string]$Reason = '核心尚未启动。')
     Set-MainText -Name 'CoreValue' -Text '未启动'
-    Set-MainText -Name 'CoreDetail' -Text $Reason
-    Set-MainText -Name 'RadioValue' -Text '未知'
-    Set-MainText -Name 'RadioDetail' -Text 'HRI 与电台状态等待本次运行报告'
-    Set-MainText -Name 'AudioValue' -Text '未知'
-    Set-MainText -Name 'AudioDetail' -Text '输入与输出流状态等待本次运行报告'
+    Set-MainText -Name 'CoreDetail' -Text ''
+    Set-MainText -Name 'RadioValue' -Text ''
+    Set-MainText -Name 'RadioDetail' -Text ''
+    Set-MainText -Name 'AudioValue' -Text ''
+    Set-MainText -Name 'AudioDetail' -Text ''
     Update-UiPlaybackGainDisplay -Record $null
-    Set-MainText -Name 'BmValue' -Text '未知'
-    Set-MainText -Name 'BmDetail' -Text 'BM 连接状态等待本次运行报告'
-    Set-MainText -Name 'RecentCaller' -Text '—'
-    Set-MainText -Name 'RecentCallDetail' -Text '当前运行还没有来话记录'
-    Set-MainText -Name 'CurrentCallValue' -Text '状态等待本次运行报告'
-    Set-MainText -Name 'CurrentCallDetail' -Text '当前没有可显示的活动来话。'
-    $identityDisplay = Get-UiSourceIdentityDisplay -State 'offline'
-    Set-MainText -Name 'HriSourceIdentityValue' -Text $identityDisplay.value
-    Set-MainText -Name 'RadioDisplayValue' -Text $identityDisplay.radio_display
-    Set-MainText -Name 'TrafficValue' -Text '等待核心状态'
-    Set-MainText -Name 'TrafficDetail' -Text '目标选择用于下一次连接。'
-    Set-MainText -Name 'RadioStateValue' -Text '电台状态：未知'
+    Set-MainText -Name 'BmValue' -Text ''
+    Set-MainText -Name 'BmDetail' -Text ''
+    Set-MainText -Name 'RecentCaller' -Text ''
+    Set-MainText -Name 'RecentCallDetail' -Text ''
+    Set-MainText -Name 'CurrentCallValue' -Text ''
+    Set-MainText -Name 'CurrentCallDetail' -Text ''
+    Set-UiIdentityRowVisibility -Row 'current' -Visibility ([System.Windows.Visibility]::Collapsed)
+    Set-UiIdentityRowVisibility -Row 'recent' -Visibility ([System.Windows.Visibility]::Collapsed)
+    Clear-UiIdentityError
+    Set-MainText -Name 'HriSourceIdentityValue' -Text ''
+    Set-MainText -Name 'RadioDisplayValue' -Text ''
+    Set-MainText -Name 'TrafficValue' -Text ''
+    Set-MainText -Name 'TrafficDetail' -Text ''
+    Set-MainText -Name 'RadioStateValue' -Text ''
+    Set-MainText -Name 'FooterText' -Text ''
+    Set-MainText -Name 'CallTargetStatusValue' -Text ''
+    Set-MainText -Name 'ActiveLeaseValue' -Text ''
     Set-MainText -Name 'RunValue' -Text '未启动'
-    Set-MainText -Name 'FreshnessValue' -Text '没有状态报告'
+    Set-MainText -Name 'FreshnessValue' -Text ''
+    Update-UiReceiveMetricsDisplay -Record $null
     Update-CallTargetChoices
     Update-UiChannelFavoriteControls
     Update-UiIdentityActionState
@@ -523,36 +568,27 @@ function Format-ProfileTarget {
 
 function Format-ProfileReceiveTarget {
     param([object]$Profile)
-    if ($null -eq $Profile -or $null -eq $Profile.rx_policy) { return '接收：尚未设置' }
+    if ($null -eq $Profile -or $null -eq $Profile.rx_policy) { return '' }
     $parts = New-Object System.Collections.Generic.List[string]
     $policy = $Profile.rx_policy
-    if ($policy.group_mode -ceq 'all_delivered') { $parts.Add('所有已送达组呼') }
-    elseif (@($policy.allow_groups).Count -eq 0) { $parts.Add('无 Selected 组呼') }
+    if ($policy.group_mode -ceq 'all_delivered') { $parts.Add('全部组呼') }
+    elseif (@($policy.allow_groups).Count -eq 0) { $parts.Add('未选组呼') }
     else {
         $groupText = @($policy.allow_groups | ForEach-Object { 'TG {0} · TS{1}' -f $_.destination_id, $_.slot }) -join '、'
-        $parts.Add(('组呼 ' + $groupText))
+        $parts.Add($groupText)
     }
     switch -CaseSensitive ([string]$policy.private_mode) {
         'disabled' { $parts.Add('私呼关闭') }
         'selected_peers' {
-            if (@($policy.allow_private_peers).Count -eq 0) { $parts.Add('没有获准私呼 peer') }
-            else {
-                $peerText = @($policy.allow_private_peers | ForEach-Object { '{0} → 本机 · TS{1}' -f $_.source_id, $_.slot }) -join '、'
-                $parts.Add(('精确私呼 peer ' + $peerText))
-            }
+            if (@($policy.allow_private_peers).Count -gt 0) { $parts.Add('指定私呼') }
+            else { $parts.Add('私呼关闭') }
         }
         'all_peers_to_local' {
-            $routeText = @($policy.local_private_routes | ForEach-Object { '本机 · TS{0}' -f $_.slot }) -join '、'
-            $parts.Add(('本机私呼 ' + $(if ($routeText) { $routeText } else { '路由缺失' })))
-            if (@($policy.allow_private_peers).Count -gt 0) {
-                $peerText = @($policy.allow_private_peers | ForEach-Object { '{0} · TS{1}' -f $_.source_id, $_.slot }) -join '、'
-                $parts.Add(('另含精确 peer ' + $peerText))
-            }
+            $privateRouteCount = @($policy.local_private_routes).Count
+            $parts.Add($(if ($privateRouteCount -gt 0) { '私呼转本机' } else { '私呼无路由' }))
         }
     }
-    if (@($policy.blocked_groups).Count -gt 0) { $parts.Add(('屏蔽组呼 {0} 项' -f @($policy.blocked_groups).Count)) }
-    if (@($policy.blocked_source_ids).Count -gt 0) { $parts.Add(('屏蔽来源 {0} 个' -f @($policy.blocked_source_ids).Count)) }
-    return ('接收：' + ($parts -join '；'))
+    return ($parts -join ' · ')
 }
 
 function Format-ProfileTransmitPermission {
@@ -560,15 +596,16 @@ function Format-ProfileTransmitPermission {
     if ($null -eq $Profile -or ($null -ne $Profile.PSObject.Properties['transmit_enabled'] -and -not [bool]$Profile.transmit_enabled)) {
         return '发射许可：关闭'
     }
-    return '发射许可：开启（仍按核心呼叫策略限制）'
+    return '发射许可：开启'
 }
 
 function Set-MainTargetSummary {
     param([object]$Profile, [string]$OverallLabel)
-    Set-MainText -Name 'TargetValue' -Text $OverallLabel
-    Set-MainText -Name 'ReceiveTargetValue' -Text (Format-ProfileReceiveTarget -Profile $Profile)
-    Set-MainText -Name 'TransmitTargetValue' -Text ('下一起呼目标：' + (Format-ProfileTarget -Profile $Profile))
-    Set-MainText -Name 'TransmitPermissionValue' -Text (Format-ProfileTransmitPermission -Profile $Profile)
+    $target = if ($Profile -and $Profile.tx_target) { Format-ProfileTarget -Profile $Profile } else { '' }
+    Set-MainText -Name 'TargetValue' -Text ''
+    Set-MainText -Name 'ReceiveTargetValue' -Text $(if ($Profile -and $Profile.rx_policy) { Format-ProfileReceiveTarget -Profile $Profile } else { '' })
+    Set-MainText -Name 'TransmitTargetValue' -Text $target
+    Set-MainText -Name 'TransmitPermissionValue' -Text $(if ($Profile -and $Profile.tx_target) { Format-ProfileTransmitPermission -Profile $Profile } else { '' })
 }
 
 function Format-UiTxTarget {
@@ -629,9 +666,10 @@ function Format-UiGainMilli {
 
 function Update-UiPlaybackGainDisplay {
     param([object]$Record=$null)
-    $runtimeText = '本次运行：等待核心报告播放增益'
+    $runtimeText = ''
     $runtimeGain = $null
     $clippedSamples = $null
+    $audioSamples = $null
     if ($Record) {
         $gainProperty = $Record.PSObject.Properties['rx_output_gain_milli']
         if ($gainProperty) {
@@ -644,33 +682,42 @@ function Update-UiPlaybackGainDisplay {
                     if ([uint64]::TryParse([string]$clipProperty.Value,[Globalization.NumberStyles]::None,
                             [Globalization.CultureInfo]::InvariantCulture,[ref]$parsedClipped)) { $clippedSamples = $parsedClipped }
                 }
-                $clipText = if ($null -ne $clippedSamples) { ' · 削波样本 ' + $clippedSamples } else { ' · 削波计数未知' }
-                $runtimeText = '本次运行：' + $gainLabel + $clipText
+                $sampleProperty = $Record.PSObject.Properties['rx_audio_samples']
+                if ($sampleProperty -and $sampleProperty.Value -isnot [bool]) {
+                    $parsedSamples = [uint64]0
+                    if ([uint64]::TryParse([string]$sampleProperty.Value,[Globalization.NumberStyles]::None,
+                            [Globalization.CultureInfo]::InvariantCulture,[ref]$parsedSamples)) { $audioSamples = $parsedSamples }
+                }
+                $runtimeText = '增益 ' + $gainLabel
+                if ($null -ne $clippedSamples) {
+                    $clipValue = [string]$clippedSamples
+                    if ($null -ne $audioSamples) { $clipValue += '/' + [string]$audioSamples }
+                    $runtimeText += ' · 削波 ' + $clipValue
+                }
             }
         }
     }
     $script:reportedPlaybackGainMilli = $runtimeGain
     $script:reportedPlaybackClippedSamples = $clippedSamples
-    $savedText = if ($null -ne $script:savedPlaybackGainMilli) { Format-UiGainMilli -GainMilli $script:savedPlaybackGainMilli } else { '尚未读取' }
-    $runtimeLabel = if ($null -ne $runtimeGain) { Format-UiGainMilli -GainMilli $runtimeGain } else { '未知' }
-    $clippedLabel = if ($null -ne $clippedSamples) { [string]$clippedSamples } else { '未知' }
-    $mainText = '当前 ' + $runtimeLabel + ' · 保存 ' + $savedText + ' · 削波 ' + $clippedLabel
-    $mainTooltip = $runtimeText + "`n已保存播放增益：" + $savedText + "`n保存后的播放增益在下次连接时生效。"
     if ($script:mainWindow) {
         $mainControl = $script:mainWindow.FindName('PlaybackGainStatusValue')
         if ($mainControl) {
-            $mainControl.Text = $mainText
-            $mainControl.ToolTip = $mainTooltip
-            $mainControl.Foreground = if ($null -eq $clippedSamples) { [Windows.Media.Brushes]::DarkGray } elseif ($clippedSamples -gt 0) { [Windows.Media.Brushes]::IndianRed } else { [Windows.Media.Brushes]::LightGreen }
+            $mainControl.Text = $runtimeText
+            $mainControl.Visibility = if ($runtimeText) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+            $mainControl.Foreground = if ($null -eq $clippedSamples) { [Windows.Media.Brushes]::LightGreen } elseif ($clippedSamples -gt 0) { [Windows.Media.Brushes]::IndianRed } else { [Windows.Media.Brushes]::LightGreen }
         }
     }
     if ($script:settingsWindow) {
         $savedControl = $script:settingsWindow.FindName('PlaybackGainSavedValueText')
-        if ($savedControl) { $savedControl.Text = '已保存：' + $savedText }
+        if ($savedControl) {
+            $savedControl.Text = if ($null -ne $script:savedPlaybackGainMilli) { '已保存：' + (Format-UiGainMilli -GainMilli $script:savedPlaybackGainMilli) } else { '' }
+            $savedControl.Visibility = if ($savedControl.Text) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+        }
         $runtimeControl = $script:settingsWindow.FindName('PlaybackGainRuntimeValueText')
         if ($runtimeControl) {
             $runtimeControl.Text = $runtimeText
-            $runtimeControl.Foreground = if ($null -eq $clippedSamples) { [Windows.Media.Brushes]::DarkGray } elseif ($clippedSamples -gt 0) { [Windows.Media.Brushes]::IndianRed } else { [Windows.Media.Brushes]::LightGreen }
+            $runtimeControl.Visibility = if ($runtimeText) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+            $runtimeControl.Foreground = if ($null -eq $clippedSamples) { [Windows.Media.Brushes]::LightGreen } elseif ($clippedSamples -gt 0) { [Windows.Media.Brushes]::IndianRed } else { [Windows.Media.Brushes]::LightGreen }
         }
     }
 }
@@ -688,7 +735,6 @@ function Update-UiCallHistoryActionState {
     $queryButton = $script:mainWindow.FindName('QueryHistoryIdentityButton')
     if ($queryButton) {
         $queryButton.IsEnabled = ($valid -and -not $script:identityQuery -and $script:radioIdentityModuleLoaded)
-        $queryButton.ToolTip = if ($script:radioIdentityModuleLoaded) { '对所选历史来源 ID 发起一次 Radio ID 查询并更新对应历史记录。' } else { 'RadioIdentity.psm1 未随界面提供。' }
     }
 }
 
@@ -713,7 +759,6 @@ function Format-UiRadioIdentity {
     $label = [string]$identity.callsign
     if ([string]::IsNullOrWhiteSpace($label)) { $label = [string]$identity.display_name }
     if ([string]::IsNullOrWhiteSpace($label) -or $label -ceq $fallback) { return $fallback }
-    if ([string]$identity.status -ceq 'stale') { return ($label + ' · 旧资料 · ' + $fallback) }
     return ($label + ' · ' + $fallback)
 }
 
@@ -722,14 +767,6 @@ function Format-UiRadioIdentityDetails {
     if (-not $Identity) { $Identity = Get-UiRadioIdentity -RadioId $RadioId }
     $lines = New-Object 'System.Collections.Generic.List[string]'
     $lines.Add(('DMR ID {0}' -f $RadioId.ToString([Globalization.CultureInfo]::InvariantCulture)))
-    $status = if ($Identity -and $Identity.PSObject.Properties['status']) { [string]$Identity.status } else { 'unavailable' }
-    $statusText = switch -CaseSensitive ($status) {
-        'found' { '资料状态：已匹配' }
-        'stale' { '资料状态：旧资料（缓存）' }
-        'not_found' { '资料状态：没有匹配记录' }
-        default { '资料状态：仅显示数字 ID' }
-    }
-    $lines.Add($statusText)
     if ($Identity) {
         foreach ($field in @(
             [pscustomobject]@{ name='callsign'; label='呼号' },
@@ -782,9 +819,303 @@ function Update-UiIdentityActionState {
             $script:latestStatus -and [bool]$script:latestStatus.current_call_valid -and
             [uint64]$script:latestStatus.current_call_source_id -ge 1)
         $queryButton.IsEnabled = ($hasCurrentCaller -and -not $script:identityQuery -and $script:radioIdentityModuleLoaded)
-        $queryButton.ToolTip = if ($script:radioIdentityModuleLoaded) { '对当前来话来源 ID 发起一次 Radio ID 查询。' } else { 'RadioIdentity.psm1 未随界面提供。' }
     }
     Update-UiCallHistoryActionState
+}
+
+function Add-UiIdentityDiagnostic {
+    param([Parameter(Mandatory=$true)][string]$Stage,[Parameter(Mandatory=$true)][string]$ErrorCode,
+        [string]$ErrorType='', [string]$Detail='')
+    try {
+        if ([string]::IsNullOrWhiteSpace($script:identityDiagnosticPath)) { return }
+        $directory = [System.IO.Path]::GetDirectoryName($script:identityDiagnosticPath)
+        if ([string]::IsNullOrWhiteSpace($directory) -or -not [System.IO.Directory]::Exists($directory)) { return }
+        if ([System.IO.File]::Exists($script:identityDiagnosticPath) -and
+            (New-Object System.IO.FileInfo($script:identityDiagnosticPath)).Length -ge 262144) { return }
+        $safeDetail = [string]$Detail
+        $safeDetail = $safeDetail -replace '(?i)https?://[^\s]+','[请求地址]'
+        $safeDetail = $safeDetail -replace '(?i)(callsign|name|city|state|country)\s*[:=]\s*[^,;\s]+','$1=[已隐藏]'
+        $safeDetail = $safeDetail -replace '(?i)(?:DMR\s*ID\s*)?\b[0-9]{6,9}\b','[ID]'
+        $safeDetail = $safeDetail -replace '[\x00-\x1F\x7F]',' '
+        if ($safeDetail.Length -gt 240) { $safeDetail = $safeDetail.Substring(0,240) }
+        $record = [pscustomobject][ordered]@{
+            timestamp_utc = [DateTimeOffset]::UtcNow.ToString('o',[Globalization.CultureInfo]::InvariantCulture)
+            stage = $Stage; error_code = $ErrorCode; error_type = $ErrorType; detail = $safeDetail
+        }
+        $line = ConvertTo-Json -InputObject $record -Compress -Depth 3
+        [System.IO.File]::AppendAllText($script:identityDiagnosticPath,$line + [Environment]::NewLine,
+            (New-Object System.Text.UTF8Encoding($false)))
+    } catch { }
+}
+
+function Set-UiIdentityError {
+    param([Parameter(Mandatory=$true)][string]$ErrorCode,[string]$Message='',
+        [string]$ErrorType='', [string]$Detail='', [string]$Stage='query',[switch]$ShowToUser)
+    Add-UiIdentityDiagnostic -Stage $Stage -ErrorCode $ErrorCode -ErrorType $ErrorType -Detail $Detail
+    if (-not $ShowToUser -or -not $script:mainWindow) { return }
+    $status = $script:mainWindow.FindName('IdentityLookupStatusValue')
+    if (-not $status) { return }
+    $text = switch -CaseSensitive ($ErrorCode) {
+        'timeout' { '查询超时' }
+        'network' { '网络查询失败' }
+        'invalid_response' { '资料服务响应无效' }
+        'cache_write' { '本机资料缓存保存失败' }
+        'queue_full' { '资料查询队列已满' }
+        'module_missing' { '资料模块不可用' }
+        'worker_start' { '资料查询无法启动' }
+        'query_contract' { '资料查询结果无效' }
+        'cleanup_failed' { '资料查询清理失败' }
+        default {
+            if ($ErrorCode -match '^http_([0-9]{3})$') { '资料服务返回 HTTP ' + $Matches[1] }
+            elseif (-not [string]::IsNullOrWhiteSpace($Message)) { $Message }
+            else { '资料查询失败' }
+        }
+    }
+    if ($text.Length -gt 64) { $text = $text.Substring(0,64) }
+    $status.Text = $text
+    $status.Visibility = [System.Windows.Visibility]::Visible
+    Set-UiIdentityRowVisibility -Row 'status'
+}
+
+function Clear-UiIdentityError {
+    if (-not $script:mainWindow) { return }
+    $status = $script:mainWindow.FindName('IdentityLookupStatusValue')
+    if (-not $status) { return }
+    $status.Text = ''
+    $status.Visibility = [System.Windows.Visibility]::Collapsed
+}
+
+function Set-UiIdentityRowVisibility {
+    param([ValidateSet('current','recent','history','history_actions','status')][string]$Row,
+        [System.Windows.Visibility]$Visibility=[System.Windows.Visibility]::Visible)
+    if (-not $script:mainWindow) { return }
+    $name = switch ($Row) {
+        'current' { 'CurrentCallPanel' }
+        'recent' { 'RecentCallPanel' }
+        'history' { 'HistoryPanel' }
+        'history_actions' { 'HistoryActionsPanel' }
+        'status' { 'IdentityLookupStatusValue' }
+    }
+    $control = $script:mainWindow.FindName($name)
+    if ($control -and $control.PSObject.Properties['Visibility']) { $control.Visibility = $Visibility }
+}
+
+function Get-UiIdentityContextKey {
+    param([Parameter(Mandatory=$true)][object]$Context)
+    return ('{0}|{1}|{2}|{3}' -f [string]$Context.context_kind,[string]$Context.run_id,
+        [uint64]$Context.generation,[string]$Context.history_key)
+}
+
+function Add-UiIdentityQueryContext {
+    param([Parameter(Mandatory=$true)][object]$Query,[Parameter(Mandatory=$true)][object]$Context)
+    $key = Get-UiIdentityContextKey -Context $Context
+    if ($Query.context_keys.ContainsKey($key)) { return }
+    [void]$Query.contexts.Add($Context)
+    $Query.context_keys[$key] = $true
+}
+
+function New-UiIdentityQueryContext {
+    param([Parameter(Mandatory=$true)][ValidateSet('current','history')][string]$ContextKind,
+        [string]$RunId='', [uint64]$Generation=0, [string]$HistoryKey='')
+    return [pscustomobject][ordered]@{
+        context_kind=$ContextKind; run_id=$RunId; generation=$Generation; history_key=$HistoryKey
+    }
+}
+
+function Clear-UiIdentityQueryQueue {
+    if ($script:identityQueryQueue) { $script:identityQueryQueue.Clear() }
+    if ($script:identityQueuedById) { $script:identityQueuedById.Clear() }
+}
+
+function Set-UiIdentityFailureCooldown {
+    param([Parameter(Mandatory=$true)][uint64]$RadioId)
+    $key = $RadioId.ToString([Globalization.CultureInfo]::InvariantCulture)
+    $count = 1
+    if ($script:identityFailureCooldown.ContainsKey($key)) {
+        $count = [Math]::Min(8,[int]$script:identityFailureCooldown[$key].failure_count + 1)
+    }
+    $seconds = [Math]::Min([double]$script:identityQueueCooldownMaxSeconds,
+        [double]$script:identityQueueCooldownSeconds * [Math]::Pow(2,($count - 1)))
+    $script:identityFailureCooldown[$key] = [pscustomobject]@{
+        failure_count=$count; retry_after_utc=[DateTime]::UtcNow.AddSeconds($seconds)
+    }
+}
+
+function Start-NextUiIdentityQuery {
+    if ($script:identityQuery -or -not $script:identityQueryQueue -or $script:identityQueryQueue.Count -eq 0) { return }
+    if ([DateTime]::UtcNow -lt $script:identityNextRequestUtc) { return }
+    $item = $script:identityQueryQueue[0]
+    $script:identityQueryQueue.RemoveAt(0)
+    $idKey = ([uint64]$item.radio_id).ToString([Globalization.CultureInfo]::InvariantCulture)
+    [void]$script:identityQueuedById.Remove($idKey)
+    if (-not $script:radioIdentityModuleLoaded -or -not [System.IO.File]::Exists($script:identityModulePath)) {
+        Set-UiIdentityError -ErrorCode module_missing -Stage 'worker_start'
+        return
+    }
+
+    $runspace = $null
+    $powerShell = $null
+    try {
+        $runspace = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+        $runspace.ApartmentState = [System.Threading.ApartmentState]::MTA
+        $runspace.ThreadOptions = [System.Management.Automation.Runspaces.PSThreadOptions]::ReuseThread
+        $runspace.Open()
+        $powerShell = [System.Management.Automation.PowerShell]::Create()
+        $powerShell.Runspace = $runspace
+        $queryScript = @'
+param([string]$ModulePath,[string]$CachePath,[uint32]$RadioId,[int]$TimeoutSec,[string]$ApiBaseUri)
+Import-Module -Name $ModulePath -Force -ErrorAction Stop
+Invoke-RadioIdentityQuery -RadioId $RadioId -CachePath $CachePath -TimeoutSec $TimeoutSec -ApiBaseUri $ApiBaseUri
+'@
+        [void]$powerShell.AddScript($queryScript).AddArgument($script:identityModulePath).
+            AddArgument($script:identityCachePath).AddArgument([uint32]$item.radio_id).
+            AddArgument([int]$item.timeout_seconds).AddArgument([string]$item.api_base_uri)
+        $asyncHandle = $powerShell.BeginInvoke()
+        $script:identityQuerySequence++
+        $script:identityQuery = [pscustomobject][ordered]@{
+            query_id=$script:identityQuerySequence; radio_id=[uint64]$item.radio_id
+            contexts=$item.contexts; context_keys=$item.context_keys
+            started_utc=[DateTime]::UtcNow; deadline_seconds=5.5; hard_deadline_seconds=8.0
+            power_shell=$powerShell; owned_runspace=$runspace; async_handle=$asyncHandle
+            stop_async=$null; stop_reason=''; stop_started_utc=[DateTime]::MinValue
+            stop_error=''; stop_attempts=0; stop_complete=$false; end_stop_done=$false
+            result_collected=$false; identity_result=$null; result_error=''; error_code=''; error_type=''; error_detail=''
+            disposed=$false; terminal_state=''; cleanup_error_reported=$false
+        }
+        $script:identityNextRequestUtc = [DateTime]::UtcNow.AddMilliseconds([double]$script:identityRequestIntervalMs)
+        Update-UiIdentityActionState
+    } catch {
+        if ($powerShell) { try { $powerShell.Dispose() } catch { } }
+        if ($runspace) {
+            try { if ($runspace.RunspaceStateInfo.State -ne 'Closed') { $runspace.Close() } } catch { }
+            try { $runspace.Dispose() } catch { }
+        }
+        Set-UiIdentityFailureCooldown -RadioId ([uint64]$item.radio_id)
+        Set-UiIdentityError -ErrorCode worker_start -ErrorType $_.Exception.GetType().FullName `
+            -Detail $_.Exception.Message -Stage 'worker_start'
+    }
+}
+
+function Start-UiIdentityQuery {
+    param(
+        [Parameter(Mandatory=$true)][uint64]$RadioId,
+        [Parameter(Mandatory=$true)][ValidateSet('current','history')][string]$ContextKind,
+        [string]$RunId='', [uint64]$Generation=0, [string]$HistoryKey='',
+        [string]$ApiBaseUri='', [int]$TimeoutSec=0
+    )
+    if ($RadioId -lt 1 -or $RadioId -gt 16777215) {
+        Set-UiIdentityError -ErrorCode 'query_contract' -Message '来源 DMR ID 无效' -Stage 'enqueue'
+        return $false
+    }
+    if ($script:RenderOnly) { return $false }
+    if (-not $script:radioIdentityModuleLoaded -or -not [System.IO.File]::Exists($script:identityModulePath)) {
+        Set-UiIdentityError -ErrorCode module_missing -Stage 'enqueue'
+        return $false
+    }
+    $key = $RadioId.ToString([Globalization.CultureInfo]::InvariantCulture)
+    $cached = Get-UiRadioIdentity -RadioId $RadioId
+    if ($cached -and [string]$cached.status -cin @('found','not_found')) { return $false }
+    if ($script:identityFailureCooldown.ContainsKey($key) -and
+        [DateTime]::UtcNow -lt [DateTime]$script:identityFailureCooldown[$key].retry_after_utc) { return $false }
+    $context = New-UiIdentityQueryContext -ContextKind $ContextKind -RunId $RunId `
+        -Generation $Generation -HistoryKey $HistoryKey
+    if ($script:identityQuery -and [uint64]$script:identityQuery.radio_id -eq $RadioId) {
+        Add-UiIdentityQueryContext -Query $script:identityQuery -Context $context
+        return $true
+    }
+    if ($script:identityQueuedById.ContainsKey($key)) {
+        Add-UiIdentityQueryContext -Query $script:identityQueuedById[$key] -Context $context
+        return $true
+    }
+    if ($script:identityQueryQueue.Count -ge [int]$script:identityQueueLimit) {
+        Set-UiIdentityError -ErrorCode queue_full -Stage 'enqueue'
+        return $false
+    }
+    $item = [pscustomobject][ordered]@{
+        radio_id=$RadioId; contexts=(New-Object 'System.Collections.Generic.List[object]'); context_keys=@{}
+        queued_at_utc=[DateTime]::UtcNow
+        timeout_seconds=$(if ($TimeoutSec -ge 1 -and $TimeoutSec -le 5) { $TimeoutSec } else { [int]$script:identityHttpTimeoutSec })
+        api_base_uri=$(if ([string]::IsNullOrWhiteSpace($ApiBaseUri)) { [string]$script:identityApiBaseUri } else { $ApiBaseUri })
+    }
+    Add-UiIdentityQueryContext -Query $item -Context $context
+    [void]$script:identityQueryQueue.Add($item)
+    $script:identityQueuedById[$key] = $item
+    Start-NextUiIdentityQuery
+    Update-UiIdentityActionState
+    return $true
+}
+
+function Update-UiIdentityHistoryEntry {
+    param([Parameter(Mandatory=$true)][string]$HistoryKey,[Parameter(Mandatory=$true)][object]$Identity)
+    if (-not $script:mainWindow -or [string]::IsNullOrWhiteSpace($HistoryKey)) { return $false }
+    $history = $script:mainWindow.FindName('CallHistoryList')
+    if (-not $history) { return $false }
+    for ($index=0; $index -lt $history.Items.Count; $index++) {
+        $entry = $history.Items[$index]
+        if ([string]$entry.key -cne $HistoryKey) { continue }
+        $entry.source_label = Format-UiRadioIdentity -RadioId ([uint64]$entry.source_id)
+        $entry.identity_details = Format-UiRadioIdentityDetails -RadioId ([uint64]$entry.source_id) -Identity $Identity
+        $kindText = if ([string]$entry.kind -ceq 'private') { '私呼 至本机 DMR ID ' + $entry.destination_id } else { '组呼 TG ' + $entry.destination_id }
+        $entry.text = ('{0} · {1} · TS{2} · 来源 {3}' -f $entry.timestamp.ToString('HH:mm:ss'),$kindText,$entry.slot,$entry.source_label)
+        $history.Items[$index] = $entry
+        Set-UiIdentityRowVisibility -Row 'history'
+        return $true
+    }
+    return $false
+}
+
+function Test-UiIdentityResultMatchesCurrent {
+    param(
+        [Parameter(Mandatory=$true)][object]$Query,
+        [Parameter(Mandatory=$true)][AllowNull()][object]$LatestStatus,
+        [Parameter(Mandatory=$true)][bool]$SupervisorAlive,
+        [Parameter(Mandatory=$true)][DateTime]$LastStatusUtc,
+        [DateTime]$NowUtc=[DateTime]::UtcNow
+    )
+    if (-not $SupervisorAlive -or $LastStatusUtc -eq [DateTime]::MinValue -or
+        ($NowUtc - $LastStatusUtc).TotalSeconds -gt 3 -or -not $LatestStatus -or
+        -not $LatestStatus.PSObject.Properties['current_call_valid'] -or -not [bool]$LatestStatus.current_call_valid -or
+        -not $LatestStatus.PSObject.Properties['current_call_generation']) { return $false }
+    $contexts = New-Object 'System.Collections.Generic.List[object]'
+    if ($Query.PSObject.Properties['contexts']) {
+        foreach ($contextItem in $Query.contexts) { [void]$contexts.Add($contextItem) }
+    } elseif ($Query.PSObject.Properties['context_kind'] -and [string]$Query.context_kind -ceq 'current') {
+        [void]$contexts.Add($Query)
+    }
+    foreach ($context in $contexts) {
+        if ([string]$context.context_kind -cne 'current') { continue }
+        if ([string]$LatestStatus.run_id -ceq [string]$context.run_id -and
+            [uint64]$LatestStatus.current_call_source_id -eq [uint64]$Query.radio_id -and
+            [uint64]$LatestStatus.current_call_generation -eq [uint64]$context.generation) { return $true }
+    }
+    return $false
+}
+
+function Complete-UiIdentityQueryResources {
+    param([Parameter(Mandatory=$true)][object]$Query)
+    if ($Query.disposed) { return $true }
+    if (-not $Query.async_handle.IsCompleted) { return $false }
+    $cleanupErrors = New-Object 'System.Collections.Generic.List[string]'
+    $state = [string]$Query.power_shell.InvocationStateInfo.State
+    if ($state -cnotin @('Completed','Failed','Stopped')) { return $false }
+    try { $Query.power_shell.Dispose() }
+    catch { [void]$cleanupErrors.Add($_.Exception.Message) }
+    $runspace = $Query.owned_runspace
+    if ($runspace) {
+        try {
+            if ([string]$runspace.RunspaceStateInfo.State -cne 'Closed') { $runspace.Close() }
+            if ([string]$runspace.RunspaceStateInfo.State -cne 'Closed') { [void]$cleanupErrors.Add('owned runspace did not close') }
+        } catch { [void]$cleanupErrors.Add($_.Exception.Message) }
+        try { $runspace.Dispose() }
+        catch { [void]$cleanupErrors.Add($_.Exception.Message) }
+    }
+    if ($cleanupErrors.Count -gt 0) {
+        $Query.stop_error = ($cleanupErrors -join '; ')
+        return $false
+    }
+    $Query.terminal_state = $state
+    $Query.disposed = $true
+    return $true
 }
 
 function Stop-UiIdentityQuery {
@@ -797,124 +1128,49 @@ function Stop-UiIdentityQuery {
     catch {
         $Query.stop_error = $_.Exception.Message
         if ($Query.async_handle -and $Query.async_handle.IsCompleted) { $Query.stop_complete = $true }
-        if ($script:mainWindow) {
-            $status = $script:mainWindow.FindName('IdentityLookupStatusValue')
-            if ($status) { $status.Text = ('停止Radio ID查询任务失败；仍在跟踪清理。' + $Query.stop_error) }
+        Add-UiIdentityDiagnostic -Stage 'stop' -ErrorCode 'stop_failed' `
+            -ErrorType $_.Exception.GetType().FullName -Detail $_.Exception.Message
+        if ($Reason -notin @('window_closed','stop_and_exit','shutdown')) {
+            Set-UiIdentityError -ErrorCode 'cleanup_failed' -ErrorType $_.Exception.GetType().FullName `
+                -Detail $_.Exception.Message -Stage 'stop'
         }
-        if ($script:mainWindow) { Add-UiEvent ('请求停止Radio ID runspace失败：' + $Query.stop_error) }
-    }
-}
-
-function Start-UiIdentityQuery {
-    param(
-        [Parameter(Mandatory=$true)][uint64]$RadioId,
-        [Parameter(Mandatory=$true)][ValidateSet('current','history')][string]$ContextKind,
-        [string]$RunId='', [uint64]$Generation=0, [string]$HistoryKey=''
-    )
-    if ($script:identityQuery) { throw '已有一条资料查询正在执行。' }
-    if (-not $script:radioIdentityModuleLoaded -or -not [System.IO.File]::Exists($script:identityModulePath)) { throw 'Radio ID 资料模块当前不可用。' }
-    if ($RadioId -lt 1 -or $RadioId -gt 16777215) { throw '来源 DMR ID 无效。' }
-    $script:identityQuerySequence++
-    $queryId = $script:identityQuerySequence
-    $powerShell = [System.Management.Automation.PowerShell]::Create()
-    $queryScript = @'
-param([string]$ModulePath,[string]$CachePath,[uint32]$RadioId)
-Import-Module -Name $ModulePath -Force -ErrorAction Stop
-Invoke-RadioIdentityQuery -RadioId $RadioId -CachePath $CachePath -TimeoutSec 5
-'@
-    try {
-        [void]$powerShell.AddScript($queryScript).AddArgument($script:identityModulePath).AddArgument($script:identityCachePath).AddArgument([uint32]$RadioId)
-        $asyncHandle = $powerShell.BeginInvoke()
-        $script:identityQuery = [pscustomobject][ordered]@{
-            query_id=$queryId; radio_id=$RadioId; context_kind=$ContextKind; run_id=$RunId; generation=$Generation
-            history_key=$HistoryKey; started_utc=[DateTime]::UtcNow; deadline_seconds=5.5; hard_deadline_seconds=8.0
-            power_shell=$powerShell; async_handle=$asyncHandle; stop_async=$null; stop_reason=''; stop_started_utc=[DateTime]::MinValue
-            stop_error=''; stop_attempts=0; stop_complete=$false; end_stop_done=$false
-            result_collected=$false; identity_result=$null; result_error=''; disposed=$false; terminal_state=''; cleanup_error_reported=$false
-        }
-    } catch {
-        try { $powerShell.Dispose() } catch { }
-        throw
-    }
-    $status = $script:mainWindow.FindName('IdentityLookupStatusValue')
-    if ($status) { $status.Text = ('正在查询 DMR ID {0}；网络请求在后台执行。' -f $RadioId) }
-    Update-UiIdentityActionState
-}
-
-function Update-UiIdentityHistoryEntry {
-    param([Parameter(Mandatory=$true)][string]$HistoryKey,[Parameter(Mandatory=$true)][object]$Identity)
-    if (-not $script:mainWindow -or [string]::IsNullOrWhiteSpace($HistoryKey)) { return }
-    $history = $script:mainWindow.FindName('CallHistoryList')
-    for ($index=0; $index -lt $history.Items.Count; $index++) {
-        $entry = $history.Items[$index]
-        if ([string]$entry.key -cne $HistoryKey) { continue }
-        $entry.source_label = Format-UiRadioIdentity -RadioId ([uint64]$entry.source_id)
-        $entry.identity_details = Format-UiRadioIdentityDetails -RadioId ([uint64]$entry.source_id) -Identity $Identity
-        $kindText = if ([string]$entry.kind -ceq 'private') { '私呼 至本机 DMR ID ' + $entry.destination_id } else { '组呼 TG ' + $entry.destination_id }
-        $entry.text = ('{0} · {1} · TS{2} · 来源 {3}' -f $entry.timestamp.ToString('HH:mm:ss'),$kindText,$entry.slot,$entry.source_label)
-        $history.Items[$index] = $entry
-        break
-    }
-}
-
-function Test-UiIdentityResultMatchesCurrent {
-    param(
-        [Parameter(Mandatory=$true)][object]$Query,
-        [Parameter(Mandatory=$true)][AllowNull()][object]$LatestStatus,
-        [Parameter(Mandatory=$true)][bool]$SupervisorAlive,
-        [Parameter(Mandatory=$true)][DateTime]$LastStatusUtc,
-        [DateTime]$NowUtc=[DateTime]::UtcNow
-    )
-    if ($Query.context_kind -cne 'current' -or -not $SupervisorAlive -or $LastStatusUtc -eq [DateTime]::MinValue -or
-        ($NowUtc - $LastStatusUtc).TotalSeconds -gt 3 -or -not $LatestStatus -or
-        -not $LatestStatus.PSObject.Properties['current_call_valid'] -or -not [bool]$LatestStatus.current_call_valid -or
-        -not $LatestStatus.PSObject.Properties['current_call_generation']) { return $false }
-    return ([string]$LatestStatus.run_id -ceq [string]$Query.run_id -and
-        [uint64]$LatestStatus.current_call_source_id -eq [uint64]$Query.radio_id -and
-        [uint64]$LatestStatus.current_call_generation -eq [uint64]$Query.generation)
-}
-
-function Complete-UiIdentityQueryResources {
-    param([Parameter(Mandatory=$true)][object]$Query)
-    if ($Query.disposed) { return $true }
-    if (-not $Query.async_handle.IsCompleted) { return $false }
-    try {
-        $state = [string]$Query.power_shell.InvocationStateInfo.State
-        if ($state -cnotin @('Completed','Failed','Stopped')) { throw ('资料查询管线状态尚未结束：' + $state) }
-        $Query.power_shell.Dispose()
-        $runspaceState = [string]$Query.power_shell.Runspace.RunspaceStateInfo.State
-        if ($runspaceState -cne 'Closed') { throw ('资料查询 runspace 未关闭：' + $runspaceState) }
-        $Query.terminal_state = $state
-        $Query.disposed = $true
-        return $true
-    } catch {
-        $Query.stop_error = $_.Exception.Message
-        return $false
     }
 }
 
 function Complete-UiIdentityQuery {
     $query = $script:identityQuery
-    if (-not $query) { return }
+    if (-not $query) { Start-NextUiIdentityQuery; return }
     if (-not $query.stop_async -and $query.async_handle.IsCompleted -and -not $query.result_collected) {
         try {
             $records = @($query.power_shell.EndInvoke($query.async_handle))
-            if ($query.power_shell.HadErrors -or $records.Count -ne 1 -or -not $records[0]) { throw 'Radio ID 查询没有返回一条有效资料。' }
+            if ($query.power_shell.HadErrors -or $records.Count -ne 1 -or -not $records[0]) { throw '资料查询没有返回一条有效记录。' }
             $identity = $records[0]
             $sourceIdProperty = $identity.PSObject.Properties['source_id']
-            if (-not $sourceIdProperty -or [uint64]$sourceIdProperty.Value -ne [uint64]$query.radio_id) { throw 'Radio ID 查询返回的来源 ID 与请求不一致。' }
+            if (-not $sourceIdProperty -or [uint64]$sourceIdProperty.Value -ne [uint64]$query.radio_id) { throw '资料查询返回的来源 ID 与请求不一致。' }
             $idProperty = $identity.PSObject.Properties['id']
-            if ($idProperty -and [uint64]$idProperty.Value -ne [uint64]$query.radio_id) { throw 'Radio ID 查询的兼容 ID 与请求不一致。' }
-            if ([string]$identity.status -cnotin @('found','not_found','stale','unavailable')) { throw 'Radio ID 查询状态无效。' }
+            if ($idProperty -and [uint64]$idProperty.Value -ne [uint64]$query.radio_id) { throw '资料查询兼容 ID 与请求不一致。' }
+            if ([string]$identity.status -cnotin @('found','not_found','stale','unavailable')) { throw '资料查询状态无效。' }
             $query.identity_result = $identity
-        } catch { $query.result_error = $_.Exception.Message }
+            $query.error_code = [string]$identity.error_code
+            $query.error_type = [string]$identity.error_type
+            $query.error_detail = [string]$identity.error_detail
+        } catch {
+            $query.result_error = $_.Exception.Message
+            $query.error_code = 'query_contract'
+            $query.error_type = $_.Exception.GetType().FullName
+            $query.error_detail = $_.Exception.Message
+        }
         $query.result_collected = $true
     }
     $stopObserved = $false
     if ($query.stop_async -and $query.stop_async.IsCompleted) {
         if (-not $query.end_stop_done) {
             try { $query.power_shell.EndStop($query.stop_async) }
-            catch { $query.stop_error = $_.Exception.Message }
+            catch {
+                $query.stop_error = $_.Exception.Message
+                Add-UiIdentityDiagnostic -Stage 'end_stop' -ErrorCode 'stop_failed' `
+                    -ErrorType $_.Exception.GetType().FullName -Detail $_.Exception.Message
+            }
             $query.end_stop_done = $true
         }
         $stopObserved = $true
@@ -923,87 +1179,92 @@ function Complete-UiIdentityQuery {
     $resourcesClosed = if ($canDispose) { Complete-UiIdentityQueryResources -Query $query } else { $false }
     if ($resourcesClosed) {
         $identity = $query.identity_result
-        $failure = [string]$query.result_error
-        if ($query.stop_reason) { $failure = if ($query.stop_error) { $query.stop_error } else { '查询已取消。' } }
+        $failureCode = [string]$query.error_code
+        $failureMessage = if ($identity) { [string]$identity.error_message } else { '' }
+        if ($query.stop_reason -ceq 'timeout') { $failureCode = 'timeout'; $failureMessage = '查询超时' }
+        elseif ($query.stop_reason -and $query.stop_reason -notin @('window_closed','stop_and_exit','shutdown')) {
+            $failureCode = 'cancelled'; $failureMessage = '查询已取消'
+        }
+        $key = ([uint64]$query.radio_id).ToString([Globalization.CultureInfo]::InvariantCulture)
         $script:identityQuery = $null
-        if ($identity -and -not $failure) {
-            $cacheKey = ([uint64]$query.radio_id).ToString([Globalization.CultureInfo]::InvariantCulture)
-            $script:callIdentityCache[$cacheKey] = $identity
-            Update-UiIdentityHistoryEntry -HistoryKey ([string]$query.history_key) -Identity $identity
-            $status = $script:mainWindow.FindName('IdentityLookupStatusValue')
+        if ($identity) {
+            $script:callIdentityCache[$key] = $identity
+            if ([string]$identity.status -cin @('found','stale')) { Clear-UiIdentityError }
+            foreach ($context in $query.contexts) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$context.history_key)) {
+                    [void](Update-UiIdentityHistoryEntry -HistoryKey ([string]$context.history_key) -Identity $identity)
+                }
+            }
             $supervisorAlive = ($script:supervisor -and -not $script:supervisor.HasExited)
             $matchesCurrent = Test-UiIdentityResultMatchesCurrent -Query $query -LatestStatus $script:latestStatus `
                 -SupervisorAlive ([bool]$supervisorAlive) -LastStatusUtc $script:lastStatusUtc
-            $identityDetails = Format-UiRadioIdentityDetails -RadioId ([uint64]$query.radio_id) -Identity $identity
             if ($matchesCurrent) {
+                Set-UiIdentityRowVisibility -Row 'current'
                 Set-MainText -Name 'CurrentCallValue' -Text (Format-UiRadioIdentity -RadioId ([uint64]$query.radio_id))
-                $currentValue = $script:mainWindow.FindName('CurrentCallValue')
-                if ($currentValue) { $currentValue.ToolTip = $identityDetails }
             }
-            $statusText = switch -CaseSensitive ([string]$identity.status) {
-                'found' {
-                    $cacheSaved = $identity.PSObject.Properties['cache_saved']
-                    if ($cacheSaved -and $cacheSaved.Value -eq $true) { '已取得资料并更新本机缓存：' + [string]$identity.display_name }
-                    elseif ($cacheSaved -and $cacheSaved.Value -eq $false) { '已取得资料（本次界面可用）；本机缓存保存失败。' }
-                    else { '已取得资料；本机缓存状态未知。' }
+            $historyList = $script:mainWindow.FindName('CallHistoryList')
+            $hasHistory = ($historyList -and $historyList.Items.Count -gt 0)
+            if (-not $hasHistory -and $script:latestStatus -and $script:latestStatus.PSObject.Properties['last_rx_header_valid'] -and
+                [bool]$script:latestStatus.last_rx_header_valid -and
+                [uint64]$script:latestStatus.last_rx_source_id -eq [uint64]$query.radio_id) {
+                Set-UiIdentityRowVisibility -Row 'recent'
+                Set-MainText -Name 'RecentCaller' -Text (Format-UiRadioIdentity -RadioId ([uint64]$query.radio_id))
+            } else {
+                Set-UiIdentityRowVisibility -Row 'recent' -Visibility ([System.Windows.Visibility]::Collapsed)
+            }
+            if ($failureCode) {
+                Set-UiIdentityFailureCooldown -RadioId ([uint64]$query.radio_id)
+                Set-UiIdentityError -ErrorCode $failureCode -Message $failureMessage -ErrorType $query.error_type `
+                    -Detail $query.error_detail -Stage 'lookup_result'
+            } else {
+                [void]$script:identityFailureCooldown.Remove($key)
+                if ($identity.cache_saved -eq $false) {
+                    Set-UiIdentityError -ErrorCode cache_write -ErrorType $query.error_type `
+                        -Detail $query.error_detail -Stage 'cache_write'
                 }
-                'not_found' { 'Radio ID 未找到；当前显示 DMR ID ' + [string]$query.radio_id }
-                'stale' { '在线查询未更新；正在显示旧缓存资料。' }
-                default { '资料服务暂不可用；保留 DMR ID ' + [string]$query.radio_id }
             }
-            $detailSummary = @($identityDetails -split "`n" | Select-Object -Skip 1) -join ' · '
-            if ($detailSummary) { $statusText += ' · ' + $detailSummary }
-            if ($status) { $status.ToolTip = $identityDetails }
-            if (-not $matchesCurrent -and $query.context_kind -ceq 'current') { $statusText += '；当前来话已变化，只更新缓存。' }
-            if ($status) { $status.Text = $statusText }
-        } else {
-            $status = $script:mainWindow.FindName('IdentityLookupStatusValue')
-            if ($status) { $status.Text = ('查询失败；保留 DMR ID {0}。{1}' -f $query.radio_id,$failure) }
+        } elseif ($failureCode -or $query.result_error -or $query.stop_error) {
+            if ($failureCode -and $failureCode -notin @('cancelled')) { Set-UiIdentityFailureCooldown -RadioId ([uint64]$query.radio_id) }
+            if ($query.stop_reason -notin @('window_closed','stop_and_exit','shutdown')) {
+                Set-UiIdentityError -ErrorCode $(if ($failureCode) { $failureCode } else { 'query_contract' }) `
+                    -Message $failureMessage -ErrorType $query.error_type `
+                    -Detail $(if ($query.result_error) { $query.result_error } else { $query.stop_error }) -Stage 'lookup_result'
+            }
         }
-        if ($query.stop_error) { Add-UiEvent ('资料查询资源收尾状态：' + [string]$query.stop_error) }
+        if ($query.stop_error) {
+            Add-UiIdentityDiagnostic -Stage 'cleanup' -ErrorCode 'cleanup_failed' `
+                -ErrorType 'System.Management.Automation.RuntimeException' -Detail $query.stop_error
+        }
         Update-UiIdentityActionState
         if ($script:closingAfterIdentityQuery) {
             $script:closingAfterIdentityQuery = $false
             if (-not $script:supervisor -or $script:supervisor.HasExited) {
+                Clear-UiIdentityQueryQueue
                 $script:allowWindowClose = $true
                 $script:mainWindow.Close()
+                return
             }
         }
+        Start-NextUiIdentityQuery
         return
     }
-    if (-not $query.stop_async -and -not $query.stop_complete -and ([DateTime]::UtcNow - $query.started_utc).TotalSeconds -ge [double]$query.deadline_seconds) {
-        if ($script:mainWindow) {
-            $status = $script:mainWindow.FindName('IdentityLookupStatusValue')
-            if ($status) { $status.Text = '查询超过 5 秒，正在结束资料任务（总期限 8 秒）。' }
-        }
+
+    if (-not $query.stop_async -and -not $query.stop_complete -and
+        ([DateTime]::UtcNow - $query.started_utc).TotalSeconds -ge [double]$query.deadline_seconds) {
         Stop-UiIdentityQuery -Query $query -Reason 'timeout'
     }
-    if ($query.stop_async -or $query.stop_complete) {
-        if ($query.stop_error -and -not $query.stop_async -and $query.stop_attempts -lt 2 -and
-            ([DateTime]::UtcNow - $query.started_utc).TotalSeconds -lt [double]$query.hard_deadline_seconds) {
-            Stop-UiIdentityQuery -Query $query -Reason ([string]$query.stop_reason)
-        }
-    }
-    if ($query.stop_error -and -not $query.stop_async -and -not $query.stop_complete -and $query.stop_attempts -lt 2 -and
-        $query.stop_started_utc -ne [DateTime]::MinValue -and
-        ([DateTime]::UtcNow - $query.stop_started_utc).TotalSeconds -ge 1 -and
-        ([DateTime]::UtcNow - $query.started_utc).TotalSeconds -lt [double]$query.hard_deadline_seconds) {
-        Stop-UiIdentityQuery -Query $query -Reason ([string]$query.stop_reason)
-    }
-    if (-not $resourcesClosed -and ([DateTime]::UtcNow - $query.started_utc).TotalSeconds -ge [double]$query.hard_deadline_seconds) {
+    if (-not $resourcesClosed -and
+        ([DateTime]::UtcNow - $query.started_utc).TotalSeconds -ge [double]$query.hard_deadline_seconds) {
         $closeRequested = ($script:closingAfterIdentityQuery -or $script:closingAfterStop)
         $coreCleanupFinished = ((-not $script:supervisor -or $script:supervisor.HasExited) -and
             -not $script:preparationStarted -and -not $script:stopTask)
         if (-not $query.cleanup_error_reported) {
-            Add-UiEvent ('Radio ID 查询任务超过 8 秒仍在清理：' + [string]$query.stop_error)
+            Add-UiIdentityDiagnostic -Stage 'hard_deadline' -ErrorCode 'cleanup_failed' `
+                -ErrorType 'System.TimeoutException' -Detail $query.stop_error
             $query.cleanup_error_reported = $true
         }
         if ($closeRequested -and $coreCleanupFinished) {
             [System.Environment]::Exit(2)
-        } elseif ($script:mainWindow) {
-            $status = $script:mainWindow.FindName('IdentityLookupStatusValue')
-            if ($status) { $status.Text = '资料任务超过 8 秒仍在清理；当前会话不能再次查询。' }
-            Update-UiIdentityActionState
         }
     }
 }
@@ -1021,6 +1282,10 @@ function Add-UiCallHistoryRecord {
     $key = Get-UiCallHistoryKey -RunId $runId -Generation $generation
     if ($script:callHistoryKeys.ContainsKey($key)) { return }
     $sourceId = [uint64]$Record.current_call_source_id
+    if ($sourceId -lt 1 -or $sourceId -gt 16777215) {
+        Add-UiIdentityDiagnostic -Stage 'enqueue' -ErrorCode 'invalid_source_id' -ErrorType 'System.ArgumentOutOfRangeException'
+        return
+    }
     $destinationId = [uint64]$Record.current_call_destination_id
     $slot = [uint64]$Record.current_call_slot
     $kind = if ([string]$Record.current_call_kind -ceq 'P') { 'private' } else { 'group' }
@@ -1044,15 +1309,26 @@ function Add-UiCallHistoryRecord {
         text=('{0} · {1} {2} · TS{3} · 来源 {4}' -f $timestamp.ToString('HH:mm:ss'),$kindText,$targetText,$slot,$sourceLabel)
     }
     $script:callHistoryKeys[$key] = $true
+    Clear-UiIdentityError
     $history = $script:mainWindow.FindName('CallHistoryList')
     $history.Items.Insert(0,$entry)
+    Set-UiIdentityRowVisibility -Row 'current'
+    Set-UiIdentityRowVisibility -Row 'history'
     while ($history.Items.Count -gt 50) {
         $oldest = $history.Items[$history.Items.Count - 1]
         if ($oldest -and $oldest.PSObject.Properties['key']) { [void]$script:callHistoryKeys.Remove([string]$oldest.key) }
         $history.Items.RemoveAt($history.Items.Count - 1)
     }
     if ($history.Items.Count -gt 0 -and $null -eq $history.SelectedItem) { $history.SelectedIndex = 0 }
+    Set-UiIdentityRowVisibility -Row 'history_actions' -Visibility $(if ($history.Items.Count -gt 0) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed })
     Update-UiCallHistoryActionState
+    try {
+        [void](Start-UiIdentityQuery -RadioId $sourceId -ContextKind current -RunId $runId `
+            -Generation $generation -HistoryKey $key)
+    } catch {
+        Set-UiIdentityError -ErrorCode worker_start -ErrorType $_.Exception.GetType().FullName `
+            -Detail $_.Exception.Message -Stage 'incoming_call'
+    }
 }
 
 function Get-UiCallHistoryKey {
@@ -1219,6 +1495,7 @@ function Update-UiChannelFavoriteControls {
             }
         }
     } finally { $script:updatingChannelFavorites = $false }
+    $list.Visibility = if ($list.Items.Count -gt 0) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
     Set-UiChannelFavoriteActionState
 }
 
@@ -1248,8 +1525,8 @@ function Set-UiChannelFavoriteActionState {
     }
     $status = $script:mainWindow.FindName('ChannelFavoritesStatusValue')
     if ($status) {
-        if ($script:channelFavoritesLoadError) { $status.Text = $script:channelFavoritesLoadError }
-        else { $status.Text = ('本机配置 · {0}/64 项；分类由用户标记。' -f $script:channelFavorites.Count) }
+        $status.Text = if ($script:channelFavoritesLoadError) { '收藏文件读取失败' } else { '' }
+        $status.Visibility = if ($status.Text) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
     }
 }
 
@@ -1298,19 +1575,16 @@ function Update-CallTargetChoices {
             [uint64]$_.destination_id -notin @(91,46001)
         } | Sort-Object destination_id,slot -Unique)
     }
-    if ($routes.Count -eq 0) {
-        $empty = New-Object System.Windows.Controls.TextBlock
-        $empty.Text = '没有本机已配置组'; $empty.Foreground = [Windows.Media.Brushes]::DarkGray
-        $empty.FontSize = 9; $empty.Margin = [Windows.Thickness]::new(2.0,4.0,2.0,2.0)
-        [void]$panel.Children.Add($empty)
-    }
+    $routeLabel = $script:mainWindow.FindName('CallTargetChoicesLabel')
+    $routeScroll = $script:mainWindow.FindName('CallTargetChoicesScroll')
+    if ($routeLabel) { $routeLabel.Visibility = if ($routes.Count -gt 0) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed } }
+    if ($routeScroll) { $routeScroll.Visibility = if ($routes.Count -gt 0) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed } }
     foreach ($route in $routes) {
         $target = [pscustomobject][ordered]@{ destination_id=[uint64]$route.destination_id; kind='group'; slot=[uint64]$route.slot }
         $button = New-Object System.Windows.Controls.Button
         $button.Content = ('TG {0} · TS{1}' -f $route.destination_id,$route.slot)
         $button.Tag = [pscustomobject]@{ target=$target; description=('本机已配置组 TG {0} · TS{1}' -f $route.destination_id,$route.slot) }
         $button.FontSize = 9; $button.Padding = [Windows.Thickness]::new(5.0,2.0,5.0,2.0); $button.Margin = [Windows.Thickness]::new(2.0)
-        $button.ToolTip = '将此本机已配置组设为呼叫目标；保留现有发射许可。'
         $button.Add_Click({ param($sender,$eventArgs) Invoke-UiSetCallTarget -Target $sender.Tag.target -Description $sender.Tag.description })
         [void]$panel.Children.Add($button)
     }
@@ -1333,7 +1607,7 @@ function Invoke-UiSetCallTarget {
     $enabled = if ($script:activeRouting) { [bool]$script:activeRouting.transmit_enabled } elseif ($script:storedProfile) { [bool]$script:storedProfile.transmit_enabled } else { [bool]$script:editTransmitEnabled }
     if ($live) {
         Invoke-UiRoutingMutation -Command 'tx_policy.replace' -PolicyOrTarget $targetCopy -TransmitEnabled $enabled
-        Set-MainText -Name 'CallTargetStatusValue' -Text ('已提交下一起呼目标 {0}；等待核心确认。活动通话保留原锁定目标。' -f (Format-UiTxTarget -Target $targetCopy))
+        Set-MainText -Name 'CallTargetStatusValue' -Text ('已提交起呼目标：' + (Format-UiTxTarget -Target $targetCopy))
         Add-UiEvent ('已提交呼叫目标设置：' + (Format-UiTxTarget -Target $targetCopy))
     } else {
         $script:pendingCallTarget = $targetCopy
@@ -1344,12 +1618,12 @@ function Invoke-UiSetCallTarget {
             $script:effectiveProfile = New-UiCallTargetProfile -Profile $profile -Target $targetCopy
             Set-MainTargetSummary -Profile $script:effectiveProfile -OverallLabel (Format-UiTxTarget -Target $targetCopy)
         } else {
-            Set-MainText -Name 'TargetValue' -Text $Description
-            Set-MainText -Name 'TransmitTargetValue' -Text ('下一起呼目标：' + (Format-UiTxTarget -Target $targetCopy))
-            Set-MainText -Name 'TransmitPermissionValue' -Text '发射许可：等待连接配置'
+            Set-MainText -Name 'TargetValue' -Text ''
+            Set-MainText -Name 'TransmitTargetValue' -Text (Format-UiTxTarget -Target $targetCopy)
+            Set-MainText -Name 'TransmitPermissionValue' -Text ''
         }
         Set-UiCallTargetSelector -Target $targetCopy
-        Set-MainText -Name 'CallTargetStatusValue' -Text ('已选择 {0}；下次连接使用此目标；发射许可与收听策略保持当前配置。' -f (Format-UiTxTarget -Target $targetCopy))
+        Set-MainText -Name 'CallTargetStatusValue' -Text ('已选择起呼目标：' + (Format-UiTxTarget -Target $targetCopy))
         Add-UiEvent ('已选择下次连接呼叫目标：' + (Format-UiTxTarget -Target $targetCopy))
     }
     Update-CallTargetChoices
@@ -1359,8 +1633,9 @@ function Invoke-UiSetDynamicCallTarget {
     try {
         Update-DynamicGroupControls
         $button = Get-UiControl 'SetDynamicCallTargetButton'
-        if (-not $button.IsEnabled) { throw [string]$button.ToolTip }
         $route = Read-DynamicGroupInput
+        if ([uint64]$route.destination_id -in @(91,46001)) { throw '此组仅用于收听' }
+        if (-not $button.IsEnabled) { throw '当前无法设置起呼目标' }
         $target = [pscustomobject][ordered]@{ destination_id=[uint64]$route.destination_id; kind='group'; slot=[uint64]$route.slot }
         $script:pendingDynamicCallTarget = if ($script:supervisor -and -not $script:supervisor.HasExited) { $target } else { $null }
         Invoke-UiSetCallTarget -Target $target -Description ('动态组 TG {0}' -f $route.destination_id)
@@ -2838,14 +3113,13 @@ function Set-SettingsDeviceControls {
     Set-UiDeviceComboOptions -Combo $inputControl -Options $inputOptions.Items -SelectedValue $inputOptions.SelectedValue
     Set-UiDeviceComboOptions -Combo $outputControl -Options $outputOptions.Items -SelectedValue $outputOptions.SelectedValue
 
+    $discoveryText = ''
     if ($script:deviceDiscoveryState -eq 'ready') {
-        (Get-SettingsControl 'DeviceDiscoveryText').Text = '设备列表已更新；自动选择优先使用 COM5/HRI 和 USB Audio。'
-    } elseif ($script:deviceDiscoveryState -eq 'failed') {
-        $detail = if ($script:deviceDiscoveryError) { ' · ' + $script:deviceDiscoveryError } else { '' }
-        (Get-SettingsControl 'DeviceDiscoveryText').Text = ('设备查询失败，可保留 auto；连接前会再次核验设备。' + $detail)
-    } elseif ($script:deviceDiscoveryState -eq 'offline') {
-        (Get-SettingsControl 'DeviceDiscoveryText').Text = '离线预览不读取本机设备。'
-    }
+        $discoveryText = ('串口 {0} · 输入 {1} · 输出 {2}' -f $allPorts.Count,$inputCatalog.Count,$outputCatalog.Count)
+    } elseif ($script:deviceDiscoveryState -eq 'failed') { $discoveryText = '设备读取失败' }
+    $discoveryControl = Get-SettingsControl 'DeviceDiscoveryText'
+    $discoveryControl.Text = $discoveryText
+    $discoveryControl.Visibility = if ($discoveryText) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
 }
 
 function Complete-UiDeviceDiscovery {
@@ -3202,14 +3476,18 @@ function Update-TxTargetButtonState {
     $isForbidden = $validId -and (Get-UiComboTag -Combo (Get-SettingsControl 'CallKindBox')) -ceq 'group' -and $destination -in @(91,46001)
     $liveReady = (-not ($script:supervisor -and -not $script:supervisor.HasExited)) -or ($script:controlConfirmed -and $script:routingCapabilities -and $script:activeRouting)
     $button.IsEnabled = (-not $script:pendingRoutingMutation -and $liveReady -and -not $isForbidden)
-    $button.ToolTip = if ($isForbidden) { 'TG91 与 TG46001 是只收通道，不能发射。' } elseif (-not $liveReady) { '连接准备好后，可立即应用下一发射目标。' } else { '立即更新下一发射目标，不改变接收策略。' }
 }
 
 function Set-DynamicGroupStatus {
     param([string]$Text, [bool]$Failed=$false)
     if (-not $script:mainWindow) { return }
     $label = Get-UiControl 'DynamicGroupStatus'
-    $label.Text = $Text
+    $compactText = ([string]$Text).Trim()
+    $sentenceEnd = $compactText.IndexOf('。')
+    if (-not $Failed -and $sentenceEnd -gt 0) { $compactText = $compactText.Substring(0,$sentenceEnd) }
+    if ($compactText.Length -gt 72) { $compactText = $compactText.Substring(0,69) + '…' }
+    $label.Text = $compactText
+    $label.Visibility = if ($compactText) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
     $label.Foreground = if ($Failed) { [Windows.Media.Brushes]::IndianRed } else { [Windows.Media.Brushes]::LightGreen }
 }
 
@@ -3255,30 +3533,6 @@ function Update-DynamicGroupControls {
     $mediaIdle = ($script:activeRouting -and [string]$script:activeRouting.media_owner -ceq 'idle')
     $activateButton.IsEnabled = ($runtimeReady -and $script:quickCallCapabilities -and $actionReady -and
         $groupIdValid -and $groupId -ne 4000 -and $mediaIdle -and $notPending)
-    if (-not $groupIdValid) { $targetButton.ToolTip = '输入组呼 TG 并选择 TS1 或 TS2。' }
-    elseif ($groupId -in @(91,46001)) { $targetButton.ToolTip = '此组用于本机收听，呼叫目标可从其他预设或已配置组中选择。' }
-    elseif (-not $callTargetReady) { $targetButton.ToolTip = '等待本次运行的核心确认目标设置能力。' }
-    else { $targetButton.ToolTip = '设置下一呼叫目标并保留当前发射许可；核心确认后更新显示。' }
-    if (-not $groupIdValid) {
-        $activateButton.ToolTip = '请填写 1 到 16777215 的组呼 TG。TG4000 是断开命令，不能用于激活。'
-    } elseif ($groupId -eq 4000) {
-        $activateButton.ToolTip = 'TG4000 是断开动态组命令，不能用于激活。'
-    } elseif (-not $runtimeReady -or -not $script:quickCallCapabilities) {
-        $activateButton.ToolTip = '等待本次运行控制通道确认 Quick Call 能力。'
-    } elseif ($offlineDiagnosticActionReady) {
-        $activateButton.ToolTip = '隔离离线验收：Quick Call 只进入内存帧接收器，没有连接 BM。'
-    } elseif (-not $bmReady) {
-        $activateButton.ToolTip = '只有核心报告 BrandMeister ready 且状态未过期时才能激活。'
-    } elseif (-not $mediaIdle) {
-        $activateButton.ToolTip = '当前媒体或清理流程占用中；请等核心报告空闲。'
-    } else {
-        $activateButton.ToolTip = '发送一次无语音组呼 header 与 EOT；不会改变语音 TX 许可或下一发射目标。'
-    }
-    $listenButton.ToolTip = if ($offlineDiagnosticActionReady) { '隔离离线验收：只更新本机 RX 路由，没有连接 BM。' }
-        elseif (-not $runtimeReady) { '等待本次运行控制通道确认本机收听设置能力。' }
-        elseif (-not $bmReady) { '请等核心报告 BrandMeister ready；状态过期后按钮会自动停用。' }
-        elseif (-not $groupIdValid) { '请填写 1 到 16777215 的组呼 TG。' }
-        else { '只更新本机 RX allow 规则，不发送动态组激活包。' }
     Update-UiChannelFavoriteControls
 }
 
@@ -3286,8 +3540,8 @@ function Invoke-UiDynamicGroupLocalListen {
     try {
         Update-DynamicGroupControls
         $button = Get-UiControl 'AddListenGroupButton'
-        if (-not $button.IsEnabled) { throw [string]$button.ToolTip }
         $route = Read-DynamicGroupInput
+        if (-not $button.IsEnabled) { throw '当前无法加入本机收听' }
         $policy = Copy-UiRxPolicy -Policy $script:activeRouting.rx_policy
         $policy.blocked_groups = @($policy.blocked_groups | Where-Object {
             -not ([uint64]$_.destination_id -eq [uint64]$route.destination_id -and [uint64]$_.slot -eq [uint64]$route.slot)
@@ -3310,9 +3564,9 @@ function Invoke-UiDynamicGroupQuickCall {
     try {
         Update-DynamicGroupControls
         $button = Get-UiControl 'ActivateDynamicGroupButton'
-        if (-not $button.IsEnabled) { throw [string]$button.ToolTip }
         $route = Read-DynamicGroupInput
         if ([uint64]$route.destination_id -eq 4000) { throw 'TG4000 是断开动态组的控制命令，不能作为激活目标。' }
+        if (-not $button.IsEnabled) { throw '当前无法激活动态组' }
         $parameters = [ordered]@{ group=$route }
         $parametersJson = ConvertTo-Json -InputObject $parameters -Depth 4 -Compress
         $requestId = [guid]::NewGuid().ToString('D')
@@ -3341,7 +3595,12 @@ function Set-RoutingEditorStatus {
     param([string]$Text, [bool]$Failed=$false)
     if ($script:settingsWindow) {
         $label = Get-SettingsControl 'RoutingEditorStatus'
-        $label.Text = $Text
+        $compactText = ([string]$Text).Trim()
+        $sentenceEnd = $compactText.IndexOf('。')
+        if (-not $Failed -and $sentenceEnd -gt 0) { $compactText = $compactText.Substring(0,$sentenceEnd) }
+        if ($compactText.Length -gt 100) { $compactText = $compactText.Substring(0,97) + '…' }
+        $label.Text = $compactText
+        $label.Visibility = if ($compactText) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
         $label.Foreground = if ($Failed) { [Windows.Media.Brushes]::IndianRed } else { [Windows.Media.Brushes]::LightGreen }
     }
 }
@@ -3422,7 +3681,7 @@ function Update-RoutingDisplays {
             default { '媒体状态需要检查' }
         }
         Set-MainText -Name 'RoutingRevisionValue' -Text ('本机媒体状态：' + $ownerText)
-        $leaseText = if ($routing.active_tx_lease) { '活动通话锁定目标（本次 lease）：{0}' -f (Format-UiRouteTarget $routing.active_tx_lease) } else { '活动通话锁定目标：无' }
+        $leaseText = if ($routing.active_tx_lease) { '活动通话目标：{0}' -f (Format-UiRouteTarget $routing.active_tx_lease) } else { '' }
         Set-MainText -Name 'ActiveLeaseValue' -Text $leaseText
     } else {
         $profileView = if ($script:activeProfile) { $script:activeProfile } elseif ($script:storedProfile) { $script:storedProfile } else { $null }
@@ -3449,9 +3708,8 @@ function Update-RoutingDisplays {
     } else { [void]$configured.Children.Add((New-UiSmallTextBlock -Text '读取本地配置后显示。')) }
     $observedPanel = $script:mainWindow.FindName('ObservedSourcesPanel')
     $observedPanel.Children.Clear()
-    if (-not $routing -or @($routing.observed_sources).Count -eq 0) {
-        [void]$observedPanel.Children.Add((New-UiSmallTextBlock -Text '本次运行尚未观察到有效来源。呼号未知时只显示数字 ID。'))
-    } else {
+    $observedSources = if ($routing -and $routing.PSObject.Properties['observed_sources']) { @($routing.observed_sources) } else { @() }
+    if ($observedSources.Count -gt 0) {
         foreach ($source in @($routing.observed_sources)) {
             $card = New-Object System.Windows.Controls.Border
             $card.Background = [Windows.Media.BrushConverter]::new().ConvertFromString('#20252A')
@@ -3460,34 +3718,48 @@ function Update-RoutingDisplays {
             $card.Padding = [Windows.Thickness]::new(5.0)
             $card.Margin = [Windows.Thickness]::new(0.0,0.0,0.0,4.0)
             $body = New-Object System.Windows.Controls.StackPanel
-            $callKind = if ($source.kind -ceq 'private') { '私呼 peer' } else { '组呼' }
-            [void]$body.Children.Add((New-UiSmallTextBlock -Text ('{0} · 来源 DMR ID {1}' -f $callKind,$source.source_id)))
-            $evidenceText = switch -CaseSensitive ([string]$source.observation_level) {
-                'outer_header_seen' { '只看到 DMRD 头部' }
-                'link_control_validated' { '呼叫信息已验证' }
-                'router_reserved' { '核心已为本机分配接收' }
-                'playback_started' { '本机播放已开始' }
-                default { '观察来源未知' }
+            $sourceId = [uint64]$source.source_id
+            $sourceLabel = 'DMR ID ' + $sourceId.ToString([Globalization.CultureInfo]::InvariantCulture)
+            $cacheKey = $sourceId.ToString([Globalization.CultureInfo]::InvariantCulture)
+            if ($script:callIdentityCache.ContainsKey($cacheKey)) {
+                $cachedIdentity = $script:callIdentityCache[$cacheKey]
+                if ($cachedIdentity -and [string]$cachedIdentity.status -cin @('found','stale')) {
+                    $cachedCallsign = ([string]$cachedIdentity.callsign).Trim()
+                    if (-not $cachedCallsign) { $cachedCallsign = ([string]$cachedIdentity.display_name).Trim() }
+                    if ($cachedCallsign -and $cachedCallsign -cne $sourceLabel) { $sourceLabel = $cachedCallsign + ' · ' + $sourceLabel }
+                }
             }
-            [void]$body.Children.Add((New-UiSmallTextBlock -Text ('目标 {0} · TS{1} · {2}' -f $source.destination_id,$source.slot,$evidenceText) -FontSize 10))
+            $callKind = switch -CaseSensitive ([string]$source.kind) { 'private' { '私呼' } 'group' { '组呼' } default { '' } }
+            $sourcePrefix = if ($callKind) { $callKind + ' · ' } else { '' }
+            [void]$body.Children.Add((New-UiSmallTextBlock -Text ($sourcePrefix + $sourceLabel)))
+            $targetText = if ([string]$source.kind -ceq 'group') {
+                'TG {0} · TS{1}' -f $source.destination_id,$source.slot
+            } elseif ([string]$source.kind -ceq 'private') {
+                '目标 DMR ID {0} · TS{1}' -f $source.destination_id,$source.slot
+            } else {
+                '目标 {0} · TS{1}' -f $source.destination_id,$source.slot
+            }
+            [void]$body.Children.Add((New-UiSmallTextBlock -Text $targetText -FontSize 10))
             $actions = New-Object System.Windows.Controls.Primitives.UniformGrid
-            $actions.Columns = 2
             $routeState = Get-UiObservedCardActionState -Source $source -Policy $routing.rx_policy
-            if ($routeState.source_blocked) { [void]$body.Children.Add((New-UiSmallTextBlock -Text '此发话来源已单独屏蔽；调整频道接收规则不会解除该屏蔽。' -FontSize 10)) }
-            $localButton = New-UiActionButton -Text $routeState.local_text -Data ([pscustomobject]@{ Action='toggle'; Source=$source })
-            $localButton.IsEnabled = [bool]$routeState.local_action_enabled
-            $localButton.ToolTip = [string]$routeState.local_tooltip
-            [void]$actions.Children.Add($localButton)
+            if ($routeState.local_action_enabled) {
+                [void]$actions.Children.Add((New-UiActionButton -Text $routeState.local_text -Data ([pscustomobject]@{ Action='toggle'; Source=$source })))
+            }
             $blockText = if ($routeState.source_blocked) { '恢复来源' } else { '屏蔽此来源' }
             [void]$actions.Children.Add((New-UiActionButton -Text $blockText -Data ([pscustomobject]@{ Action='block'; Source=$source })))
             $txDisabled = ($source.kind -ceq 'group' -and [uint64]$source.destination_id -in @(91,46001))
-            $txButton = New-UiActionButton -Text '设为呼叫目标' -Data ([pscustomobject]@{ Action='tx'; Source=$source })
-            if ($txDisabled) { $txButton.IsEnabled = $false; $txButton.ToolTip = 'TG91 与 TG46001 只收，不能设为发射目标。' }
-            [void]$actions.Children.Add($txButton)
+            if (-not $txDisabled) {
+                [void]$actions.Children.Add((New-UiActionButton -Text '设为呼叫目标' -Data ([pscustomobject]@{ Action='tx'; Source=$source })))
+            }
+            $actions.Columns = [Math]::Max(1,$actions.Children.Count)
             [void]$body.Children.Add($actions)
             $card.Child = $body
             [void]$observedPanel.Children.Add($card)
         }
+    }
+    $observedExpander = $script:mainWindow.FindName('RadioDetailsExpander')
+    if ($observedExpander) {
+        $observedExpander.Visibility = if ($observedSources.Count -gt 0) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
     }
     $currentCall = $script:latestStatus
     $blockButton = $script:mainWindow.FindName('BlockCurrentSourceButton')
@@ -3684,7 +3956,7 @@ function Save-UiRoutingMutationAfterAck {
         $script:pendingCallTarget = $null
         $targetText = Format-UiTxTarget -Target $Routing.tx_target
         $activeText = if ($Routing.active_tx_lease) { '活动通话锁定目标仍为 ' + (Format-UiRouteTarget $Routing.active_tx_lease) } else { '当前没有已锁定的活动通话' }
-        Set-MainText -Name 'CallTargetStatusValue' -Text ('核心已确认下一起呼目标 {0}。此确认只更新呼叫策略，{1}。' -f $targetText,$activeText)
+        Set-MainText -Name 'CallTargetStatusValue' -Text ('已确认起呼目标：' + $targetText)
     }
 }
 
@@ -3773,15 +4045,6 @@ function Set-SettingsWindowFields {
     $script:editRxPolicy = Copy-UiRxPolicy -Policy $policy
     $script:editTxTarget = if ($txTarget) { [pscustomobject][ordered]@{ destination_id=[uint64]$txTarget.destination_id; kind=[string]$txTarget.kind; slot=[uint64]$txTarget.slot } } else { [pscustomobject][ordered]@{ destination_id=[uint64]91; kind='group'; slot=[uint64]2 } }
     $script:txEditorDirty = $false
-    $migrationText = if (-not $script:storedProfile) {
-        '新配置将保存为 schema 2。'
-    } elseif ($sourceSchema -eq 1) {
-        '迁移预览：从文件 schema 1 生成 schema 2 内存视图；当前文件未修改。点击保存后会先备份原文件再写入 schema 2。'
-    } else {
-        '配置文件 schema 2；读取不会写回原文件。'
-    }
-    $receivePreview = Format-ProfileReceiveTarget -Profile ([pscustomobject]@{ rx_policy=$script:editRxPolicy })
-    if ($liveRouting) { $migrationText += ' 当前页面显示本次连接正在使用的策略；每项接收设置生效后会单独保存到本机配置。' }
     $fields = @{
         CallsignBox = if ($script:storedProfile) { $script:storedProfile.connection.callsign } else { '' }
         GatewayBox = if ($script:storedProfile) { $script:storedProfile.connection.gateway_id } else { '' }
@@ -3793,8 +4056,11 @@ function Set-SettingsWindowFields {
         PasswordPathBox = Read-CurrentPasswordPath
     }
     $script:loadingSettings = $true
-    (Get-SettingsControl 'ProfileMigrationText').Text = $migrationText
-    (Get-SettingsControl 'ReceivePolicyPreviewText').Text = $receivePreview
+    foreach ($name in @('ProfileMigrationText','ReceivePolicyPreviewText')) {
+        $control = Get-SettingsControl $name
+        $control.Text = ''
+        $control.Visibility = [System.Windows.Visibility]::Collapsed
+    }
     foreach ($name in $fields.Keys) { (Get-SettingsControl $name).Text = [string]$fields[$name] }
     (Get-SettingsControl 'PlaybackGainSlider').Value = [double]$audio.RadioPlaybackGainMilli / 1000.0
     (Get-SettingsControl 'TransmitGainSlider').Value = [double]$audio.MicTransmitGainMilli / 1000.0
@@ -3829,14 +4095,15 @@ function Set-SettingsWindowFields {
     (Get-SettingsControl 'RefreshDevicesButton').IsEnabled = [bool]$script:profileEditable
     $script:loadingSettings = $false
     if ($profileError -or $audioError) {
-        $readErrors = @($profileError, $audioError | Where-Object { $_ }) -join '；'
-        (Get-SettingsControl 'SettingsErrorText').Text = ('有本机设置无法读取，请检查并重新保存。' + $readErrors)
+        $errorLabels = @()
+        if ($profileError) { $errorLabels += '连接设置读取失败' }
+        if ($audioError) { $errorLabels += '音量设置读取失败' }
+        (Get-SettingsControl 'SettingsErrorText').Text = ($errorLabels -join '；')
         (Get-SettingsControl 'SettingsErrorText').Foreground = [Windows.Media.Brushes]::IndianRed
-    } elseif ($script:storedProfile) {
-        (Get-SettingsControl 'SettingsErrorText').Text = if ($liveRouting) { '接收策略与下一发射目标会立即应用；服务器、设备与音量在下次连接时使用。' } else { '接收策略、下一发射目标和连接设置会在保存后用于下次连接。' }
     } else {
-        (Get-SettingsControl 'SettingsErrorText').Text = '请填写连接信息后保存。'
+        (Get-SettingsControl 'SettingsErrorText').Text = ''
     }
+    (Get-SettingsControl 'SettingsErrorText').Visibility = if ($profileError -or $audioError) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
 }
 
 function Read-SettingsUnsignedField {
@@ -4026,7 +4293,15 @@ function Initialize-SettingsWindow {
 }
 
 function Show-SettingsWindow {
+    param([switch]$ScrollToVolume)
     if ($null -eq $script:settingsWindow) { Initialize-SettingsWindow }
+    if ($ScrollToVolume) {
+        $script:settingsWindow.Add_Loaded({
+            $slider = Get-SettingsControl 'PlaybackGainSlider'
+            $slider.BringIntoView()
+            $slider.Focus()
+        }.GetNewClosure())
+    }
     [void]$script:settingsWindow.ShowDialog()
 }
 
@@ -4182,10 +4457,11 @@ function Save-SettingsFromWindow {
         }
         if ($writeProfile) {
             $script:storedProfile = Read-BridgeUserConnectionProfile -Path $script:profilePath
-            (Get-SettingsControl 'SettingsErrorText').Text = if ($script:receiveEditorState.CanEdit) { '设置已保存为 schema 2。' } else { '原 schema 1 已备份，完整策略已迁移并保存为 schema 2。' }
+            (Get-SettingsControl 'SettingsErrorText').Text = '设置已保存'
         } else {
-            (Get-SettingsControl 'SettingsErrorText').Text = '音量和密码路径已保存；连接策略保持原样。'
+            (Get-SettingsControl 'SettingsErrorText').Text = '设置已保存'
         }
+        (Get-SettingsControl 'SettingsErrorText').Visibility = [System.Windows.Visibility]::Visible
         $script:savedPlaybackGainMilli = [uint32]$playbackMilli
         Update-UiPlaybackGainDisplay -Record $script:latestStatus
         $pendingProfile = $script:storedProfile
@@ -4205,10 +4481,11 @@ function Save-SettingsFromWindow {
             $script:startupNeedsSettings = $false
             Start-BridgeRun
         } else {
-            Set-MainText -Name 'FooterText' -Text '设置已保存；下次连接时使用新配置。'
+            Set-MainText -Name 'FooterText' -Text '设置已保存'
         }
     } catch {
-        (Get-SettingsControl 'SettingsErrorText').Text = $_.Exception.Message
+        (Get-SettingsControl 'SettingsErrorText').Text = '设置保存失败'
+        (Get-SettingsControl 'SettingsErrorText').Visibility = [System.Windows.Visibility]::Visible
         (Get-SettingsControl 'SettingsErrorText').Foreground = [Windows.Media.Brushes]::IndianRed
     }
 }
@@ -4638,10 +4915,10 @@ function Complete-BridgePreparation {
         $script:lastSequence = [uint64]0
         $script:lastStatusUtc = [DateTime]::MinValue
         Set-MainText -Name 'CoreValue' -Text '运行中'
-        Set-MainText -Name 'CoreDetail' -Text '等待本次运行状态报告'
-        Set-MainText -Name 'RunValue' -Text '等待状态'
-        Set-MainText -Name 'FreshnessValue' -Text '等待状态报告'
-        Set-MainText -Name 'FooterText' -Text '使用已保存的配置连接；关闭窗口将停止桥接并退出。'
+        Set-MainText -Name 'CoreDetail' -Text ''
+        Set-MainText -Name 'RunValue' -Text ''
+        Set-MainText -Name 'FreshnessValue' -Text ''
+        Set-MainText -Name 'FooterText' -Text ''
         Add-UiEvent '核心进程已启动'
     } catch {
         Set-OfflineDisplay -Reason ('连接准备失败：' + $_.Exception.Message)
@@ -4655,6 +4932,82 @@ function Complete-BridgePreparation {
         (Get-UiControl 'SettingsButton').IsEnabled = $true
         (Get-UiControl 'TargetSelector').IsEnabled = $true
         Set-ConnectionButtonState
+    }
+}
+
+function Update-UiReceiveMetricsDisplay {
+    param([object]$Record=$null)
+    if (-not $script:mainWindow) { return }
+    $rttPanel = $script:mainWindow.FindName('BmRttMetric')
+    $rttValue = $script:mainWindow.FindName('BmRttValue')
+    $lossPanel = $script:mainWindow.FindName('RxNetworkMetric')
+    $callLossValue = $script:mainWindow.FindName('RxCallLossValue')
+    $sessionLossValue = $script:mainWindow.FindName('RxSessionLossValue')
+    foreach ($control in @($rttPanel,$lossPanel)) {
+        if ($control) { $control.Visibility = [System.Windows.Visibility]::Collapsed }
+    }
+    foreach ($control in @($rttValue,$callLossValue,$sessionLossValue)) {
+        if ($control) { $control.Text = ''; $control.Visibility = [System.Windows.Visibility]::Collapsed }
+    }
+    if (-not $Record) { return }
+
+    $rttValidProperty = $Record.PSObject.Properties['bm_rtt_valid']
+    $rttLastProperty = $Record.PSObject.Properties['bm_rtt_last_ms']
+    $rttCountProperty = $Record.PSObject.Properties['bm_rtt_sample_count']
+    if ($rttValidProperty -and [bool]$rttValidProperty.Value -and $rttLastProperty -and $rttCountProperty -and
+        $null -ne $rttLastProperty.Value -and $null -ne $rttCountProperty.Value) {
+        $lastMs = [double]0
+        $sampleCount = [uint64]0
+        $lastValid = [double]::TryParse([string]$rttLastProperty.Value,[Globalization.NumberStyles]::Float,
+            [Globalization.CultureInfo]::InvariantCulture,[ref]$lastMs)
+        $countValid = [uint64]::TryParse([string]$rttCountProperty.Value,[Globalization.NumberStyles]::None,
+            [Globalization.CultureInfo]::InvariantCulture,[ref]$sampleCount)
+        if ($lastValid -and $countValid -and $sampleCount -gt 0) {
+            $rttValue.Text = ('{0:0.#} ms · {1} 次' -f $lastMs,$sampleCount)
+            $rttValue.Visibility = [System.Windows.Visibility]::Visible
+            $rttPanel.Visibility = [System.Windows.Visibility]::Visible
+        }
+    }
+
+    $usingCall = $false
+    $expectedProperty = $null
+    $receivedProperty = $null
+    $lossProperty = $null
+    $completeProperty = $null
+    $callValid = $Record.PSObject.Properties['rx_call_dmrd_valid']
+    $currentValid = $Record.PSObject.Properties['current_call_valid']
+    if ($callValid -and [bool]$callValid.Value -and $currentValid -and [bool]$currentValid.Value) {
+        $expectedProperty = $Record.PSObject.Properties['rx_call_dmrd_expected']
+        $receivedProperty = $Record.PSObject.Properties['rx_call_dmrd_received']
+        $lossProperty = $Record.PSObject.Properties['rx_call_dmrd_loss_pct']
+        $completeProperty = $Record.PSObject.Properties['rx_call_dmrd_loss_complete']
+        $usingCall = $true
+    } else {
+        $sessionValid = $Record.PSObject.Properties['rx_session_dmrd_valid']
+        if ($sessionValid -and [bool]$sessionValid.Value) {
+            $expectedProperty = $Record.PSObject.Properties['rx_session_dmrd_expected']
+            $receivedProperty = $Record.PSObject.Properties['rx_session_dmrd_received']
+            $lossProperty = $Record.PSObject.Properties['rx_session_dmrd_loss_pct']
+        }
+    }
+    if ($expectedProperty -and $receivedProperty -and $lossProperty -and $null -ne $expectedProperty.Value -and
+        $null -ne $receivedProperty.Value -and $null -ne $lossProperty.Value) {
+        $expected = [uint64]0
+        $received = [uint64]0
+        $lossPercent = [double]0
+        $expectedValid = [uint64]::TryParse([string]$expectedProperty.Value,[Globalization.NumberStyles]::None,
+            [Globalization.CultureInfo]::InvariantCulture,[ref]$expected)
+        $receivedValid = [uint64]::TryParse([string]$receivedProperty.Value,[Globalization.NumberStyles]::None,
+            [Globalization.CultureInfo]::InvariantCulture,[ref]$received)
+        $lossValid = [double]::TryParse([string]$lossProperty.Value,[Globalization.NumberStyles]::Float,
+            [Globalization.CultureInfo]::InvariantCulture,[ref]$lossPercent)
+        if ($expectedValid -and $receivedValid -and $lossValid -and $expected -gt 0 -and $received -le $expected -and $lossPercent -ge 0 -and $lossPercent -le 100) {
+            $value = ('{0:0.#}%' -f $lossPercent)
+            $lossTarget = if ($usingCall) { $callLossValue } else { $sessionLossValue }
+            $lossTarget.Text = $value
+            $lossTarget.Visibility = [System.Windows.Visibility]::Visible
+            $lossPanel.Visibility = [System.Windows.Visibility]::Visible
+        }
     }
 }
 
@@ -4672,6 +5025,7 @@ function Apply-StatusRecord {
     $script:lastSequence = $sequence
     $script:lastStatusUtc = [DateTimeOffset]::FromUnixTimeMilliseconds($recordUtcMs).UtcDateTime
     $script:latestStatus = $Record
+    Set-MainText -Name 'CoreValue' -Text '运行中'
     $bm = [string]$Record.bm_state
     if ($script:lastUiBmState -cne $bm) {
         switch -CaseSensitive ($bm) {
@@ -4688,7 +5042,8 @@ function Apply-StatusRecord {
         'stopped' { Set-MainText -Name 'BmValue' -Text '已停止' }
         'recovering' { Set-MainText -Name 'BmValue' -Text '恢复中' }
         'backoff' { Set-MainText -Name 'BmValue' -Text '重试中' }
-        default { Set-MainText -Name 'BmValue' -Text '连接中' }
+        'connecting' { Set-MainText -Name 'BmValue' -Text '连接中' }
+        default { Set-MainText -Name 'BmValue' -Text '' }
     }
     $failure = [string]$Record.bm_failure
     if ($failure -cne 'none') {
@@ -4736,7 +5091,7 @@ function Apply-StatusRecord {
         $(if ($serialOpen) { '已打开' } else { '未打开' }),
         $(if ($hriReady) { '就绪' } else { '未就绪' }),
         $(if ($yReady) { '已确认' } else { '未确认' }))
-    Set-MainText -Name 'RadioStateValue' -Text '电台状态：未知（核心未读取）'
+    Set-MainText -Name 'RadioStateValue' -Text ''
 
     $waveIn = [string]$Record.wavein_state
     $waveOut = [string]$Record.waveout_state
@@ -4744,42 +5099,39 @@ function Apply-StatusRecord {
         if ($waveIn -ceq 'open' -and $waveOut -ceq 'open') { Set-MainText -Name 'AudioValue' -Text '双向流已打开' }
         elseif ($waveIn -ceq 'open' -or $waveOut -ceq 'open') { Set-MainText -Name 'AudioValue' -Text '单路流已打开' }
         else { Set-MainText -Name 'AudioValue' -Text '端点已核验' }
-    } else { Set-MainText -Name 'AudioValue' -Text '未知' }
-    Set-MainText -Name 'AudioDetail' -Text ('输入流：{0} · 输出流：{1}' -f `
-        $(if ($waveIn -ceq 'open') { '已打开' } else { '未打开' }),
-        $(if ($waveOut -ceq 'open') { '已打开' } else { '未打开' }))
+    } else { Set-MainText -Name 'AudioValue' -Text '' }
+    Set-MainText -Name 'AudioDetail' -Text ''
     Update-UiPlaybackGainDisplay -Record $Record
-    if ([string]$Record.radio_state -ceq 'unknown') { Set-MainText -Name 'RadioStateValue' -Text '电台状态：未知（核心未读取）' }
+    Update-UiReceiveMetricsDisplay -Record $Record
 
     $hasCurrentCallFields = $null -ne $Record.PSObject.Properties['current_call_valid']
     if (-not $hasCurrentCallFields) {
-        Set-MainText -Name 'CurrentCallValue' -Text '当前核心未提供活动来话状态'
-        Set-MainText -Name 'CurrentCallDetail' -Text '本次运行不含当前 BM 来话字段。'
+        Set-UiIdentityRowVisibility -Row 'current' -Visibility ([System.Windows.Visibility]::Collapsed)
+        Set-MainText -Name 'CurrentCallValue' -Text ''
+        Set-MainText -Name 'CurrentCallDetail' -Text ''
     } elseif ([bool]$Record.current_call_valid) {
+        Set-UiIdentityRowVisibility -Row 'current'
         $callerId = [uint64]$Record.current_call_source_id
         $caller = Format-UiRadioIdentity -RadioId $callerId
         $kind = if ([string]$Record.current_call_kind -ceq 'P') { '私呼' } else { '组呼' }
-        $colorCode = if ([bool]$Record.current_call_color_code_known) {
-            'CC ' + [string]$Record.current_call_color_code
-        } else { 'CC 未知' }
-        $linkControl = if ([bool]$Record.current_call_link_control_validated) { 'LC 已验证' } else { 'LC 未验证' }
-        $phase = switch -CaseSensitive ([string]$Record.current_call_phase) {
-            'waiting_for_playback' { '等待回放许可' }
-            'buffering' { '缓冲中' }
-            'playing' { '接收中' }
-            default { '状态未知' }
+        $callDetails = [System.Collections.Generic.List[string]]::new()
+        $destination = [uint64]$Record.current_call_destination_id
+        if ([string]$Record.current_call_kind -ceq 'P') {
+            $callDetails.Add($(if ($destination -gt 0) { '私呼 {0}' -f $destination } else { '私呼' }))
+        } else {
+            $callDetails.Add($(if ($destination -gt 0) { 'TG {0}' -f $destination } else { '组呼' }))
         }
+        if ([uint64]$Record.current_call_slot -in @(1,2)) { $callDetails.Add(('TS{0}' -f $Record.current_call_slot)) }
         Set-MainText -Name 'CurrentCallValue' -Text $caller
-        $currentCallControl = Get-UiControl 'CurrentCallValue'
-        if ($currentCallControl) { $currentCallControl.ToolTip = Format-UiRadioIdentityDetails -RadioId $callerId }
-        Set-MainText -Name 'CurrentCallDetail' -Text ('{0} · 目标 {1} · TS{2} · {3} · {4} · {5}' -f `
-            $kind, $Record.current_call_destination_id, $Record.current_call_slot, $colorCode, $linkControl, $phase)
+        Set-MainText -Name 'CurrentCallDetail' -Text ($callDetails -join ' · ')
     } elseif ([string]$Record.receive_media_state -ceq 'draining') {
-        Set-MainText -Name 'CurrentCallValue' -Text '当前没有活动 BM 话者'
-        Set-MainText -Name 'CurrentCallDetail' -Text 'BM 来话已结束，本机回放尾音正在排空。'
+        Set-UiIdentityRowVisibility -Row 'current' -Visibility ([System.Windows.Visibility]::Collapsed)
+        Set-MainText -Name 'CurrentCallValue' -Text ''
+        Set-MainText -Name 'CurrentCallDetail' -Text ''
     } else {
-        Set-MainText -Name 'CurrentCallValue' -Text '当前没有已接受的 BM 来话'
-        Set-MainText -Name 'CurrentCallDetail' -Text '等待通过目标、时隙和呼叫类型过滤的来话。'
+        Set-UiIdentityRowVisibility -Row 'current' -Visibility ([System.Windows.Visibility]::Collapsed)
+        Set-MainText -Name 'CurrentCallValue' -Text ''
+        Set-MainText -Name 'CurrentCallDetail' -Text ''
     }
     Add-UiCallHistoryRecord -Record $Record
     Update-UiIdentityActionState
@@ -4792,11 +5144,16 @@ function Apply-StatusRecord {
     Set-MainText -Name 'HriSourceIdentityValue' -Text $identityDisplay.value
     Set-MainText -Name 'RadioDisplayValue' -Text $identityDisplay.radio_display
 
-    if ([bool]$Record.last_rx_header_valid) {
+    $historyList = $null
+    if ($script:mainWindow) { $historyList = $script:mainWindow.FindName('CallHistoryList') }
+    if ([bool]$Record.last_rx_header_valid -and $historyList -and $historyList.Items.Count -eq 0) {
+        Set-UiIdentityRowVisibility -Row 'recent'
         $caller = Format-UiRadioIdentity -RadioId ([uint64]$Record.last_rx_source_id)
         Set-MainText -Name 'RecentCaller' -Text $caller
         Set-MainText -Name 'RecentCallDetail' -Text ('最近来话 · 目标 {0} · TS{1} · {2}' -f `
             $Record.last_rx_destination_id, $Record.last_rx_slot, $Record.last_rx_call_kind)
+    } else {
+        Set-UiIdentityRowVisibility -Row 'recent' -Visibility ([System.Windows.Visibility]::Collapsed)
     }
     Set-MainText -Name 'TrafficValue' -Text $script:activeTargetLabel
     Set-MainText -Name 'TrafficDetail' -Text '当前连接使用运行会话中显示的目标。'
@@ -4846,27 +5203,34 @@ function Read-StatusUpdates {
 function Set-StaleDisplay {
     if ($script:lastStatusUtc -eq [DateTime]::MinValue) { return }
     if (([DateTime]::UtcNow - $script:lastStatusUtc).TotalSeconds -le 3) { return }
-    Set-MainText -Name 'CoreDetail' -Text '最近状态报告已过期'
-    Set-MainText -Name 'RadioValue' -Text '未知'
-    Set-MainText -Name 'RadioDetail' -Text '等待新的 HRI 状态报告'
-    Set-MainText -Name 'AudioValue' -Text '未知'
-    Set-MainText -Name 'AudioDetail' -Text '等待新的输入与输出流状态报告'
+    Set-MainText -Name 'CoreValue' -Text '状态过期'
+    Set-MainText -Name 'CoreDetail' -Text ''
+    Set-MainText -Name 'RadioValue' -Text ''
+    Set-MainText -Name 'RadioDetail' -Text ''
+    Set-MainText -Name 'AudioValue' -Text ''
+    Set-MainText -Name 'AudioDetail' -Text ''
     Update-UiPlaybackGainDisplay -Record $null
-    Set-MainText -Name 'BmValue' -Text '未知'
-    Set-MainText -Name 'BmDetail' -Text '等待新的 BM 状态报告'
-    Set-MainText -Name 'TrafficDetail' -Text '最近状态报告已过期；正在等待新状态。'
-    Set-MainText -Name 'RadioStateValue' -Text '电台状态：未知'
-    Set-MainText -Name 'CurrentCallValue' -Text '活动来话状态已过期'
-    Set-MainText -Name 'CurrentCallDetail' -Text '已清除上次状态中的当前 BM 话者；等待新状态报告。'
-    $identityDisplay = Get-UiSourceIdentityDisplay -State 'stale'
-    Set-MainText -Name 'HriSourceIdentityValue' -Text $identityDisplay.value
-    Set-MainText -Name 'RadioDisplayValue' -Text $identityDisplay.radio_display
-    Set-MainText -Name 'FreshnessValue' -Text '状态报告过期'
+    Set-MainText -Name 'BmValue' -Text ''
+    Set-MainText -Name 'BmDetail' -Text ''
+    Set-MainText -Name 'TrafficValue' -Text ''
+    Set-MainText -Name 'TrafficDetail' -Text ''
+    Set-MainText -Name 'RadioStateValue' -Text ''
+    Set-MainText -Name 'CurrentCallValue' -Text ''
+    Set-MainText -Name 'CurrentCallDetail' -Text ''
+    Set-MainText -Name 'RecentCaller' -Text ''
+    Set-MainText -Name 'RecentCallDetail' -Text ''
+    Set-UiIdentityRowVisibility -Row 'current' -Visibility ([System.Windows.Visibility]::Collapsed)
+    Set-UiIdentityRowVisibility -Row 'recent' -Visibility ([System.Windows.Visibility]::Collapsed)
+    Set-MainText -Name 'HriSourceIdentityValue' -Text ''
+    Set-MainText -Name 'RadioDisplayValue' -Text ''
+    Set-MainText -Name 'FreshnessValue' -Text ''
+    Update-UiReceiveMetricsDisplay -Record $null
     Update-DynamicGroupControls
     Update-UiIdentityActionState
 }
 
 function Request-StopAndExit {
+    Clear-UiIdentityQueryQueue
     $script:closingAfterStop = $true
     $script:reconnectAfterStop = $false
     if ($script:identityQuery -and -not $script:identityQuery.stop_async) {
@@ -4883,7 +5247,7 @@ function Request-StopAndExit {
     }
     if ($script:supervisor -and -not $script:supervisor.HasExited) {
         (Get-UiControl 'StopButton').IsEnabled = $false
-        (Get-UiControl 'FooterText').Text = '正在停止桥接并清理设备资源。'
+        Set-MainText -Name 'FooterText' -Text ''
         $script:stopTask = $script:supervisor.StopAsync(5000)
         Set-ConnectionButtonState
         return
@@ -5024,7 +5388,14 @@ function Complete-BridgeStop {
 }
 
 function On-UiTimerTick {
-    Complete-UiIdentityQuery
+    try { Complete-UiIdentityQuery }
+    catch {
+        Add-UiIdentityDiagnostic -Stage 'dispatcher' -ErrorCode 'query_contract' `
+            -ErrorType $_.Exception.GetType().FullName -Detail $_.Exception.Message
+        if ($script:identityQuery) {
+            try { Stop-UiIdentityQuery -Query $script:identityQuery -Reason 'dispatcher_error' } catch { }
+        }
+    }
     if ($script:prepareStopAsync) { Complete-PreparationStop; return }
     Complete-UiDeviceDiscovery
     Complete-BridgePreparation
@@ -5036,16 +5407,19 @@ function On-UiTimerTick {
             [void]$script:supervisor.TryGetExitCode([ref]$exitCode)
             Set-MainText -Name 'CoreValue' -Text '已停止'
             Set-MainText -Name 'CoreDetail' -Text ('核心进程已退出，退出码 {0}' -f $exitCode)
-            Set-MainText -Name 'RadioValue' -Text '未知'
-            Set-MainText -Name 'RadioDetail' -Text '核心已退出'
-            Set-MainText -Name 'AudioValue' -Text '未知'
-            Set-MainText -Name 'AudioDetail' -Text '核心已退出'
+            Set-MainText -Name 'RadioValue' -Text ''
+            Set-MainText -Name 'RadioDetail' -Text ''
+            Set-MainText -Name 'AudioValue' -Text ''
+            Set-MainText -Name 'AudioDetail' -Text ''
             Update-UiPlaybackGainDisplay -Record $null
-            Set-MainText -Name 'BmValue' -Text '未知'
-            Set-MainText -Name 'BmDetail' -Text '核心已退出'
-            Set-MainText -Name 'RadioStateValue' -Text '电台状态：未知'
-            Set-MainText -Name 'CurrentCallValue' -Text '核心已退出'
-            Set-MainText -Name 'CurrentCallDetail' -Text '活动 BM 来话状态已清除。'
+            Set-MainText -Name 'BmValue' -Text ''
+            Set-MainText -Name 'BmDetail' -Text ''
+            Set-MainText -Name 'RadioStateValue' -Text ''
+            Set-MainText -Name 'CurrentCallValue' -Text ''
+            Set-MainText -Name 'CurrentCallDetail' -Text ''
+            Set-UiIdentityRowVisibility -Row 'current' -Visibility ([System.Windows.Visibility]::Collapsed)
+            Set-UiIdentityRowVisibility -Row 'recent' -Visibility ([System.Windows.Visibility]::Collapsed)
+            Update-UiReceiveMetricsDisplay -Record $null
             Update-UiIdentityActionState
             $identityDisplay = Get-UiSourceIdentityDisplay -State 'exited'
             Set-MainText -Name 'HriSourceIdentityValue' -Text $identityDisplay.value
@@ -5200,9 +5574,21 @@ try {
 } catch { $script:savedPlaybackGainMilli = $null }
 try { $script:channelFavorites = @(Read-UiChannelFavorites) }
 catch { $script:channelFavoritesLoadError = '本机收藏文件读取失败；原文件已保留，收藏操作已停用。' }
+if ($RenderOnly -or $OfflinePreview) { $script:storedProfile = $null }
+else {
+    try { $script:storedProfile = Read-BridgeUserConnectionProfile -Path $script:profilePath }
+    catch { $script:storedProfile = $null; $startupProfileError = $true }
+}
 Set-OfflineDisplay
+$script:startupNeedsSettings = ($null -eq $script:storedProfile)
+if ($script:storedProfile) {
+    Set-MainTargetSummary -Profile $script:storedProfile -OverallLabel (Format-ProfileTarget -Profile $script:storedProfile)
+} elseif ($startupProfileError) {
+    Set-MainText -Name 'FooterText' -Text '连接设置读取失败'
+}
 $script:mainWindow.FindName('OfflineBanner').Visibility = [Windows.Visibility]::Collapsed
 (Get-UiControl 'SettingsButton').Add_Click({ Show-SettingsWindow })
+(Get-UiControl 'VolumeSettingsButton').Add_Click({ Show-SettingsWindow -ScrollToVolume })
 (Get-UiControl 'ConnectButton').Add_Click({ Request-Reconnect })
 (Get-UiControl 'StopButton').Add_Click({ Request-StopAndExit })
 (Get-UiControl 'ControlStatusButton').Add_Click({ Request-UiControlStatus })
@@ -5251,14 +5637,16 @@ $script:mainWindow.FindName('OfflineBanner').Visibility = [Windows.Visibility]::
         if (-not $call -or -not [bool]$call.current_call_valid) { throw '当前没有有效来话来源可查询。' }
         $generation = if ($call.PSObject.Properties['current_call_generation']) { [uint64]$call.current_call_generation } else { [uint64]0 }
         Start-UiIdentityQuery -RadioId ([uint64]$call.current_call_source_id) -ContextKind current -RunId ([string]$call.run_id) -Generation $generation
-    } catch { Set-MainText -Name 'IdentityLookupStatusValue' -Text $_.Exception.Message }
+    } catch { Set-UiIdentityError -ErrorCode 'user_action' -Message $_.Exception.Message `
+        -Detail $_.Exception.Message -Stage 'manual_query' -ShowToUser }
 })
 (Get-UiControl 'QueryHistoryIdentityButton').Add_Click({
     try {
         $entry = (Get-UiControl 'CallHistoryList').SelectedItem
         if (-not $entry) { throw '请选择一条来话历史。' }
         Start-UiIdentityQuery -RadioId ([uint64]$entry.source_id) -ContextKind history -RunId ([string]$entry.run_id) -Generation ([uint64]$entry.generation) -HistoryKey ([string]$entry.key)
-    } catch { Set-MainText -Name 'IdentityLookupStatusValue' -Text $_.Exception.Message }
+    } catch { Set-UiIdentityError -ErrorCode 'user_action' -Message $_.Exception.Message `
+        -Detail $_.Exception.Message -Stage 'manual_query' -ShowToUser }
 })
 (Get-UiControl 'SetHistoryCallTargetButton').Add_Click({
     $entry = (Get-UiControl 'CallHistoryList').SelectedItem
@@ -5405,7 +5793,6 @@ if ($RenderOnly) {
     $script:savedPlaybackGainMilli = [uint32]5959
     (Get-SettingsControl 'PlaybackGainSlider').Value = 5.959
     Set-GainValueLabel -SliderName 'PlaybackGainSlider' -LabelName 'PlaybackGainValueText'
-    Update-UiPlaybackGainDisplay -Record ([pscustomobject]@{ rx_output_gain_milli=[uint32]1000; rx_pcm_clipped_samples=[uint64]0 })
     $script:settingsWindow.FindName('SettingsScrollViewer').ScrollToTop()
     $script:settingsWindow.Show()
     $script:settingsWindow.UpdateLayout()
@@ -5420,13 +5807,18 @@ if ($RenderOnly) {
     $script:settingsWindow.UpdateLayout()
     Save-RenderedWindow -Window $script:settingsWindow -Path (Join-Path $renderDirectory 'settings-window.png')
     $layoutInfo = [pscustomobject][ordered]@{
+        render_only = [bool]$RenderOnly
         work_area_width = $script:workAreaWidth
         work_area_height = $script:workAreaHeight
         max_window_width = $script:maxWindowWidth
         max_window_height = $script:maxWindowHeight
         device_combo_rendered_text = $deviceComboEvidence
-        main = Get-WpfWindowLayoutInfo -Window $script:mainWindow -ControlNames @('ConnectButton', 'SettingsButton', 'StopButton', 'FooterText', 'TargetSelector', 'ReceiveTargetValue', 'TransmitTargetValue', 'TransmitPermissionValue', 'ActiveLeaseValue', 'PlaybackGainStatusValue', 'ListeningHistoryPanel', 'CallChannelPanel', 'CallTargetStatusValue', 'CallTargetChoicesPanel', 'CallFavoritesList', 'FavoriteCurrentTargetButton', 'FavoriteManualGroupButton', 'ApplyCallFavoriteButton', 'RemoveCallFavoriteButton', 'ChannelFavoritesStatusValue', 'CallHistoryList', 'SetHistoryCallTargetButton', 'QueryCurrentIdentityButton', 'QueryHistoryIdentityButton', 'IdentityLookupStatusValue', 'CoreDetail', 'RadioDetail', 'AudioDetail', 'BmDetail', 'CoreStatusCard', 'RadioStatusCard', 'AudioStatusCard', 'BmStatusCard', 'HriSourceIdentityValue', 'RadioDisplayValue', 'CurrentCallLabel', 'CurrentCallValue', 'CurrentCallDetail', 'BlockCurrentSourceButton', 'TrafficCard', 'DynamicGroupPanel', 'DynamicGroupIdBox', 'DynamicGroupSlotBox', 'SetDynamicCallTargetButton', 'AddListenGroupButton', 'ActivateDynamicGroupButton', 'DynamicGroupStatus')
+        main = Get-WpfWindowLayoutInfo -Window $script:mainWindow -ControlNames @('ConnectButton', 'SettingsButton', 'StopButton', 'FooterText', 'TargetSelector', 'ReceiveTargetValue', 'TransmitTargetValue', 'TransmitPermissionValue', 'ActiveLeaseValue', 'PlaybackGainStatusValue', 'ListeningHistoryPanel', 'CallChannelPanel', 'CallTargetStatusValue', 'CallTargetChoicesPanel', 'CallFavoritesList', 'FavoriteCurrentTargetButton', 'FavoriteManualGroupButton', 'ApplyCallFavoriteButton', 'RemoveCallFavoriteButton', 'ChannelFavoritesStatusValue', 'CallHistoryList', 'EventList', 'SetHistoryCallTargetButton', 'QueryCurrentIdentityButton', 'QueryHistoryIdentityButton', 'IdentityLookupStatusValue', 'CoreDetail', 'RadioDetail', 'AudioDetail', 'BmDetail', 'CoreStatusCard', 'RadioStatusCard', 'AudioStatusCard', 'BmStatusCard', 'HriSourceIdentityValue', 'RadioDisplayValue', 'CurrentCallLabel', 'CurrentCallValue', 'CurrentCallDetail', 'BlockCurrentSourceButton', 'TrafficCard', 'DynamicGroupPanel', 'DynamicGroupIdBox', 'DynamicGroupSlotBox', 'SetDynamicCallTargetButton', 'AddListenGroupButton', 'ActivateDynamicGroupButton', 'DynamicGroupStatus')
+        main_action_controls = Get-WpfWindowLayoutInfo -Window $script:mainWindow -ControlNames @('ConnectButton','SettingsButton','StopButton','TargetSelector','ListeningHistoryPanel','CallChannelPanel','FavoriteCurrentTargetButton','FavoriteManualGroupButton','ApplyCallFavoriteButton','RemoveCallFavoriteButton','DynamicGroupPanel','DynamicGroupIdBox','DynamicGroupSlotBox','SetDynamicCallTargetButton','AddListenGroupButton','ActivateDynamicGroupButton','VolumeSettingsButton')
         settings = Get-WpfWindowLayoutInfo -Window $script:settingsWindow -ControlNames @('CancelSettingsButton', 'SaveSettingsButton', 'SettingsErrorText', 'ProfileMigrationText', 'ReceivePolicyPreviewText', 'MasterPresetBox', 'PasswordPathBox', 'BrowsePasswordButton', 'DeviceDiscoveryText', 'RefreshDevicesButton', 'SerialBox', 'WaveInEndpointBox', 'WaveOutEndpointBox', 'DestinationBox', 'SlotBox', 'CallKindBox', 'TransmitEnabledBox', 'ApplyNextTxTargetButton', 'GroupModeBox', 'PrivateModeBox', 'GroupRouteIdBox', 'GroupRouteSlotBox', 'GroupRoutesList', 'BlockedGroupIdBox', 'BlockedGroupSlotBox', 'BlockedGroupsList', 'PeerSourceIdBox', 'PeerLocalDestinationBox', 'PeerSlotBox', 'PeerRoutesList', 'LocalPrivateDestinationBox', 'LocalPrivateSlotBox', 'LocalPrivateRoutesList', 'BlockedSourceIdBox', 'BlockedSourcesList', 'PlaybackGainSlider', 'PlaybackGainValueText', 'PlaybackGainSavedValueText', 'PlaybackGainRuntimeValueText', 'TransmitGainSlider', 'TransmitGainValueText')
+        settings_action_controls = Get-WpfWindowLayoutInfo -Window $script:settingsWindow -ControlNames @('SaveSettingsButton','CancelSettingsButton','PasswordPathBox','BrowsePasswordButton','MasterPresetBox','DestinationBox','SlotBox','CallKindBox','TransmitEnabledBox','ApplyNextTxTargetButton','GroupModeBox','PrivateModeBox','GroupRouteIdBox','GroupRouteSlotBox','AddGroupRouteButton','RemoveGroupRouteButton','GroupRoutesList','BlockedGroupIdBox','BlockedGroupSlotBox','AddBlockedGroupButton','RemoveBlockedGroupButton','BlockedGroupsList','PeerSourceIdBox','PeerLocalDestinationBox','PeerSlotBox','AddPeerRouteButton','PeerRoutesList','LocalPrivateDestinationBox','LocalPrivateSlotBox','AddLocalPrivateRouteButton','LocalPrivateRoutesList','BlockedSourceIdBox','AddBlockedSourceButton','BlockedSourcesList','PlaybackGainSlider','TransmitGainSlider')
+        settings_empty_state = Get-WpfWindowLayoutInfo -Window $script:settingsWindow -ControlNames @('ProfileMigrationText','ReceivePolicyPreviewText','SettingsErrorText','RoutingEditorStatus','DeviceDiscoveryText')
+        main_empty_state = Get-WpfWindowLayoutInfo -Window $script:mainWindow -ControlNames @('CoreStatusCard','RadioStatusCard','BmStatusCard','AudioStatusCard','CurrentCallPanel','RecentCallPanel','HistoryPanel','HistoryActionsPanel','CallHistoryList','CallFavoritesList','CallTargetChoicesLabel','CallTargetChoicesScroll','BmRttMetric','BmRttValue','RxNetworkMetric','RxCallLossValue','RxSessionLossValue','PlaybackGainStatusValue','HriSourceIdentityValue','RadioDisplayValue','RadioDetailsExpander','ObservedSourcesCard','ObservedSourcesPanel')
         main_source_identity = [pscustomobject][ordered]@{
             value = (Get-UiControl 'HriSourceIdentityValue').Text
             radio_display = (Get-UiControl 'RadioDisplayValue').Text
@@ -5471,8 +5863,7 @@ if ($RenderOnly) {
     Set-MainText -Name 'TrafficDetail' -Text '离线模拟：收听 TG91，未连接 BM。'
     Set-MainText -Name 'RadioStateValue' -Text '电台状态：未知（离线模拟）'
     Set-MainText -Name 'CurrentCallValue' -Text 'TEST · DMR ID 3149876'
-    (Get-UiControl 'CurrentCallValue').ToolTip = Format-UiRadioIdentityDetails -RadioId 3149876
-    Set-MainText -Name 'CurrentCallDetail' -Text '离线模拟：组呼 · 目标 91 · TS2 · CC 1 · LC 已验证 · 接收中'
+    Set-MainText -Name 'CurrentCallDetail' -Text 'TG 91 · TS2'
     $renderRouting = [pscustomobject][ordered]@{
         local_source_id=[uint64]3149876; rx_policy_revision=[uint64]2; tx_policy_revision=[uint64]1
         rx_policy=(Copy-UiRxPolicy -Policy $renderRxPolicy)
@@ -5500,7 +5891,22 @@ if ($RenderOnly) {
         run_id='render-fixture'; current_call_valid=$true; current_call_generation=[uint64]4
         current_call_source_id=[uint64]3149876; current_call_destination_id=[uint64]91
         current_call_slot=[uint64]2; current_call_kind='G'
+        bm_rtt_valid=$true; bm_rtt_last_ms=[uint64]42; bm_rtt_sample_count=[uint64]3
+        rx_call_dmrd_valid=$true; rx_call_dmrd_received=[uint64]10; rx_call_dmrd_missing=[uint64]0
+        rx_call_dmrd_expected=[uint64]10; rx_call_dmrd_loss_pct=[double]0; rx_call_dmrd_loss_complete=$false
+        rx_session_dmrd_valid=$true; rx_session_dmrd_received=[uint64]10; rx_session_dmrd_missing=[uint64]0
+        rx_session_dmrd_expected=[uint64]10; rx_session_dmrd_loss_pct=[double]0
     }
+    Update-UiReceiveMetricsDisplay -Record $script:latestStatus
+    $callMetricsLayout = Get-WpfWindowLayoutInfo -Window $script:mainWindow -ControlNames @('BmRttMetric','BmRttValue','RxNetworkMetric','RxCallLossValue','RxSessionLossValue')
+    $sessionMetricsFixture = [pscustomobject][ordered]@{
+        current_call_valid=$false; rx_call_dmrd_valid=$false
+        rx_session_dmrd_valid=$true; rx_session_dmrd_received=[uint64]15; rx_session_dmrd_missing=[uint64]0
+        rx_session_dmrd_expected=[uint64]15; rx_session_dmrd_loss_pct=[double]0
+    }
+    Update-UiReceiveMetricsDisplay -Record $sessionMetricsFixture
+    $sessionMetricsLayout = Get-WpfWindowLayoutInfo -Window $script:mainWindow -ControlNames @('RxNetworkMetric','RxCallLossValue','RxSessionLossValue')
+    Update-UiReceiveMetricsDisplay -Record $script:latestStatus
     $historyRecord = [pscustomobject][ordered]@{
         run_id='render-fixture'; current_call_valid=$true; current_call_generation=[uint64]3
         current_call_source_id=[uint64]3149877; current_call_destination_id=[uint64]91
@@ -5514,7 +5920,7 @@ if ($RenderOnly) {
     Add-UiCallHistoryRecord -Record $historyRecord
     (Get-UiControl 'CallHistoryList').SelectedIndex = 0
     Update-UiIdentityActionState
-    Update-UiPlaybackGainDisplay -Record ([pscustomobject]@{ rx_output_gain_milli=[uint32]1000; rx_pcm_clipped_samples=[uint64]0 })
+    Update-UiPlaybackGainDisplay -Record ([pscustomobject]@{ rx_output_gain_milli=[uint32]5959; rx_pcm_clipped_samples=[uint64]21684; rx_audio_samples=[uint64]23851566 })
     $script:mainWindow.UpdateLayout()
     Save-RenderedWindow -Window $script:mainWindow -Path (Join-Path $renderDirectory 'main-routing-fixture.png')
     $script:loadingSettings = $true
@@ -5539,7 +5945,7 @@ if ($RenderOnly) {
     (Get-SettingsControl 'ProfileMigrationText').Text = '离线渲染样例：下方路由和观察卡片均为模拟数据，没有连接电台或 BM。'
     $script:loadingSettings = $false
     Set-SettingsPolicyLists
-    $script:settingsWindow.FindName('SettingsScrollViewer').ScrollToVerticalOffset(440)
+    $script:settingsWindow.FindName('SettingsScrollViewer').ScrollToVerticalOffset(360)
     (Get-SettingsControl 'GroupRoutesList').SelectedIndex = 0
     [void][System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::Render)
     $script:settingsWindow.UpdateLayout()
@@ -5564,13 +5970,21 @@ if ($RenderOnly) {
     [void][System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::Render)
     $script:mainWindow.UpdateLayout()
     Save-RenderedWindow -Window $script:mainWindow -Path (Join-Path $activeCallDirectory 'main-window.png')
+    $activeCallDisplayControls = Get-WpfWindowLayoutInfo -Window $script:mainWindow -ControlNames @('CurrentCallPanel','CurrentCallValue','CurrentCallDetail','IdentityLookupStatusValue','RecentCallPanel','HistoryPanel','HistoryActionsPanel','CallHistoryList','BlockCurrentSourceButton','RadioDetailsExpander')
     $activeCallLayout = [pscustomobject][ordered]@{
+        render_only = [bool]$RenderOnly
+        fixture_label = '模拟数据 · 未连接设备或网络'
         work_area_width = $script:workAreaWidth
         work_area_height = $script:workAreaHeight
         max_window_width = $script:maxWindowWidth
         max_window_height = $script:maxWindowHeight
         device_combo_rendered_text = $deviceComboEvidence
         main = Get-WpfWindowLayoutInfo -Window $script:mainWindow -ControlNames @('ConnectButton', 'SettingsButton', 'StopButton', 'FooterText', 'TargetSelector', 'ReceiveTargetValue', 'TransmitTargetValue', 'TransmitPermissionValue', 'ActiveLeaseValue', 'PlaybackGainStatusValue', 'ListeningHistoryPanel', 'CallChannelPanel', 'CallTargetStatusValue', 'CallTargetChoicesPanel', 'CallFavoritesList', 'FavoriteCurrentTargetButton', 'FavoriteManualGroupButton', 'ApplyCallFavoriteButton', 'RemoveCallFavoriteButton', 'ChannelFavoritesStatusValue', 'CallHistoryList', 'SetHistoryCallTargetButton', 'QueryCurrentIdentityButton', 'QueryHistoryIdentityButton', 'IdentityLookupStatusValue', 'CoreDetail', 'RadioDetail', 'AudioDetail', 'BmDetail', 'CoreStatusCard', 'RadioStatusCard', 'AudioStatusCard', 'BmStatusCard', 'HriSourceIdentityValue', 'RadioDisplayValue', 'CurrentCallLabel', 'CurrentCallValue', 'CurrentCallDetail', 'BlockCurrentSourceButton', 'TrafficCard', 'DynamicGroupPanel', 'DynamicGroupIdBox', 'DynamicGroupSlotBox', 'SetDynamicCallTargetButton', 'AddListenGroupButton', 'ActivateDynamicGroupButton', 'DynamicGroupStatus')
+        main_empty_state = $layoutInfo.main_empty_state
+        main_action_controls = $layoutInfo.main_action_controls
+        main_call_controls = $activeCallDisplayControls
+        settings_action_controls = $layoutInfo.settings_action_controls
+        settings_empty_state = $layoutInfo.settings_empty_state
         settings = $layoutInfo.settings
         main_source_identity = $layoutInfo.main_source_identity
         radio_details_expanded = [bool](Get-UiControl 'RadioDetailsExpander').IsExpanded
@@ -5578,7 +5992,7 @@ if ($RenderOnly) {
         active_call = [pscustomobject][ordered]@{
             value = (Get-UiControl 'CurrentCallValue').Text
             detail = (Get-UiControl 'CurrentCallDetail').Text
-            current_identity_details = [string](Get-UiControl 'CurrentCallValue').ToolTip
+            current_identity_details = Format-UiRadioIdentityDetails -RadioId 3149876
             current_tx_target = (Get-UiControl 'ActiveLeaseValue').Text
             next_tx_target = (Get-UiControl 'TransmitTargetValue').Text
             visual_text = @(Get-UiVisualTextValues -Root $script:mainWindow)
@@ -5587,17 +6001,29 @@ if ($RenderOnly) {
             history_identity_details = @((Get-UiControl 'CallHistoryList').Items | ForEach-Object { [string]$_.identity_details })
             favorite_items = @((Get-UiControl 'CallFavoritesList').Items | ForEach-Object { [string]$_.text })
             playback_gain_status = (Get-UiControl 'PlaybackGainStatusValue').Text
+            metrics_call = $callMetricsLayout
+            metrics_session = $sessionMetricsLayout
             observed_cards = @(
                 foreach ($card in @($script:mainWindow.FindName('ObservedSourcesPanel').Children)) {
                     if ($card -isnot [System.Windows.Controls.Border] -or $card.Child -isnot [System.Windows.Controls.StackPanel]) { continue }
                     $actions = @($card.Child.Children | Where-Object { $_ -is [System.Windows.Controls.Primitives.UniformGrid] }) | Select-Object -First 1
-                    if (-not $actions -or $actions.Children.Count -lt 3) { continue }
-                    $localButton = $actions.Children[0]; $sourceButton = $actions.Children[1]; $txButton = $actions.Children[2]
-                    $source = $localButton.Tag.Source
+                    if (-not $actions -or $actions.Children.Count -eq 0) { continue }
+                    $buttons = @($actions.Children | Where-Object { $_ -is [System.Windows.Controls.Button] })
+                    $localButton = @($buttons | Where-Object { [string]$_.Tag.Action -ceq 'toggle' }) | Select-Object -First 1
+                    $sourceButton = @($buttons | Where-Object { [string]$_.Tag.Action -ceq 'block' }) | Select-Object -First 1
+                    $txButton = @($buttons | Where-Object { [string]$_.Tag.Action -ceq 'tx' }) | Select-Object -First 1
+                    if (-not $sourceButton) { continue }
+                    $source = $sourceButton.Tag.Source
                     [pscustomobject][ordered]@{
                         source_id=[uint64]$source.source_id; destination_id=[uint64]$source.destination_id; slot=[uint64]$source.slot; kind=[string]$source.kind
-                        local_action=[string]$localButton.Content; local_action_enabled=[bool]$localButton.IsEnabled
-                        source_action=[string]$sourceButton.Content; tx_action=[string]$txButton.Content; tx_action_enabled=[bool]$txButton.IsEnabled
+                        local_action=if ($localButton) { [string]$localButton.Content } else { '' }
+                        local_action_enabled=if ($localButton) { [bool]$localButton.IsEnabled } else { $false }
+                        local_action_visible=[bool]$localButton
+                        source_action=[string]$sourceButton.Content; source_action_enabled=[bool]$sourceButton.IsEnabled
+                        tx_action=if ($txButton) { [string]$txButton.Content } else { '' }
+                        tx_action_enabled=if ($txButton) { [bool]$txButton.IsEnabled } else { $false }
+                        tx_action_visible=[bool]$txButton
+                        action_bindings=@($buttons | ForEach-Object { [pscustomobject][ordered]@{ action=[string]$_.Tag.Action; label=[string]$_.Content; source_id=[uint64]$_.Tag.Source.source_id } })
                     }
                 }
             )
@@ -5626,7 +6052,9 @@ if ($RenderOnly) {
     [void][System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::Render)
     $script:mainWindow.UpdateLayout()
     Save-RenderedWindow -Window $script:mainWindow -Path (Join-Path $renderDirectory 'radio-details-expanded.png')
-    $expandedRadioDetails = Get-WpfWindowLayoutInfo -Window $script:mainWindow -ControlNames @('RadioDetailsExpander','TrafficCard','RunValue','FreshnessValue','ControlProtocolValue','ControlStatusButton','DynamicGroupPanel','DynamicGroupIdBox','DynamicGroupSlotBox','SetDynamicCallTargetButton','AddListenGroupButton','ActivateDynamicGroupButton','DynamicGroupStatus')
+    $expandedRadioDetails = Get-WpfWindowLayoutInfo -Window $script:mainWindow -ControlNames @('RadioDetailsExpander','ObservedSourcesCard','ObservedSourcesPanel','TrafficCard','RunValue','FreshnessValue','ControlProtocolValue','ControlStatusButton','DynamicGroupPanel','DynamicGroupIdBox','DynamicGroupSlotBox','SetDynamicCallTargetButton','AddListenGroupButton','ActivateDynamicGroupButton','DynamicGroupStatus')
+    $expandedRadioDetails | Add-Member -NotePropertyName is_expanded -NotePropertyValue ([bool]$radioDetailsExpander.IsExpanded)
+    $expandedRadioDetails | Add-Member -NotePropertyName observed_source_text -NotePropertyValue @(Get-UiVisualTextValues -Root $observedSourcesPanel)
     $sourceActionEvidence = @(
         foreach ($card in @($observedSourcesPanel.Children)) {
             if ($card -isnot [System.Windows.Controls.Border] -or $card.Child -isnot [System.Windows.Controls.StackPanel]) { continue }
@@ -5635,7 +6063,9 @@ if ($RenderOnly) {
             foreach ($button in @($actions.Children)) {
                 $buttonLayout = if ($button.IsVisible) { Get-WpfElementLayoutEvidence -Window $script:mainWindow -Element $button } else { $null }
                 [pscustomobject][ordered]@{
-                    text=[string]$button.Content; is_visible=[bool]$button.IsVisible
+                    text=[string]$button.Content; action=[string]$button.Tag.Action
+                    source_id=[uint64]$button.Tag.Source.source_id; is_enabled=[bool]$button.IsEnabled
+                    is_visible=[bool]$button.IsVisible
                     actual=if ($buttonLayout) { $buttonLayout.actual } else { $null }
                     visible=if ($buttonLayout) { $buttonLayout.visible } else { $null }
                     fully_visible=if ($buttonLayout) { [bool]$buttonLayout.fully_visible } else { $false }

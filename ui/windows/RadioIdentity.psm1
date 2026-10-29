@@ -93,7 +93,11 @@ function New-RadioIdentityResult {
         [Parameter(Mandatory = $true)][ValidateSet('found', 'not_found', 'stale', 'unavailable')][string]$Status,
         [Parameter()][AllowNull()][string]$FetchedAtUtc,
         [Parameter()][AllowNull()][string]$Source = $script:RadioIdentitySource,
-        [Parameter()][bool]$CacheSaved = $true
+        [Parameter()][bool]$CacheSaved = $true,
+        [Parameter()][AllowNull()][string]$ErrorCode,
+        [Parameter()][AllowNull()][string]$ErrorMessage,
+        [Parameter()][AllowNull()][string]$ErrorType,
+        [Parameter()][AllowNull()][string]$ErrorDetail
     )
 
     $callsign = $null
@@ -137,6 +141,10 @@ function New-RadioIdentityResult {
         status = $Status
         display_name = $displayName
         cache_saved = $CacheSaved
+        error_code = $ErrorCode
+        error_message = $ErrorMessage
+        error_type = $ErrorType
+        error_detail = $ErrorDetail
     }
 }
 
@@ -486,18 +494,64 @@ function Get-RadioIdentityFallbackResult {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][uint32]$RadioId,
-        [Parameter(Mandatory = $true)][string]$CachePath
+        [Parameter(Mandatory = $true)][string]$CachePath,
+        [Parameter()][AllowNull()][string]$ErrorCode,
+        [Parameter()][AllowNull()][string]$ErrorMessage,
+        [Parameter()][AllowNull()][string]$ErrorType,
+        [Parameter()][AllowNull()][string]$ErrorDetail
     )
 
     $entry = Find-RadioIdentityCacheEntry -CachePath $CachePath -RadioId $RadioId
     if ($null -ne $entry) {
-        return ConvertFrom-RadioIdentityCacheEntry -RadioId $RadioId -Entry $entry -Status stale
+        $result = ConvertFrom-RadioIdentityCacheEntry -RadioId $RadioId -Entry $entry -Status stale
+        $result.error_code = $ErrorCode
+        $result.error_message = $ErrorMessage
+        $result.error_type = $ErrorType
+        $result.error_detail = $ErrorDetail
+        return $result
     }
     return New-RadioIdentityResult -RadioId $RadioId -Record $null -Status unavailable `
-        -FetchedAtUtc $null -Source $script:RadioIdentitySource
+        -FetchedAtUtc $null -Source $script:RadioIdentitySource -ErrorCode $ErrorCode `
+        -ErrorMessage $ErrorMessage -ErrorType $ErrorType -ErrorDetail $ErrorDetail
 }
 
-# Call only from an explicit user refresh action. Transport injection is for offline tests.
+function Get-RadioIdentityFailureInfo {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][System.Exception]$Exception)
+
+    $caught = $Exception
+    $webException = $null
+    while ($null -ne $caught) {
+        if ($caught -is [Net.WebException]) { $webException = $caught; break }
+        $caught = $caught.InnerException
+    }
+    $message = [string]$Exception.Message
+    $code = 'request_failed'
+    $shortMessage = '资料查询失败'
+    if ($Exception -is [OperationCanceledException]) {
+        $code = 'cancelled'; $shortMessage = '查询已取消'
+    } elseif (($webException -and $webException.Status -eq [Net.WebExceptionStatus]::Timeout) -or
+        $message -match '(?i)超过时间限制|超时|time.?out') {
+        $code = 'timeout'; $shortMessage = '查询超时'
+    } elseif ($message -match 'HTTP 状态 ([0-9]{3})') {
+        $code = 'http_' + $Matches[1]; $shortMessage = '资料服务返回 HTTP ' + $Matches[1]
+    } elseif ($webException) {
+        $code = 'network'; $shortMessage = '网络查询失败'
+    } elseif ($message -match '响应|结果不唯一|ID 不匹配|JSON') {
+        $code = 'invalid_response'; $shortMessage = '资料服务响应无效'
+    }
+    $detail = $message -replace '(?i)https?://[^\s]+', '[请求地址]' -replace '(?i)(token|password|authorization)\s*[:=]\s*[^\s,;]+', '$1=[已隐藏]'
+    $detail = $detail -replace '[\x00-\x1F\x7F]', ' '
+    if ($detail.Length -gt 240) { $detail = $detail.Substring(0, 240) }
+    return [pscustomobject]@{
+        error_code = $code
+        error_message = $shortMessage
+        error_type = $Exception.GetType().FullName
+        error_detail = $detail
+    }
+}
+
+# Call for one received or explicitly refreshed ID. Transport injection is for offline tests.
 function Invoke-RadioIdentityQuery {
     [CmdletBinding()]
     param(
@@ -505,6 +559,7 @@ function Invoke-RadioIdentityQuery {
         [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string]$CachePath,
         [Parameter()][ValidateRange(1, 5)][int]$TimeoutSec = 5,
         [Parameter()][scriptblock]$Transport,
+        [Parameter()][ValidateNotNullOrEmpty()][string]$ApiBaseUri = 'https://radioid.net/api/dmr/user/',
         [Parameter()][ValidateNotNullOrEmpty()][string]$UserAgent = $script:RadioIdentityUserAgent
     )
 
@@ -512,8 +567,15 @@ function Invoke-RadioIdentityQuery {
     if ($UserAgent -notmatch '(?i)WIREX\s+Bridge' -or $UserAgent -notmatch '(?i)contact\s*:') {
         throw 'User-Agent 必须标识 WIREX Bridge 并包含联系地址。'
     }
+    $endpoint = $null
+    if (-not [Uri]::TryCreate($ApiBaseUri, [UriKind]::Absolute, [ref]$endpoint) -or
+        -not [string]::IsNullOrEmpty($endpoint.UserInfo) -or
+        ($ApiBaseUri -cne 'https://radioid.net/api/dmr/user/' -and
+            -not ($endpoint.Scheme -ceq 'http' -and $endpoint.IsLoopback))) {
+        throw 'RadioID 查询地址只接受官方 HTTPS 地址或本机 HTTP 测试夹具。'
+    }
     $escapedId = [Uri]::EscapeDataString([string]$RadioId)
-    $uri = "https://radioid.net/api/dmr/user/?id=$escapedId&id_sel=%3D"
+    $uri = $ApiBaseUri.TrimEnd('/') + "/?id=$escapedId&id_sel=%3D"
     $request = [pscustomobject][ordered]@{
         method = 'GET'
         uri = $uri
@@ -544,7 +606,11 @@ function Invoke-RadioIdentityQuery {
                 source = $script:RadioIdentitySource; fetched_at_utc = $fetchedAt; status = 'not_found'
             }
             try { Save-RadioIdentityCacheEntry -CachePath $CachePath -Entry $entry }
-            catch { return New-RadioIdentityResult -RadioId $RadioId -Record $null -Status not_found -FetchedAtUtc $fetchedAt -CacheSaved $false }
+            catch {
+                return New-RadioIdentityResult -RadioId $RadioId -Record $null -Status not_found `
+                    -FetchedAtUtc $fetchedAt -CacheSaved $false -ErrorCode cache_write `
+                    -ErrorMessage '本机缓存保存失败' -ErrorType $_.Exception.GetType().FullName -ErrorDetail $_.Exception.Message
+            }
             return New-RadioIdentityResult -RadioId $RadioId -Record $entry -Status not_found -FetchedAtUtc $fetchedAt
         }
         if ($parsed.state -ne 'found') { throw "RadioID 查询结果不唯一或 ID 不匹配（$($parsed.state)）。" }
@@ -556,10 +622,17 @@ function Invoke-RadioIdentityQuery {
             source = $script:RadioIdentitySource; fetched_at_utc = $fetchedAt; status = 'found'
         }
         try { Save-RadioIdentityCacheEntry -CachePath $CachePath -Entry $entry }
-        catch { return New-RadioIdentityResult -RadioId $RadioId -Record $entry -Status found -FetchedAtUtc $fetchedAt -CacheSaved $false }
+        catch {
+            return New-RadioIdentityResult -RadioId $RadioId -Record $entry -Status found `
+                -FetchedAtUtc $fetchedAt -CacheSaved $false -ErrorCode cache_write `
+                -ErrorMessage '本机缓存保存失败' -ErrorType $_.Exception.GetType().FullName -ErrorDetail $_.Exception.Message
+        }
         return New-RadioIdentityResult -RadioId $RadioId -Record $entry -Status found -FetchedAtUtc $fetchedAt
     } catch {
-        return Get-RadioIdentityFallbackResult -RadioId $RadioId -CachePath $CachePath
+        $failure = Get-RadioIdentityFailureInfo -Exception $_.Exception
+        return Get-RadioIdentityFallbackResult -RadioId $RadioId -CachePath $CachePath `
+            -ErrorCode $failure.error_code -ErrorMessage $failure.error_message `
+            -ErrorType $failure.error_type -ErrorDetail $failure.error_detail
     }
 }
 

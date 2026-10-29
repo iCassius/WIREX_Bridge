@@ -1,5 +1,13 @@
 # WIREX Bridge 交接入口
 
+## R112-A alpha10 集成当前状态（2026-10-29）
+
+本轮从 `main` / `9c8ea32263717c861ebe5f664e55fab54bdd7774` 开始。Native 往返与接收指标阶段已提交并普通推送为 `a726472`；其余冻结的身份、UI、profile 与 release 文件正在集成。alpha10 增加来话 DMR ID 后台 RadioID 查询和查询退出收尾、BM RTT/DMRD 接收/播放队列/既有削波数据，以及单页 UI 精简。完整实施、离线证据和验收边界见 [R112-A 集成总交接](docs/R112_总交接.md)。
+
+身份查询和 UI 使用 PowerShell、WPF Dispatcher、RenderOnly 与本机 HTTP 夹具验证；没有发起真实 RadioID 或 BM 查询，没有连接 COM、真实音频设备，没有触发 PTT/RF。FTX-1 LCD 呼号显示、FM RF 发射与 C4FM RF 发射链尚未实现。新窗口截图使用模拟数据：`build/_work/R112-A-ui-render/configured-active-call/main-window.png` 和 `build/_work/R112-A-ui-render/work-area-1024x728/configured-active-call/main-window.png`。alpha10 profile 会用三份 R112-A 说明替换三份已过期的 R111 发行说明；个人连接/音量配置、收藏、缓存、路径指针、密码和测试 helper 不进入通用包。
+
+源码 clean full39、alpha10 实际包和根包审计尚待集成提交后完成。alpha9 仍是当前可用包；在 alpha10 根审计通过前，不切换本机 `bridge-directory.txt`，不归档 alpha9。没有生成 ZIP、tag 或 GitHub Release。
+
 ## R111 alpha.9 集成当前状态（2026-10-29）
 
 本轮从 `main` / `d2c098452247f26fbe8a0d23d84b5c1f415ce747` 开始。RadioIdentity、UI/发布集成和文案修正分别经 `222f71d`、`e7ec9a0`、`c4597e9` 提交；最终交接文档提交 `15e60753f201d92937d5ca3ccaf3d5ee0d29c313`。这些提交已普通推送到 `origin/main`，本机 `main` 与远端均为 `15e60753`，源码工作树干净。clean full39、alpha.9 通用包和唯一 CMD 包级检查均已通过，alpha.9 是当前验收包。详细证据见 [R111 alpha.9 集成总交接](docs/R111_总交接.md) 与 [alpha.9 构建和交付审计](docs/R111_alpha9_最终交付审计.md)。

@@ -42,6 +42,7 @@ $script:alpha6TestNames = @($script:alpha5TestNames + 'talkgroup_routing_test' +
 $script:alpha7TestNames = @($script:alpha6TestNames)
 $script:alpha8TestNames = @($script:alpha7TestNames)
 $script:alpha9TestNames = @($script:alpha8TestNames)
+$script:alpha10TestNames = @($script:alpha9TestNames)
 
 function Set-PublishProfile {
     param([Parameter(Mandatory=$true)][string]$Tag)
@@ -192,7 +193,26 @@ function Set-PublishProfile {
             $script:expectedDirectories = @($alpha8.Directories)
             $script:expectedTestNames = $script:alpha9TestNames
         }
-        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, v0.1.0-alpha.8, and v0.1.0-alpha.9 release profiles are supported.' }
+        'v0.1.0-alpha.10' {
+            $alpha9 = Set-PublishProfile -Tag 'v0.1.0-alpha.9'
+            $assetMap = [ordered]@{}
+            $excludedAlpha9Docs = @(
+                'docs/R111_UI与音量.md',
+                'docs/R111_BM订阅与收听优先级.md',
+                'docs/R111_用户资料与电台显示.md'
+            )
+            foreach ($path in $alpha9.AssetPathMap.Keys) {
+                if ($excludedAlpha9Docs -cnotcontains ([string]$path)) { $assetMap[$path] = $alpha9.AssetPathMap[$path] }
+            }
+            $assetMap['docs/R112_A_身份查询实施.md'] = 'docs__r112-a-identity-lookup.md'
+            $assetMap['docs/R112_A_网络音频指标.md'] = 'docs__r112-a-network-audio-metrics.md'
+            $assetMap['docs/R112_A_UI精简.md'] = 'docs__r112-a-ui-compact.md'
+            $script:publishTag = $Tag
+            $script:assetPathMap = $assetMap
+            $script:expectedDirectories = @($alpha9.Directories)
+            $script:expectedTestNames = $script:alpha10TestNames
+        }
+        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, v0.1.0-alpha.8, v0.1.0-alpha.9, and v0.1.0-alpha.10 release profiles are supported.' }
     }
     return [pscustomobject]@{
         Tag = $script:publishTag

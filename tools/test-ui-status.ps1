@@ -2,6 +2,7 @@
 param()
 
 $ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName PresentationFramework
 function Assert-UiStatus {
     param([bool]$Condition, [string]$Message)
     if (-not $Condition) { throw $Message }
@@ -25,10 +26,18 @@ foreach ($functionAst in $found) { Invoke-Expression $functionAst.Extent.Text }
 function Update-UiPlaybackGainDisplay {
     param([object]$Record=$null)
 }
+function Update-UiReceiveMetricsDisplay {
+    param([object]$Record=$null)
+}
 function Add-UiCallHistoryRecord {
     param([Parameter(Mandatory=$true)][object]$Record)
 }
 function Update-UiIdentityActionState { }
+function Set-UiIdentityRowVisibility {
+    param([string]$Row,[object]$Visibility=$null)
+    if (-not $script:mockIdentityRows) { $script:mockIdentityRows = @{} }
+    $script:mockIdentityRows[$Row] = if ($null -eq $Visibility) { 'Visible' } else { [string]$Visibility }
+}
 function Update-DynamicGroupControls { }
 function Complete-UiIdentityQuery { }
 function Format-UiRadioIdentity {
@@ -203,7 +212,9 @@ $valid.timestamp_utc_ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 Apply-StatusRecord -Record $valid
 Assert-UiStatus ($script:currentRunId -ceq '4120-78123' -and $script:lastSequence -eq 1) '首条有效运行记录未锁定 run_id 与序号。'
 $acceptedBmText = $script:mockUiFields['BmValue']
-Assert-UiStatus ($script:mockUiFields['CurrentCallValue'] -ceq '当前没有已接受的 BM 来话') '空闲记录没有清空当前来话栏。'
+Assert-UiStatus ([string]::IsNullOrEmpty([string]$script:mockUiFields['CurrentCallValue']) -and
+    [string]::IsNullOrEmpty([string]$script:mockUiFields['CurrentCallDetail']) -and
+    $script:mockIdentityRows['current'] -ceq 'Collapsed') '空闲记录应隐藏空的当前来话栏。'
 
 $copy = $valid.PSObject.Copy(); $copy.run_id = '4120-99999'; $copy.seq = [int64]2; $copy.bm_state = 'ready'
 Apply-StatusRecord -Record $copy
@@ -233,7 +244,8 @@ $active.lcd_source_identity = [pscustomobject][ordered]@{
 }
 Apply-StatusRecord -Record $active
 Assert-UiStatus ($script:lastSequence -eq 3 -and $script:mockUiFields['CurrentCallValue'] -ceq 'DMR ID 1234') '活动来话没有显示数字 DMR ID。'
-Assert-UiStatus ($script:mockUiFields['CurrentCallDetail'] -match '目标 91.*TS2.*CC 1.*LC 已验证.*接收中') '活动来话没有显示目标、时隙、CC、LC 和阶段。'
+Assert-UiStatus ($script:mockUiFields['CurrentCallDetail'] -match 'TG 91.*TS2' -and
+    $script:mockUiFields['CurrentCallDetail'] -notmatch 'CC|LC|接收中|缓冲中|未知') '活动来话应只显示组别和时隙等实际通话信息。'
 Assert-UiStatus ($script:mockUiFields['HriSourceIdentityValue'] -ceq 'ID1234 · 已准备' -and
     $script:mockUiFields['RadioDisplayValue'] -ceq 'FTX-1 屏幕：未知') '活动来话没有显示已准备的 HRI 来源标签并将屏显保留为未知。'
 
@@ -245,27 +257,34 @@ $ended.current_call_slot = [int64]0; $ended.current_call_kind = 'none'; $ended.c
 $ended.current_call_link_control_validated = $false; $ended.current_call_color_code_known = $false
 $ended.current_call_generation = [int64]0
 Apply-StatusRecord -Record $ended
-Assert-UiStatus ($script:lastSequence -eq 4 -and $script:mockUiFields['CurrentCallValue'] -ceq '当前没有活动 BM 话者') 'BM EOT 后仍显示上一位活动话者。'
-Assert-UiStatus ($script:mockUiFields['CurrentCallDetail'] -match '来话已结束.*尾音正在排空') '本机音频排空阶段没有与 BM 活动话者分开显示。'
+Assert-UiStatus ($script:lastSequence -eq 4 -and [string]::IsNullOrEmpty([string]$script:mockUiFields['CurrentCallValue']) -and
+    [string]::IsNullOrEmpty([string]$script:mockUiFields['CurrentCallDetail']) -and
+    $script:mockIdentityRows['current'] -ceq 'Collapsed') 'BM EOT 后应隐藏已结束的活动话者。'
 Assert-UiStatus ($script:mockUiFields['HriSourceIdentityValue'] -ceq 'ID1234 · 已准备') 'BM EOT 时过早清除了仍待 HRI T0 收尾的标签。'
 
 $idle = $valid.PSObject.Copy()
 $idle.seq = [int64]5; $idle.event = 'runtime_snapshot'; $idle.timestamp_utc_ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 Apply-StatusRecord -Record $idle
-Assert-UiStatus ($script:lastSequence -eq 5 -and $script:mockUiFields['CurrentCallValue'] -ceq '当前没有已接受的 BM 来话') '排空结束后当前来话栏没有清空。'
+Assert-UiStatus ($script:lastSequence -eq 5 -and [string]::IsNullOrEmpty([string]$script:mockUiFields['CurrentCallValue']) -and
+    $script:mockIdentityRows['current'] -ceq 'Collapsed') '排空结束后应隐藏空的当前来话栏。'
 
 $legacy.timestamp_utc_ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); $legacy.seq = [int64]6
 Apply-StatusRecord -Record $legacy
-Assert-UiStatus ($script:lastSequence -eq 6 -and $script:mockUiFields['CurrentCallValue'] -ceq '当前核心未提供活动来话状态') '缺少整组新字段的旧 native 状态没有显示为无活动信息。'
+Assert-UiStatus ($script:lastSequence -eq 6 -and [string]::IsNullOrEmpty([string]$script:mockUiFields['CurrentCallValue']) -and
+    $script:mockIdentityRows['current'] -ceq 'Collapsed') '旧 native 状态缺少来话字段时应隐藏空的当前来话栏。'
 Assert-UiStatus ($script:mockUiFields['HriSourceIdentityValue'] -ceq '当前核心未提供来源标签字段' -and
-    $script:mockUiFields['RadioDisplayValue'] -ceq 'FTX-1 屏幕：未知') '旧核心缺少身份字段时没有显示兼容状态和未知屏显。'
+    $script:mockUiFields['RadioDisplayValue'] -ceq 'FTX-1 屏幕：未知' -and
+    $script:mockIdentityRows['recent'] -ceq 'Collapsed') '旧核心的身份状态数据应保留在折叠区，不出现在主界面。'
 
 $script:lastStatusUtc = [DateTime]::UtcNow.AddSeconds(-4)
 $script:mockUiFields['CurrentCallValue'] = 'DMR ID 1234'
 Set-StaleDisplay
-Assert-UiStatus ($script:mockUiFields['CurrentCallValue'] -ceq '活动来话状态已过期') '状态过期时仍显示旧活动 BM 话者。'
-Assert-UiStatus ($script:mockUiFields['HriSourceIdentityValue'] -ceq '状态已过期，旧标签已清除' -and
-    $script:mockUiFields['RadioDisplayValue'] -ceq 'FTX-1 屏幕：未知') '状态过期时仍显示旧 HRI 来源标签。'
+Assert-UiStatus ([string]::IsNullOrEmpty([string]$script:mockUiFields['CurrentCallValue']) -and
+    $script:mockIdentityRows['current'] -ceq 'Collapsed') '状态过期时仍显示旧活动 BM 话者。'
+Assert-UiStatus ([string]::IsNullOrEmpty([string]$script:mockUiFields['HriSourceIdentityValue']) -and
+    [string]::IsNullOrEmpty([string]$script:mockUiFields['RadioDisplayValue']) -and
+    $script:mockIdentityRows['recent'] -ceq 'Collapsed') ('过期身份状态应清空可见来话行并隐藏屏显区域：recent={0}, current={1}, display={2}' -f `
+        $script:mockIdentityRows['recent'],$script:mockIdentityRows['current'],$script:mockUiFields['RadioDisplayValue'])
 
 function Complete-PreparationStop {}
 function Complete-UiDeviceDiscovery {}
@@ -288,8 +307,9 @@ $script:statusStream = $null
 $script:targetLabel = '启动目标'
 $script:mockUiFields['CurrentCallValue'] = 'DMR ID 1234'
 On-UiTimerTick
-Assert-UiStatus ($script:mockUiFields['CurrentCallValue'] -ceq '核心已退出' -and
-    $script:mockUiFields['CurrentCallDetail'] -ceq '活动 BM 来话状态已清除。') '核心意外退出时仍显示上次活动 BM 话者。'
+Assert-UiStatus ([string]::IsNullOrEmpty([string]$script:mockUiFields['CurrentCallValue']) -and
+    [string]::IsNullOrEmpty([string]$script:mockUiFields['CurrentCallDetail']) -and
+    $script:mockIdentityRows['current'] -ceq 'Collapsed') '核心意外退出时仍显示上次活动 BM 话者。'
 Assert-UiStatus ($script:mockUiFields['HriSourceIdentityValue'] -ceq '本次运行已结束' -and
     $script:mockUiFields['RadioDisplayValue'] -ceq 'FTX-1 屏幕：未知') '核心退出时仍显示旧 HRI 来源标签。'
 

@@ -463,6 +463,87 @@ try {
         'alpha.9 publisher rejects the local test HTTP helper from the generic package'
     Remove-Item -LiteralPath $identityTestHelper -ErrorAction Stop
 
+    $alpha10Root = Join-Path $testRoot 'package-alpha10'
+    Copy-Item -LiteralPath $alpha9Root -Destination $alpha10Root -Recurse
+    $alpha10Profile = Set-PublishProfile -Tag 'v0.1.0-alpha.10'
+    $alpha10R111Paths = @(
+        'docs/R111_UI与音量.md',
+        'docs/R111_BM订阅与收听优先级.md',
+        'docs/R111_用户资料与电台显示.md'
+    )
+    foreach ($relativePath in $alpha10R111Paths) {
+        Remove-Item -LiteralPath (Join-Path $alpha10Root $relativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar)) -Force -ErrorAction Stop
+    }
+    foreach ($relativePath in @(
+        'docs/R112_A_身份查询实施.md',
+        'docs/R112_A_网络音频指标.md',
+        'docs/R112_A_UI精简.md'
+    )) {
+        $fullPath = Join-Path $alpha10Root $relativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+        $parent = Split-Path -Parent $fullPath
+        if (-not [System.IO.Directory]::Exists($parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+        Write-Utf8NoBom -Path $fullPath -Text ('synthetic alpha.10 package content: ' + $relativePath)
+    }
+    $alpha10ReadmePath = Join-Path $alpha10Root 'README.md'
+    Write-Utf8NoBom -Path $alpha10ReadmePath -Text 'synthetic alpha.10 package README'
+    $alpha10LauncherPath = Join-Path $alpha10Root 'tools\start-wirex-bridge.ps1'
+    $alpha10LauncherText = [System.IO.File]::ReadAllText($alpha10LauncherPath, [System.Text.Encoding]::UTF8)
+    Write-Utf8NoBom -Path $alpha10LauncherPath -Text $alpha10LauncherText.Replace('alpha.9', 'alpha.10')
+
+    $alpha10ManifestPath = Join-Path $alpha10Root 'manifest.json'
+    $alpha10Manifest = [System.IO.File]::ReadAllText($alpha10ManifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $alpha10Manifest.files = @($alpha10Manifest.files | Where-Object {
+        [string]$_.path -cne 'README.md' -and [string]$_.path -cne 'tools/start-wirex-bridge.ps1' -and
+        $alpha10R111Paths -cnotcontains [string]$_.path
+    })
+    foreach ($relativePath in @('README.md', 'tools/start-wirex-bridge.ps1',
+        'docs/R112_A_身份查询实施.md', 'docs/R112_A_网络音频指标.md', 'docs/R112_A_UI精简.md')) {
+        $fullPath = Join-Path $alpha10Root $relativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+        $item = Get-Item -LiteralPath $fullPath
+        $alpha10Manifest.files += ,([ordered]@{
+            path = $relativePath
+            asset_name = (Get-PublishAssetName -RelativePath $relativePath)
+            length_bytes = [long]$item.Length
+            sha256 = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            source = 'synthetic test content'
+        })
+    }
+    $alpha10Manifest.version = 'v0.1.0-alpha.10'
+    $alpha10Manifest.tag_candidate = 'v0.1.0-alpha.10'
+    $alpha10Manifest.build.passed_test_count = $alpha10Profile.TestNames.Count
+    $alpha10Manifest.build.passed_tests = @($alpha10Profile.TestNames)
+    $alpha10Manifest | Add-Member -NotePropertyName excluded_private_files -NotePropertyValue @(
+        'private/bm-device-password.txt', 'connection-profile.json', 'audio-settings.json',
+        'private/user-config-directory.txt', 'private/user-config/radio-identity-cache.json',
+        'private/user-config/channel-favorites.json', 'private/user-config/password-file-path.txt'
+    ) -Force
+    $validAlpha10ManifestJson = ConvertTo-Json -InputObject $alpha10Manifest -Depth 12
+    Write-Utf8NoBom -Path $alpha10ManifestPath -Text ($validAlpha10ManifestJson + "`n")
+    $alpha10Package = Assert-PublishPackage -PackageRoot $alpha10Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.10'
+    Assert-True ($alpha10Package.Assets.Count -eq 33) 'alpha.10 package accepts 32 files plus standalone manifest'
+    Assert-True ($alpha10Profile.AssetPathMap.Count -eq $alpha9Profile.AssetPathMap.Count) `
+        'alpha.10 publisher profile replaces three R111 documents with three R112 documents'
+    Assert-True (@($alpha10Package.Assets | Where-Object { $_.Name -match '\.cmd$' }).Count -eq 1 -and
+        @($alpha10Package.Assets | Where-Object { $_.Name -like 'docs__r112-*' }).Count -eq 3) `
+        'alpha.10 publisher accepts one command and all three R112 document assets'
+    Assert-True (@($alpha10Profile.AssetPathMap.Keys | Where-Object { [string]$_ -like 'docs/R111_*' }).Count -eq 0) `
+        'alpha.10 publisher excludes the three superseded R111 documents'
+    Assert-True (@($alpha10Profile.AssetPathMap.Keys | Where-Object {
+        [string]$_ -match '(^|/)test[^/]*\.(?:cmd|ps1)$'
+    }).Count -eq 0) 'alpha.10 publisher allowlist excludes every test entry script'
+    Assert-True ($alpha10Package.Manifest.build.passed_tests.Count -eq 39 -and
+        [string]::Join('|', @($alpha10Package.Manifest.build.passed_tests)) -ceq
+            [string]::Join('|', @($alpha9Profile.TestNames))) `
+        'alpha.10 publisher profile preserves all 39 native tests in order'
+    Assert-Throws { Assert-PublishPackage -PackageRoot $alpha10Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.9' } `
+        'alpha.10 package cannot pass the alpha.9 profile'
+    $alpha10PrivateDirectory = Join-Path $alpha10Root 'private\user-config'
+    New-Item -ItemType Directory -Path $alpha10PrivateDirectory -Force | Out-Null
+    Write-Utf8NoBom -Path (Join-Path $alpha10PrivateDirectory 'password-file-path.txt') -Text 'synthetic test path only'
+    Assert-Throws { Assert-PublishPackage -PackageRoot $alpha10Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.10' } `
+        'alpha.10 publisher rejects a personal password-path file in the generic package'
+    Remove-Item -LiteralPath $alpha10PrivateDirectory -Recurse -Force -ErrorAction Stop
+
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.9')
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.1')
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.1')
@@ -594,7 +675,7 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $preflightRepo 'tools') -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $preflightRepo 'docs/releases') -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'download-release.ps1') -Destination (Join-Path $preflightRepo 'tools/download-release.ps1')
-    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9')) {
+    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10')) {
         Write-Utf8NoBom -Path (Join-Path $preflightRepo ('docs/releases/' + $tag + '.md')) -Text ('Synthetic offline release notes for ' + $tag + "`n")
     }
     $gitInit = @(& git -C $preflightRepo init --quiet 2>&1)
@@ -603,7 +684,7 @@ try {
         @('config', 'user.name', 'WIREX Offline Test'),
         @('config', 'user.email', 'wirex-offline-test@example.invalid'),
         @('remote', 'add', 'origin', $script:repositoryUrl),
-        @('add', '--', 'tools/download-release.ps1', 'docs/releases/v0.1.0-alpha.1.md', 'docs/releases/v0.1.0-alpha.2.md', 'docs/releases/v0.1.0-alpha.3.md', 'docs/releases/v0.1.0-alpha.4.md', 'docs/releases/v0.1.0-alpha.5.md', 'docs/releases/v0.1.0-alpha.6.md', 'docs/releases/v0.1.0-alpha.7.md', 'docs/releases/v0.1.0-alpha.8.md', 'docs/releases/v0.1.0-alpha.9.md'),
+        @('add', '--', 'tools/download-release.ps1', 'docs/releases/v0.1.0-alpha.1.md', 'docs/releases/v0.1.0-alpha.2.md', 'docs/releases/v0.1.0-alpha.3.md', 'docs/releases/v0.1.0-alpha.4.md', 'docs/releases/v0.1.0-alpha.5.md', 'docs/releases/v0.1.0-alpha.6.md', 'docs/releases/v0.1.0-alpha.7.md', 'docs/releases/v0.1.0-alpha.8.md', 'docs/releases/v0.1.0-alpha.9.md', 'docs/releases/v0.1.0-alpha.10.md'),
         @('commit', '--quiet', '-m', 'offline publisher preflight fixture')
     )) {
         $previousErrorActionPreference = $ErrorActionPreference
@@ -616,7 +697,7 @@ try {
     $preflightCommit = [string](@(& git -C $preflightRepo rev-parse HEAD 2>$null)[0]).Trim()
     if ($LASTEXITCODE -ne 0 -or $preflightCommit -cnotmatch '^[0-9a-f]{40}$') { throw 'Could not identify the temporary offline commit.' }
     New-Item -ItemType Directory -Path (Join-Path $preflightRepo 'build/_work') -Force | Out-Null
-    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9')) {
+    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10')) {
         $sourcePackage = switch ($tag) {
             'v0.1.0-alpha.1' { $packageRoot; break }
             'v0.1.0-alpha.2' { $alpha2Root; break }
@@ -627,6 +708,7 @@ try {
             'v0.1.0-alpha.7' { $alpha7Root; break }
             'v0.1.0-alpha.8' { $alpha8Root; break }
             'v0.1.0-alpha.9' { $alpha9Root; break }
+            'v0.1.0-alpha.10' { $alpha10Root; break }
         }
         $targetPackage = Join-Path $preflightRepo ('build/releases/' + $tag)
         $targetParent = Split-Path -Parent $targetPackage
@@ -642,6 +724,7 @@ try {
             'v0.1.0-alpha.7' { $validAlpha7ManifestJson; break }
             'v0.1.0-alpha.8' { $validAlpha8ManifestJson; break }
             'v0.1.0-alpha.9' { $validAlpha9ManifestJson; break }
+            'v0.1.0-alpha.10' { $validAlpha10ManifestJson; break }
         }
         $preflightManifest = $sourceManifestText | ConvertFrom-Json
         $preflightManifest.source.commit = $preflightCommit
@@ -661,7 +744,7 @@ try {
         $script:credentialAttempted = $true
         throw 'OFFLINE_TEST_CREDENTIAL_ACCESS_BLOCKED'
     }
-    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9')) {
+    foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10')) {
         $script:preflightBoundaryReached = $false
         $boundaryMessage = ''
         try {

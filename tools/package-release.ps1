@@ -59,6 +59,7 @@ $script:alpha6TestNames = @($script:alpha5TestNames + 'talkgroup_routing_test' +
 $script:alpha7TestNames = @($script:alpha6TestNames)
 $script:alpha8TestNames = @($script:alpha7TestNames)
 $script:alpha9TestNames = @($script:alpha8TestNames)
+$script:alpha10TestNames = @($script:alpha9TestNames)
 $script:activeReleaseVersion = 'v0.1.0-alpha.1'
 
 function Get-ReleaseProfile {
@@ -428,7 +429,59 @@ function Get-ReleaseProfile {
                 )
             }
         }
-        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, v0.1.0-alpha.8, and v0.1.0-alpha.9 release profiles are supported.' }
+        'v0.1.0-alpha.10' {
+            $alpha9 = Get-ReleaseProfile -Version 'v0.1.0-alpha.9'
+            $alpha10R111Paths = @(
+                'docs/R111_UI与音量.md',
+                'docs/R111_BM订阅与收听优先级.md',
+                'docs/R111_用户资料与电台显示.md'
+            )
+            $alpha10SourceFiles = @($alpha9.SourceFiles | Where-Object {
+                [string]$_.Destination -cne 'README.md' -and
+                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha9.cmd' -and
+                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha9.ps1' -and
+                $alpha10R111Paths -cnotcontains ([string]$_.Destination).Replace('\', '/')
+            }) + @(
+                @{ Source='docs\releases\v0.1.0-alpha.10-package-README.md'; Destination='README.md' },
+                @{ Source='tools\start-wirex-bridge-alpha10.cmd'; Destination='start-wirex-bridge.cmd' },
+                @{ Source='tools\start-wirex-bridge-alpha10.ps1'; Destination='tools/start-wirex-bridge.ps1' },
+                @{ Source='docs\R112_A_身份查询实施.md'; Destination='docs\R112_A_身份查询实施.md' },
+                @{ Source='docs\R112_A_网络音频指标.md'; Destination='docs\R112_A_网络音频指标.md' },
+                @{ Source='docs\R112_A_UI精简.md'; Destination='docs\R112_A_UI精简.md' }
+            )
+            $alpha10PackageFiles = @($alpha9.PackageFiles | Where-Object { $alpha10R111Paths -cnotcontains ([string]$_).Replace('\', '/') }) + @(
+                'docs/R112_A_身份查询实施.md',
+                'docs/R112_A_网络音频指标.md',
+                'docs/R112_A_UI精简.md'
+            )
+            $alpha10AssetMap = [ordered]@{}
+            foreach ($path in $alpha9.AssetMap.Keys) {
+                if ($alpha10R111Paths -cnotcontains ([string]$path)) { $alpha10AssetMap[$path] = $alpha9.AssetMap[$path] }
+            }
+            $alpha10AssetMap['docs/R112_A_身份查询实施.md'] = 'docs__r112-a-identity-lookup.md'
+            $alpha10AssetMap['docs/R112_A_网络音频指标.md'] = 'docs__r112-a-network-audio-metrics.md'
+            $alpha10AssetMap['docs/R112_A_UI精简.md'] = 'docs__r112-a-ui-compact.md'
+            $alpha10NotIncluded = @($alpha9.NotIncluded | ForEach-Object { ([string]$_).Replace('alpha.9', 'alpha.10') })
+            $alpha10NotIncluded += @(
+                'BM RTT is a client-measured round-trip estimate; it does not report one-way delay or server CPU load',
+                'DMRD loss is inferred only between accepted sequence numbers; filtered, busy, and post-watchdog traffic is not counted as lost packets',
+                'The new metrics do not change DSP, audio scheduling, or the established voice path',
+                'FTX-1 LCD source-identity display is not implemented',
+                'FM and C4FM RF transmit paths are not implemented'
+            )
+            return [pscustomobject]@{
+                Version = 'v0.1.0-alpha.10'
+                TestNames = $script:alpha10TestNames
+                SourceFiles = $alpha10SourceFiles
+                PackageFiles = $alpha10PackageFiles
+                Directories = @($alpha9.Directories)
+                AssetMap = $alpha10AssetMap
+                PackageReadme = 'docs\releases\v0.1.0-alpha.10-package-README.md'
+                ReleaseScope = 'R112 A: query one incoming DMR ID in the background and display measured BM round-trip, accepted DMRD sequence-loss, receive-queue, and existing PCM clipping data'
+                NotIncluded = $alpha10NotIncluded
+            }
+        }
+        default { throw 'Only v0.1.0-alpha.1, v0.1.0-alpha.2, v0.1.0-alpha.3, v0.1.0-alpha.4, v0.1.0-alpha.5, v0.1.0-alpha.6, v0.1.0-alpha.7, v0.1.0-alpha.8, v0.1.0-alpha.9, and v0.1.0-alpha.10 release profiles are supported.' }
     }
 }
 
@@ -661,7 +714,7 @@ function Assert-ReleasePackageInventory {
     $fixturePath = Join-Path $PackageRoot 'private\device-y.bin'
     $fixtureHash = Test-ApprovedYFixture -Path $fixturePath
     $forbidden = @($actualFiles | Where-Object {
-        $_ -match '(^|/)(?:bm-device-password\.txt|connection-profile\.json|audio-settings\.json)$' -or
+        $_ -match '(^|/)(?:bm-device-password\.txt|password-file-path\.txt|connection-profile\.json|audio-settings\.json)$' -or
         $_ -match '(^|/)(?:radio-identity-cache\.json|channel-favorites\.json|user-config-directory\.txt|test-radio-identity(?:-http-server)?\.ps1)$' -or
         $_ -match '^private/user-config/' -or
         $_ -match '(^|/)logs/|\.log$'
@@ -785,6 +838,14 @@ function Invoke-ReleasePackaging {
                 'private/user-config-directory.txt',
                 'private/user-config/radio-identity-cache.json',
                 'private/user-config/channel-favorites.json'
+            )
+        }
+        if ($Version -ceq 'v0.1.0-alpha.10') {
+            $excludedPrivateFiles += @(
+                'private/user-config-directory.txt',
+                'private/user-config/radio-identity-cache.json',
+                'private/user-config/channel-favorites.json',
+                'private/user-config/password-file-path.txt'
             )
         }
         $sourceText = @"
