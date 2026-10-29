@@ -1,5 +1,17 @@
 # WIREX Bridge 交接入口
 
+## R114 alpha.11 LCD 实测与日志审计（2026-10-30）
+
+用户确认 alpha.11 App 呼号显示正常；FTX-1 LCD 两个内容区仍为空白。截图左上角有一个红色 WIRES-X 图标，顶部另有 WIRES-X HRI、DIRECT、HRI MODE 和 FM 字样；当前没有证据把红色图标对应到具体底层故障。详细记录见 [R114 LCD 实测审计](docs/R114_LCD实测审计.md)。
+
+本轮只审计了指定 Native JSONL 的身份字段，共 285 条记录。8 个接收代次（1、3、5、7、9、11、13、15）均经历 `serial_write_state=pending` 到 `sent`；6 次使用 `dmr_id` 回退，2 次 cache hit 后使用 `callsign`（代次 13、15）。日志所有 `lcd_source_identity.display` 值仍为 `unknown`。`sent` 记录完整 T 帧写出；它没有记录 LCD 的实际绘制结果。该 JSONL 没有身份 `cache_upsert`/ACK 专属事件或字段，无法据此确认 UI→Native 的逐项发送和 ACK 状态。收尾从 seq 282 `shutdown_requested` 到 seq 285 `stopped`，BM/HRI 进入 stopped 且 HRI 串口关闭；8 通来话均有 start/end 计数。seq 253 同时记录 `downlink_call_bounded_cleanup_incomplete` 与 `rx_cleanup_result=completed`，原因待查。该 JSONL 没有进程退出码字段。未读取运行目录中的配置正文，未启动设备、BM 或音频，也未改用户配置；alpha.11 源码保持不变。
+
+官方 `HRI_UART.dll` 的本轮静态查询补充了来话回调输入进入 PC 侧字段/状态处理的证据：`FUN_1001b190`（`ev_1661a89f0094fc4f67961e11cffb463af5f8a11d5e8ddd7114c1066cafdea137`）将输入传给 `FUN_10013e60`（`ev_f163cab598682a7d4398cebf41abf88e4fa1ffa34addf0175b4dbac405ba14b5`），可见 `WM 0x650` 和未解析目标的间接回调。`FUN_10013e10` 校验证据为 `ev_e30a5696922437631fd87255737c0b9bb5fa016d2f1ae6edcfc75390e44a6ed9`；全局对象 xrefs 查询为 `ev_ca1c3c2f44f893e34318f2d779d626726cedf20ad91e4f04f3458fba4487bc52`。本轮查到的函数和回调链没有呈现 PC→LCD 命令构造或 LCD 绘制路径，也不能据此断言整个 DLL 不存在其他输出路径。完整静态分析边界见 [HRI 来话回调与 LCD 写出边界](../research/r114/hri-dll/R114_HRI来话回调与LCD写出边界.md)。
+
+官方 `WIRES_X.EXE` 查询没有产生新的函数证据：`xrefs(0x004e0790)` 导出为 0 条记录，`procedure_callers(0x004e0790)` 在 330000 ms 后返回 `provider_timeout`。既有 R79 `FUN_004e0790`（`ev_61089f387cfdec5258766bf18d61b16af8cbbcb26a6d044f4fc464c9a41abcba`）追到响应字段 `0x0A` 写入连接对象 `+0x12F`；`FUN_004e5580`（`ev_5131b0c70d73a5f6b72c69e23fb4ff735ce3e5d673ac8d5c9bd16a32e39d8ef9`）显示该字段可在条件满足时覆盖 HRI `SetDigiTrcvData` 的 DE 字段，但没有把这些字段映射到 LCD。该 dossier 还列有 DATA 引用 `0x4e24e1` / `FUN_004e1200` 指向 `FUN_004e0790`；这不是直接调用或运行时已派发的证据。当前仍未找到从列表请求/响应到完整 HRI 记录、再到 LCD 区域刷新的闭合路径。详见 [EXE 列表信息发送链与 LCD 缺口](../research/r114/screen-exe/R114_EXE列表信息发送链与LCD缺口.md)。
+
+根会话完成了一次 45,009 ms 被动 `WriteFile` 观察（Evidence `ev_cededd928e87d751af14080fa91e33e270ada3e0788a63c6e42a5cc0760cc2f1`）：134 次调用中有 90 个输入缓冲区以 SOH 开头；白名单识别出 Y 帧 45 条，正文各 100 字节（含 Direct 外层后每帧 109 字节），F/T/V 为 0，未保存 payload。观察器已 detach，清理无错误；随后 session 关闭但 PID 8116 仍运行。该窗口没有由观察器或根会话发起节点/房间连接或来话操作，不能据此判断 LCD 显示能力或其他记录类型。详细证据见 [被动 WriteFile 观察记录](../research/r114/runtime-observer/r114_official_idle_metadata.evidence.json)。用户已选择在现有 DIRECT/HRI 连接的节点或房间继续观察屏幕，目视结果待反馈；当前事实仍是 App 呼号显示正常、FTX-1 LCD 两个内容区空白。
+
 ## R113 起点（2026-10-29）
 
 用户确认 alpha.10 上 FTX-1 收听和鹦鹉回放正常。这项确认只涉及听音与鹦鹉路径；FTX-1 LCD 来话呼号显示仍待实物观察，R113 不把软件状态或 Native ACK 记作屏幕验收。当前工作只接入 RadioID 缓存到 Native 的后续来话呼号映射，不修改路由、用户配置、密码路径或音量。
