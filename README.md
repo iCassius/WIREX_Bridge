@@ -2,7 +2,7 @@
 
 ## 当前工作：R117 / Alpha 13
 
-R117 源码已冻结，包含 BM 服务器选择、电台设备识别、CAT 操作与 BM 静态组管理。普通 WPF 回归在 PS5.1/PS7 各通过 78 项，生产串口目录检查各通过 16 项；RenderOnly 通过 79 项，root 已检查正常尺寸、小屏和展开的服务器下拉。四项旧 UI 兼容 suite 已在 PS5.1/PS7 各通过；Alpha 13 的 Native 40 项 clean build 和本机包仍待执行。当前没有 Alpha 13 硬件验收或新 tag/Release。操作说明见 [Alpha 13 包内说明](docs/releases/v0.1.0-alpha.13-package-README.md)，发布清单、测试记录与待办见 [R117 发布交接](docs/R117_发布交接.md)。
+R117 已提交并构建 Alpha 13 本机测试版。BM 服务器选择、电台设备识别、CAT 操作与静态组管理已接入控制台；普通 WPF 回归通过 78 项，生产串口目录读取通过 16 项，RenderOnly 通过 79 项，四项旧 UI 兼容套件在 PS5.1/PS7 均通过。源码提交 `a33c485a0d6c1046497b94d5eddc9d74da8296e6` 的 Native 40 项 clean build 通过，Alpha 13 包已通过 root 只读审计。尚未进行 BM/CAT/电台硬件验收，也没有创建 ZIP、tag 或 GitHub Release。操作说明见 [Alpha 13 包内说明](docs/releases/v0.1.0-alpha.13-package-README.md)，构建、包审计与后续实机验收见 [R117 发布交接](docs/R117_发布交接.md)。
 
 以下为历史阶段记录；当前进度以 [R117 发布交接](docs/R117_发布交接.md) 为准。
 

@@ -1,8 +1,14 @@
 ﻿# WIREX Bridge 交接入口
 
-## R117 / Alpha 13 发行准备（2026-10-30）
+## R117 / Alpha 13 发行交付与实机待验收（2026-10-30）
 
-R117 源码已冻结。普通 WPF 回归在 PS5.1/PS7 各通过 78 项，生产串口目录检查各通过 16 项；RenderOnly 通过 79 项，root 已检查正常尺寸、小屏和展开的服务器下拉。四项旧 UI 兼容 suite 已在 PS5.1/PS7 各通过。Alpha 13 的 Native 40 项 clean build、本机包和硬件验收仍待完成；目前没有创建 Alpha 13 tag 或 GitHub Release。详细清单与可复核命令见 [R117 发布交接](docs/R117_发布交接.md)，操作入口说明见 [Alpha 13 包内说明](docs/releases/v0.1.0-alpha.13-package-README.md)。
+R117 源码提交为 `a33c485a0d6c1046497b94d5eddc9d74da8296e6`。新建的 Native clean build 通过 40/40 项测试，warning/error 为 0；构建目录 `build/_work/wirex-bridge-a33c485-20261030-031608`，日志 `build/_work/alpha13-clean-build-a33c485-20261030-111607.log`，EXE SHA-256 为 `488a35e4d305cd8efa519f798ab7e82f37264aaba8d669bfcb8d0e84507b62ed`，provenance SHA-256 为 `40b5485d62598a2b3a31c9b912cee159215ab547534c38317b784100b7567ff4`。
+
+Alpha 13 本机包位于 `build/releases/v0.1.0-alpha.13`，root 已确认 40 个 manifest 资产、36 组 source mapping、Native 测试顺序与 fresh build 一致；状态为 `root_audit_passed`，最终 manifest SHA-256 为 `d75d375bdf42373c067ded915dbf19c8a7e4b4b00f2259299df9e00964f47b48`。Windows PowerShell 5.1 包启动检查、包内 EXE 的 `test-control.ps1` 与 `test-ui-control-v2.ps1` 均通过。没有启动真实 BM、CAT/COM、音频、PTT 或 RF，也没有创建 ZIP、tag 或 GitHub Release。
+
+个人 `user-config-directory.txt` 指向现有 canonical `private/user-config`；canonical `bridge-directory.txt` 已指向 Alpha 13。切换前原始指针备份为 `private/config-backups/R117/bridge-directory.before-alpha13.20261030T032721Z.txt`，长度 93 字节、SHA-256 `c9b989b2d5c1d7abafd8636cf0298dd781ac6884b069b6eff85e9a3a65c30146`。connection profile、audio settings 与 password-file-path 的 SHA-256 仍分别为 `e4f053bdd1c9f08380cda7c2d3efc77877f7e15ae8c2538a40cf85221fa821ec`、`aa91098ae5cb5fe76d44b9e5062917bce922ed7c94f65214ee587574b283fe51` 和 `bb7cbf045f4057b191fbea0ee3127511f201a86cb748c95a25911f26cf0ab2ae`；没有读取密码正文。
+
+发布包文件夹、哈希和测试结果见 [R117 发布交接](docs/R117_发布交接.md) 与 [Alpha 13 本机测试版记录](docs/releases/v0.1.0-alpha.13.md)。硬件验收仍待进行，包括实际 BM API 读写、CAT/HRI、音频、PTT、RF 与 LCD 观察；目前没有任何此类验收标记为通过。
 
 以下为历史阶段记录；当前进度以 [R117 发布交接](docs/R117_发布交接.md) 为准。
 
