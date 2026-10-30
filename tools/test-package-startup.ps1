@@ -30,8 +30,8 @@ try {
     throw ('候选包 manifest.json 无法读取：{0}' -f $_.Exception.Message)
 }
 $packageVersion = [string]$packageManifest.version
-if (@('v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12') -cnotcontains $packageVersion) {
-    throw ('包级启动检查只支持 alpha.9 至 alpha.12；manifest.version 为：{0}' -f $packageVersion)
+if (@('v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12', 'v0.1.0-alpha.13') -cnotcontains $packageVersion) {
+    throw ('包级启动检查只支持 alpha.9 至 alpha.13；manifest.version 为：{0}' -f $packageVersion)
 }
 $releaseProfile = Set-ReleaseVersion -Version $packageVersion
 Assert-ReleasePackageInventory -PackageRoot $sourcePackage -Version $releaseProfile.Version | Out-Null
@@ -60,6 +60,20 @@ if ($packageVersion -ceq 'v0.1.0-alpha.12') {
     if ($catModuleBytes.Length -lt 3 -or $catModuleBytes[0] -ne 0xEF -or
         $catModuleBytes[1] -ne 0xBB -or $catModuleBytes[2] -ne 0xBF) {
         throw 'alpha.12 RadioCat.psm1 缺少 Windows PowerShell 5.1 需要的 UTF-8 BOM。'
+    }
+}
+if ($packageVersion -ceq 'v0.1.0-alpha.13') {
+    foreach ($moduleName in @(
+        'RadioCat.psm1', 'RadioCatUi.ps1', 'RadioDevices.psm1',
+        'BmServers.psm1', 'BmManagement.psm1', 'BmManagementUi.ps1'
+    )) {
+        $modulePath = Join-Path $sourcePackage ('ui\windows\' + $moduleName)
+        if (-not [System.IO.File]::Exists($modulePath)) { throw ('alpha.13 包缺少运行模块：{0}' -f $moduleName) }
+        $moduleBytes = [System.IO.File]::ReadAllBytes($modulePath)
+        if ($moduleBytes.Length -lt 3 -or $moduleBytes[0] -ne 0xEF -or
+            $moduleBytes[1] -ne 0xBB -or $moduleBytes[2] -ne 0xBF) {
+            throw ('alpha.13 {0} 缺少 Windows PowerShell 5.1 需要的 UTF-8 BOM。' -f $moduleName)
+        }
     }
 }
 

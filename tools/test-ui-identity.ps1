@@ -65,6 +65,11 @@ function Complete-BridgeStop { return $false }
 function Process-UiControlEvents { }
 function Read-StatusUpdates { }
 function Set-StaleDisplay { }
+# 身份回归只验证自己的 Dispatcher 路径；CAT/BM timer 槽位保持空实现。
+function Complete-UiRadioCatOperation { return $false }
+function Invoke-UiRadioCatPollTick { return $false }
+function Update-UiRadioCatControls { }
+function Add-UiEvent { param([string]$Text) }
 
 function New-TestWindow {
     $window = New-Object System.Windows.Window
@@ -108,6 +113,22 @@ function New-TestWindow {
 function Initialize-TestState {
     param([Parameter(Mandatory=$true)][string]$TestDirectory,[Parameter(Mandatory=$true)][string]$ApiBaseUri)
     $script:mainWindow = New-TestWindow
+    # bridge-ui initializes both windows in the application state. This fixture only
+    # needs the routing window to be explicitly absent while identity callbacks run.
+    $script:settingsWindow = $null
+    $script:radioCatOperationPowerShell = $null
+    $script:radioCatOperationAsync = $null
+    $script:radioCatOperationStopAsync = $null
+    $script:radioCatOperationOwnerWindow = $null
+    $script:radioCatOperationKind = ''
+    $script:radioCatPollingActive = $false
+    $script:radioCatCloseMainAfterOperation = $false
+    $script:radioCatCloseSettingsAfterOperation = $false
+    $script:radioCatPowerNeedsUserChoice = $false
+    $script:radioCatResult = $null
+    $script:radioCatObserved = $null
+    $script:radioModeApplyAfterStop = $null
+    $script:radioModePreviousHriPortName = ''
     $script:RenderOnly = $false
     $script:radioIdentityModuleLoaded = $true
     $script:identityModulePath = $modulePath
@@ -151,6 +172,8 @@ function Initialize-TestState {
     $script:preparePowerShell = $null
     $script:preparationStarted = $false
     $script:stopTask = $null
+    $script:bmCloseWhenDisposed = $false
+    $script:bmManagementUiDisposed = $false
     $script:closingAfterStop = $false
     $script:closingAfterIdentityQuery = $false
     $script:allowWindowClose = $false

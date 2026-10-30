@@ -833,6 +833,82 @@ Assert-True ($alpha12ReadmeText.Contains('radio-control-preferences.json') -and 
     $alpha12ReadmeText.Contains('不作为 alpha.12 主线功能')) 'alpha.12 README documents local preference defaults, unavailable HRI switches and experimental LCD scope'
 Assert-True (-not $alpha12ReadmeText.Contains('屏显已完成') -and -not $alpha12ReadmeText.Contains('实机通过')) 'alpha.12 README makes no LCD or device pass claim'
 
+$alpha13Profile = Get-ReleaseProfile -Version 'v0.1.0-alpha.13'
+[void](Set-ReleaseVersion -Version 'v0.1.0-alpha.13')
+$alpha13Files = @(Get-ExpectedReleasePackageFiles)
+$alpha13Tests = @(Get-ExpectedReleaseTests)
+Assert-True ([string]$alpha13Profile.ReleaseScope -like 'R117 DIRECT:*') 'alpha.13 release metadata identifies the R117 DIRECT UI scope'
+$alpha13NotIncluded = @($alpha13Profile.NotIncluded)
+Assert-True (@($alpha13NotIncluded | Where-Object { [string]$_ -ceq '本机服务器选择偏好 private/user-config/bm-server-preferences.json 不随通用发行包分发' }).Count -eq 1) `
+    'alpha.13 not-included metadata names the local BM server-selection preference file'
+Assert-Equal $alpha13Files.Count ($alpha12Files.Count + 5) 'alpha.13 adds exactly the five new runtime modules to all alpha.12 files'
+Assert-True ([string]::Join('|', $alpha13Tests) -ceq [string]::Join('|', $alpha12Tests) -and
+    [string]::Join('|', $builderTestNames) -ceq [string]::Join('|', $alpha13Tests)) 'alpha.13 preserves exactly the same 40 Native tests in their existing order'
+foreach ($requiredPath in @(
+    'ui/windows/RadioCatUi.ps1',
+    'ui/windows/RadioDevices.psm1',
+    'ui/windows/BmServers.psm1',
+    'ui/windows/BmManagement.psm1',
+    'ui/windows/BmManagementUi.ps1'
+)) {
+    Assert-True ($alpha13Files -ccontains $requiredPath) "alpha.13 package includes $requiredPath"
+}
+Assert-True (-not ($alpha13Files | Where-Object { [string]$_ -like 'private/user-config/*' })) 'alpha.13 never puts per-user preferences into the generic package'
+Assert-True (@($alpha13Files | Where-Object { [string]$_ -ceq 'manifest.json' }).Count -eq 1 -and
+    @($alpha13Files | Where-Object { [string]$_ -ceq 'start-wirex-bridge.cmd' }).Count -eq 1 -and
+    @($alpha13Files | Where-Object { [string]$_ -ceq 'start-wirex-bridge-alpha13.cmd' }).Count -eq 0) 'alpha.13 package inventory has one canonical CMD launcher and no source-named duplicate'
+Assert-True (@($alpha13Profile.SourceFiles | Where-Object {
+    [string]$_.Source -ceq 'tools\start-wirex-bridge-alpha13.cmd' -and
+    [string]$_.Destination -ceq 'start-wirex-bridge.cmd'
+}).Count -eq 1) 'alpha.13 package maps its versioned ASCII CMD source to the single canonical launcher'
+Assert-True ([string]$alpha13Profile.PackageReadme -ceq 'docs\releases\v0.1.0-alpha.13-package-README.md') 'alpha.13 profile selects its versioned package README'
+
+$alpha13CmdPath = Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha13.cmd'
+$alpha13CmdBytes = [System.IO.File]::ReadAllBytes($alpha13CmdPath)
+Assert-True (@($alpha13CmdBytes | Where-Object { $_ -gt 127 }).Count -eq 0) 'alpha.13 CMD source contains ASCII only'
+$alpha12CmdText = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes((Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha12.cmd')))
+Assert-True ([System.Text.Encoding]::ASCII.GetString($alpha13CmdBytes) -ceq $alpha12CmdText) 'alpha.13 CMD preserves green exit-code forwarding behavior'
+$alpha13LauncherPath = Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha13.ps1'
+$alpha13LauncherBytes = [System.IO.File]::ReadAllBytes($alpha13LauncherPath)
+Assert-True ($alpha13LauncherBytes.Length -ge 3 -and $alpha13LauncherBytes[0] -eq 0xEF -and
+    $alpha13LauncherBytes[1] -eq 0xBB -and $alpha13LauncherBytes[2] -eq 0xBF) 'alpha.13 technical entry has a UTF-8 BOM for Windows PowerShell 5.1'
+$alpha13LauncherTokens = $null
+$alpha13LauncherErrors = $null
+[System.Management.Automation.Language.Parser]::ParseFile($alpha13LauncherPath, [ref]$alpha13LauncherTokens, [ref]$alpha13LauncherErrors) | Out-Null
+Assert-True ($alpha13LauncherErrors.Count -eq 0) ('alpha.13 technical entry parses; parse errors={0}' -f $alpha13LauncherErrors.Count)
+$alpha13LauncherText = [System.IO.File]::ReadAllText($alpha13LauncherPath, [System.Text.Encoding]::UTF8)
+$alpha12LauncherText = [System.IO.File]::ReadAllText((Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha12.ps1'), [System.Text.Encoding]::UTF8)
+Assert-True ($alpha13LauncherText -ceq $alpha12LauncherText.Replace('alpha.12', 'alpha.13')) 'alpha.13 launcher changes only its version-specific startup failure text'
+foreach ($relativePath in @(
+    'ui\windows\RadioCatUi.ps1', 'ui\windows\RadioDevices.psm1', 'ui\windows\BmServers.psm1',
+    'ui\windows\BmManagement.psm1', 'ui\windows\BmManagementUi.ps1'
+)) {
+    $runtimePath = Join-Path $repositoryRoot $relativePath
+    $runtimeBytes = [System.IO.File]::ReadAllBytes($runtimePath)
+    Assert-True ($runtimeBytes.Length -ge 3 -and $runtimeBytes[0] -eq 0xEF -and $runtimeBytes[1] -eq 0xBB -and $runtimeBytes[2] -eq 0xBF) `
+        "alpha.13 runtime source has a UTF-8 BOM: $relativePath"
+    $runtimeTokens = $null
+    $runtimeErrors = $null
+    [System.Management.Automation.Language.Parser]::ParseFile($runtimePath, [ref]$runtimeTokens, [ref]$runtimeErrors) | Out-Null
+    Assert-True ($runtimeErrors.Count -eq 0) ("alpha.13 runtime source parses: {0}; errors={1}" -f $relativePath, $runtimeErrors.Count)
+}
+foreach ($mapping in @(
+    @{ Path='ui/windows/RadioCatUi.ps1'; Name='ui__windows__radio-cat-ui.ps1' },
+    @{ Path='ui/windows/RadioDevices.psm1'; Name='ui__windows__radio-devices.psm1' },
+    @{ Path='ui/windows/BmServers.psm1'; Name='ui__windows__bm-servers.psm1' },
+    @{ Path='ui/windows/BmManagement.psm1'; Name='ui__windows__bm-management.psm1' },
+    @{ Path='ui/windows/BmManagementUi.ps1'; Name='ui__windows__bm-management-ui.ps1' }
+)) {
+    Assert-True ((Get-ReleaseAssetName -RelativePath $mapping.Path) -ceq $mapping.Name) "alpha.13 fixed ASCII asset mapping $($mapping.Path)"
+}
+$alpha13ReadmeText = [System.IO.File]::ReadAllText((Join-Path $repositoryRoot $alpha13Profile.PackageReadme), [System.Text.Encoding]::UTF8)
+Assert-True ($alpha13ReadmeText.Contains('4602.master.brandmeister.network') -and
+    $alpha13ReadmeText.Contains('bm-management-preferences.json') -and
+    $alpha13ReadmeText.Contains('bm-server-preferences.json') -and
+    $alpha13ReadmeText.Contains('打开窗口不会自动写入') -and
+    $alpha13ReadmeText.Contains('动态组') -and $alpha13ReadmeText.Contains('静态组')) 'alpha.13 README documents the default BM server and distinct group controls without bundling local preferences'
+Assert-True (-not $alpha13ReadmeText.Contains('BM 实机通过') -and -not $alpha13ReadmeText.Contains('射频验收通过')) 'alpha.13 README makes no BM or RF hardware validation claim'
+
 [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.1')
 Assert-Throws { Get-ReleaseAssetName -RelativePath 'start-ui.cmd' } 'alpha.1 不接受 alpha.2 UI asset'
 Assert-True ((Get-ReleaseAssetName -RelativePath 'docs/连接配置.md') -ceq 'docs__connection-profile.md') `
@@ -1225,6 +1301,72 @@ try {
     New-Item -ItemType Directory -Path $alpha12PrivateDirectory -Force | Out-Null
     Write-Utf8NoBom -Path (Join-Path $alpha12PrivateDirectory 'radio-control-preferences.json') -Text '{"defaultPowerWatts":25}'
     Assert-Throws { Assert-ReleasePackageInventory -PackageRoot $alpha12InventoryRoot -Version 'v0.1.0-alpha.12' } 'alpha.12 inventory rejects a personal radio-control preference file'
+
+    [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.13')
+    $alpha13InventoryProfile = Get-ReleaseProfile -Version 'v0.1.0-alpha.13'
+    $alpha13InventoryRoot = Join-Path $testRoot 'synthetic-alpha13-package'
+    New-Item -ItemType Directory -Path $alpha13InventoryRoot -Force | Out-Null
+    foreach ($relativeDirectory in $alpha13InventoryProfile.Directories) {
+        New-Item -ItemType Directory -Path (Join-Path $alpha13InventoryRoot $relativeDirectory.Replace('/', '\')) -Force | Out-Null
+    }
+    foreach ($relativePath in ($alpha13InventoryProfile.PackageFiles | Where-Object { $_ -cne 'manifest.json' })) {
+        $fullPath = Join-Path $alpha13InventoryRoot $relativePath.Replace('/', '\')
+        $parent = Split-Path -Parent $fullPath
+        if (-not [System.IO.Directory]::Exists($parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+        if ($relativePath -ceq 'private/device-y.bin') {
+            Copy-Item -LiteralPath $approvedFixturePath -Destination $fullPath
+        } else {
+            Write-Utf8NoBom -Path $fullPath -Text ('synthetic alpha.13 inventory fixture: ' + $relativePath)
+        }
+    }
+    $alpha13InventoryRecords = @()
+    foreach ($relativePath in ($alpha13InventoryProfile.PackageFiles | Where-Object { $_ -cne 'manifest.json' } | Sort-Object)) {
+        $fullPath = Join-Path $alpha13InventoryRoot $relativePath.Replace('/', '\')
+        $item = Get-Item -LiteralPath $fullPath
+        $alpha13InventoryRecords += ,([ordered]@{
+            path = $relativePath
+            asset_name = [string]$alpha13InventoryProfile.AssetMap[$relativePath]
+            length_bytes = [long]$item.Length
+            sha256 = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            source = 'synthetic alpha.13 inventory fixture'
+        })
+    }
+    $alpha13InventoryManifest = [ordered]@{
+        schema_version = 1
+        package_status = 'awaiting_root_audit'
+        version = 'v0.1.0-alpha.13'
+        tag_candidate = 'v0.1.0-alpha.13'
+        manifest_asset_name = 'manifest.json'
+        approved_y_fixture = [ordered]@{
+            path = 'private/device-y.bin'
+            length_bytes = 100
+            sha256 = $approvedFixtureHash
+        }
+        excluded_private_files = @(
+            'private/bm-device-password.txt', 'connection-profile.json', 'audio-settings.json',
+            'private/user-config-directory.txt', 'private/user-config/radio-identity-cache.json',
+            'private/user-config/channel-favorites.json', 'private/user-config/password-file-path.txt',
+            'private/user-config/radio-control-preferences.json', 'private/user-config/bm-management-preferences.json',
+            'private/user-config/bm-server-preferences.json'
+        )
+        files = $alpha13InventoryRecords
+    }
+    Write-Utf8NoBom -Path (Join-Path $alpha13InventoryRoot 'manifest.json') -Text ((ConvertTo-Json -InputObject $alpha13InventoryManifest -Depth 8) + [Environment]::NewLine)
+    Assert-True ((Assert-ReleasePackageInventory -PackageRoot $alpha13InventoryRoot -Version 'v0.1.0-alpha.13') -eq $null) `
+        'alpha.13 synthetic inventory accepts all five runtime modules and excludes local BM preferences'
+    Assert-True (@($alpha13InventoryManifest.excluded_private_files | Where-Object { [string]$_ -ceq 'private/user-config/bm-management-preferences.json' }).Count -eq 1) `
+        'alpha.13 manifest declares the path-only BM preference file as excluded'
+    Assert-True (@($alpha13InventoryManifest.excluded_private_files | Where-Object { [string]$_ -ceq 'private/user-config/bm-server-preferences.json' }).Count -eq 1) `
+        'alpha.13 manifest declares the local BM server-selection preference as excluded'
+    $alpha13PrivateDirectory = Join-Path $alpha13InventoryRoot 'private\user-config'
+    New-Item -ItemType Directory -Path $alpha13PrivateDirectory -Force | Out-Null
+    Write-Utf8NoBom -Path (Join-Path $alpha13PrivateDirectory 'bm-server-preferences.json') -Text '{"schema_version":1,"selection_id":"bm-4602"}'
+    Assert-Throws { Assert-ReleasePackageInventory -PackageRoot $alpha13InventoryRoot -Version 'v0.1.0-alpha.13' } `
+        'alpha.13 package inventory rejects a local BM server-selection preference file'
+    Remove-Item -LiteralPath (Join-Path $alpha13PrivateDirectory 'bm-server-preferences.json') -Force -ErrorAction Stop
+    Write-Utf8NoBom -Path (Join-Path $alpha13PrivateDirectory 'bm-management-preferences.json') -Text '{"schema_version":1}'
+    Assert-Throws { Assert-ReleasePackageInventory -PackageRoot $alpha13InventoryRoot -Version 'v0.1.0-alpha.13' } `
+        'alpha.13 package inventory rejects local BM API-key path preferences'
 
     $alpha2PackageRoot = Join-Path $testRoot 'package-alpha2'
     Copy-Item -LiteralPath $packageRoot -Destination $alpha2PackageRoot -Recurse

@@ -27,7 +27,7 @@ $script:releaseAssetRedirectHosts = @(
 )
 $script:assertionCount = 0
 $downloadProfiles = @{}
-foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12')) {
+foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12', 'v0.1.0-alpha.13')) {
     $downloadProfiles[$tag] = [pscustomobject]@{
         Files = @(Get-ExpectedReleaseFiles -Tag $tag)
         Tests = @(Get-ExpectedReleaseTests -Tag $tag)
@@ -83,6 +83,12 @@ function New-TestManifest {
         $excludedPrivateFiles += @('private/user-config-directory.txt', 'private/user-config/radio-identity-cache.json',
             'private/user-config/channel-favorites.json', 'private/user-config/password-file-path.txt',
             'private/user-config/radio-control-preferences.json')
+    }
+    if ($Tag -ceq 'v0.1.0-alpha.13') {
+        $excludedPrivateFiles += @('private/user-config-directory.txt', 'private/user-config/radio-identity-cache.json',
+            'private/user-config/channel-favorites.json', 'private/user-config/password-file-path.txt',
+            'private/user-config/radio-control-preferences.json', 'private/user-config/bm-management-preferences.json',
+            'private/user-config/bm-server-preferences.json')
     }
     return [pscustomobject]@{
         schema_version = 1
@@ -467,10 +473,64 @@ $invalidAlpha12Preference.files += [pscustomobject]@{
 }
 Assert-Throws { Test-ManifestDocument -Manifest $invalidAlpha12Preference -RequestedTag 'v0.1.0-alpha.12' } 'alpha.12 downloader rejects a local radio-control preference file in the generic package'
 
+$alpha13Manifest = New-TestManifest -Tag 'v0.1.0-alpha.13'
+$alpha13Manifest.release_scope = 'R117 DIRECT: offline BM server selection and explicit static group management'
+$alpha13Validated = Test-ManifestDocument -Manifest $alpha13Manifest -RequestedTag 'v0.1.0-alpha.13'
+$alpha12ExpectedFiles = @(Get-ExpectedReleaseFiles -Tag 'v0.1.0-alpha.12')
+Assert-True ($alpha13Validated.Files.Count -eq ($alpha12ExpectedFiles.Count + 5)) 'alpha.13 adds exactly five runtime assets while retaining every alpha.12 file'
+$expectedAlpha13Tests = @(Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.12')
+Assert-True (@($alpha13Manifest.build.passed_tests).Count -eq 40 -and
+    [string]::Join('|', @($alpha13Manifest.build.passed_tests)) -ceq [string]::Join('|', $expectedAlpha13Tests)) 'alpha.13 pins the same 40 Native tests in the alpha.12 order'
+foreach ($mapping in @(
+    @{ Path='ui/windows/RadioCatUi.ps1'; AssetName='ui__windows__radio-cat-ui.ps1' },
+    @{ Path='ui/windows/RadioDevices.psm1'; AssetName='ui__windows__radio-devices.psm1' },
+    @{ Path='ui/windows/BmServers.psm1'; AssetName='ui__windows__bm-servers.psm1' },
+    @{ Path='ui/windows/BmManagement.psm1'; AssetName='ui__windows__bm-management.psm1' },
+    @{ Path='ui/windows/BmManagementUi.ps1'; AssetName='ui__windows__bm-management-ui.ps1' }
+)) {
+    Assert-True (@($alpha13Validated.Files | Where-Object { [string]$_.path -ceq $mapping.Path -and [string]$_.asset_name -ceq $mapping.AssetName }).Count -eq 1) `
+        "alpha.13 maps $($mapping.Path) to its fixed ASCII asset"
+}
+Assert-True (@($alpha13Validated.Files | Where-Object { [string]$_.path -match '(?i)(bm-management-preferences\.json|private/user-config/)' }).Count -eq 0) `
+    'alpha.13 allowlist excludes BM key-path and all other local preferences'
+Assert-True (@($alpha13Manifest.excluded_private_files | Where-Object { [string]$_ -ceq 'private/user-config/bm-management-preferences.json' }).Count -eq 1) `
+    'alpha.13 manifest explicitly lists the BM key-path preference exclusion'
+Assert-True (@($alpha13Manifest.excluded_private_files | Where-Object { [string]$_ -ceq 'private/user-config/bm-server-preferences.json' }).Count -eq 1) `
+    'alpha.13 manifest explicitly lists the BM server-selection preference exclusion'
+Assert-True (Test-ReleaseTag -Tag 'v0.1.0-alpha.13') 'alpha.13 is an explicitly supported release tag'
+$missingAlpha13PreferenceExclusion = New-TestManifest -Tag 'v0.1.0-alpha.13'
+$missingAlpha13PreferenceExclusion.excluded_private_files = @('private/bm-device-password.txt', 'connection-profile.json', 'audio-settings.json')
+Assert-Throws { Test-ManifestDocument -Manifest $missingAlpha13PreferenceExclusion -RequestedTag 'v0.1.0-alpha.13' } `
+    'alpha.13 downloader rejects a manifest without local BM and CAT preference exclusions'
+$missingAlpha13ServerPreferenceExclusion = New-TestManifest -Tag 'v0.1.0-alpha.13'
+$missingAlpha13ServerPreferenceExclusion.excluded_private_files = @(
+    $missingAlpha13ServerPreferenceExclusion.excluded_private_files | Where-Object {
+        [string]$_ -cne 'private/user-config/bm-server-preferences.json'
+    }
+)
+Assert-Throws { Test-ManifestDocument -Manifest $missingAlpha13ServerPreferenceExclusion -RequestedTag 'v0.1.0-alpha.13' } `
+    'alpha.13 downloader rejects a manifest that omits the BM server-selection preference exclusion'
+$invalidAlpha13Preference = New-TestManifest -Tag 'v0.1.0-alpha.13'
+$invalidAlpha13Preference.files += [pscustomobject]@{
+    path='private/user-config/bm-management-preferences.json'; asset_name='private__user-config__bm-management-preferences.json'
+    length_bytes=1; sha256=('0' * 64); source='synthetic forbidden local BM preference'
+}
+Assert-Throws { Test-ManifestDocument -Manifest $invalidAlpha13Preference -RequestedTag 'v0.1.0-alpha.13' } `
+    'alpha.13 downloader rejects a local BM API-key path preference in the generic package'
+$invalidAlpha13ServerPreference = New-TestManifest -Tag 'v0.1.0-alpha.13'
+$invalidAlpha13ServerPreference.files += [pscustomobject]@{
+    path='private/user-config/bm-server-preferences.json'; asset_name='private__user-config__bm-server-preferences.json'
+    length_bytes=1; sha256=('0' * 64); source='synthetic forbidden local BM server preference'
+}
+Assert-Throws { Test-ManifestDocument -Manifest $invalidAlpha13ServerPreference -RequestedTag 'v0.1.0-alpha.13' } `
+    'alpha.13 downloader rejects local BM server-selection preferences in the generic package'
+
 $publishedAlpha11 = [pscustomobject]@{ tag_name='v0.1.0-alpha.11'; draft=$false; prerelease=$true }
 Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha11) -RequestedTag 'v0.1.0-alpha.11').tag_name -ceq 'v0.1.0-alpha.11') 'alpha.11 is selected by exact tag'
 $publishedAlpha12 = [pscustomobject]@{ tag_name='v0.1.0-alpha.12'; draft=$false; prerelease=$true }
 Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha12) -RequestedTag 'v0.1.0-alpha.12').tag_name -ceq 'v0.1.0-alpha.12') 'alpha.12 is selected by exact tag'
+$publishedAlpha13 = [pscustomobject]@{ tag_name='v0.1.0-alpha.13'; draft=$false; prerelease=$true }
+Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha13) -RequestedTag 'v0.1.0-alpha.13').tag_name -ceq 'v0.1.0-alpha.13') 'alpha.13 is selected by exact tag'
 
 $goodAssets = New-TestAssetList -Manifest $validManifest
 $release = [pscustomobject]@{ assets=$goodAssets; target_commitish=[string]$validManifest.source.commit }
@@ -613,7 +673,7 @@ try {
 
 . (Join-Path $PSScriptRoot 'package-release.ps1')
 . (Join-Path $PSScriptRoot 'publish-release.ps1')
-foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12')) {
+foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12', 'v0.1.0-alpha.13')) {
     $packageProfile = Set-ReleaseVersion -Version $tag
     $packagePaths = @($packageProfile.PackageFiles | Where-Object { $_ -cne 'manifest.json' })
     $downloadFiles = @($downloadProfiles[$tag].Files)

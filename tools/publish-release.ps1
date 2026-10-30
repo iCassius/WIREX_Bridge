@@ -48,6 +48,7 @@ $script:alpha11TestNames = @(
     $script:alpha10TestNames[6..($script:alpha10TestNames.Count - 1)]
 )
 $script:alpha12TestNames = @($script:alpha11TestNames)
+$script:alpha13TestNames = @($script:alpha12TestNames)
 
 function Set-PublishProfile {
     param([Parameter(Mandatory=$true)][string]$Tag)
@@ -246,7 +247,21 @@ function Set-PublishProfile {
             $script:expectedDirectories = @($alpha11.Directories)
             $script:expectedTestNames = $script:alpha12TestNames
         }
-        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.12 release profiles are supported.' }
+        'v0.1.0-alpha.13' {
+            $alpha12 = Set-PublishProfile -Tag 'v0.1.0-alpha.12'
+            $assetMap = [ordered]@{}
+            foreach ($path in $alpha12.AssetPathMap.Keys) { $assetMap[$path] = $alpha12.AssetPathMap[$path] }
+            $assetMap['ui/windows/RadioCatUi.ps1'] = 'ui__windows__radio-cat-ui.ps1'
+            $assetMap['ui/windows/RadioDevices.psm1'] = 'ui__windows__radio-devices.psm1'
+            $assetMap['ui/windows/BmServers.psm1'] = 'ui__windows__bm-servers.psm1'
+            $assetMap['ui/windows/BmManagement.psm1'] = 'ui__windows__bm-management.psm1'
+            $assetMap['ui/windows/BmManagementUi.ps1'] = 'ui__windows__bm-management-ui.ps1'
+            $script:publishTag = $Tag
+            $script:assetPathMap = $assetMap
+            $script:expectedDirectories = @($alpha12.Directories)
+            $script:expectedTestNames = $script:alpha13TestNames
+        }
+        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.13 release profiles are supported.' }
     }
     return [pscustomobject]@{
         Tag = $script:publishTag
@@ -367,6 +382,18 @@ function Assert-PublishPackage {
         [long]$manifest.approved_y_fixture.length_bytes -ne 100 -or
         ([string]$manifest.approved_y_fixture.sha256).ToLowerInvariant() -cne $script:approvedFixtureSha256) {
         throw 'Package metadata does not identify the approved 100-byte Y fixture.'
+    }
+    if ($Tag -ceq 'v0.1.0-alpha.13') {
+        $excludedPrivateFiles = @($manifest.excluded_private_files | ForEach-Object { [string]$_ })
+        foreach ($requiredPath in @(
+            'private/user-config/radio-control-preferences.json',
+            'private/user-config/bm-management-preferences.json',
+            'private/user-config/bm-server-preferences.json'
+        )) {
+            if ($excludedPrivateFiles -cnotcontains $requiredPath) {
+                throw 'Alpha 13 manifest must explicitly exclude the local radio and BM preference files.'
+            }
+        }
     }
 
     $actualFiles = [System.Collections.Generic.List[string]]::new()

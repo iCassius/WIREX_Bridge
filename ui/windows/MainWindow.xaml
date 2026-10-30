@@ -1,267 +1,414 @@
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+﻿<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="WIREX Bridge · FTX-1"
-        Width="1180" Height="820" MinWidth="980" MinHeight="680"
-        WindowStartupLocation="CenterScreen" Background="#141719" Foreground="#EDF1F2"
+        Width="1360" Height="900" MinWidth="980" MinHeight="700"
+        WindowStartupLocation="CenterScreen" Background="#111619" Foreground="#EDF3F4"
         FontFamily="Segoe UI, Microsoft YaHei UI">
   <Window.Resources>
+    <SolidColorBrush x:Key="PanelBrush" Color="#1D2529"/>
+    <SolidColorBrush x:Key="InsetBrush" Color="#151C20"/>
+    <SolidColorBrush x:Key="LineBrush" Color="#46545B"/>
+    <SolidColorBrush x:Key="MutedBrush" Color="#A8B5BB"/>
+    <SolidColorBrush x:Key="GreenBrush" Color="#9BE0AE"/>
     <Style TargetType="TextBlock">
-      <Setter Property="Foreground" Value="#EDF1F2"/>
+      <Setter Property="Foreground" Value="#EDF3F4"/>
       <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
     </Style>
+    <Style TargetType="TextBox">
+      <Setter Property="Background" Value="#12191C"/><Setter Property="Foreground" Value="#F2F6F7"/>
+      <Setter Property="BorderBrush" Value="#64747C"/><Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding" Value="7,4"/><Setter Property="Margin" Value="2,1"/><Setter Property="FontSize" Value="13"/>
+      <Setter Property="CaretBrush" Value="#FFFFFF"/>
+    </Style>
     <Style TargetType="Button">
-      <Setter Property="Foreground" Value="#EDF1F2"/>
-      <Setter Property="Background" Value="#30383E"/>
-      <Setter Property="BorderBrush" Value="#536169"/>
-      <Setter Property="BorderThickness" Value="1"/>
-      <Setter Property="Padding" Value="13,8"/>
-      <Setter Property="FontWeight" Value="Bold"/>
-      <Setter Property="Margin" Value="3"/>
+      <Setter Property="Foreground" Value="#F0F4F5"/><Setter Property="Background" Value="#2B383E"/>
+      <Setter Property="BorderBrush" Value="#718189"/><Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding" Value="10,6"/><Setter Property="FontWeight" Value="Bold"/>
+      <Setter Property="Margin" Value="2"/><Setter Property="FontSize" Value="12"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="Button">
-            <Border x:Name="Chrome" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="2">
-              <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+            <Border x:Name="Chrome" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="2">
+              <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
                                 Margin="{TemplateBinding Padding}" RecognizesAccessKey="True"/>
             </Border>
             <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Chrome" Property="BorderBrush" Value="#87A9B6"/></Trigger>
-              <Trigger Property="IsPressed" Value="True"><Setter TargetName="Chrome" Property="Background" Value="#273238"/></Trigger>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Chrome" Property="BorderBrush" Value="#B7D5DE"/></Trigger>
+              <Trigger Property="IsPressed" Value="True"><Setter TargetName="Chrome" Property="Background" Value="#26343A"/></Trigger>
               <Trigger Property="IsEnabled" Value="False">
-                <Setter TargetName="Chrome" Property="Background" Value="#252B2F"/>
-                <Setter TargetName="Chrome" Property="BorderBrush" Value="#394147"/>
-                <Setter Property="Foreground" Value="#778288"/>
+                <Setter TargetName="Chrome" Property="Background" Value="#20272B"/>
+                <Setter TargetName="Chrome" Property="BorderBrush" Value="#3D484D"/>
+                <Setter Property="Foreground" Value="#8A969B"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
       </Setter>
-      <Style.Triggers>
-        <Trigger Property="IsEnabled" Value="False">
-          <Setter Property="Foreground" Value="#778288"/>
-          <Setter Property="Background" Value="#252B2F"/>
-          <Setter Property="BorderBrush" Value="#394147"/>
-        </Trigger>
-      </Style.Triggers>
     </Style>
     <Style TargetType="ComboBox">
-      <Setter Property="Foreground" Value="#EDF1F2"/>
-      <Setter Property="Background" Value="#20252A"/>
-      <Setter Property="BorderBrush" Value="#536169"/>
-      <Setter Property="BorderThickness" Value="1"/>
-      <Setter Property="Padding" Value="8,6"/>
-      <Setter Property="Margin" Value="3"/>
+      <Setter Property="Foreground" Value="#F2F6F7"/><Setter Property="Background" Value="#12191C"/>
+      <Setter Property="BorderBrush" Value="#64747C"/><Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding" Value="6,4"/><Setter Property="Margin" Value="2,1"/>
+      <Setter Property="MinHeight" Value="29"/><Setter Property="FontSize" Value="13"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="ComboBox">
-            <Grid>
-              <Border x:Name="Outer" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"/>
-              <Grid Margin="{TemplateBinding BorderThickness}">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="30"/></Grid.ColumnDefinitions>
-                <ContentPresenter Margin="{TemplateBinding Padding}" VerticalAlignment="Center" HorizontalAlignment="Left"
-                                  Content="{TemplateBinding SelectionBoxItem}" ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"/>
-                <ToggleButton Grid.Column="1" Focusable="False" IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}" ClickMode="Press" Background="#252B2F" BorderThickness="0">
-                  <Path Fill="{TemplateBinding Foreground}" HorizontalAlignment="Center" VerticalAlignment="Center" Data="M 0 0 L 8 0 L 4 5 Z"/>
-                </ToggleButton>
-              </Grid>
+            <Grid SnapsToDevicePixels="True">
+              <Border x:Name="Chrome" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="2"/>
+              <ContentPresenter x:Name="PART_SelectionBoxItem" Margin="7,0,29,0" VerticalAlignment="Center" IsHitTestVisible="False" Content="{TemplateBinding SelectionBoxItem}" ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"/>
+              <TextBox x:Name="PART_EditableTextBox" Visibility="Collapsed" Background="{TemplateBinding Background}" Foreground="{TemplateBinding Foreground}" BorderThickness="0" Margin="5,1,29,1" Padding="1,0" VerticalContentAlignment="Center"/>
+              <ToggleButton x:Name="DropDownToggle" Width="25" HorizontalAlignment="Right" Focusable="False" ClickMode="Press" IsChecked="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}">
+                <ToggleButton.Template>
+                  <ControlTemplate TargetType="ToggleButton">
+                    <Border x:Name="ArrowChrome" Background="Transparent" CornerRadius="1">
+                      <TextBlock Text="▾" Foreground="#E6EEF0" FontSize="13" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ArrowChrome" Property="Background" Value="#34474F"/></Trigger><Trigger Property="IsPressed" Value="True"><Setter TargetName="ArrowChrome" Property="Background" Value="#28533B"/></Trigger></ControlTemplate.Triggers>
+                  </ControlTemplate>
+                </ToggleButton.Template>
+              </ToggleButton>
               <Popup x:Name="PART_Popup" Placement="Bottom" IsOpen="{TemplateBinding IsDropDownOpen}" AllowsTransparency="True" Focusable="False" PopupAnimation="Fade">
-                <Border Background="#20252A" BorderBrush="#536169" BorderThickness="1" MaxHeight="{TemplateBinding MaxDropDownHeight}">
-                  <ScrollViewer CanContentScroll="True"><ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained"/></ScrollViewer>
+                <Border Background="#182126" BorderBrush="#64747C" BorderThickness="1" MaxHeight="240" MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}">
+                  <ScrollViewer Margin="1" CanContentScroll="True" SnapsToDevicePixels="True"><ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained"/></ScrollViewer>
                 </Border>
               </Popup>
             </Grid>
             <ControlTemplate.Triggers>
-              <Trigger Property="IsEnabled" Value="False">
-                <Setter TargetName="Outer" Property="Background" Value="#20252A"/>
-                <Setter Property="Foreground" Value="#778288"/>
-              </Trigger>
-              <Trigger Property="IsDropDownOpen" Value="True"><Setter TargetName="Outer" Property="BorderBrush" Value="#87A9B6"/></Trigger>
+              <Trigger Property="IsEditable" Value="True"><Setter TargetName="PART_SelectionBoxItem" Property="Visibility" Value="Collapsed"/><Setter TargetName="PART_EditableTextBox" Property="Visibility" Value="Visible"/></Trigger>
+              <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter TargetName="Chrome" Property="BorderBrush" Value="#9BE0AE"/></Trigger>
+              <Trigger Property="IsEnabled" Value="False"><Setter TargetName="Chrome" Property="Background" Value="#20272B"/><Setter TargetName="Chrome" Property="BorderBrush" Value="#3D484D"/><Setter Property="Foreground" Value="#8A969B"/></Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
       </Setter>
     </Style>
     <Style TargetType="ComboBoxItem">
-      <Setter Property="Background" Value="#20252A"/>
-      <Setter Property="Foreground" Value="#EDF1F2"/>
-      <Setter Property="Padding" Value="8,6"/>
+      <Setter Property="Background" Value="#182126"/><Setter Property="Foreground" Value="#F2F6F7"/>
+      <Setter Property="Padding" Value="7,5"/>
       <Style.Triggers>
-        <Trigger Property="IsHighlighted" Value="True"><Setter Property="Background" Value="#344148"/></Trigger>
-        <Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="#355A42"/></Trigger>
+        <Trigger Property="IsHighlighted" Value="True"><Setter Property="Background" Value="#34474F"/></Trigger>
+        <Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="#28533B"/></Trigger>
       </Style.Triggers>
     </Style>
     <Style TargetType="ListBox">
-      <Setter Property="Background" Value="#191E21"/>
-      <Setter Property="Foreground" Value="#C2CBD0"/>
-      <Setter Property="BorderBrush" Value="#3A4248"/>
+      <Setter Property="Background" Value="#12191C"/><Setter Property="Foreground" Value="#E6EEF0"/>
+      <Setter Property="BorderBrush" Value="#526169"/><Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding" Value="3"/>
+    </Style>
+    <Style TargetType="ListBoxItem">
+      <Setter Property="Background" Value="Transparent"/><Setter Property="Foreground" Value="#E6EEF0"/>
+      <Setter Property="Padding" Value="5,3"/>
+      <Style.Triggers><Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="#28533B"/></Trigger></Style.Triggers>
+    </Style>
+    <Style TargetType="Slider">
+      <Setter Property="Foreground" Value="#9BE0AE"/><Setter Property="Margin" Value="2,4,10,5"/>
+      <Setter Property="SmallChange" Value="0.05"/><Setter Property="LargeChange" Value="0.5"/>
+    </Style>
+    <Style TargetType="Expander">
+      <Setter Property="Foreground" Value="#EDF3F4"/><Setter Property="Background" Value="#172024"/>
+      <Setter Property="BorderBrush" Value="#46545B"/><Setter Property="BorderThickness" Value="1"/>
     </Style>
   </Window.Resources>
-  <Grid Margin="20">
-    <Grid.RowDefinitions>
-      <RowDefinition Height="Auto"/>
-      <RowDefinition Height="Auto"/>
-      <RowDefinition Height="Auto"/>
-      <RowDefinition Height="*"/>
-      <RowDefinition Height="Auto"/>
-    </Grid.RowDefinitions>
-    <Grid Grid.Row="0" Margin="0,0,0,12">
-      <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-      <StackPanel>
-        <TextBlock Text="WIREX BRIDGE · FTX-1" FontSize="19" FontWeight="Bold"/>
-        <TextBlock x:Name="FooterText" Text="" Foreground="#E1AE53" FontSize="10" Margin="0,2,0,0"/>
+  <Grid x:Name="ConsoleRoot" Margin="12">
+      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="45*"/><RowDefinition Height="55*"/></Grid.RowDefinitions>
+
+    <Grid Grid.Row="0" Margin="0,0,0,8">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+      <StackPanel VerticalAlignment="Center">
+        <TextBlock Text="WIREX BRIDGE  ·  FTX-1" FontSize="19" FontWeight="Bold"/>
+        <TextBlock x:Name="FooterText" Text="" Foreground="#EFC36F" FontSize="12" Margin="1,1,0,0" Visibility="Collapsed"/>
       </StackPanel>
-      <Button x:Name="ConnectButton" Grid.Column="1" Content="连接" MinWidth="90" Background="#355A42" BorderBrush="#55785F"/>
-      <Button x:Name="SettingsButton" Grid.Column="2" Content="设置" MinWidth="90"/>
-      <Button x:Name="StopButton" Grid.Column="3" Content="停止并退出" MinWidth="130" Background="#68412A" BorderBrush="#9C6843"/>
+      <Button x:Name="SettingsButton" Grid.Column="1" Content="路由策略" MinWidth="88"/>
+      <Button x:Name="StopButton" Grid.Column="2" Content="停止并退出" MinWidth="120" Background="#69422E" BorderBrush="#A06F4D"/>
     </Grid>
-    <Border x:Name="OfflineBanner" Grid.Row="1" Padding="8,5" Margin="0,0,0,6" Background="#493819" BorderBrush="#9B7635" BorderThickness="1" Visibility="Collapsed">
-      <TextBlock x:Name="OfflineBannerText" Text="" Foreground="#FFDD98" FontWeight="Bold" FontSize="10"/>
-    </Border>
-    <UniformGrid x:Name="StatusCards" Grid.Row="2" Columns="3" Margin="0,0,0,7">
-      <Border x:Name="CoreStatusCard" Background="#20252A" BorderBrush="#3A4248" BorderThickness="1" Padding="7" Margin="0,0,5,0">
-        <StackPanel><DockPanel LastChildFill="True"><TextBlock Text="核心" Foreground="#9DA8AD" FontSize="10" DockPanel.Dock="Left" Margin="0,0,8,0"/><TextBlock x:Name="CoreValue" Text="" FontSize="12" FontWeight="Bold"/></DockPanel><TextBlock x:Name="CoreDetail" Text="" Visibility="Collapsed"/></StackPanel>
+
+    <Grid x:Name="ConsoleTop" Grid.Row="1" Margin="0,0,0,8">
+      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+      <Border x:Name="OfflineBanner" Grid.Row="0" Padding="7,4" Margin="0,0,0,5" Background="#493819" BorderBrush="#9B7635" BorderThickness="1" Visibility="Collapsed">
+        <TextBlock x:Name="OfflineBannerText" Text="" Foreground="#FFE0A1" FontWeight="Bold" FontSize="12"/>
       </Border>
-      <Border x:Name="RadioStatusCard" Background="#20252A" BorderBrush="#3A4248" BorderThickness="1" Padding="7" Margin="0,0,5,0">
-        <StackPanel><DockPanel LastChildFill="True"><TextBlock Text="HRI" Foreground="#9DA8AD" FontSize="10" DockPanel.Dock="Left" Margin="0,0,8,0"/><TextBlock x:Name="RadioValue" Text="" FontSize="12" FontWeight="Bold"/></DockPanel><TextBlock x:Name="RadioDetail" Text="" Visibility="Collapsed"/></StackPanel>
-      </Border>
-      <Border x:Name="BmStatusCard" Background="#20252A" BorderBrush="#3A4248" BorderThickness="1" Padding="7">
-        <StackPanel><DockPanel LastChildFill="True"><TextBlock Text="BM" Foreground="#9DA8AD" FontSize="10" DockPanel.Dock="Left" Margin="0,0,8,0"/><TextBlock x:Name="BmValue" Text="" FontSize="12" FontWeight="Bold"/></DockPanel><TextBlock x:Name="BmDetail" Text="" Visibility="Collapsed"/></StackPanel>
-      </Border>
-    </UniformGrid>
-    <Border x:Name="DashboardPanel" Grid.Row="3" Background="#20252A" BorderBrush="#3A4248" BorderThickness="1" Padding="8" Margin="0,0,0,10">
-      <ScrollViewer x:Name="DashboardScrollViewer" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-      <Grid>
-        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-        <Grid Grid.Row="0" Margin="0,0,0,8">
-          <Grid.ColumnDefinitions><ColumnDefinition Width="1.1*"/><ColumnDefinition Width="1*"/></Grid.ColumnDefinitions>
-          <Border x:Name="ListeningHistoryPanel" Grid.Column="0" Background="#191E21" BorderBrush="#46545A" BorderThickness="1" Padding="10" Margin="0,0,6,0">
-            <Grid>
-              <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-              <TextBlock Text="当前收听" FontSize="14" FontWeight="Bold" Margin="0,0,0,4"/>
-              <TextBlock x:Name="ReceiveTargetValue" Grid.Row="1" Text="" Foreground="#8CC9A1" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,5"/>
-              <StackPanel x:Name="CurrentCallPanel" Grid.Row="2" Margin="0,0,0,5" Visibility="Collapsed">
-                <TextBlock x:Name="CurrentCallLabel" Text="当前来话" Foreground="#9DA8AD" FontSize="10"/>
-                <TextBlock x:Name="CurrentCallValue" Text="" FontSize="15" FontWeight="Bold" Margin="0,1,0,0"/>
-                <TextBlock x:Name="CurrentCallDetail" Text="" Foreground="#9DA8AD" FontSize="10" TextWrapping="Wrap"/>
-                <TextBlock x:Name="IdentityLookupStatusValue" Text="" Foreground="#E1AE53" FontSize="9" TextWrapping="Wrap" Margin="0,2,0,0" Visibility="Collapsed"/>
-                <WrapPanel>
-                  <Button x:Name="QueryCurrentIdentityButton" Content="查询当前资料" Padding="6,2" Margin="0,2,4,0" IsEnabled="False" Visibility="Collapsed"/>
-                  <Button x:Name="BlockCurrentSourceButton" Content="屏蔽当前来源" Padding="6,2" Margin="0,2,0,0" IsEnabled="False"/>
-                </WrapPanel>
-              </StackPanel>
-              <Grid x:Name="RecentCallPanel" Grid.Row="3" Margin="0,2,0,4" Visibility="Collapsed">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                <StackPanel><TextBlock Text="最近来话" Foreground="#9DA8AD" FontSize="10"/><TextBlock x:Name="RecentCaller" Text="" FontSize="14" FontWeight="Bold" Margin="0,1,0,0"/><TextBlock x:Name="RecentCallDetail" Text="" Foreground="#9DA8AD" FontSize="10" TextWrapping="Wrap"/></StackPanel>
-                <StackPanel Grid.Column="1" Margin="8,0,0,0" Visibility="Collapsed"><TextBlock Text="HRI 来源标签" Foreground="#9DA8AD" FontSize="10"/><TextBlock x:Name="HriSourceIdentityValue" Text="" FontSize="12" FontWeight="Bold" Margin="0,1,0,0"/><TextBlock x:Name="RadioDisplayValue" Text="" Foreground="#E1AE53" FontSize="10" Margin="0,2,0,0"/></StackPanel>
-              </Grid>
-              <DockPanel x:Name="HistoryPanel" Grid.Row="4" LastChildFill="True" Margin="0,1,0,2" Visibility="Collapsed">
-                <TextBlock Text="来话历史" FontSize="10" FontWeight="Bold" VerticalAlignment="Top" Margin="0,2,8,2" DockPanel.Dock="Top"/>
-                <ListBox x:Name="CallHistoryList" Height="76" DisplayMemberPath="text"/>
-              </DockPanel>
-              <Grid x:Name="HistoryActionsPanel" Grid.Row="5" Visibility="Collapsed">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                <Button x:Name="SetHistoryCallTargetButton" Content="设为起呼目标" Width="98" Height="28" HorizontalAlignment="Left" VerticalAlignment="Top" Padding="5,2" Margin="0,1,5,0" IsEnabled="False"/>
-                <Button x:Name="QueryHistoryIdentityButton" Grid.Column="1" Content="查询资料" Width="92" Height="28" HorizontalAlignment="Left" VerticalAlignment="Top" Padding="5,2" Margin="0,1,5,0" IsEnabled="False" Visibility="Collapsed"/>
-                <ListBox x:Name="EventList" Height="42" Visibility="Collapsed"/>
-              </Grid>
-            </Grid>
-          </Border>
-          <Border x:Name="CallChannelPanel" Grid.Column="1" Background="#191E21" BorderBrush="#46545A" BorderThickness="1" Padding="10" Margin="6,0,0,0">
-            <StackPanel>
-              <TextBlock Text="起呼目标" FontSize="14" FontWeight="Bold" Margin="0,0,0,4"/>
-              <TextBlock x:Name="TargetValue" Text="" Visibility="Collapsed"/>
-              <TextBlock x:Name="TransmitTargetValue" Text="" Foreground="#8CC9A1" FontSize="14" FontWeight="Bold" Margin="0,1,0,0" TextWrapping="Wrap"/>
-              <TextBlock x:Name="TransmitPermissionValue" Text="" Foreground="#E1AE53" FontSize="10" Margin="0,1,0,0"/>
-              <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
-                <TextBlock Text="预设" Foreground="#9DA8AD" FontSize="10" VerticalAlignment="Center"/>
-                <ComboBox x:Name="TargetSelector" Height="29" MinWidth="175" SelectedIndex="1">
-                  <ComboBoxItem Content="鹦鹉私呼 · 460997 · TS2" Tag="parrot-cn"/>
-                  <ComboBoxItem Content="当前已保存频道" Tag="custom"/>
-                </ComboBox>
-              </StackPanel>
-              <TextBlock x:Name="CallTargetChoicesLabel" Text="本机目标" Foreground="#9DA8AD" FontSize="10" FontWeight="Bold" Margin="0,3,0,1" Visibility="Collapsed"/>
-              <ScrollViewer x:Name="CallTargetChoicesScroll" MaxHeight="46" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed"><WrapPanel x:Name="CallTargetChoicesPanel"/></ScrollViewer>
-              <Grid Margin="0,0,0,1">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="92"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                <TextBlock Text="分类" Foreground="#9DA8AD" FontSize="9" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                <ComboBox x:Name="FavoriteCategorySelector" Grid.Column="1" Height="25" SelectedIndex="0" Margin="0,0,4,0">
-                  <ComboBoxItem Content="普通" Tag="normal"/><ComboBoxItem Content="动态" Tag="dynamic"/><ComboBoxItem Content="静态" Tag="static"/>
-                </ComboBox>
-                <TextBlock Grid.Column="2" Text="名称" Foreground="#9DA8AD" FontSize="9" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                <TextBox x:Name="FavoriteLabelBox" Grid.Column="3" Height="25" Padding="5,2" Margin="0" Background="#20252A" Foreground="#EDF1F2" BorderBrush="#536169" BorderThickness="1"/>
-              </Grid>
-              <WrapPanel Margin="-2,0,0,0">
-                <Button x:Name="FavoriteCurrentTargetButton" Content="收藏当前起呼目标" Padding="5,2" Margin="2" IsEnabled="False"/>
-                <Button x:Name="FavoriteManualGroupButton" Content="收藏输入TG/TS" Padding="5,2" Margin="2"/>
-              </WrapPanel>
-              <ListBox x:Name="CallFavoritesList" Height="52" DisplayMemberPath="text" Visibility="Collapsed"/>
-              <WrapPanel Margin="-2,0,0,0">
-                <Button x:Name="ApplyCallFavoriteButton" Content="设为呼叫目标" Padding="5,2" Margin="2" IsEnabled="False"/>
-                <Button x:Name="RemoveCallFavoriteButton" Content="删除收藏" Padding="5,2" Margin="2" IsEnabled="False"/>
-                <TextBlock x:Name="ChannelFavoritesStatusValue" Text="" Foreground="#E1AE53" FontSize="9" TextWrapping="Wrap" VerticalAlignment="Center" Margin="4,1" Visibility="Collapsed"/>
-              </WrapPanel>
-                <TextBlock x:Name="ActiveLeaseValue" Text="" Foreground="#E1AE53" FontSize="10" TextWrapping="Wrap" Margin="0,2,0,0" Visibility="Collapsed"/>
-              <TextBlock x:Name="RoutingRevisionValue" Text="" Visibility="Collapsed"/>
-              <TextBlock x:Name="CallTargetStatusValue" Text="" Foreground="#E1AE53" FontSize="9" TextWrapping="Wrap" Margin="0,2,0,0" Visibility="Collapsed"/>
-            </StackPanel>
-          </Border>
-        </Grid>
-        <Border x:Name="DynamicGroupPanel" Grid.Row="1" Background="#191E21" BorderBrush="#46545A" BorderThickness="1" Padding="5" Margin="0,0,0,8">
-          <Grid>
-            <Grid.ColumnDefinitions><ColumnDefinition Width="1.8*"/><ColumnDefinition Width="1.1*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="1.4*"/></Grid.ColumnDefinitions>
-            <StackPanel Grid.Column="0" VerticalAlignment="Center">
-              <TextBlock Text="TG / TS 快速操作" FontWeight="Bold" FontSize="11"/>
-              <TextBlock x:Name="DynamicGroupHelpText" Text="" Visibility="Collapsed"/>
-            </StackPanel>
-            <Grid Grid.Column="1" VerticalAlignment="Center">
-              <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-              <TextBlock Text="TG" Foreground="#AAB5BA" FontSize="10" VerticalAlignment="Center" Margin="3,0,5,0"/>
-              <TextBox x:Name="DynamicGroupIdBox" Grid.Column="1" Background="#20252A" Foreground="#EDF1F2" BorderBrush="#536169" BorderThickness="1" Padding="7,4" VerticalAlignment="Center"/>
-            </Grid>
-            <ComboBox x:Name="DynamicGroupSlotBox" Grid.Column="2" SelectedIndex="1" Width="74" VerticalAlignment="Center" Margin="3,0">
-              <ComboBoxItem Content="TS1" Tag="1"/><ComboBoxItem Content="TS2" Tag="2"/>
-            </ComboBox>
-            <Button x:Name="SetDynamicCallTargetButton" Grid.Column="3" Content="设为起呼目标" MinWidth="96" Padding="6,4" Margin="2" IsEnabled="False"/>
-            <Button x:Name="AddListenGroupButton" Grid.Column="4" Content="加入本机收听" MinWidth="96" Padding="6,4" Margin="2" IsEnabled="False"/>
-            <Button x:Name="ActivateDynamicGroupButton" Grid.Column="5" Content="激活动态组" MinWidth="86" Padding="6,4" Margin="2" IsEnabled="False"/>
-            <TextBlock x:Name="DynamicGroupStatus" Grid.Column="6" Text="" Foreground="#E1AE53" FontSize="9" TextWrapping="Wrap" VerticalAlignment="Center" Margin="5,0,0,0" Visibility="Collapsed"/>
-          </Grid>
+      <UniformGrid x:Name="StatusCards" Grid.Row="1" Columns="4" Margin="0,0,0,6">
+        <Border x:Name="CoreStatusCard" Background="#1D2529" BorderBrush="#3C4A50" BorderThickness="1" Padding="8" Margin="0,0,4,0">
+          <StackPanel><DockPanel><TextBlock Text="核心" Foreground="#A8B5BB" FontSize="12"/><TextBlock x:Name="CoreValue" DockPanel.Dock="Right" Text="" FontSize="13" FontWeight="Bold"/></DockPanel><TextBlock x:Name="CoreDetail" Text="" FontSize="12" Foreground="#9BA9AE" Visibility="Collapsed"/></StackPanel>
         </Border>
-        <Expander x:Name="RadioDetailsExpander" Grid.Row="2" IsExpanded="False" Visibility="Collapsed" Margin="0,0,0,0" Background="#191E21" Foreground="#EDF1F2" BorderBrush="#46545A" BorderThickness="1">
-          <Expander.Header><TextBlock Text="收听来源" FontSize="11" FontWeight="Bold"/></Expander.Header>
-        <Grid Margin="0,4,0,0">
-          <Grid.ColumnDefinitions><ColumnDefinition Width="0.95*"/><ColumnDefinition Width="1.1*"/><ColumnDefinition Width="1.75*"/><ColumnDefinition Width="0.95*"/></Grid.ColumnDefinitions>
-          <Border x:Name="TrafficCard" Grid.Column="0" Visibility="Collapsed" Background="#191E21" BorderBrush="#343D42" BorderThickness="1" Padding="8" Margin="0,0,6,0">
-            <StackPanel><TextBlock Text="收发状态" Foreground="#9DA8AD" FontSize="10"/><TextBlock x:Name="TrafficValue" Text="" FontSize="15" FontWeight="Bold" Margin="0,3,0,1"/><TextBlock x:Name="TrafficDetail" Text="" Foreground="#9DA8AD" FontSize="10" TextWrapping="Wrap"/><TextBlock x:Name="RadioStateValue" Text="" Foreground="#E1AE53" FontSize="10" Margin="0,4,0,0"/></StackPanel>
+        <Border x:Name="RadioStatusCard" Background="#1D2529" BorderBrush="#3C4A50" BorderThickness="1" Padding="8" Margin="2,0,3,0">
+          <StackPanel><DockPanel><TextBlock Text="电台 / HRI" Foreground="#A8B5BB" FontSize="12"/><TextBlock x:Name="RadioValue" DockPanel.Dock="Right" Text="" FontSize="13" FontWeight="Bold"/></DockPanel><TextBlock x:Name="RadioDetail" Text="" FontSize="12" Foreground="#9BA9AE" Visibility="Collapsed"/></StackPanel>
+        </Border>
+        <Border x:Name="AudioStatusCard" Background="#1D2529" BorderBrush="#3C4A50" BorderThickness="1" Padding="8" Margin="2,0,3,0">
+          <StackPanel><DockPanel><TextBlock Text="音频" Foreground="#A8B5BB" FontSize="12"/><TextBlock x:Name="AudioValue" DockPanel.Dock="Right" Text="" FontSize="13" FontWeight="Bold"/></DockPanel><TextBlock x:Name="AudioDetail" Text="" FontSize="12" Foreground="#9BA9AE" Visibility="Collapsed"/></StackPanel>
+        </Border>
+        <Border x:Name="BmStatusCard" Background="#1D2529" BorderBrush="#3C4A50" BorderThickness="1" Padding="8" Margin="2,0,0,0">
+          <StackPanel>
+            <DockPanel LastChildFill="True"><TextBlock Text="BrandMeister" Foreground="#A8B5BB" FontSize="12" DockPanel.Dock="Left" Margin="0,0,8,0"/><TextBlock x:Name="BmValue" Text="" FontSize="13" FontWeight="Bold"/></DockPanel>
+            <StackPanel x:Name="BmRttMetric" Orientation="Horizontal" Visibility="Collapsed" Margin="0,2,0,0">
+              <TextBlock Text="往返" Foreground="#A8B5BB" FontSize="12" Margin="0,0,5,0"/><TextBlock x:Name="BmRttValue" Text="" FontSize="12" FontWeight="Bold"/>
+            </StackPanel>
+            <TextBlock x:Name="BmDetail" Text="" FontSize="12" Foreground="#9BA9AE" Visibility="Collapsed"/>
+          </StackPanel>
+        </Border>
+      </UniformGrid>
+      <Border Grid.Row="2" Background="#1D2529" BorderBrush="#46545B" BorderThickness="1" Padding="10,8">
+        <StackPanel>
+            <TextBlock Text="当前来话 · 发话来源" Foreground="#A8B5BB" FontSize="12" FontWeight="Bold"/>
+            <StackPanel x:Name="CurrentCallPanel" Visibility="Collapsed" Margin="0,3,0,0">
+              <TextBlock x:Name="CurrentCallLabel" Text="来话" Foreground="#9FB2BA" FontSize="12"/>
+              <TextBlock x:Name="CurrentCallValue" Text="" FontSize="34" FontWeight="Bold" Foreground="#9BE0AE" Margin="0,1,0,0"/>
+              <TextBlock x:Name="CurrentCallDetail" Text="" Foreground="#D2DDE0" FontSize="12" TextWrapping="Wrap"/>
+              <TextBlock x:Name="IdentityLookupStatusValue" Text="" Foreground="#EFC36F" FontSize="12" TextWrapping="Wrap" Margin="0,2,0,0" Visibility="Collapsed"/>
+              <WrapPanel>
+                <Button x:Name="QueryCurrentIdentityButton" Content="查询资料" Padding="7,3" Margin="0,2,4,0" IsEnabled="False" Visibility="Collapsed"/>
+                <Button x:Name="BlockCurrentSourceButton" Content="屏蔽此来源" Padding="7,3" Margin="0,2,0,0" IsEnabled="False"/>
+              </WrapPanel>
+            </StackPanel>
+            <Grid x:Name="RecentCallPanel" Visibility="Collapsed" Margin="0,2,0,0">
+              <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+              <StackPanel><TextBlock Text="最近来话" Foreground="#9FB2BA" FontSize="12"/><TextBlock x:Name="RecentCaller" Text="" FontSize="13" FontWeight="Bold"/><TextBlock x:Name="RecentCallDetail" Text="" Foreground="#BCC8CC" FontSize="12" TextWrapping="Wrap"/></StackPanel>
+              <StackPanel Grid.Column="1" Visibility="Collapsed"><TextBlock Text="HRI 来源标签" Foreground="#9FB2BA" FontSize="12"/><TextBlock x:Name="HriSourceIdentityValue" Text="" FontSize="12" FontWeight="Bold"/><TextBlock x:Name="RadioDisplayValue" Text="" Foreground="#EFC36F" FontSize="12"/></StackPanel>
+            </Grid>
+        </StackPanel>
+      </Border>
+      <Expander x:Name="RadioDetailsExpander" Grid.Row="3" IsExpanded="False" Visibility="Collapsed" HorizontalAlignment="Right" Background="#172024" Foreground="#EDF3F4" BorderBrush="#46545B" BorderThickness="1">
+        <Expander.Header><TextBlock Text="来话历史 · 收听来源与屏蔽" FontSize="12" FontWeight="Bold"/></Expander.Header>
+        <Grid Width="600" MaxHeight="240" Margin="3">
+          <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+          <DockPanel x:Name="HistoryPanel" Grid.Row="0" LastChildFill="True" Margin="0,0,0,5" Visibility="Collapsed">
+            <TextBlock Text="来话历史" Foreground="#A8B5BB" FontSize="12" Margin="0,2,8,0" DockPanel.Dock="Left"/>
+            <ListBox x:Name="CallHistoryList" Height="68" DisplayMemberPath="text"/>
+          </DockPanel>
+          <Grid x:Name="HistoryActionsPanel" Grid.Row="1" Visibility="Collapsed" Margin="0,0,0,4">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+            <Button x:Name="SetHistoryCallTargetButton" Content="设为起呼目标" Width="102" Height="27" Padding="5,2" Margin="0,1,5,0" IsEnabled="False"/>
+            <Button x:Name="QueryHistoryIdentityButton" Grid.Column="1" Content="查询资料" Width="80" Height="27" Padding="5,2" Margin="0,1,5,0" IsEnabled="False" Visibility="Collapsed"/>
+            <ListBox x:Name="EventList" Grid.Column="2" Height="32" Visibility="Collapsed"/>
+          </Grid>
+          <Border x:Name="ObservedSourcesCard" Grid.Row="2" Background="#151C20" BorderBrush="#46545B" BorderThickness="1" Padding="5" Visibility="Collapsed">
+            <DockPanel LastChildFill="True"><TextBlock Text="收听来源" Foreground="#A8B5BB" FontSize="12" DockPanel.Dock="Top" Margin="0,0,0,4"/><ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"><StackPanel x:Name="ObservedSourcesPanel"/></ScrollViewer></DockPanel>
           </Border>
-          <Border Grid.Column="1" Visibility="Collapsed" Background="#191E21" BorderBrush="#343D42" BorderThickness="1" Padding="8" Margin="6,0">
-            <DockPanel LastChildFill="True"><TextBlock Text="本机接收路由" Foreground="#9DA8AD" FontSize="10" DockPanel.Dock="Top" Margin="0,0,0,5"/><ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"><StackPanel x:Name="ConfiguredRoutesPanel"/></ScrollViewer></DockPanel>
-          </Border>
-          <Border x:Name="ObservedSourcesCard" Grid.Column="0" Grid.ColumnSpan="4" Background="#191E21" BorderBrush="#343D42" BorderThickness="1" Padding="8" Margin="0">
-            <DockPanel LastChildFill="True"><TextBlock Text="收听来源" Foreground="#9DA8AD" FontSize="10" DockPanel.Dock="Top" Margin="0,0,0,4"/><ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"><StackPanel x:Name="ObservedSourcesPanel"/></ScrollViewer></DockPanel>
-          </Border>
-          <Border Grid.Column="3" Visibility="Collapsed" Background="#191E21" BorderBrush="#343D42" BorderThickness="1" Padding="8" Margin="6,0,0,0">
-            <StackPanel><TextBlock Text="运行会话" Foreground="#9DA8AD" FontSize="10"/><TextBlock x:Name="RunValue" Text="" FontSize="15" FontWeight="Bold" Margin="0,6,0,3"/><TextBlock x:Name="FreshnessValue" Text="" Foreground="#9DA8AD" FontSize="10" TextWrapping="Wrap"/><TextBlock x:Name="ControlProtocolValue" Text="" Foreground="#E1AE53" TextWrapping="Wrap" FontSize="10" Margin="0,4,0,3"/><Button x:Name="ControlStatusButton" Content="查询状态" Height="26" Padding="8,1" HorizontalAlignment="Left" MinWidth="84" IsEnabled="False"/></StackPanel>
-          </Border>
-          <Border x:Name="AudioStatusCard" Grid.Column="3" Visibility="Collapsed"><StackPanel><TextBlock x:Name="AudioValue" Text=""/><TextBlock x:Name="AudioDetail" Text=""/></StackPanel></Border>
         </Grid>
-        </Expander>
-      </Grid>
-      </ScrollViewer>
-    </Border>
-    <Grid Grid.Row="4">
-      <Grid.ColumnDefinitions><ColumnDefinition Width="1.1*"/><ColumnDefinition Width="1.1*"/><ColumnDefinition Width="1.5*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-      <StackPanel x:Name="BmRttMetric" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Visibility="Collapsed">
-        <TextBlock Text="往返" Foreground="#9DA8AD" FontSize="9" VerticalAlignment="Center" Margin="0,0,5,0"/>
-        <TextBlock x:Name="BmRttValue" Text="" FontSize="10" FontWeight="Bold" VerticalAlignment="Center"/>
-      </StackPanel>
-      <StackPanel x:Name="RxNetworkMetric" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Visibility="Collapsed">
-        <TextBlock Text="丢包" Foreground="#9DA8AD" FontSize="9" VerticalAlignment="Center" Margin="0,0,5,0"/>
-        <TextBlock x:Name="RxCallLossValue" Text="" FontSize="10" FontWeight="Bold" VerticalAlignment="Center" Visibility="Collapsed"/>
-        <TextBlock x:Name="RxSessionLossValue" Text="" FontSize="10" FontWeight="Bold" VerticalAlignment="Center" Visibility="Collapsed"/>
-      </StackPanel>
-      <TextBlock x:Name="PlaybackGainStatusValue" Grid.Column="2" Text="" Foreground="#8CC9A1" FontSize="9" VerticalAlignment="Center" Margin="3,0,5,0" Visibility="Collapsed"/>
-      <Button x:Name="VolumeSettingsButton" Grid.Column="3" Content="音量" MinWidth="64" Padding="7,4" Margin="2"/>
+      </Expander>
+    </Grid>
+
+    <Grid x:Name="DashboardPanel" Grid.Row="2">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="2*"/><ColumnDefinition Width="3*"/></Grid.ColumnDefinitions>
+
+      <Border x:Name="ConnectionConfigPanel" Grid.Column="0" Background="#1D2529" BorderBrush="#46545B" BorderThickness="1" Padding="8" Margin="0,0,7,0">
+        <Grid>
+          <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+          <ScrollViewer x:Name="ConnectionScrollViewer" Grid.Row="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+          <StackPanel>
+            <DockPanel Margin="1,0,0,4"><TextBlock Text="连接配置" FontSize="14" FontWeight="Bold"/><TextBlock x:Name="DeviceDiscoveryText" DockPanel.Dock="Right" Text="" Foreground="#A8B5BB" FontSize="12" VerticalAlignment="Center" Visibility="Collapsed"/></DockPanel>
+            <TextBlock x:Name="ProfileMigrationText" Text="" Foreground="#EFC36F" FontSize="12" TextWrapping="Wrap" Visibility="Collapsed"/>
+            <Grid>
+              <Grid.ColumnDefinitions><ColumnDefinition Width="1.3*"/><ColumnDefinition Width="1*"/><ColumnDefinition Width="1.1*"/></Grid.ColumnDefinitions>
+              <StackPanel><TextBlock Text="呼号" Foreground="#A8B5BB" FontSize="12"/><TextBox x:Name="CallsignBox"/></StackPanel>
+              <StackPanel Grid.Column="1"><TextBlock Text="Gateway ID" Foreground="#A8B5BB" FontSize="12"/><TextBox x:Name="GatewayBox"/></StackPanel>
+              <StackPanel Grid.Column="2"><TextBlock Text="本机 DMR ID" Foreground="#A8B5BB" FontSize="12"/><TextBox x:Name="SourceBox"/></StackPanel>
+            </Grid>
+            <Grid>
+              <Grid.ColumnDefinitions><ColumnDefinition Width="1.5*"/><ColumnDefinition Width="0.7*"/><ColumnDefinition Width="1.2*"/><ColumnDefinition Width="0.65*"/></Grid.ColumnDefinitions>
+              <StackPanel><TextBlock Text="BM 服务器" Foreground="#A8B5BB" FontSize="12"/><ComboBox x:Name="MasterPresetBox" SelectedIndex="0"><ComboBoxItem Content="BM 4602 · 43.129.83.124" Tag="bm-china-4602"/><ComboBoxItem Content="自定义" Tag="custom"/></ComboBox></StackPanel>
+              <StackPanel Grid.Column="1"><TextBlock Text="UDP 端口" Foreground="#A8B5BB" FontSize="12"/><TextBox x:Name="MasterPortBox" Text="62031"/></StackPanel>
+              <StackPanel Grid.Column="2"><TextBlock Text="主机名 / IPv4" Foreground="#A8B5BB" FontSize="12"/><TextBox x:Name="MasterBox" Text="43.129.83.124"/></StackPanel>
+              <StackPanel Grid.Column="3"><TextBlock Text="色码" Foreground="#A8B5BB" FontSize="12"/><TextBox x:Name="ColorCodeBox"/></StackPanel>
+            </Grid>
+            <Border Background="#172024" BorderBrush="#3C494F" BorderThickness="1" Padding="5" Margin="0,2,0,3">
+              <StackPanel>
+                <DockPanel><TextBlock Text="设备端口" FontWeight="Bold" FontSize="12"/><Button x:Name="RefreshDevicesButton" Content="刷新" Padding="6,2" Margin="0"/></DockPanel>
+                <Grid>
+                  <Grid.ColumnDefinitions><ColumnDefinition Width="1.05*"/><ColumnDefinition Width="1*"/><ColumnDefinition Width="1*"/></Grid.ColumnDefinitions>
+                  <StackPanel><TextBlock Text="HRI 串口" Foreground="#A8B5BB" FontSize="12"/><ComboBox x:Name="SerialBox"/></StackPanel>
+                  <StackPanel Grid.Column="1"><TextBlock Text="音频输入" Foreground="#A8B5BB" FontSize="12"/><ComboBox x:Name="WaveInEndpointBox"/></StackPanel>
+                  <StackPanel Grid.Column="2"><TextBlock Text="音频输出" Foreground="#A8B5BB" FontSize="12"/><ComboBox x:Name="WaveOutEndpointBox"/></StackPanel>
+                </Grid>
+              </StackPanel>
+            </Border>
+            <Border x:Name="RadioCatPanel" Background="#172024" BorderBrush="#3C494F" BorderThickness="1" Padding="5" Margin="0,2,0,3" Visibility="Collapsed">
+              <StackPanel>
+                <TextBlock Text="FTX-1 CAT-1 端口" FontWeight="Bold" FontSize="12"/>
+                <Grid>
+                  <Grid.ColumnDefinitions><ColumnDefinition Width="1.5*"/><ColumnDefinition Width="0.85*"/><ColumnDefinition Width="0.85*"/></Grid.ColumnDefinitions>
+                  <StackPanel><TextBlock Text="CAT 串口" Foreground="#A8B5BB" FontSize="12"/><ComboBox x:Name="CatPortBox" IsEditable="True" IsTextSearchEnabled="False"/></StackPanel>
+                  <StackPanel Grid.Column="1"><TextBlock Text="波特率" Foreground="#A8B5BB" FontSize="12"/><ComboBox x:Name="CatBaudRateBox"><ComboBoxItem Content="4800" Tag="4800"/><ComboBoxItem Content="9600" Tag="9600"/><ComboBoxItem Content="19200" Tag="19200"/><ComboBoxItem Content="38400" Tag="38400"/><ComboBoxItem Content="115200" Tag="115200"/></ComboBox></StackPanel>
+                  <StackPanel Grid.Column="2"><TextBlock Text="停止位" Foreground="#A8B5BB" FontSize="12"/><ComboBox x:Name="CatStopBitsBox"><ComboBoxItem Content="1" Tag="One"/><ComboBoxItem Content="2" Tag="Two"/></ComboBox></StackPanel>
+                </Grid>
+              </StackPanel>
+            </Border>
+            <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+              <StackPanel><TextBlock Text="BM API Key 文件" Foreground="#A8B5BB" FontSize="12"/>
+              <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <TextBox x:Name="BmApiKeyPathBox" Margin="2,1,4,1"/>
+                <Button x:Name="BrowseBmApiKeyButton" Grid.Column="1" Content="选择" Padding="6,3"/>
+              </Grid>
+              </StackPanel>
+              <StackPanel Grid.Column="1">
+              <TextBlock Text="BM 密码文件" Foreground="#A8B5BB" FontSize="12"/>
+              <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <TextBox x:Name="PasswordPathBox" Margin="2,1,4,1"/>
+                <Button x:Name="BrowsePasswordButton" Grid.Column="1" Content="选择" Padding="6,3"/>
+              </Grid>
+              </StackPanel>
+            </Grid>
+            <TextBlock x:Name="SettingsErrorText" Text="" Foreground="#EFC36F" FontSize="12" TextWrapping="Wrap" Margin="2,3" Visibility="Collapsed"/>
+          </StackPanel>
+        </ScrollViewer>
+          <Grid Grid.Row="1" Margin="0,4,0,0">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <Button x:Name="ConnectButton" Content="连接并应用" MinWidth="110" Background="#28583C" BorderBrush="#64A477"/>
+            <Button x:Name="SaveSettingsButton" Grid.Column="1" Content="保存配置" MinWidth="88"/>
+            <TextBlock x:Name="ConnectionLockValue" Grid.Column="2" Text="" Foreground="#A8B5BB" FontSize="12" VerticalAlignment="Center" Margin="6,0,1,0"/>
+          </Grid>
+        </Grid>
+      </Border>
+
+      <Border x:Name="DailyControlsPanel" Grid.Column="1" Background="#1D2529" BorderBrush="#46545B" BorderThickness="1" Padding="8" Margin="7,0,0,0">
+        <ScrollViewer x:Name="DashboardScrollViewer" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+          <StackPanel>
+            <TextBlock Text="日常控制" FontSize="14" FontWeight="Bold" Margin="1,0,0,4"/>
+            <Grid Margin="0,0,0,4">
+              <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+              <Border x:Name="ListeningHistoryPanel" Background="#151C20" BorderBrush="#3C494F" BorderThickness="1" Padding="7" Margin="0,0,3,0">
+                <StackPanel><TextBlock Text="当前收听组" Foreground="#A8B5BB" FontSize="12"/><TextBlock x:Name="ReceiveTargetValue" Text="" Foreground="#9BE0AE" FontSize="13" FontWeight="Bold" TextWrapping="Wrap"/></StackPanel>
+              </Border>
+              <Border x:Name="TransmitTargetPanel" Grid.Column="1" Background="#151C20" BorderBrush="#3C494F" BorderThickness="1" Padding="7" Margin="3,0,0,0">
+                <StackPanel>
+                  <TextBlock Text="当前起呼目标" Foreground="#A8B5BB" FontSize="12"/>
+                  <TextBlock x:Name="TransmitTargetValue" Text="" Foreground="#E6F4E9" FontSize="13" FontWeight="Bold" TextWrapping="Wrap"/>
+                  <TextBlock x:Name="TransmitPermissionValue" Text="" Foreground="#EFC36F" FontSize="12" Margin="0,1,0,0"/>
+                  <Grid Margin="0,3,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="1.15*"/><ColumnDefinition Width="0.8*"/><ColumnDefinition Width="1*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <StackPanel><TextBlock Text="目标 ID" Foreground="#A8B5BB" FontSize="12"/><TextBox x:Name="DestinationBox"/></StackPanel>
+                    <StackPanel Grid.Column="1"><TextBlock Text="时隙" Foreground="#A8B5BB" FontSize="12"/><ComboBox x:Name="SlotBox" MinWidth="76" SelectedIndex="1"><ComboBoxItem Content="TS1" Tag="1"/><ComboBoxItem Content="TS2" Tag="2"/></ComboBox></StackPanel>
+                    <StackPanel Grid.Column="2"><TextBlock Text="类型" Foreground="#A8B5BB" FontSize="12"/><ComboBox x:Name="CallKindBox" MinWidth="76" SelectedIndex="1"><ComboBoxItem Content="组呼" Tag="group"/><ComboBoxItem Content="私呼" Tag="private"/></ComboBox></StackPanel>
+                    <Button x:Name="ApplyNextTxTargetButton" Grid.Column="3" Content="应用" VerticalAlignment="Bottom" Padding="8,5"/>
+                  </Grid>
+                  <CheckBox x:Name="TransmitEnabledBox" Content="允许向 BM 发送" IsChecked="True" Foreground="#EDF3F4" Margin="3,2,0,0"/>
+                </StackPanel>
+              </Border>
+              <TextBlock x:Name="TargetValue" Text="" Visibility="Collapsed"/>
+            </Grid>
+            <Border x:Name="DynamicGroupPanel" Background="#172024" BorderBrush="#46545B" BorderThickness="1" Padding="7" Margin="0,0,0,4">
+              <StackPanel>
+                <TextBlock Text="动态组" FontWeight="Bold" FontSize="12" Margin="0,0,0,2"/>
+                <Grid>
+                  <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="1.15*"/><ColumnDefinition Width="0.65*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                  <TextBlock Text="TG" Foreground="#A8B5BB" FontSize="12" VerticalAlignment="Center" Margin="2,0,5,0"/>
+                  <TextBox x:Name="DynamicGroupIdBox" Grid.Column="1"/>
+                  <ComboBox x:Name="DynamicGroupSlotBox" Grid.Column="2" SelectedIndex="1"><ComboBoxItem Content="TS1" Tag="1"/><ComboBoxItem Content="TS2" Tag="2"/></ComboBox>
+                  <Button x:Name="SetDynamicCallTargetButton" Grid.Column="3" Content="设为起呼" MinWidth="82" Padding="7,4" IsEnabled="False"/>
+                  <Button x:Name="AddListenGroupButton" Grid.Column="4" Content="加入收听" MinWidth="82" Padding="7,4" IsEnabled="False"/>
+                  <Button x:Name="ActivateDynamicGroupButton" Grid.Column="5" Content="激活动态组" MinWidth="88" Padding="7,4" IsEnabled="False"/>
+                </Grid>
+                <TextBlock x:Name="DynamicGroupStatus" Text="" Foreground="#EFC36F" FontSize="12" TextWrapping="Wrap" Margin="2,2,0,0" Visibility="Collapsed"/>
+                <TextBlock x:Name="DynamicGroupHelpText" Text="" Visibility="Collapsed"/>
+              </StackPanel>
+            </Border>
+
+            <Border Background="#172024" BorderBrush="#46545B" BorderThickness="1" Padding="7" Margin="0,0,0,4">
+              <StackPanel x:Name="CallChannelPanel">
+                <DockPanel><TextBlock Text="起呼目标与收藏" FontWeight="Bold" FontSize="12"/></DockPanel>
+                <Grid Margin="0,2,0,2"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                  <TextBlock Text="目标" Foreground="#A8B5BB" FontSize="12" VerticalAlignment="Center" Margin="2,0,6,0"/>
+                  <ComboBox x:Name="TargetSelector" Grid.Column="1" SelectedIndex="1" MinHeight="29"><ComboBoxItem Content="鹦鹉私呼 · 460997 · TS2" Tag="parrot-cn"/><ComboBoxItem Content="当前已保存频道" Tag="custom"/></ComboBox>
+                </Grid>
+                <TextBlock x:Name="CallTargetChoicesLabel" Text="本机目标" Foreground="#A8B5BB" FontSize="12" FontWeight="Bold" Margin="2,1" Visibility="Collapsed"/>
+                <ScrollViewer x:Name="CallTargetChoicesScroll" MaxHeight="46" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed"><WrapPanel x:Name="CallTargetChoicesPanel"/></ScrollViewer>
+                <Grid Margin="0,1,0,2">
+                  <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="90"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                  <TextBlock Text="收藏分类" Foreground="#A8B5BB" FontSize="12" VerticalAlignment="Center" Margin="2,0,4,0"/>
+                  <ComboBox x:Name="FavoriteCategorySelector" Grid.Column="1" SelectedIndex="0" MinHeight="26"><ComboBoxItem Content="普通" Tag="normal"/><ComboBoxItem Content="动态" Tag="dynamic"/><ComboBoxItem Content="静态" Tag="static"/></ComboBox>
+                  <TextBlock Grid.Column="2" Text="名称" Foreground="#A8B5BB" FontSize="12" VerticalAlignment="Center" Margin="3,0,4,0"/>
+                  <TextBox x:Name="FavoriteLabelBox" Grid.Column="3" Padding="5,2" Margin="2,1"/>
+                </Grid>
+                <WrapPanel>
+                  <Button x:Name="FavoriteCurrentTargetButton" Content="收藏起呼目标" Padding="6,3" Margin="1" IsEnabled="False"/>
+                  <Button x:Name="FavoriteManualGroupButton" Content="收藏输入 TG/TS" Padding="6,3" Margin="1"/>
+                  <Button x:Name="ApplyCallFavoriteButton" Content="设为呼叫目标" Padding="6,3" Margin="1" IsEnabled="False"/>
+                  <Button x:Name="RemoveCallFavoriteButton" Content="删除本机收藏" Padding="6,3" Margin="1" IsEnabled="False"/>
+                </WrapPanel>
+                <ListBox x:Name="CallFavoritesList" Height="64" DisplayMemberPath="text" Visibility="Collapsed"/>
+                <Border x:Name="BmStaticGroupPanel" Background="#151C20" BorderBrush="#3C494F" BorderThickness="1" Padding="4" Margin="0,3,0,0" Visibility="Collapsed">
+                  <StackPanel>
+                    <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                      <TextBlock Text="BM 静态组" FontSize="12" Foreground="#A8B5BB" VerticalAlignment="Center"/><TextBlock x:Name="BmStaticGroupSourceValue" Text="" Foreground="#A8B5BB" FontSize="12" DockPanel.Dock="Right" VerticalAlignment="Center"/>
+                      <Button x:Name="RefreshBmStaticGroupsButton" Grid.Column="1" Content="刷新" Padding="6,2" Margin="1"/>
+                      <Button x:Name="RemoveBmStaticGroupButton" Grid.Column="2" Content="移除" Padding="6,2" Margin="1" IsEnabled="False"/>
+                    </Grid>
+                    <ListBox x:Name="BmStaticGroupsList" Height="62" DisplayMemberPath="text"/>
+            <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="1.1*"/><ColumnDefinition Width="0.7*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+              <TextBox x:Name="BmStaticGroupIdBox" Grid.Column="0" ToolTip="TG"/>
+              <ComboBox x:Name="BmStaticGroupSlotBox" Grid.Column="1" SelectedIndex="1"><ComboBoxItem Content="TS1" Tag="1"/><ComboBoxItem Content="TS2" Tag="2"/></ComboBox>
+              <Button x:Name="AddBmStaticGroupButton" Grid.Column="2" Content="添加" Padding="7,3" IsEnabled="False"/>
+                    </Grid>
+                  </StackPanel>
+                </Border>
+                <TextBlock x:Name="BmStaticGroupStatus" Text="" Foreground="#EFC36F" FontSize="12" TextWrapping="Wrap" Visibility="Collapsed"/>
+                <TextBlock x:Name="ActiveLeaseValue" Text="" Foreground="#EFC36F" FontSize="12" TextWrapping="Wrap" Margin="0,2,0,0" Visibility="Collapsed"/>
+                <TextBlock x:Name="RoutingRevisionValue" Text="" Visibility="Collapsed"/>
+                <TextBlock x:Name="CallTargetStatusValue" Text="" Foreground="#EFC36F" FontSize="12" TextWrapping="Wrap" Margin="0,2,0,0" Visibility="Collapsed"/>
+                <TextBlock x:Name="ChannelFavoritesStatusValue" Text="" Foreground="#EFC36F" FontSize="12" TextWrapping="Wrap" VerticalAlignment="Center" Margin="2,1" Visibility="Collapsed"/>
+              </StackPanel>
+            </Border>
+
+            <Border Background="#172024" BorderBrush="#46545B" BorderThickness="1" Padding="7" Margin="0,0,0,4">
+              <StackPanel>
+                <TextBlock Text="音量" FontWeight="Bold" FontSize="12" Margin="0,0,0,2"/>
+                <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                  <StackPanel>
+                    <DockPanel><TextBlock Text="BM → 电台播放" Foreground="#A8B5BB" FontSize="12"/><TextBlock x:Name="PlaybackGainValueText" DockPanel.Dock="Right" Text="" Foreground="#9BE0AE" FontWeight="Bold" Margin="0,0,6,0"/></DockPanel>
+                    <Slider x:Name="PlaybackGainSlider" Minimum="0.25" Maximum="16" Value="1"/>
+                    <TextBlock x:Name="PlaybackGainSavedValueText" Text="" Foreground="#9BA9AE" FontSize="12" Visibility="Collapsed"/>
+                    <TextBlock x:Name="PlaybackGainRuntimeValueText" Text="" Foreground="#9BA9AE" FontSize="12" Visibility="Collapsed"/>
+                  </StackPanel>
+                  <StackPanel Grid.Column="1" Margin="8,0,0,0">
+                    <DockPanel><TextBlock Text="手咪 → BM 发送" Foreground="#A8B5BB" FontSize="12"/><TextBlock x:Name="TransmitGainValueText" DockPanel.Dock="Right" Text="" Foreground="#9BE0AE" FontWeight="Bold" Margin="0,0,6,0"/></DockPanel>
+                    <Slider x:Name="TransmitGainSlider" Minimum="0.25" Maximum="16" Value="16"/>
+                  </StackPanel>
+                </Grid>
+                <TextBlock x:Name="PlaybackGainStatusValue" Text="" Foreground="#9BE0AE" FontSize="12" Margin="2,0" Visibility="Collapsed"/>
+              </StackPanel>
+            </Border>
+
+            <Border x:Name="CatOperatingPanel" Background="#172024" BorderBrush="#46545B" BorderThickness="1" Padding="7" Margin="0,0,0,4" Visibility="Collapsed">
+              <StackPanel>
+                <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                  <TextBlock Text="FTX-1 CAT-1" FontWeight="Bold" FontSize="12" VerticalAlignment="Center"/>
+                  <Button x:Name="ReadRadioButton" Grid.Column="1" Content="读取电台" MinWidth="84" Padding="7,3"/>
+                </Grid>
+                <TextBlock x:Name="CatOperationStatusText" Text="" Foreground="#EFC36F" FontSize="12" TextWrapping="Wrap" Visibility="Collapsed"/>
+                <StackPanel x:Name="CatObservedPanel" Visibility="Collapsed" Margin="0,2,0,4">
+                  <TextBlock x:Name="CatRadioIdentityText" Text="" Foreground="#9BA9AE" FontSize="12" TextWrapping="Wrap"/>
+                  <TextBlock x:Name="CatObservedMainModeText" Text="" Foreground="#9BE0AE" FontSize="12"/>
+                  <TextBlock x:Name="CatObservedSubModeText" Text="" Foreground="#A8B5BB" FontSize="12"/>
+                  <TextBlock x:Name="CatObservedFrequencyText" Text="" Foreground="#9BE0AE" FontSize="12" FontWeight="Bold"/>
+                  <TextBlock x:Name="CatObservedPowerText" Text="" Foreground="#9BE0AE" FontSize="12"/>
+                </StackPanel>
+                <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                  <ComboBox x:Name="CatMainModeBox" SelectedIndex="-1"><ComboBoxItem Content="FM" Tag="FM"/><ComboBoxItem Content="FM-N" Tag="FM-N"/><ComboBoxItem Content="C4FM-DN" Tag="C4FM-DN"/><ComboBoxItem Content="C4FM-VW" Tag="C4FM-VW"/></ComboBox>
+                  <Button x:Name="ApplyCatModeButton" Grid.Column="1" Content="应用模式" MinWidth="94" Padding="7,3"/>
+                </Grid>
+                <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                  <TextBox x:Name="CatMainFrequencyMHzBox"/>
+                  <Button x:Name="ApplyCatFrequencyButton" Grid.Column="1" Content="应用频率" MinWidth="94" Padding="7,3"/>
+                </Grid>
+                <Grid Margin="2,2,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                  <StackPanel><TextBlock x:Name="CatDesiredPowerText" Text="" Foreground="#9BE0AE" FontWeight="Bold" FontSize="12"/><Slider x:Name="CatPowerSlider" Minimum="5" Maximum="50" Value="25" IsSnapToTickEnabled="True" TickFrequency="1" SmallChange="1" LargeChange="5"/></StackPanel>
+                  <Button x:Name="ApplyCatPowerButton" Grid.Column="1" Content="应用功率" MinWidth="84" Padding="7,3" VerticalAlignment="Center"/>
+                </Grid>
+              </StackPanel>
+            </Border>
+
+            <StackPanel x:Name="HiddenRuntimeControls" Visibility="Collapsed">
+              <TextBlock x:Name="TrafficValue" Text=""/><TextBlock x:Name="TrafficDetail" Text=""/><TextBlock x:Name="RadioStateValue" Text=""/>
+              <Border x:Name="TrafficCard" Visibility="Collapsed"/><TextBlock x:Name="RunValue" Text=""/><TextBlock x:Name="FreshnessValue" Text=""/>
+              <TextBlock x:Name="ControlProtocolValue" Text=""/><Button x:Name="ControlStatusButton" Content="查询状态"/>
+              <Border x:Name="ConfiguredRoutesCard" Visibility="Collapsed"><StackPanel x:Name="ConfiguredRoutesPanel"/></Border>
+              <StackPanel x:Name="RxMetricsHidden"><StackPanel x:Name="RxNetworkMetric" Orientation="Horizontal" Visibility="Collapsed"><TextBlock x:Name="RxCallLossValue" Text=""/><TextBlock x:Name="RxSessionLossValue" Text=""/></StackPanel></StackPanel>
+              <Button x:Name="VolumeSettingsButton" Content=""/>
+            </StackPanel>
+          </StackPanel>
+        </ScrollViewer>
+      </Border>
     </Grid>
   </Grid>
 </Window>

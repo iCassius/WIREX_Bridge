@@ -319,6 +319,7 @@ Assert-RadioCatTest ($powerOutOfRange.status -ceq 'rejected' -and -not $powerOut
 $closeFailureState = New-RadioCatFakeState -CloseThrows $true
 $closeFailureResult = Invoke-RadioCatFake -Operation query -State $closeFailureState
 Assert-RadioCatTest ($closeFailureResult.status -ceq 'unknown' -and $closeFailureResult.cleanup_status -ceq 'close_failed' -and $closeFailureResult.error_code -ceq 'serial_close_failed' -and $null -ne $closeFailureResult.observed.power.value) 'A failed cleanup prevents an overall confirmed result while preserving CAT readback.'
+Assert-RadioCatTest (-not $closeFailureResult.capabilities.set_frequency.available -and -not $closeFailureResult.capabilities.set_mode.available -and -not $closeFailureResult.capabilities.set_power.available) 'A failed close clears every CAT write capability even when readback values are present.'
 
 $portConflictState = New-RadioCatFakeState
 $portConflictTransport = New-RadioCatFakeTransport -State $portConflictState
@@ -328,6 +329,7 @@ Assert-RadioCatTest ($portConflict.status -ceq 'rejected' -and -not $portConflic
 $timeoutState = New-RadioCatFakeState -NoResponseFor 'PC;'
 $timeout = Invoke-RadioCatFake -Operation query -State $timeoutState
 Assert-RadioCatTest ($timeout.status -ceq 'unknown' -and $timeout.error_code -ceq 'timeout') 'No data before the deadline remains unknown.'
+Assert-RadioCatTest (-not $timeout.capabilities.query.available -and -not $timeout.capabilities.set_frequency.available -and -not $timeout.capabilities.set_mode.available -and -not $timeout.capabilities.set_power.available) 'A timed out query does not leave a stale CAT write permit.'
 Assert-RadioCatTest ($timeoutState.closed) 'Timeout still closes the short-lived session.'
 
 $unsafeCommandState = New-RadioCatFakeState

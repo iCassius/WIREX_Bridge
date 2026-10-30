@@ -31,7 +31,8 @@ function Test-ReleaseTag {
         $Tag -ceq 'v0.1.0-alpha.5' -or $Tag -ceq 'v0.1.0-alpha.6' -or
         $Tag -ceq 'v0.1.0-alpha.7' -or $Tag -ceq 'v0.1.0-alpha.8' -or
         $Tag -ceq 'v0.1.0-alpha.9' -or $Tag -ceq 'v0.1.0-alpha.10' -or
-        $Tag -ceq 'v0.1.0-alpha.11' -or $Tag -ceq 'v0.1.0-alpha.12')
+        $Tag -ceq 'v0.1.0-alpha.11' -or $Tag -ceq 'v0.1.0-alpha.12' -or
+        $Tag -ceq 'v0.1.0-alpha.13')
 }
 
 function Get-ExpectedReleaseTests {
@@ -74,7 +75,8 @@ function Get-ExpectedReleaseTests {
             return @($alpha10Tests[0..5] + 'radio_identity_cache_test' + $alpha10Tests[6..($alpha10Tests.Count - 1)])
         }
         'v0.1.0-alpha.12' { return @(Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.11') }
-        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.12 are supported.' }
+        'v0.1.0-alpha.13' { return @(Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.12') }
+        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.13 are supported.' }
     }
 }
 
@@ -222,7 +224,16 @@ function Get-ExpectedReleaseFiles {
             $alpha12 += [pscustomobject]@{ Path='docs/R116_电台控制界面.md'; AssetName='docs__r116-radio-controls-ui.md'; MaximumBytes=4194304L }
             return $alpha12
         }
-        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.12 are supported.' }
+        'v0.1.0-alpha.13' {
+            $alpha13 = @(Get-ExpectedReleaseFiles -Tag 'v0.1.0-alpha.12')
+            $alpha13 += [pscustomobject]@{ Path='ui/windows/RadioCatUi.ps1'; AssetName='ui__windows__radio-cat-ui.ps1'; MaximumBytes=1048576L }
+            $alpha13 += [pscustomobject]@{ Path='ui/windows/RadioDevices.psm1'; AssetName='ui__windows__radio-devices.psm1'; MaximumBytes=1048576L }
+            $alpha13 += [pscustomobject]@{ Path='ui/windows/BmServers.psm1'; AssetName='ui__windows__bm-servers.psm1'; MaximumBytes=1048576L }
+            $alpha13 += [pscustomobject]@{ Path='ui/windows/BmManagement.psm1'; AssetName='ui__windows__bm-management.psm1'; MaximumBytes=1048576L }
+            $alpha13 += [pscustomobject]@{ Path='ui/windows/BmManagementUi.ps1'; AssetName='ui__windows__bm-management-ui.ps1'; MaximumBytes=1048576L }
+            return $alpha13
+        }
+        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.13 are supported.' }
     }
 }
 
@@ -436,6 +447,14 @@ function Test-ManifestDocument {
             if ($excluded -cnotcontains $required) { throw 'alpha.12 manifest 未明确排除本机偏好、个人配置指针、缓存、收藏与密码路径。' }
         }
     }
+    if ($RequestedTag -ceq 'v0.1.0-alpha.13') {
+        foreach ($required in @('private/user-config-directory.txt', 'private/user-config/radio-identity-cache.json',
+            'private/user-config/channel-favorites.json', 'private/user-config/password-file-path.txt',
+            'private/user-config/radio-control-preferences.json', 'private/user-config/bm-management-preferences.json',
+            'private/user-config/bm-server-preferences.json')) {
+            if ($excluded -cnotcontains $required) { throw 'alpha.13 manifest 未明确排除本机 BM 路径偏好、设备偏好、个人配置指针、缓存、收藏与密码路径。' }
+        }
+    }
 
     $records = @($Manifest.files)
     $expectedFiles = @(Get-ExpectedReleaseFiles -Tag $RequestedTag)
@@ -521,7 +540,7 @@ function Test-BuildProvenanceDocument {
 
 function Select-ReleaseCandidate {
     param([object[]]$Releases, [Parameter(Mandatory=$true)][string]$RequestedTag, [switch]$AllowDraft)
-    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.12 are supported.' }
+    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.13 are supported.' }
     $matches = @($Releases | Where-Object { [string]$_.tag_name -ceq $RequestedTag })
     if ($matches.Count -ne 1) { throw 'GitHub Release 列表中没有唯一匹配的 tag。' }
     $release = $matches[0]
@@ -692,7 +711,7 @@ function New-GitHubApiUri {
     )
     switch ($Kind) {
         'tag' {
-            if (-not (Test-ReleaseTag -Tag $Tag)) { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.12 are supported.' }
+            if (-not (Test-ReleaseTag -Tag $Tag)) { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.13 are supported.' }
             return [Uri]($script:githubApiRoot + '/releases/tags/' + $Tag)
         }
         'list' {
@@ -895,7 +914,7 @@ function Invoke-ReleaseDownload {
     param([Parameter(Mandatory=$true)][string]$RequestedTag,
           [Parameter(Mandatory=$true)][string]$OutputDirectory,
           [switch]$AllowDraft)
-    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.12 are supported.' }
+    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.13 are supported.' }
     $context = Get-DownloadDestinationContext -Destination $OutputDirectory
     $token = Get-GitCredentialToken
     $stagingCreated = $false

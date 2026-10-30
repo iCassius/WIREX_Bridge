@@ -65,6 +65,7 @@ $script:alpha11TestNames = @(
     $script:alpha10TestNames[6..($script:alpha10TestNames.Count - 1)]
 )
 $script:alpha12TestNames = @($script:alpha11TestNames)
+$script:alpha13TestNames = @($script:alpha12TestNames)
 $script:activeReleaseVersion = 'v0.1.0-alpha.1'
 
 function Get-ReleaseProfile {
@@ -581,7 +582,54 @@ function Get-ReleaseProfile {
                 NotIncluded = $alpha12NotIncluded
             }
         }
-        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.12 release profiles are supported.' }
+        'v0.1.0-alpha.13' {
+            $alpha12 = Get-ReleaseProfile -Version 'v0.1.0-alpha.12'
+            $alpha13SourceFiles = @($alpha12.SourceFiles | Where-Object {
+                [string]$_.Destination -cne 'README.md' -and
+                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha12.cmd' -and
+                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha12.ps1'
+            }) + @(
+                @{ Source='docs\releases\v0.1.0-alpha.13-package-README.md'; Destination='README.md' },
+                @{ Source='tools\start-wirex-bridge-alpha13.cmd'; Destination='start-wirex-bridge.cmd' },
+                @{ Source='tools\start-wirex-bridge-alpha13.ps1'; Destination='tools/start-wirex-bridge.ps1' },
+                @{ Source='ui\windows\RadioCatUi.ps1'; Destination='ui\windows\RadioCatUi.ps1' },
+                @{ Source='ui\windows\RadioDevices.psm1'; Destination='ui\windows\RadioDevices.psm1' },
+                @{ Source='ui\windows\BmServers.psm1'; Destination='ui\windows\BmServers.psm1' },
+                @{ Source='ui\windows\BmManagement.psm1'; Destination='ui\windows\BmManagement.psm1' },
+                @{ Source='ui\windows\BmManagementUi.ps1'; Destination='ui\windows\BmManagementUi.ps1' }
+            )
+            $alpha13PackageFiles = @($alpha12.PackageFiles) + @(
+                'ui/windows/RadioCatUi.ps1',
+                'ui/windows/RadioDevices.psm1',
+                'ui/windows/BmServers.psm1',
+                'ui/windows/BmManagement.psm1',
+                'ui/windows/BmManagementUi.ps1'
+            )
+            $alpha13AssetMap = [ordered]@{}
+            foreach ($path in $alpha12.AssetMap.Keys) { $alpha13AssetMap[$path] = $alpha12.AssetMap[$path] }
+            $alpha13AssetMap['ui/windows/RadioCatUi.ps1'] = 'ui__windows__radio-cat-ui.ps1'
+            $alpha13AssetMap['ui/windows/RadioDevices.psm1'] = 'ui__windows__radio-devices.psm1'
+            $alpha13AssetMap['ui/windows/BmServers.psm1'] = 'ui__windows__bm-servers.psm1'
+            $alpha13AssetMap['ui/windows/BmManagement.psm1'] = 'ui__windows__bm-management.psm1'
+            $alpha13AssetMap['ui/windows/BmManagementUi.ps1'] = 'ui__windows__bm-management-ui.ps1'
+            $alpha13NotIncluded = @($alpha12.NotIncluded | ForEach-Object {
+                ([string]$_).Replace('alpha.12', 'alpha.13')
+            })
+            $alpha13NotIncluded += 'BM API keys and per-user configuration remain outside the generic release package'
+            $alpha13NotIncluded += '本机服务器选择偏好 private/user-config/bm-server-preferences.json 不随通用发行包分发'
+            return [pscustomobject]@{
+                Version = 'v0.1.0-alpha.13'
+                TestNames = $script:alpha13TestNames
+                SourceFiles = $alpha13SourceFiles
+                PackageFiles = $alpha13PackageFiles
+                Directories = @($alpha12.Directories)
+                AssetMap = $alpha13AssetMap
+                PackageReadme = 'docs\releases\v0.1.0-alpha.13-package-README.md'
+                ReleaseScope = 'R117 DIRECT: offline BM master selection, independent radio port discovery and CAT UI synchronization, plus user-triggered BM static talkgroup management'
+                NotIncluded = $alpha13NotIncluded
+            }
+        }
+        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.13 release profiles are supported.' }
     }
 }
 
@@ -815,6 +863,7 @@ function Assert-ReleasePackageInventory {
     $fixtureHash = Test-ApprovedYFixture -Path $fixturePath
     $forbidden = @($actualFiles | Where-Object {
         $_ -match '(^|/)(?:bm-device-password\.txt|password-file-path\.txt|connection-profile\.json|audio-settings\.json)$' -or
+        $_ -match '(^|/)bm-management-preferences\.json$' -or
         $_ -match '(^|/)(?:radio-identity-cache\.json|channel-favorites\.json|user-config-directory\.txt|test-radio-identity(?:-http-server)?\.ps1)$' -or
         $_ -match '^private/user-config/' -or
         $_ -match '(^|/)logs/|\.log$'
@@ -963,6 +1012,17 @@ function Invoke-ReleasePackaging {
                 'private/user-config/channel-favorites.json',
                 'private/user-config/password-file-path.txt',
                 'private/user-config/radio-control-preferences.json'
+            )
+        }
+        if ($Version -ceq 'v0.1.0-alpha.13') {
+            $excludedPrivateFiles += @(
+                'private/user-config-directory.txt',
+                'private/user-config/radio-identity-cache.json',
+                'private/user-config/channel-favorites.json',
+                'private/user-config/password-file-path.txt',
+                'private/user-config/radio-control-preferences.json',
+                'private/user-config/bm-management-preferences.json',
+                'private/user-config/bm-server-preferences.json'
             )
         }
         $sourceText = @"

@@ -767,6 +767,12 @@ function Invoke-Ftx1CatOperation {
             if ($successMessage) { $successMessage = "$successMessage 串口关闭失败：$closeError" }
             else { $successMessage = "CAT 读回值与目标相符，但串口关闭失败；本次操作整体状态为 unknown：$closeError" }
         }
+        if ($resultStatus -ceq 'unknown') {
+            $observedPower = $emptyObserved.power.value
+            $powerPath = if ($observedPower) { [string]$observedPower.path } else { $null }
+            $powerReadable = ($null -ne $observedPower)
+            $capabilities = New-Ftx1CatCapabilities -PowerPath $powerPath -PowerReadable $powerReadable -PowerWritable $false -PowerUnavailableReason 'CAT 会话未能在时限内完成并关闭；本次不提供写入许可。' -RadioAvailable $false -SettingsWritable $false
+        }
         return New-Ftx1CatResult -Operation $Operation -Status $resultStatus -PortName $PortName -Observed $emptyObserved -Prior $prior -Desired $desired -Capabilities $capabilities -UpdatedAtUtc $updatedAt -StartedAtUtc $startedAt -ErrorCode $successCode -ErrorMessage $successMessage -Source $operationSource -CleanupStatus $cleanupStatus
     } catch {
         $code = 'error'
@@ -807,6 +813,10 @@ function Invoke-Ftx1CatOperation {
         }
         $cleanupStatus = if ($closeError) { 'close_failed' } elseif ($openCompleted -and -not $isOpen) { 'closed' } else { 'not_opened' }
         if ($closeError) { $message = "$message Serial close failed: $closeError" }
+        $observedPower = $emptyObserved.power.value
+        $powerPath = if ($observedPower) { [string]$observedPower.path } else { $null }
+        $powerReadable = ($null -ne $observedPower)
+        $capabilities = New-Ftx1CatCapabilities -PowerPath $powerPath -PowerReadable $powerReadable -PowerWritable $false -PowerUnavailableReason 'CAT 操作未成功完成；本次不提供写入许可。' -RadioAvailable $false -SettingsWritable $false
         return New-Ftx1CatResult -Operation $Operation -Status $status -PortName $PortName -Observed $emptyObserved -Prior $prior -Desired $desired -Capabilities $capabilities -UpdatedAtUtc $null -StartedAtUtc $startedAt -ErrorCode $code -ErrorMessage $message -Source $operationSource -CleanupStatus $cleanupStatus
     } finally {
         if ($Transport -and $isOpen) {

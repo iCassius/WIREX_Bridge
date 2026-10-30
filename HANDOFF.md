@@ -1,4 +1,10 @@
-# WIREX Bridge 交接入口
+﻿# WIREX Bridge 交接入口
+
+## R117 / Alpha 13 发行准备（2026-10-30）
+
+R117 源码已冻结。普通 WPF 回归在 PS5.1/PS7 各通过 78 项，生产串口目录检查各通过 16 项；RenderOnly 通过 79 项，root 已检查正常尺寸、小屏和展开的服务器下拉。四项旧 UI 兼容 suite 已在 PS5.1/PS7 各通过。Alpha 13 的 Native 40 项 clean build、本机包和硬件验收仍待完成；目前没有创建 Alpha 13 tag 或 GitHub Release。详细清单与可复核命令见 [R117 发布交接](docs/R117_发布交接.md)，操作入口说明见 [Alpha 13 包内说明](docs/releases/v0.1.0-alpha.13-package-README.md)。
+
+以下为历史阶段记录；当前进度以 [R117 发布交接](docs/R117_发布交接.md) 为准。
 
 ## R115 FTX-1 模式范围与后续开发计划（2026-10-30）
 

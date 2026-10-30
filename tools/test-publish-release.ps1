@@ -676,6 +676,78 @@ try {
     Assert-Throws { Assert-PublishPackage -PackageRoot $alpha12Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.12' } 'alpha.12 publisher rejects a personal radio-control preference file'
     Remove-Item -LiteralPath $alpha12PrivateDirectory -Recurse -Force -ErrorAction Stop
 
+    $alpha13Root = Join-Path $testRoot 'package-alpha13'
+    Copy-Item -LiteralPath $alpha12Root -Destination $alpha13Root -Recurse
+    $alpha13Profile = Set-PublishProfile -Tag 'v0.1.0-alpha.13'
+    $alpha13NewAssets = @(
+        'ui/windows/RadioCatUi.ps1', 'ui/windows/RadioDevices.psm1', 'ui/windows/BmServers.psm1',
+        'ui/windows/BmManagement.psm1', 'ui/windows/BmManagementUi.ps1'
+    )
+    foreach ($relativePath in $alpha13NewAssets) {
+        $fullPath = Join-Path $alpha13Root $relativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+        $parent = Split-Path -Parent $fullPath
+        if (-not [System.IO.Directory]::Exists($parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+        [System.IO.File]::WriteAllText($fullPath, ('# synthetic alpha.13 package content: ' + $relativePath), [System.Text.UTF8Encoding]::new($true))
+    }
+    $alpha13ReadmePath = Join-Path $alpha13Root 'README.md'
+    Write-Utf8NoBom -Path $alpha13ReadmePath -Text 'synthetic alpha.13 package README'
+    $alpha13LauncherPath = Join-Path $alpha13Root 'tools\start-wirex-bridge.ps1'
+    $alpha13LauncherText = [System.IO.File]::ReadAllText($alpha13LauncherPath, [System.Text.Encoding]::UTF8)
+    Write-Utf8NoBom -Path $alpha13LauncherPath -Text $alpha13LauncherText.Replace('alpha.12', 'alpha.13')
+
+    $alpha13ManifestPath = Join-Path $alpha13Root 'manifest.json'
+    $alpha13Manifest = [System.IO.File]::ReadAllText($alpha13ManifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $alpha13Manifest.files = @($alpha13Manifest.files | Where-Object {
+        [string]$_.path -cne 'README.md' -and [string]$_.path -cne 'tools/start-wirex-bridge.ps1'
+    })
+    foreach ($relativePath in @('README.md', 'tools/start-wirex-bridge.ps1') + $alpha13NewAssets) {
+        $fullPath = Join-Path $alpha13Root $relativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+        $item = Get-Item -LiteralPath $fullPath
+        $alpha13Manifest.files += ,([ordered]@{
+            path = $relativePath
+            asset_name = [string]$alpha13Profile.AssetPathMap[$relativePath]
+            length_bytes = [long]$item.Length
+            sha256 = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            source = 'synthetic alpha.13 test content'
+        })
+    }
+    $alpha13Manifest.version = 'v0.1.0-alpha.13'
+    $alpha13Manifest.tag_candidate = 'v0.1.0-alpha.13'
+    $alpha13Manifest | Add-Member -MemberType NoteProperty -Name release_scope -Value 'R117 DIRECT: BM server selection, radio catalog and static group controls' -Force
+    $alpha13Manifest.build.passed_test_count = $alpha13Profile.TestNames.Count
+    $alpha13Manifest.build.passed_tests = @($alpha13Profile.TestNames)
+    $alpha13Manifest.excluded_private_files = @($alpha13Manifest.excluded_private_files) + @(
+        'private/user-config/radio-control-preferences.json',
+        'private/user-config/bm-management-preferences.json',
+        'private/user-config/bm-server-preferences.json'
+    )
+    $validAlpha13ManifestJson = ConvertTo-Json -InputObject $alpha13Manifest -Depth 12
+    Write-Utf8NoBom -Path $alpha13ManifestPath -Text ($validAlpha13ManifestJson + [Environment]::NewLine)
+    $alpha13Package = Assert-PublishPackage -PackageRoot $alpha13Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.13'
+    Assert-True ($alpha13Package.Assets.Count -eq ($alpha12Package.Assets.Count + 5)) 'alpha.13 publisher accepts exactly five new runtime assets and the inherited manifest'
+    Assert-True ($alpha13Profile.AssetPathMap.Count -eq ($alpha12Profile.AssetPathMap.Count + 5)) 'alpha.13 publisher inherits the complete alpha.12 allowlist and adds five exact paths'
+    Assert-True (@($alpha13Package.Assets | Where-Object { $_.Name -like 'ui__windows__bm-*' }).Count -eq 3 -and
+        @($alpha13Package.Assets | Where-Object { $_.Name -ceq 'ui__windows__radio-cat-ui.ps1' }).Count -eq 1 -and
+        @($alpha13Package.Assets | Where-Object { $_.Name -ceq 'ui__windows__radio-devices.psm1' }).Count -eq 1) 'alpha.13 includes the BM adapters and both radio UI/catalog modules'
+    Assert-True ($alpha13Package.Manifest.build.passed_tests.Count -eq 40 -and
+        [string]::Join('|', @($alpha13Package.Manifest.build.passed_tests)) -ceq [string]::Join('|', @($alpha12Profile.TestNames))) 'alpha.13 publisher retains the exact 40-test Native inventory'
+    Assert-True (@($alpha13Package.Manifest.excluded_private_files | Where-Object { [string]$_ -ceq 'private/user-config/bm-management-preferences.json' }).Count -eq 1) 'alpha.13 manifest declares local BM preferences as excluded'
+    Assert-True (@($alpha13Package.Manifest.excluded_private_files | Where-Object { [string]$_ -ceq 'private/user-config/bm-server-preferences.json' }).Count -eq 1) 'alpha.13 manifest declares local BM server-selection preferences as excluded'
+    $alpha13Manifest.excluded_private_files = @($alpha13Manifest.excluded_private_files | Where-Object {
+        [string]$_ -cne 'private/user-config/bm-server-preferences.json'
+    })
+    Write-Utf8NoBom -Path $alpha13ManifestPath -Text ((ConvertTo-Json -InputObject $alpha13Manifest -Depth 12) + [Environment]::NewLine)
+    Assert-Throws { Assert-PublishPackage -PackageRoot $alpha13Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.13' } `
+        'alpha.13 publisher rejects a manifest that omits the local BM server-selection preference exclusion'
+    $alpha13Manifest.excluded_private_files += 'private/user-config/bm-server-preferences.json'
+    Write-Utf8NoBom -Path $alpha13ManifestPath -Text ((ConvertTo-Json -InputObject $alpha13Manifest -Depth 12) + [Environment]::NewLine)
+    Assert-Throws { Assert-PublishPackage -PackageRoot $alpha13Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.12' } 'alpha.13 package cannot pass the alpha.12 profile'
+    $alpha13PrivateDirectory = Join-Path $alpha13Root 'private\user-config'
+    New-Item -ItemType Directory -Path $alpha13PrivateDirectory -Force | Out-Null
+    Write-Utf8NoBom -Path (Join-Path $alpha13PrivateDirectory 'bm-management-preferences.json') -Text '{"schema_version":1}'
+    Assert-Throws { Assert-PublishPackage -PackageRoot $alpha13Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.13' } 'alpha.13 publisher rejects a local BM API-key path preference file'
+    Remove-Item -LiteralPath $alpha13PrivateDirectory -Recurse -Force -ErrorAction Stop
+
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.9')
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.1')
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.1')
