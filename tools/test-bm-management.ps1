@@ -55,7 +55,7 @@ function Set-FakeResponseSequence {
 try {
     $profileJson = '{"staticSubscriptions":[{"talkgroup":91,"slot":2},{"talkgroup":46001,"slot":1}],"dynamicSubscriptions":[{"talkgroup":3100,"slot":2}],"displayName":"must not be returned"}'
     Set-FakeResponseSequence @([pscustomobject]@{ status_code = 200; body = $profileJson })
-    $read = Get-BmStaticGroups -ApiKeyFilePath $apiKeyFile -DeviceId '461135501' -TimeoutMs 2500 -Transport $transport
+    $read = Get-BmStaticGroups -ApiKey $fakeToken -DeviceId '461135501' -TimeoutMs 2500 -Transport $transport
     Assert-BmManagement ($read.operation -ceq 'get_static_groups' -and $read.success) 'GET should report a successful static list operation'
     Assert-BmManagement ($read.groups.Count -eq 2) 'GET should return only static subscriptions'
     Assert-BmManagement ([uint64]$read.groups[0].talkgroup -eq 91 -and [int]$read.groups[0].slot -eq 2) 'GET should preserve TG and slot'
@@ -76,7 +76,7 @@ try {
         [pscustomobject]@{ status_code = 201; body = '' },
         [pscustomobject]@{ status_code = 200; body = $afterAddJson }
     )
-    $add = Add-BmStaticGroup -ApiKeyFilePath $apiKeyFile -DeviceId '461135501' -Talkgroup 12345 -Slot 1 -Transport $transport
+    $add = Add-BmStaticGroup -ApiKey $fakeToken -DeviceId '461135501' -Talkgroup 12345 -Slot 1 -Transport $transport
     Assert-BmManagement ($add.write_accepted -and $add.readback_status -ceq 'confirmed') 'POST should be followed by a confirming GET'
     Assert-BmManagement ($add.operation -ceq 'add_static_group' -and [uint64]$add.talkgroup -eq 12345 -and [int]$add.slot -eq 1) 'add result should identify exact operation and target'
     Assert-BmManagement ($state.requests.Count -eq 2) 'add should make one POST and one readback GET'
@@ -92,7 +92,7 @@ try {
         [pscustomobject]@{ status_code = 204; body = '' },
         [pscustomobject]@{ status_code = 200; body = '{"staticSubscriptions":[]}' }
     )
-    $remove = Remove-BmStaticGroup -ApiKeyFilePath $apiKeyFile -DeviceId '461135501' -Talkgroup 91 -Slot 2 -Transport $transport
+    $remove = Remove-BmStaticGroup -ApiKey $fakeToken -DeviceId '461135501' -Talkgroup 91 -Slot 2 -Transport $transport
     Assert-BmManagement ($remove.write_accepted -and $remove.readback_status -ceq 'confirmed') 'DELETE should be followed by a confirming GET'
     Assert-BmManagement ($state.requests[0].method -ceq 'DELETE') 'remove should use DELETE'
     Assert-BmManagement ($state.requests[0].uri -ceq 'https://api.brandmeister.network/v2/device/461135501/talkgroup/2/91') 'remove URI should include slot and talkgroup'
@@ -101,7 +101,7 @@ try {
     Set-FakeResponseSequence @(
         [pscustomobject]@{ status_code = 200; body = '{"staticSubscriptions":[{"talkgroup":91,"slot":0}]}' }
     )
-    $simplex = Get-BmStaticGroups -ApiKeyFilePath $apiKeyFile -DeviceId '461135501' -Transport $transport
+    $simplex = Get-BmStaticGroups -ApiKey $fakeToken -DeviceId '461135501' -Transport $transport
     Assert-BmManagement ([int]$simplex.groups[0].slot -eq 0) 'GET should preserve slot 0 from a simplex device for display and removal'
 
     $state.requests.Clear()
@@ -109,14 +109,14 @@ try {
         [pscustomobject]@{ status_code = 201; body = '' },
         [System.TimeoutException]::new('fake timeout')
     )
-    $acceptedUnconfirmed = Add-BmStaticGroup -ApiKeyFilePath $apiKeyFile -DeviceId '461135501' -Talkgroup 23456 -Slot 2 -Transport $transport
+    $acceptedUnconfirmed = Add-BmStaticGroup -ApiKey $fakeToken -DeviceId '461135501' -Talkgroup 23456 -Slot 2 -Transport $transport
     Assert-BmManagement ($acceptedUnconfirmed.write_accepted -and $acceptedUnconfirmed.readback_status -ceq 'unavailable') 'successful write with failed readback must stay accepted but unconfirmed'
     Assert-BmManagement ($acceptedUnconfirmed.readback_error -ceq 'timeout') 'readback timeout should be reported without repeating the write'
     Assert-BmManagement ($state.requests.Count -eq 2 -and $state.requests[0].method -ceq 'POST') 'readback timeout must not retry the write'
 
     Set-FakeResponseSequence @([System.OperationCanceledException]::new('synthetic canceled write'))
     $writeOutcomeUnknown = $false
-    try { [void](Add-BmStaticGroup -ApiKeyFilePath $apiKeyFile -DeviceId '461135501' -Talkgroup 34567 -Slot 2 -Transport $transport) }
+    try { [void](Add-BmStaticGroup -ApiKey $fakeToken -DeviceId '461135501' -Talkgroup 34567 -Slot 2 -Transport $transport) }
     catch [System.OperationCanceledException] { $writeOutcomeUnknown = $true }
     Assert-BmManagement $writeOutcomeUnknown 'canceled write should surface as an unresolved operation'
     Assert-BmManagement ($state.requests.Count -eq 1 -and $state.requests[0].method -ceq 'POST') 'canceled write must not trigger readback or an automatic retry'
@@ -125,7 +125,7 @@ try {
     $cancelSource = New-Object System.Threading.CancellationTokenSource
     $cancelSource.Cancel()
     $canceled = $false
-    try { [void](Get-BmStaticGroups -ApiKeyFilePath $apiKeyFile -DeviceId '461135501' -CancellationToken $cancelSource.Token -Transport $transport) }
+    try { [void](Get-BmStaticGroups -ApiKey $fakeToken -DeviceId '461135501' -CancellationToken $cancelSource.Token -Transport $transport) }
     catch [System.OperationCanceledException] { $canceled = $true }
     finally { $cancelSource.Dispose() }
     Assert-BmManagement $canceled 'pre-canceled GET should stop before transport'
@@ -133,20 +133,20 @@ try {
 
     $badProfileRejected = $false
     Set-FakeResponseSequence @([pscustomobject]@{ status_code = 200; body = '{"staticSubscriptions":[{"talkgroup":"<script>","slot":2}]}' })
-    try { [void](Get-BmStaticGroups -ApiKeyFilePath $apiKeyFile -DeviceId '461135501' -Transport $transport) }
+    try { [void](Get-BmStaticGroups -ApiKey $fakeToken -DeviceId '461135501' -Transport $transport) }
     catch { $badProfileRejected = $true }
     Assert-BmManagement $badProfileRejected 'malformed TG values must be rejected'
 
     $state.requests.Clear()
     $invalidDeviceRejected = $false
-    try { [void](Get-BmStaticGroups -ApiKeyFilePath $apiKeyFile -DeviceId '461135501/elsewhere' -Transport $transport) }
+    try { [void](Get-BmStaticGroups -ApiKey $fakeToken -DeviceId '461135501/elsewhere' -Transport $transport) }
     catch { $invalidDeviceRejected = $true }
     Assert-BmManagement $invalidDeviceRejected 'device id must not inject an alternate API path'
     Assert-BmManagement ($state.requests.Count -eq 0) 'invalid device id must be rejected before transport'
 
     $state.requests.Clear()
     $invalidSlotRejected = $false
-    try { [void](Add-BmStaticGroup -ApiKeyFilePath $apiKeyFile -DeviceId '461135501' -Talkgroup 91 -Slot 0 -Transport $transport) }
+    try { [void](Add-BmStaticGroup -ApiKey $fakeToken -DeviceId '461135501' -Talkgroup 91 -Slot 0 -Transport $transport) }
     catch { $invalidSlotRejected = $true }
     Assert-BmManagement $invalidSlotRejected 'add must accept only TS1 or TS2'
     Assert-BmManagement ($state.requests.Count -eq 0) 'invalid add slot must not reach transport'
@@ -166,6 +166,20 @@ try {
     catch { $invalidKeyRejected = $true; Assert-BmManagement (-not $_.Exception.Message.Contains('synthetic-invalid-token-content')) 'API key errors must not echo file contents' }
     Assert-BmManagement $invalidKeyRejected 'invalid API key file should be rejected'
     Assert-BmManagement ($state.requests.Count -eq 0) 'invalid API key should not reach the transport'
+
+    $state.requests.Clear()
+    $ambiguousSourceRejected = $false
+    try { [void](Get-BmStaticGroups -ApiKey $fakeToken -ApiKeyFilePath $apiKeyFile -DeviceId '461135501' -Transport $transport) }
+    catch { $ambiguousSourceRejected = $true; Assert-BmManagement (-not $_.Exception.Message.Contains($fakeToken)) 'key source errors must not echo the token' }
+    Assert-BmManagement $ambiguousSourceRejected 'direct key and compatibility file path must not be accepted together'
+    Assert-BmManagement ($state.requests.Count -eq 0) 'ambiguous key source must be rejected before transport'
+
+    $invalidDirectKey = 'synthetic-invalid-direct-key'
+    $invalidDirectRejected = $false
+    try { [void](Get-BmStaticGroups -ApiKey $invalidDirectKey -DeviceId '461135501' -Transport $transport) }
+    catch { $invalidDirectRejected = $true; Assert-BmManagement (-not $_.Exception.Message.Contains($invalidDirectKey)) 'direct key validation errors must not echo the key' }
+    Assert-BmManagement $invalidDirectRejected 'invalid direct API key should be rejected'
+    Assert-BmManagement ($state.requests.Count -eq 0) 'invalid direct API key should not reach transport'
 
     Write-Output ("PASS: test-bm-management.ps1 ({0} assertions; PowerShell {1})" -f $script:assertionCount, $PSVersionTable.PSVersion)
 } finally {

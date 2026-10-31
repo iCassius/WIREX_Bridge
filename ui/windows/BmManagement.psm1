@@ -7,33 +7,46 @@ $script:BmManagementMaxResponseBytes = 1048576
 $script:BmManagementDefaultTimeoutMs = 3000
 $script:BmManagementMaxTimeoutMs = 10000
 
-function Get-BmManagementApiKey {
+function Set-BmManagementApiKey {
     [CmdletBinding()]
-    param([Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string]$ApiKeyFilePath)
+    param(
+        [Parameter(Mandatory = $true)][ref]$ApiKeyValue,
+        [Parameter()][AllowEmptyString()][string]$ApiKey,
+        [Parameter()][AllowEmptyString()][string]$ApiKeyFilePath
+    )
 
-    if (-not [System.IO.Path]::IsPathRooted($ApiKeyFilePath)) {
-        throw [System.ArgumentException]::new('BM API 文件必须使用完整路径。')
-    }
-    if (-not (Test-Path -LiteralPath $ApiKeyFilePath -PathType Leaf)) {
-        throw [System.IO.FileNotFoundException]::new('找不到 BM API 文件。')
-    }
-
-    try {
-        $content = [System.IO.File]::ReadAllText($ApiKeyFilePath, [System.Text.Encoding]::UTF8)
-    } catch {
-        throw [System.InvalidOperationException]::new('无法读取已指定的 BM API 文件。')
+    $hasApiKey = -not [string]::IsNullOrWhiteSpace($ApiKey)
+    $hasFilePath = -not [string]::IsNullOrWhiteSpace($ApiKeyFilePath)
+    if ($hasApiKey -eq $hasFilePath) {
+        throw [System.ArgumentException]::new('必须且只能提供一个 BM API key 来源。')
     }
 
-    $candidate = $content.Trim()
-    # Accept a raw v2 JWT or Pi-Star's INI form without copying the file into
-    # application preferences. Never return the file contents to a caller.
-    if ($candidate -match '(?im)^\s*apikey\s*=\s*(\S+)\s*$') {
-        $candidate = $Matches[1]
+    if ($hasApiKey) {
+        $candidate = $ApiKey.Trim()
+    } else {
+        if (-not [System.IO.Path]::IsPathRooted($ApiKeyFilePath)) {
+            throw [System.ArgumentException]::new('BM API 文件必须使用完整路径。')
+        }
+        if (-not (Test-Path -LiteralPath $ApiKeyFilePath -PathType Leaf)) {
+            throw [System.IO.FileNotFoundException]::new('找不到 BM API 文件。')
+        }
+
+        try {
+            $content = [System.IO.File]::ReadAllText($ApiKeyFilePath, [System.Text.Encoding]::UTF8)
+        } catch {
+            throw [System.InvalidOperationException]::new('无法读取已指定的 BM API 文件。')
+        }
+
+        $candidate = $content.Trim()
+        # Retain the old file format only for migration and compatibility.
+        if ($candidate -match '(?im)^\s*apikey\s*=\s*(\S+)\s*$') {
+            $candidate = $Matches[1]
+        }
     }
     if ($candidate.Length -lt 200 -or $candidate -notmatch '^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$') {
-        throw [System.InvalidOperationException]::new('BM API 文件没有可用的 BrandMeister API v2 token。')
+        throw [System.InvalidOperationException]::new('BM API key 格式无效；需要 BrandMeister API v2 token。')
     }
-    return $candidate
+    $ApiKeyValue.Value = $candidate
 }
 
 function Test-BmManagementCancellation {
@@ -50,7 +63,8 @@ function Invoke-BmManagementRequest {
         [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string]$DeviceId,
         [Parameter(Mandatory = $true)][ValidateSet('profile', 'talkgroup')][string]$Resource,
         [Parameter()][AllowNull()][string]$ResourceSuffix = '',
-        [Parameter(Mandatory = $true)][string]$ApiKeyFilePath,
+        [Parameter()][AllowEmptyString()][string]$ApiKey,
+        [Parameter()][AllowEmptyString()][string]$ApiKeyFilePath,
         [Parameter()][AllowNull()][string]$Body,
         [Parameter()][ValidateRange(1, 10000)][int]$TimeoutMs = $script:BmManagementDefaultTimeoutMs,
         [Parameter()][System.Threading.CancellationToken]$CancellationToken = [System.Threading.CancellationToken]::None,
@@ -76,7 +90,8 @@ function Invoke-BmManagementRequest {
         throw [System.InvalidOperationException]::new('BM API 只允许使用官方 HTTPS 服务地址。')
     }
 
-    $apiKey = Get-BmManagementApiKey -ApiKeyFilePath $ApiKeyFilePath
+    $resolvedApiKey = ''
+    Set-BmManagementApiKey -ApiKeyValue ([ref]$resolvedApiKey) -ApiKey $ApiKey -ApiKeyFilePath $ApiKeyFilePath
     $request = $null
     $response = $null
     $handler = $null
@@ -90,7 +105,7 @@ function Invoke-BmManagementRequest {
             method = $Method
             uri = $uri.AbsoluteUri
             headers = [pscustomobject][ordered]@{
-                Authorization = 'Bearer ' + $apiKey
+                Authorization = 'Bearer ' + $resolvedApiKey
                 Accept = 'application/json'
                 ContentType = if ($Method -ceq 'POST') { 'application/json; charset=utf-8' } else { '' }
             }
@@ -124,7 +139,7 @@ function Invoke-BmManagementRequest {
                 $timeoutSource = [System.Threading.CancellationTokenSource]::CreateLinkedTokenSource($CancellationToken)
                 $timeoutSource.CancelAfter($TimeoutMs)
                 $httpRequest = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::new($Method), $uri)
-                $httpRequest.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $apiKey)
+                $httpRequest.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $resolvedApiKey)
                 [void]$httpRequest.Headers.Accept.ParseAdd('application/json')
                 if ($Method -ceq 'POST') {
                     $httpRequest.Content = [System.Net.Http.StringContent]::new([string]$Body, [System.Text.Encoding]::UTF8, 'application/json')
@@ -183,7 +198,7 @@ function Invoke-BmManagementRequest {
         }
         return [pscustomobject][ordered]@{ status_code = $statusCode; body = $responseBody }
     } finally {
-        $apiKey = $null
+        $resolvedApiKey = $null
         if ($request -and $request.headers) { $request.headers.Authorization = '' }
     }
 }
@@ -232,7 +247,8 @@ function ConvertFrom-BmStaticSubscriptionProfile {
 function Get-BmStaticGroups {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string]$ApiKeyFilePath,
+        [Parameter()][AllowEmptyString()][string]$ApiKey,
+        [Parameter()][AllowEmptyString()][string]$ApiKeyFilePath,
         [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string]$DeviceId,
         [Parameter()][ValidateRange(1, 10000)][int]$TimeoutMs = $script:BmManagementDefaultTimeoutMs,
         [Parameter()][System.Threading.CancellationToken]$CancellationToken = [System.Threading.CancellationToken]::None,
@@ -240,7 +256,7 @@ function Get-BmStaticGroups {
     )
 
     $response = Invoke-BmManagementRequest -Method GET -DeviceId $DeviceId -Resource profile `
-        -ApiKeyFilePath $ApiKeyFilePath -TimeoutMs $TimeoutMs -CancellationToken $CancellationToken -Transport $Transport
+        -ApiKey $ApiKey -ApiKeyFilePath $ApiKeyFilePath -TimeoutMs $TimeoutMs -CancellationToken $CancellationToken -Transport $Transport
     $groups = @(ConvertFrom-BmStaticSubscriptionProfile -Json $response.body -DeviceId $DeviceId)
     return [pscustomobject][ordered]@{
         operation = 'get_static_groups'
@@ -254,7 +270,8 @@ function Get-BmStaticGroups {
 function Add-BmStaticGroup {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string]$ApiKeyFilePath,
+        [Parameter()][AllowEmptyString()][string]$ApiKey,
+        [Parameter()][AllowEmptyString()][string]$ApiKeyFilePath,
         [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string]$DeviceId,
         [Parameter(Mandatory = $true)][ValidateRange(1, 16777215)][uint64]$Talkgroup,
         [Parameter(Mandatory = $true)][ValidateRange(1, 2)][int]$Slot,
@@ -265,16 +282,17 @@ function Add-BmStaticGroup {
 
     $body = ConvertTo-Json -InputObject ([ordered]@{ slot = $Slot; group = $Talkgroup }) -Compress
     [void](Invoke-BmManagementRequest -Method POST -DeviceId $DeviceId -Resource talkgroup `
-        -ApiKeyFilePath $ApiKeyFilePath -Body $body -TimeoutMs $TimeoutMs -CancellationToken $CancellationToken -Transport $Transport)
+        -ApiKey $ApiKey -ApiKeyFilePath $ApiKeyFilePath -Body $body -TimeoutMs $TimeoutMs -CancellationToken $CancellationToken -Transport $Transport)
     return Complete-BmStaticGroupWrite -Operation add_static_group -DeviceId $DeviceId -Talkgroup $Talkgroup `
-        -Slot $Slot -ExpectedPresent $true -ApiKeyFilePath $ApiKeyFilePath -TimeoutMs $TimeoutMs `
+        -Slot $Slot -ExpectedPresent $true -ApiKey $ApiKey -ApiKeyFilePath $ApiKeyFilePath -TimeoutMs $TimeoutMs `
         -CancellationToken $CancellationToken -Transport $Transport
 }
 
 function Remove-BmStaticGroup {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string]$ApiKeyFilePath,
+        [Parameter()][AllowEmptyString()][string]$ApiKey,
+        [Parameter()][AllowEmptyString()][string]$ApiKeyFilePath,
         [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string]$DeviceId,
         [Parameter(Mandatory = $true)][ValidateRange(1, 16777215)][uint64]$Talkgroup,
         [Parameter(Mandatory = $true)][ValidateRange(0, 2)][int]$Slot,
@@ -284,10 +302,10 @@ function Remove-BmStaticGroup {
     )
 
     [void](Invoke-BmManagementRequest -Method DELETE -DeviceId $DeviceId -Resource talkgroup `
-        -ResourceSuffix ('/{0}/{1}' -f $Slot, $Talkgroup) -ApiKeyFilePath $ApiKeyFilePath `
+        -ResourceSuffix ('/{0}/{1}' -f $Slot, $Talkgroup) -ApiKey $ApiKey -ApiKeyFilePath $ApiKeyFilePath `
         -TimeoutMs $TimeoutMs -CancellationToken $CancellationToken -Transport $Transport)
     return Complete-BmStaticGroupWrite -Operation remove_static_group -DeviceId $DeviceId -Talkgroup $Talkgroup `
-        -Slot $Slot -ExpectedPresent $false -ApiKeyFilePath $ApiKeyFilePath -TimeoutMs $TimeoutMs `
+        -Slot $Slot -ExpectedPresent $false -ApiKey $ApiKey -ApiKeyFilePath $ApiKeyFilePath -TimeoutMs $TimeoutMs `
         -CancellationToken $CancellationToken -Transport $Transport
 }
 
@@ -298,7 +316,8 @@ function Complete-BmStaticGroupWrite {
         [Parameter(Mandatory = $true)][uint64]$Talkgroup,
         [Parameter(Mandatory = $true)][int]$Slot,
         [Parameter(Mandatory = $true)][bool]$ExpectedPresent,
-        [Parameter(Mandatory = $true)][string]$ApiKeyFilePath,
+        [Parameter()][AllowEmptyString()][string]$ApiKey,
+        [Parameter()][AllowEmptyString()][string]$ApiKeyFilePath,
         [Parameter(Mandatory = $true)][int]$TimeoutMs,
         [Parameter(Mandatory = $true)][System.Threading.CancellationToken]$CancellationToken,
         [Parameter()][scriptblock]$Transport
@@ -308,7 +327,7 @@ function Complete-BmStaticGroupWrite {
     $groups = @()
     $readbackError = ''
     try {
-        $readback = Get-BmStaticGroups -ApiKeyFilePath $ApiKeyFilePath -DeviceId $DeviceId `
+        $readback = Get-BmStaticGroups -ApiKey $ApiKey -ApiKeyFilePath $ApiKeyFilePath -DeviceId $DeviceId `
             -TimeoutMs $TimeoutMs -CancellationToken $CancellationToken -Transport $Transport
         $groups = @($readback.groups)
         $present = @($groups | Where-Object { [uint64]$_.talkgroup -eq $Talkgroup -and [int]$_.slot -eq $Slot }).Count -gt 0
