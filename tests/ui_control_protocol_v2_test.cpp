@@ -360,20 +360,28 @@ void test_routing_commands_use_typed_backend_and_live_snapshots()
           rx_calls == 1U && rx_revision == 2U,
           "rx_policy.replace invokes the typed backend and reports its applied snapshot");
 
-    const auto protected_tx = request_with_parameters("route-run", "tx-protected", "tx_policy.replace",
+    const auto tg91_tx = request_with_parameters("route-run", "tx-91", "tx_policy.replace",
         "{\"expected_revision\":1,\"tx_target\":{\"destination_id\":91,\"kind\":\"group\",\"slot\":2},\"transmit_enabled\":true}");
-    const auto protected_result = dispatcher.handle(protected_tx, snapshot);
-    check(protected_result.json_line.find("\"result\":\"rejected\"") != std::string::npos &&
-          protected_result.json_line.find("\"error\":\"invalid_parameters\"") != std::string::npos &&
-          tx_calls == 0U && tx_revision == 1U,
-          "TG91 transmit permission is rejected before the typed backend is called");
+    const auto tg91_result = dispatcher.handle(tg91_tx, snapshot);
+    check(tg91_result.json_line.find("\"result\":\"ok\"") != std::string::npos &&
+          tg91_result.json_line.find("\"tx_policy_revision\":2") != std::string::npos &&
+          tx_calls == 1U && tx_revision == 2U && current_target.destination_id == 91U && current_tx_enabled,
+          "a manually selected TG91 target reaches the typed transmit-policy backend");
+
+    const auto tg46001_tx = request_with_parameters("route-run", "tx-46001", "tx_policy.replace",
+        "{\"expected_revision\":2,\"tx_target\":{\"destination_id\":46001,\"kind\":\"group\",\"slot\":2},\"transmit_enabled\":true}");
+    const auto tg46001_result = dispatcher.handle(tg46001_tx, snapshot);
+    check(tg46001_result.json_line.find("\"result\":\"ok\"") != std::string::npos &&
+          tg46001_result.json_line.find("\"tx_policy_revision\":3") != std::string::npos &&
+          tx_calls == 2U && tx_revision == 3U && current_target.destination_id == 46001U && current_tx_enabled,
+          "a manually selected TG46001 target reaches the typed transmit-policy backend");
 
     const auto tx_body = request_with_parameters("route-run", "tx-one", "tx_policy.replace",
-        "{\"expected_revision\":1,\"tx_target\":{\"destination_id\":1452,\"kind\":\"group\",\"slot\":1},\"transmit_enabled\":true}");
+        "{\"expected_revision\":3,\"tx_target\":{\"destination_id\":1452,\"kind\":\"group\",\"slot\":1},\"transmit_enabled\":true}");
     const auto tx_result = dispatcher.handle(tx_body, snapshot);
     check(tx_result.json_line.find("\"result\":\"ok\"") != std::string::npos &&
-          tx_result.json_line.find("\"tx_policy_revision\":2") != std::string::npos &&
-          tx_calls == 1U && tx_revision == 2U && current_target.destination_id == 1452U && current_tx_enabled,
+          tx_result.json_line.find("\"tx_policy_revision\":4") != std::string::npos &&
+          tx_calls == 3U && tx_revision == 4U && current_target.destination_id == 1452U && current_tx_enabled,
           "tx_policy.replace applies the next target and live permission through the backend");
 
     const auto conflict = dispatcher.handle(request_with_parameters("route-run", "rx-stale", "rx_policy.replace",
@@ -390,7 +398,7 @@ void test_routing_commands_use_typed_backend_and_live_snapshots()
           "a replay preserves the original cached routing result and never re-runs mutation");
     const auto current_push = dispatcher.routing_state_line();
     check(current_push.find("\"rx_policy_revision\":2") != std::string::npos &&
-          current_push.find("\"tx_policy_revision\":2") != std::string::npos,
+          current_push.find("\"tx_policy_revision\":4") != std::string::npos,
           "a separate routing_state push reports current revisions after replay");
 
     const auto missing_parameters = dispatcher.handle(request("route-run", "missing", "rx_policy.replace"), snapshot);

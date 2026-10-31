@@ -32,7 +32,7 @@ function Test-ReleaseTag {
         $Tag -ceq 'v0.1.0-alpha.7' -or $Tag -ceq 'v0.1.0-alpha.8' -or
         $Tag -ceq 'v0.1.0-alpha.9' -or $Tag -ceq 'v0.1.0-alpha.10' -or
         $Tag -ceq 'v0.1.0-alpha.11' -or $Tag -ceq 'v0.1.0-alpha.12' -or
-        $Tag -ceq 'v0.1.0-alpha.13')
+        $Tag -ceq 'v0.1.0-alpha.13' -or $Tag -ceq 'v0.1.0-alpha.14')
 }
 
 function Get-ExpectedReleaseTests {
@@ -76,7 +76,8 @@ function Get-ExpectedReleaseTests {
         }
         'v0.1.0-alpha.12' { return @(Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.11') }
         'v0.1.0-alpha.13' { return @(Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.12') }
-        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.13 are supported.' }
+        'v0.1.0-alpha.14' { return @(Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.13') }
+        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.14 are supported.' }
     }
 }
 
@@ -233,7 +234,12 @@ function Get-ExpectedReleaseFiles {
             $alpha13 += [pscustomobject]@{ Path='ui/windows/BmManagementUi.ps1'; AssetName='ui__windows__bm-management-ui.ps1'; MaximumBytes=1048576L }
             return $alpha13
         }
-        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.13 are supported.' }
+        'v0.1.0-alpha.14' {
+            $alpha14 = @(Get-ExpectedReleaseFiles -Tag 'v0.1.0-alpha.13')
+            $alpha14 += [pscustomobject]@{ Path='ui/windows/PortableConfig.psm1'; AssetName='ui__windows__portable-config.psm1'; MaximumBytes=1048576L }
+            return $alpha14
+        }
+        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.14 are supported.' }
     }
 }
 
@@ -453,6 +459,19 @@ function Test-ManifestDocument {
             'private/user-config/radio-control-preferences.json', 'private/user-config/bm-management-preferences.json',
             'private/user-config/bm-server-preferences.json')) {
             if ($excluded -cnotcontains $required) { throw 'alpha.13 manifest 未明确排除本机 BM 路径偏好、设备偏好、个人配置指针、缓存、收藏与密码路径。' }
+        }
+    }
+    if ($RequestedTag -ceq 'v0.1.0-alpha.14') {
+        foreach ($required in @(
+            'config.json', 'config.*.backup*', 'credentials/', 'tempSecrets/',
+            'private/user-config-directory.txt', 'private/user-config/radio-identity-cache.json',
+            'private/user-config/channel-favorites.json', 'private/user-config/password-file-path.txt',
+            'private/user-config/radio-control-preferences.json', 'private/user-config/bm-management-preferences.json',
+            'private/user-config/bm-server-preferences.json'
+        )) {
+            if ($excluded -cnotcontains $required) {
+                throw 'alpha.14 manifest 未明确排除 package-root 配置文件、备份、凭据和旧版个人偏好。'
+            }
         }
     }
 

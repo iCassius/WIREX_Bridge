@@ -82,14 +82,18 @@ void test_policy_and_startup_validation()
           "{\"destination_id\":1453,\"kind\":\"group\",\"slot\":1}"),
           1U, cli_target, true, config),
           "startup target must match the CLI TX target");
-    check(!wirex::routing_state::parse_startup_config(startup(1U,
+    check(wirex::routing_state::parse_startup_config(startup(1U,
           "{\"destination_id\":91,\"kind\":\"group\",\"slot\":2}"),
           1U, TxTarget{91U, CallKind::group, Slot::ts2}, true, config),
-          "protected TG91 startup target cannot enable transmit");
+          "a manually selected TG91 target may enable transmit");
+    check(wirex::routing_state::parse_startup_config(startup(1U,
+          "{\"destination_id\":46001,\"kind\":\"group\",\"slot\":2}"),
+          1U, TxTarget{46001U, CallKind::group, Slot::ts2}, true, config),
+          "a manually selected TG46001 target may enable transmit");
     check(wirex::routing_state::parse_startup_config(startup(1U,
           "{\"destination_id\":46001,\"kind\":\"group\",\"slot\":2}", "false"),
           1U, TxTarget{46001U, CallKind::group, Slot::ts2}, false, config),
-          "protected TG46001 is accepted as receive-only");
+          "an explicitly disabled TG46001 target remains receive-only");
     check(!wirex::routing_state::parse_startup_config(startup(1U,
           "{\"destination_id\":1,\"kind\":\"private\",\"slot\":3}"),
           1U, TxTarget{1U, CallKind::private_call, Slot::ts1}, true, config),

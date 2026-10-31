@@ -27,7 +27,7 @@ $script:releaseAssetRedirectHosts = @(
 )
 $script:assertionCount = 0
 $downloadProfiles = @{}
-foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12', 'v0.1.0-alpha.13')) {
+foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12', 'v0.1.0-alpha.13', 'v0.1.0-alpha.14')) {
     $downloadProfiles[$tag] = [pscustomobject]@{
         Files = @(Get-ExpectedReleaseFiles -Tag $tag)
         Tests = @(Get-ExpectedReleaseTests -Tag $tag)
@@ -89,6 +89,15 @@ function New-TestManifest {
             'private/user-config/channel-favorites.json', 'private/user-config/password-file-path.txt',
             'private/user-config/radio-control-preferences.json', 'private/user-config/bm-management-preferences.json',
             'private/user-config/bm-server-preferences.json')
+    }
+    if ($Tag -ceq 'v0.1.0-alpha.14') {
+        $excludedPrivateFiles += @(
+            'config.json', 'config.*.backup*', 'credentials/', 'tempSecrets/',
+            'private/user-config-directory.txt', 'private/user-config/radio-identity-cache.json',
+            'private/user-config/channel-favorites.json', 'private/user-config/password-file-path.txt',
+            'private/user-config/radio-control-preferences.json', 'private/user-config/bm-management-preferences.json',
+            'private/user-config/bm-server-preferences.json'
+        )
     }
     return [pscustomobject]@{
         schema_version = 1
@@ -525,12 +534,48 @@ $invalidAlpha13ServerPreference.files += [pscustomobject]@{
 Assert-Throws { Test-ManifestDocument -Manifest $invalidAlpha13ServerPreference -RequestedTag 'v0.1.0-alpha.13' } `
     'alpha.13 downloader rejects local BM server-selection preferences in the generic package'
 
+$alpha14Manifest = New-TestManifest -Tag 'v0.1.0-alpha.14'
+$alpha14Manifest.release_scope = 'R118 DIRECT: portable package-root configuration and user-managed channel selection'
+$alpha14Validated = Test-ManifestDocument -Manifest $alpha14Manifest -RequestedTag 'v0.1.0-alpha.14'
+$alpha13ExpectedFiles = @(Get-ExpectedReleaseFiles -Tag 'v0.1.0-alpha.13')
+Assert-True ($alpha14Validated.Files.Count -eq ($alpha13ExpectedFiles.Count + 1)) `
+    'alpha.14 adds exactly PortableConfig.psm1 and retains every alpha.13 package asset'
+$expectedAlpha14Tests = @(Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.13')
+Assert-True (@($alpha14Manifest.build.passed_tests).Count -eq 40 -and
+    [string]::Join('|', @($alpha14Manifest.build.passed_tests)) -ceq [string]::Join('|', $expectedAlpha14Tests)) `
+    'alpha.14 pins the same 40 Native tests in the alpha.13 order'
+Assert-True (@($alpha14Validated.Files | Where-Object {
+    [string]$_.path -ceq 'ui/windows/PortableConfig.psm1' -and [string]$_.asset_name -ceq 'ui__windows__portable-config.psm1'
+}).Count -eq 1) 'alpha.14 downloader requires PortableConfig under its fixed ASCII asset name'
+Assert-True (@($alpha14Validated.Files | Where-Object {
+    [string]$_.path -match '(?i)(^|/)(config\.json|config\..*\.backup[^/]*|credentials|tempSecrets)(/|$)'
+}).Count -eq 0) 'alpha.14 allowlist does not contain user config, its backups, credential folders or temporary secrets'
+foreach ($excludedPath in @('config.json', 'config.*.backup*', 'credentials/', 'tempSecrets/')) {
+    Assert-True (@($alpha14Manifest.excluded_private_files | Where-Object { [string]$_ -ceq $excludedPath }).Count -eq 1) `
+        "alpha.14 manifest explicitly excludes $excludedPath"
+}
+Assert-True (Test-ReleaseTag -Tag 'v0.1.0-alpha.14') 'alpha.14 is an explicitly supported release tag'
+$missingAlpha14ConfigExclusion = New-TestManifest -Tag 'v0.1.0-alpha.14'
+$missingAlpha14ConfigExclusion.excluded_private_files = @($missingAlpha14ConfigExclusion.excluded_private_files | Where-Object {
+    [string]$_ -cne 'config.json'
+})
+Assert-Throws { Test-ManifestDocument -Manifest $missingAlpha14ConfigExclusion -RequestedTag 'v0.1.0-alpha.14' } `
+    'alpha.14 downloader rejects a manifest that omits the package-root config exclusion'
+$invalidAlpha14Config = New-TestManifest -Tag 'v0.1.0-alpha.14'
+$invalidAlpha14Config.files += [pscustomobject]@{
+    path='config.json'; asset_name='config.json'; length_bytes=1; sha256=('0' * 64); source='synthetic forbidden user config'
+}
+Assert-Throws { Test-ManifestDocument -Manifest $invalidAlpha14Config -RequestedTag 'v0.1.0-alpha.14' } `
+    'alpha.14 downloader rejects a user-created package-root config file in the generic package'
+
 $publishedAlpha11 = [pscustomobject]@{ tag_name='v0.1.0-alpha.11'; draft=$false; prerelease=$true }
 Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha11) -RequestedTag 'v0.1.0-alpha.11').tag_name -ceq 'v0.1.0-alpha.11') 'alpha.11 is selected by exact tag'
 $publishedAlpha12 = [pscustomobject]@{ tag_name='v0.1.0-alpha.12'; draft=$false; prerelease=$true }
 Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha12) -RequestedTag 'v0.1.0-alpha.12').tag_name -ceq 'v0.1.0-alpha.12') 'alpha.12 is selected by exact tag'
 $publishedAlpha13 = [pscustomobject]@{ tag_name='v0.1.0-alpha.13'; draft=$false; prerelease=$true }
 Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha13) -RequestedTag 'v0.1.0-alpha.13').tag_name -ceq 'v0.1.0-alpha.13') 'alpha.13 is selected by exact tag'
+$publishedAlpha14 = [pscustomobject]@{ tag_name='v0.1.0-alpha.14'; draft=$false; prerelease=$true }
+Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha14) -RequestedTag 'v0.1.0-alpha.14').tag_name -ceq 'v0.1.0-alpha.14') 'alpha.14 is selected by exact tag'
 
 $goodAssets = New-TestAssetList -Manifest $validManifest
 $release = [pscustomobject]@{ assets=$goodAssets; target_commitish=[string]$validManifest.source.commit }
@@ -673,7 +718,7 @@ try {
 
 . (Join-Path $PSScriptRoot 'package-release.ps1')
 . (Join-Path $PSScriptRoot 'publish-release.ps1')
-foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12', 'v0.1.0-alpha.13')) {
+foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12', 'v0.1.0-alpha.13', 'v0.1.0-alpha.14')) {
     $packageProfile = Set-ReleaseVersion -Version $tag
     $packagePaths = @($packageProfile.PackageFiles | Where-Object { $_ -cne 'manifest.json' })
     $downloadFiles = @($downloadProfiles[$tag].Files)

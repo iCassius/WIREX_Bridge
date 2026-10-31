@@ -56,10 +56,29 @@ function Assert-UiRenderLayout {
         }
         Assert-UiRender ($combo.background -cne $combo.foreground -and $combo.popup_background -cne $combo.foreground) ("$Label ComboBox $($combo.name) 前景和背景颜色相同。")
     }
-    $normal = Join-Path $RenderDirectory 'main-normal.png'
-    $popup = Join-Path $RenderDirectory 'main-combo-open.png'
+    $normal = Join-Path $RenderDirectory 'main-window.png'
+    $advanced = Join-Path $RenderDirectory 'settings-window.png'
     Assert-UiRender ([System.IO.File]::Exists($normal) -and (New-Object System.IO.FileInfo($normal)).Length -gt 50000) "$Label 没有生成完整主窗口截图。"
-    Assert-UiRender ([System.IO.File]::Exists($popup) -and (New-Object System.IO.FileInfo($popup)).Length -gt 1000) "$Label 没有生成展开的 BM 服务器下拉截图。"
+    Assert-UiRender ([System.IO.File]::Exists($advanced) -and (New-Object System.IO.FileInfo($advanced)).Length -gt 1000) "$Label 没有生成频道高级设置截图。"
+    Assert-UiRender ($layout.history_count -eq 1) "$Label 来话历史没有与当前频道卡分开保留。"
+    Assert-UiRender (@($layout.caller_card_text) -contains 'TEST · Sample Operator') "$Label 频道卡没有显示呼号和姓名。"
+    Assert-UiRender (-not $layout.favorites_present -and -not $layout.transmit_enabled_control_present -and -not $layout.stop_bits_control_present) `
+        "$Label 仍显示收藏、发射开关或停止位控件。"
+    Assert-UiRender (@($layout.channel_card_layout).Count -eq @($layout.channel_cards).Count) "$Label 上方频道卡数量错误。"
+    foreach ($card in @($layout.channel_card_layout)) {
+        Assert-UiRender (@($card.buttons | Where-Object { $_ -in @('取消监听','临时屏蔽','恢复收听') }).Count -ge 2) `
+            "$Label 频道卡头部没有同时提供取消监听与屏蔽/恢复按钮。"
+        Assert-UiRender ($card.height -lt 100) "$Label 频道卡仍保留过多空白高度。"
+    }
+    Assert-UiRender (@($layout.channel_list_layout).Count -eq @($layout.channel_cards).Count) "$Label 下方 PTT 频道清单数量错误。"
+    foreach ($entry in @($layout.channel_list_layout)) {
+        Assert-UiRender ($entry.height -le 48) "$Label 下方频道项目没有保持紧凑高度。"
+        Assert-UiRender (@($entry.buttons | Where-Object { $_ -in @('取消监听','临时屏蔽','恢复收听') }).Count -eq 0) `
+            "$Label 下方 PTT 项重复显示了监听或屏蔽按钮。"
+    }
+    Assert-UiRender ($layout.combo_interaction.cat_port.opened -and -not $layout.combo_interaction.cat_port.handled -and
+        $layout.combo_interaction.cat_port.editable_text_preserved) "$Label 点击 CAT 可编辑端口区域没有展开列表或影响手工输入。"
+    Assert-UiRender ($layout.combo_interaction.advanced_slot.opened) "$Label 点击高级时隙下拉区域没有展开列表。"
 }
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -79,7 +98,7 @@ foreach ($path in @($uiPath)) {
 }
 [xml]$null = [System.IO.File]::ReadAllText($xamlPath,[System.Text.Encoding]::UTF8)
 
-$taskRoot = [System.IO.Path]::GetFullPath((Join-Path ([System.IO.Path]::GetTempPath()) ('wirex-r117-render-' + [guid]::NewGuid().ToString('N'))))
+$taskRoot = [System.IO.Path]::GetFullPath((Join-Path ([System.IO.Path]::GetTempPath()) ('wirex-r118-render-' + [guid]::NewGuid().ToString('N'))))
 $package = Join-Path $taskRoot 'package'
 $config = Join-Path $taskRoot 'config'
 [void][System.IO.Directory]::CreateDirectory($package)
@@ -99,5 +118,6 @@ foreach ($case in @(
     if ($childExitCode -ne 0) { throw ("$($case.Label) RenderOnly exited ${childExitCode}: " + ($childOutput -join "`n")) }
     Assert-UiRenderLayout -LayoutPath (Join-Path $case.Directory 'layout-info.json') -RenderDirectory $case.Directory -Label $case.Label
 }
+Assert-UiRender (@(Get-ChildItem -LiteralPath $config -Force -ErrorAction Stop).Count -eq 0) 'RenderOnly 将 synthetic config 写入测试目录。'
 
 Write-Output ("PASS: test-ui-render.ps1 ({0} RenderOnly layout/contrast assertions; output={1})" -f $script:assertionCount,$taskRoot)

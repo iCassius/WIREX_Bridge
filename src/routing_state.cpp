@@ -326,9 +326,6 @@ bool parse_startup_config(std::string_view json, std::uint32_t cli_source_id,
     if (!parse_rx_policy(*root.find("rx_policy"), candidate.local_source_id, candidate.rx_policy) ||
         !parse_tx_target(*root.find("tx_target"), candidate.tx_policy.target) ||
         !same_tx_target(candidate.tx_policy.target, cli_target)) return false;
-    if (candidate.tx_policy.target.kind == dmr_call::CallKind::group &&
-        (candidate.tx_policy.target.destination_id == 91U || candidate.tx_policy.target.destination_id == 46001U) &&
-        candidate.tx_policy.transmit_enabled) return false;
     output = std::move(candidate);
     return true;
 }

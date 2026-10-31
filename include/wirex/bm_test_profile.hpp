@@ -25,6 +25,7 @@ struct Preset {
     dmr_call::Slot slot{dmr_call::Slot::ts1};
     dmr_call::CallKind kind{dmr_call::CallKind::group};
     std::uint8_t color_code{};
+    bool listen_only{};
 };
 
 enum class TxStartStatus : std::uint8_t {

@@ -38,7 +38,9 @@ $functionNames = @(
     'Clear-UiIdentityQueryQueue','Set-UiIdentityFailureCooldown','Start-NextUiIdentityQuery',
     'Start-UiIdentityQuery','Update-UiIdentityHistoryEntry','Test-UiIdentityResultMatchesCurrent',
     'Complete-UiIdentityQueryResources','Stop-UiIdentityQuery','Complete-UiIdentityQuery',
-    'Get-UiCallHistoryKey','Add-UiCallHistoryRecord','Request-StopAndExit','On-UiTimerTick'
+    'Get-UiCallHistoryKey','Add-UiCallHistoryRecord','Request-StopAndExit','On-UiTimerTick',
+    'Get-UiChannelKey','Get-UiChannelTarget','Get-UiChannelByKey','Get-UiChannelCurrentCall',
+    'Get-UiChannelCallerLabel','New-UiChannelActionButton','Update-UiChannelDisplays'
 )
 foreach ($name in $functionNames) {
     $functionAst = $uiAst.Find({ param($node)
@@ -69,6 +71,7 @@ function Set-StaleDisplay { }
 function Complete-UiRadioCatOperation { return $false }
 function Invoke-UiRadioCatPollTick { return $false }
 function Update-UiRadioCatControls { }
+function Clear-UiSessionTemp { }
 function Add-UiEvent { param([string]$Text) }
 
 function New-TestWindow {
@@ -81,9 +84,10 @@ function New-TestWindow {
     [System.Windows.NameScope]::SetNameScope($window,(New-Object System.Windows.NameScope))
     foreach ($item in @(
         @{name='QueryCurrentIdentityButton'; type='button'},
-        @{name='CurrentCallPanel'; type='panel'},
-        @{name='CurrentCallValue'; type='text'},
-        @{name='CurrentCallDetail'; type='text'},
+        @{name='ChannelListPanel'; type='wrap'},
+        @{name='ChannelCardsPanel'; type='wrap'},
+        @{name='TransmitTargetValue'; type='text'},
+        @{name='ReceiveTargetValue'; type='text'},
         @{name='RecentCallPanel'; type='panel'},
         @{name='RecentCaller'; type='text'},
         @{name='HistoryPanel'; type='panel'},
@@ -96,11 +100,12 @@ function New-TestWindow {
         switch ($item.type) {
             'button' { $control = New-Object System.Windows.Controls.Button; $control.Content = $item.name }
             'panel' { $control = New-Object System.Windows.Controls.StackPanel }
+            'wrap' { $control = New-Object System.Windows.Controls.WrapPanel }
             'list' { $control = New-Object System.Windows.Controls.ListBox }
             default { $control = New-Object System.Windows.Controls.TextBlock }
         }
         $control.Name = $item.name
-        if ($item.name -in @('CurrentCallPanel','RecentCallPanel','HistoryPanel','HistoryActionsPanel','IdentityLookupStatusValue')) {
+        if ($item.name -in @('RecentCallPanel','HistoryPanel','HistoryActionsPanel','IdentityLookupStatusValue')) {
             $control.Visibility = [System.Windows.Visibility]::Collapsed
         }
         [void]$window.RegisterName($item.name,$control)
@@ -110,9 +115,36 @@ function New-TestWindow {
     return $window
 }
 
+function Get-TestChannelCardTexts {
+    $panel = $script:mainWindow.FindName('ChannelCardsPanel')
+    $texts = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($card in @($panel.Children)) {
+        if ($card.Child -is [System.Windows.Controls.Panel]) {
+            foreach ($child in @($card.Child.Children)) {
+                if ($child -is [System.Windows.Controls.TextBlock]) { $texts.Add([string]$child.Text) }
+            }
+        }
+    }
+    return @($texts.ToArray())
+}
+
 function Initialize-TestState {
     param([Parameter(Mandatory=$true)][string]$TestDirectory,[Parameter(Mandatory=$true)][string]$ApiBaseUri)
     $script:mainWindow = New-TestWindow
+    $script:channels = @([pscustomobject][ordered]@{ id=[uint64]91; kind='group'; slot=[int]2; name='91' })
+    $script:txChannelKey = 'group:91:2'
+    $script:mutedChannelKeys = @{}
+    $script:portableConfig = [pscustomobject][ordered]@{ connection=[pscustomobject][ordered]@{ source_id=[uint64]123456 } }
+    $script:quickCallCapabilities = $false
+    $script:routingCapabilities = $false
+    $script:controlConfirmed = $false
+    $script:pendingRoutingMutation = $null
+    $script:pendingChannelMutation = $null
+    $script:pendingChannelStopMutation = $null
+    $script:channelMutationSafetyStopPending = $false
+    $script:activeRouting = $null
+    $script:nativeExitCleanupPending = $false
+    $script:nativeExitCleanupStarted = $false
     # bridge-ui initializes both windows in the application state. This fixture only
     # needs the routing window to be explicitly absent while identity callbacks run.
     $script:settingsWindow = $null
@@ -251,7 +283,8 @@ function Set-TestLatestStatus {
     param([uint64]$RadioId,[string]$RunId='run-ui-test',[uint64]$Generation=7)
     $script:latestStatus = [pscustomobject][ordered]@{
         run_id=$RunId; current_call_valid=$true; current_call_source_id=$RadioId
-        current_call_generation=$Generation; last_rx_header_valid=$true; last_rx_source_id=$RadioId
+        current_call_destination_id=[uint64]91; current_call_slot=[uint64]2; current_call_kind='G'
+        current_call_generation=$Generation; last_rx_header_valid=$true; last_rx_source_id=$RadioId; bm_state='ready'
     }
     $script:lastStatusUtc = [DateTime]::UtcNow
     $script:supervisor = [pscustomobject]@{ HasExited=$false }
@@ -316,7 +349,8 @@ try {
     $script:identityNativeRunId = 'run-ui-test'
     $script:supervisor = New-TestIdentitySupervisor
     Add-TestIdentityClickHandler
-    Set-MainText -Name 'CurrentCallValue' -Text 'DMR ID 7654321'
+    Update-UiChannelDisplays
+    Assert-UiIdentity (@(Get-TestChannelCardTexts) -contains 'DMR ID 7654321') '查询开始前，频道卡片应显示来源 DMR ID。'
     Add-UiCallHistoryRecord -Record (Get-TestCallRecord -RadioId 7654321)
     Assert-UiIdentity ($null -ne $script:identityQuery) '来话入口应自动启动后台 ID 查询。'
     $queryOwned = $script:identityQuery
@@ -327,15 +361,22 @@ try {
     $script:dispatcherUnhandled = $null
     $script:insideWpfDispatcher = $false
     $completed = Invoke-TestDispatcherUntil -Condition { $null -eq $script:identityQuery } -TimeoutMs 8000
-    Assert-UiIdentity $completed '成功查询应在有限时间内完成。'
+    Assert-UiIdentity $completed ("成功查询应在有限时间内完成。 dispatcher=[$script:dispatcherUnhandled], query_pending=$([bool]$script:identityQuery)")
     Assert-UiIdentity ($null -eq $script:dispatcherUnhandled -and $script:insideWpfDispatcher) `
         ("查询结果不得从 WPF Dispatcher 回调抛出未处理异常。 error=[$script:dispatcherUnhandled], inside=[$script:insideWpfDispatcher]")
     Assert-UiIdentity ($queryOwned.disposed -and [string]$queryOwned.owned_runspace.RunspaceStateInfo.State -ceq 'Closed') `
         '成功结果必须先关闭并释放本查询独占的 runspace。'
-    $currentLabel = [string](Get-UiControl 'CurrentCallValue').Text
+    $currentLabel = [string](@(Get-TestChannelCardTexts | Where-Object { $_ -match 'N0TEST|DMR ID 7654321' } | Select-Object -First 1))
     $historyLabel = [string](Get-UiControl 'CallHistoryList').Items[0].source_label
-    Assert-UiIdentity ($currentLabel -match 'N0TEST' -and $historyLabel -match 'N0TEST') `
-        ("成功查询应更新匹配的当前来话和历史呼号。 current=[$currentLabel], history=[$historyLabel], identity_status=[$($queryOwned.identity_result.status)], error=[$($queryOwned.error_code)], sent=[$($script:identityNativeSent.Count)], diagnostic=[$(if ([IO.File]::Exists($script:identityDiagnosticPath)) { [IO.File]::ReadAllText($script:identityDiagnosticPath,[Text.Encoding]::UTF8) })]")
+    Assert-UiIdentity ($currentLabel -ceq 'N0TEST · DMR ID 7654321' -and $historyLabel -match 'N0TEST') `
+        ("成功查询应更新匹配频道卡片和历史呼号。 card=[$currentLabel], history=[$historyLabel], identity_status=[$($queryOwned.identity_result.status)], error=[$($queryOwned.error_code)], sent=[$($script:identityNativeSent.Count)], diagnostic=[$(if ([IO.File]::Exists($script:identityDiagnosticPath)) { [IO.File]::ReadAllText($script:identityDiagnosticPath,[Text.Encoding]::UTF8) })]")
+    $script:callIdentityCache['7654321'] = [pscustomobject][ordered]@{
+        source_id=[uint64]7654321; callsign='N0TEST'; name='Test Operator'; display_name='N0TEST'; status='found'
+    }
+    Update-UiChannelDisplays
+    $namedLabel = Get-UiChannelCallerLabel -RadioId 7654321
+    Assert-UiIdentity ($namedLabel -ceq 'N0TEST · Test Operator' -and @(Get-TestChannelCardTexts) -contains $namedLabel) `
+        '来话频道卡片应同时显示缓存呼号和姓名。'
     Assert-UiIdentity ($script:identityNativeSent.Count -eq 1 -and
         $script:identityNativeSent[0].request_id -ceq 'radioid-1' -and
         $script:identityNativeSent[0].command -ceq 'radio_identity.cache_upsert') `
@@ -559,16 +600,16 @@ try {
     Set-TestLatestStatus -RadioId 7654322 -RunId 'timeout-run' -Generation 8
     Seed-TestNativeIdentityMap -RadioId 7654322 -RunId 'timeout-run'
     Add-TestIdentityClickHandler
-    Set-MainText -Name 'CurrentCallValue' -Text 'DMR ID 7654322'
+    Update-UiChannelDisplays
     Add-UiCallHistoryRecord -Record (Get-TestCallRecord -RadioId 7654322 -RunId 'timeout-run' -Generation 8)
     $timeoutOwned = $script:identityQuery
     Assert-UiIdentity ((Invoke-TestDispatcherUntil -Condition { $null -eq $script:identityQuery } -TimeoutMs 10000)) `
         '5 秒 HTTP 超时应释放后台查询，不阻塞 UI dispatcher。'
     Assert-UiIdentity ($timeoutOwned.disposed -and [string]$timeoutOwned.owned_runspace.RunspaceStateInfo.State -ceq 'Closed') `
         '超时结果必须释放独占 runspace。'
-    Assert-UiIdentity ((Get-UiControl 'CurrentCallValue').Text -ceq 'DMR ID 7654322' -and
+    Assert-UiIdentity ((Get-TestChannelCardTexts) -contains 'DMR ID 7654322' -and
         [string](Get-UiControl 'CallHistoryList').Items[0].source_label -ceq 'DMR ID 7654322') `
-        '自动查询超时时当前来话与历史必须继续显示原始 DMR ID。'
+        '自动查询超时时频道卡片与历史必须继续显示原始 DMR ID。'
     Assert-UiIdentity ((Get-UiControl 'IdentityLookupStatusValue').Visibility -eq [System.Windows.Visibility]::Collapsed) `
         '自动查询超时不得打扰 UI 或显示查询失败状态。'
     Assert-UiIdentity ($script:identityFailureCooldown.ContainsKey('7654322')) '超时 ID 应进入有界失败冷却。'
@@ -584,7 +625,7 @@ try {
     Initialize-TestState -TestDirectory $closeDirectory `
         -ApiBaseUri ('http://127.0.0.1:{0}/api/dmr/user/' -f $fixture.port)
     Set-TestLatestStatus -RadioId 7654323 -RunId 'close-run' -Generation 9
-    Set-MainText -Name 'CurrentCallValue' -Text 'DMR ID 7654323'
+    Update-UiChannelDisplays
     Add-UiCallHistoryRecord -Record (Get-TestCallRecord -RadioId 7654323 -RunId 'close-run' -Generation 9)
     $closeOwned = $script:identityQuery
     $script:identityNativeCapability = $true

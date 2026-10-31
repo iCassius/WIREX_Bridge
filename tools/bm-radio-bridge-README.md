@@ -74,7 +74,7 @@ TG91 收听入口为 `tools\start-listen-91.cmd`。先在 BrandMeister SelfCare 
 
 选择手工入口时，启动器在首次创建 profile 时询问呼号、Gateway ID、本机 Source ID、目标 Talkgroup 或单呼 Radio ID、呼叫类型（`G` 组呼 / `P` 单呼）、Timeslot、Color Code、Master 地址和端口，并将非秘密字段保存到 JSON。后续启动读取已保存配置；native 在 DNS 和设备打开前再次校验完整参数。组呼收包按所选 TG 过滤；单呼发送目标是用户输入的远端 ID，接收过滤按本机 Source ID 识别返回单呼。Master 地址可输入严格 IPv4 或符合 hostname 语法的 ASCII 主机名；主机名会通过 Windows 有界解析转换为 IPv4，控制台显示固定地址供核对。当前只支持 IPv4。DIRECT 没有可声明的地理坐标或 RF 频率；RPTC 中使用上述固定格式的空位置坐标和节点元数据，不表示设备位置或 CAT/RF 频率。手工 Color Code 仍按用户输入传给 BM。
 
-`listen-46001` 和 `listen-91` 只登录 BM 并被动处理已经转发到本机的指定组呼。要收听 TG91，操作者先在 BrandMeister SelfCare 为 Gateway ID `461135501` 的 TS2 添加 TG91 静态订阅；程序按 TG91、TS2、G 过滤收到的 DMRD。该预设不发送组呼激活 DMRD。TG91 组呼与 TG46001 组呼在预设和手工入口中均拒绝上行，键盘 `T` 与电台手咪 PTT 共用这项策略。
+`listen-46001` 和 `listen-91` 只登录 BM 并被动处理已经转发到本机的指定组呼。要收听 TG91，操作者先在 BrandMeister SelfCare 为 Gateway ID `461135501` 的 TS2 添加 TG91 静态订阅；程序按 TG91、TS2、G 过滤收到的 DMRD。这两个预设不发送组呼激活 DMRD。手工入口中，合法目标 ID（1 到 16,777,215）不会因号码是 91 或 46001 而自动禁发；发射许可按手工配置中的明确策略决定。选定目标本身不会启动发射，只有有效 PTT 按下边沿才开始上行。
 
 完成必要的设备选择后，启动器直接运行 native，不再要求输入 `START`。显式 `-PasswordFile` 指向不存在的文件时，启动器报错；未指定时，优先使用便携目录的 `private\bm-device-password.txt`，该文件不存在则由 native 在控制台隐藏输入密码。固定预设从私有文件读取密码。文件最多 128 字节，只接受非空可打印 ASCII 内容和至多一个文件行尾；密码值不放入 profile、命令行、环境变量、日志、报告或 Git。native 在打开设备前验证文件，并在运行结束时擦除其进程内密码缓冲。手工隐藏输入仍允许空格。
 
@@ -82,7 +82,7 @@ TG91 收听入口为 `tools\start-listen-91.cmd`。先在 BrandMeister SelfCare 
 
 **音量设置已完成代码与离线验证。** 音量功能源码提交 `5e3343372d9b0427b5c25943a731292e65b1f7ca` 的正式 clean build 与 26 项离线测试通过；便携包 `build/bm-radio-bridge-5e33433` 已通过 root 审计。回放默认 `1.0x`，麦克风上行默认 `16x`，范围均为 `0.25x–16x`。启动器参数 `-RadioPlaybackGain` / `-MicTransmitGain` 可覆盖并保存到便携目录的 `audio-settings.json`，下次启动恢复。当前没有运行时热调；新音量倍率的实机听音尚待验收。操作步骤见 [`../docs/音量调节.md`](../docs/音量调节.md)。
 
-当 BM 已进入 `ready` 且 HRI 已确认 Y0 时，控制台显示等待手咪 PTT 的状态。按下边沿开始 BM 上行，松开边沿结束；忙碌期间按下会被拒绝，松开后重新按下才会再启动。`-ManualPtt` 诊断入口改用显式键盘 `T`。TG91 与 TG46001 组呼始终拒绝键盘和手咪发射。
+当 BM 已进入 `ready` 且 HRI 已确认 Y0 时，控制台显示等待手咪 PTT 的状态。按下边沿开始 BM 上行，松开边沿结束；忙碌期间按下会被拒绝，松开后重新按下才会再启动。`-ManualPtt` 诊断入口改用显式键盘 `T`。手工配置的 TG91 与 TG46001 起呼目标按当前发射许可处理，不会仅因目标号码而拒绝；选择目标不会自动发射。
 
 若有界收尾期间没有观察到 HRI T0 对应的 `T` 记录，状态报告会保留 `downlink_call_bounded_cleanup_incomplete`，桥接会阻止后续下行并以退出码 2 结束；该本机串口观察仍不能证明电台已恢复或 RF/PTT 状态。
 

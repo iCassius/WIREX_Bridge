@@ -19,7 +19,9 @@ $wantedFunctions = @('Test-UiSourceIdentityRecord', 'Get-UiSourceIdentityDisplay
     'Get-UiRunDirectorySize', 'Invoke-UiRunLogRetention', 'Test-UiStatusRecord', 'Test-UiStatusFreshness',
     'Test-UiRunRecordAcceptance', 'Get-VisibleUiEventText', 'Apply-StatusRecord', 'Set-StaleDisplay',
     'Reset-UiControlState',
-    'Format-ProfileTarget', 'Format-ProfileReceiveTarget', 'Format-ProfileTransmitPermission', 'Set-MainTargetSummary', 'On-UiTimerTick')
+    'Format-ProfileTarget', 'Format-ProfileReceiveTarget', 'Set-MainTargetSummary', 'On-UiTimerTick',
+    'Get-UiChannelKey', 'Get-UiChannelByKey', 'Get-UiChannelCurrentCall', 'Get-UiChannelCallerLabel',
+    'New-UiChannelActionButton', 'Update-UiChannelDisplays', 'Update-CallTargetChoices', 'Set-OfflineDisplay')
 $found = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wantedFunctions -ccontains $node.Name }, $true))
 Assert-UiStatus ($found.Count -eq $wantedFunctions.Count) '没有找到状态记录验证函数。'
 foreach ($functionAst in $found) { Invoke-Expression $functionAst.Extent.Text }
@@ -42,8 +44,11 @@ function Set-UiIdentityRowVisibility {
     $script:mockIdentityRows[$Row] = if ($null -eq $Visibility) { 'Visible' } else { [string]$Visibility }
 }
 function Update-DynamicGroupControls { }
+function Update-RoutingDisplays { }
 function Update-UiRadioCatControls { }
 function Complete-UiIdentityQuery { }
+function Clear-UiSessionTemp { }
+function Clear-UiIdentityError { }
 function Format-UiRadioIdentity {
     param([Parameter(Mandatory=$true)][uint64]$RadioId)
     return ('DMR ID ' + $RadioId.ToString([Globalization.CultureInfo]::InvariantCulture))
@@ -252,11 +257,47 @@ function Set-MainText {
 }
 function Get-UiControl {
     param([Parameter(Mandatory=$true)][string]$Name)
+    if ($script:mainWindow) { return $script:mainWindow.FindName($Name) }
     return $null
 }
 function Add-UiEvent {
     param([string]$Text)
     $script:mockUiEvents.Add($Text)
+}
+function New-TestChannelWindow {
+    $window = New-Object System.Windows.Window
+    $window.Title = 'status channel-card fixture'
+    $root = New-Object System.Windows.Controls.StackPanel
+    $window.Content = $root
+    [System.Windows.NameScope]::SetNameScope($window,(New-Object System.Windows.NameScope))
+    foreach ($item in @(
+        @{ name='ChannelListPanel'; type='panel' },
+        @{ name='ChannelCardsPanel'; type='panel' },
+        @{ name='ControlStatusButton'; type='button' },
+        @{ name='ControlProtocolValue'; type='text' }
+    )) {
+        $control = switch ($item.type) {
+            'panel' { New-Object System.Windows.Controls.WrapPanel }
+            'button' { New-Object System.Windows.Controls.Button }
+            default { New-Object System.Windows.Controls.TextBlock }
+        }
+        $control.Name = $item.name
+        [void]$window.RegisterName($item.name,$control)
+        [void]$root.Children.Add($control)
+    }
+    return $window
+}
+function Get-TestChannelCardTexts {
+    $panel = $script:mainWindow.FindName('ChannelCardsPanel')
+    $texts = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($card in @($panel.Children)) {
+        if ($card.Child -is [System.Windows.Controls.Panel]) {
+            foreach ($child in @($card.Child.Children)) {
+                if ($child -is [System.Windows.Controls.TextBlock]) { $texts.Add([string]$child.Text) }
+            }
+        }
+    }
+    return @($texts.ToArray())
 }
 
 $script:mockUiFields = @{}
@@ -269,13 +310,24 @@ $script:latestStatus = $null
 $script:activeTargetLabel = 'TG 91 · TS2'
 $script:lastUiBmState = ''
 $script:lastUiHriState = ''
+$script:mainWindow = New-TestChannelWindow
+$script:channels = @([pscustomobject][ordered]@{ id=[uint64]91; kind='group'; slot=[int]2; name='91' })
+$script:txChannelKey = 'group:91:2'
+$script:mutedChannelKeys = @{}
+$script:portableConfig = [pscustomobject][ordered]@{ connection=[pscustomobject][ordered]@{ source_id=[uint64]123456 } }
+$script:callIdentityCache = @{}
+$script:quickCallCapabilities = $false
+$script:pendingRoutingMutation = $null
+$script:pendingChannelMutation = $null
+$script:pendingChannelStopMutation = $null
+$script:activeRouting = $null
+$script:controlConfirmed = $false
+$script:statusChannelWindow = $script:mainWindow
 $valid.timestamp_utc_ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 Apply-StatusRecord -Record $valid
 Assert-UiStatus ($script:currentRunId -ceq '4120-78123' -and $script:lastSequence -eq 1) '首条有效运行记录未锁定 run_id 与序号。'
 $acceptedBmText = $script:mockUiFields['BmValue']
-Assert-UiStatus ([string]::IsNullOrEmpty([string]$script:mockUiFields['CurrentCallValue']) -and
-    [string]::IsNullOrEmpty([string]$script:mockUiFields['CurrentCallDetail']) -and
-    $script:mockIdentityRows['current'] -ceq 'Collapsed') '空闲记录应隐藏空的当前来话栏。'
+Assert-UiStatus (@(Get-TestChannelCardTexts | Where-Object { $_ -match '^DMR ID ' -or $_ -ceq '当前来话' }).Count -eq 0) '空闲记录不应在频道卡片显示来话身份。'
 
 $copy = $valid.PSObject.Copy(); $copy.run_id = '4120-99999'; $copy.seq = [int64]2; $copy.bm_state = 'ready'
 Apply-StatusRecord -Record $copy
@@ -305,9 +357,9 @@ $active.lcd_source_identity = [pscustomobject][ordered]@{
     label_kind = 'dmr_id'; cache_revision = [uint64]0; serial_write_state = 'pending'
 }
 Apply-StatusRecord -Record $active
-Assert-UiStatus ($script:lastSequence -eq 3 -and $script:mockUiFields['CurrentCallValue'] -ceq 'DMR ID 1234') '活动来话没有显示数字 DMR ID。'
-Assert-UiStatus ($script:mockUiFields['CurrentCallDetail'] -match 'TG 91.*TS2' -and
-    $script:mockUiFields['CurrentCallDetail'] -notmatch 'CC|LC|接收中|缓冲中|未知') '活动来话应只显示组别和时隙等实际通话信息。'
+ $cardTexts = @(Get-TestChannelCardTexts)
+Assert-UiStatus ($script:lastSequence -eq 3 -and $cardTexts -contains 'DMR ID 1234' -and $cardTexts -contains '当前来话') '活动组呼未在匹配的频道卡片显示来话 DMR ID。'
+Assert-UiStatus (@($cardTexts | Where-Object { $_ -match 'CC|LC|接收中|缓冲中|未知' }).Count -eq 0) '频道来话卡片应只显示频道和来话身份，不显示协议字段或推测状态。'
 Assert-UiStatus ($script:mockUiFields['HriSourceIdentityValue'] -ceq 'ID1234 · 已准备' -and
     $script:mockUiFields['RadioDisplayValue'] -ceq 'FTX-1 屏幕：未知') '活动来话没有显示已准备的 HRI 来源标签并将屏显保留为未知。'
 
@@ -319,30 +371,27 @@ $ended.current_call_slot = [int64]0; $ended.current_call_kind = 'none'; $ended.c
 $ended.current_call_link_control_validated = $false; $ended.current_call_color_code_known = $false
 $ended.current_call_generation = [int64]0
 Apply-StatusRecord -Record $ended
-Assert-UiStatus ($script:lastSequence -eq 4 -and [string]::IsNullOrEmpty([string]$script:mockUiFields['CurrentCallValue']) -and
-    [string]::IsNullOrEmpty([string]$script:mockUiFields['CurrentCallDetail']) -and
-    $script:mockIdentityRows['current'] -ceq 'Collapsed') 'BM EOT 后应隐藏已结束的活动话者。'
+Assert-UiStatus ($script:lastSequence -eq 4 -and @((Get-TestChannelCardTexts) | Where-Object { $_ -match '^DMR ID ' -or $_ -ceq '当前来话' }).Count -eq 0) 'BM EOT 后应从频道卡片移除已结束的活动话者。'
 Assert-UiStatus ($script:mockUiFields['HriSourceIdentityValue'] -ceq 'ID1234 · 已准备') 'BM EOT 时过早清除了仍待 HRI T0 收尾的标签。'
 
 $idle = $valid.PSObject.Copy()
 $idle.seq = [int64]5; $idle.event = 'runtime_snapshot'; $idle.timestamp_utc_ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 Apply-StatusRecord -Record $idle
-Assert-UiStatus ($script:lastSequence -eq 5 -and [string]::IsNullOrEmpty([string]$script:mockUiFields['CurrentCallValue']) -and
-    $script:mockIdentityRows['current'] -ceq 'Collapsed') '排空结束后应隐藏空的当前来话栏。'
+Assert-UiStatus ($script:lastSequence -eq 5 -and @((Get-TestChannelCardTexts) | Where-Object { $_ -match '^DMR ID ' -or $_ -ceq '当前来话' }).Count -eq 0) '排空结束后不应在频道卡片保留空的来话身份。'
 
 $legacy.timestamp_utc_ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); $legacy.seq = [int64]6
 Apply-StatusRecord -Record $legacy
-Assert-UiStatus ($script:lastSequence -eq 6 -and [string]::IsNullOrEmpty([string]$script:mockUiFields['CurrentCallValue']) -and
-    $script:mockIdentityRows['current'] -ceq 'Collapsed') '旧 native 状态缺少来话字段时应隐藏空的当前来话栏。'
+Assert-UiStatus ($script:lastSequence -eq 6 -and @((Get-TestChannelCardTexts) | Where-Object { $_ -match '^DMR ID ' -or $_ -ceq '当前来话' }).Count -eq 0) '旧 native 状态缺少来话字段时不应显示频道来话身份。'
 Assert-UiStatus ($script:mockUiFields['HriSourceIdentityValue'] -ceq '当前核心未提供来源标签字段' -and
     $script:mockUiFields['RadioDisplayValue'] -ceq 'FTX-1 屏幕：未知' -and
     $script:mockIdentityRows['recent'] -ceq 'Collapsed') '旧核心的身份状态数据应保留在折叠区，不出现在主界面。'
 
+$script:latestStatus = $active
 $script:lastStatusUtc = [DateTime]::UtcNow.AddSeconds(-4)
-$script:mockUiFields['CurrentCallValue'] = 'DMR ID 1234'
+Update-UiChannelDisplays
+Assert-UiStatus (@(Get-TestChannelCardTexts) -contains 'DMR ID 1234') '过期用例没有先呈现旧来话身份。'
 Set-StaleDisplay
-Assert-UiStatus ([string]::IsNullOrEmpty([string]$script:mockUiFields['CurrentCallValue']) -and
-    $script:mockIdentityRows['current'] -ceq 'Collapsed') '状态过期时仍显示旧活动 BM 话者。'
+Assert-UiStatus (@((Get-TestChannelCardTexts) | Where-Object { $_ -match '^DMR ID ' -or $_ -ceq '当前来话' }).Count -eq 0) '状态过期时仍在频道卡片显示旧活动 BM 话者。'
 Assert-UiStatus ([string]::IsNullOrEmpty([string]$script:mockUiFields['HriSourceIdentityValue']) -and
     [string]::IsNullOrEmpty([string]$script:mockUiFields['RadioDisplayValue']) -and
     $script:mockIdentityRows['recent'] -ceq 'Collapsed') ('过期身份状态应清空可见来话行并隐藏屏显区域：recent={0}, current={1}, display={2}' -f `
@@ -353,7 +402,6 @@ function Complete-UiDeviceDiscovery {}
 function Complete-BridgePreparation {}
 function Complete-BridgeStop { return $false }
 function Set-ConnectionButtonState {}
-$script:mainWindow = $null
 $script:identityNativeDeferredBySource = @{}
 $script:identityNativeDeferredOrder = New-Object 'System.Collections.Generic.List[string]'
 $script:identityNativeQueue = New-Object 'System.Collections.Generic.List[object]'
@@ -364,7 +412,9 @@ $script:identityNativeQueue.Add([pscustomobject][ordered]@{ source_id=[uint64]90
 $script:identityNativeCapability = $true
 $script:identityNativeRunId = 'old-run'
 $script:controlRunId = 'old-run'
+$script:mainWindow = $null
 Reset-UiControlState
+$script:mainWindow = $script:statusChannelWindow
 Assert-UiStatus ($script:identityNativeDeferredBySource.Count -eq 2 -and
     $script:identityNativeDeferredBySource.ContainsKey('901') -and
     $null -eq $script:identityNativeDeferredBySource['902'].callsign -and
@@ -384,13 +434,13 @@ $script:lastUiBmState = 'ready'
 $script:lastUiHriState = 'ready'
 $script:statusStream = $null
 $script:targetLabel = '启动目标'
-$script:mockUiFields['CurrentCallValue'] = 'DMR ID 1234'
+$script:latestStatus = $active
+Update-UiChannelDisplays
+Assert-UiStatus (@(Get-TestChannelCardTexts) -contains 'DMR ID 1234') '核心退出用例没有先呈现活动来话身份。'
 On-UiTimerTick
-Assert-UiStatus ([string]::IsNullOrEmpty([string]$script:mockUiFields['CurrentCallValue']) -and
-    [string]::IsNullOrEmpty([string]$script:mockUiFields['CurrentCallDetail']) -and
-    $script:mockIdentityRows['current'] -ceq 'Collapsed') '核心意外退出时仍显示上次活动 BM 话者。'
-Assert-UiStatus ($script:mockUiFields['HriSourceIdentityValue'] -ceq '本次运行已结束' -and
-    $script:mockUiFields['RadioDisplayValue'] -ceq 'FTX-1 屏幕：未知') '核心退出时仍显示旧 HRI 来源标签。'
+Assert-UiStatus (@((Get-TestChannelCardTexts) | Where-Object { $_ -match '^DMR ID ' -or $_ -ceq '当前来话' }).Count -eq 0) '核心意外退出时仍在频道卡片显示上次活动 BM 话者。'
+Assert-UiStatus ([string]::IsNullOrEmpty([string]$script:mockUiFields['HriSourceIdentityValue']) -and
+    [string]::IsNullOrEmpty([string]$script:mockUiFields['RadioDisplayValue'])) '核心退出后仍显示旧 HRI 来源标签。'
 
 $retentionRoot = Join-Path $env:TEMP ('wirex-ui-retention-' + [guid]::NewGuid().ToString('N'))
 $runRoot = Join-Path $retentionRoot 'ui-runs'

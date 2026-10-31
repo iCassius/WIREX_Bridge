@@ -31,6 +31,84 @@ function Write-Utf8NoBom {
     [System.IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding($false)))
 }
 
+function Test-Alpha14SyntheticLauncher {
+    param([Parameter(Mandatory=$true)][string]$TestRoot)
+    $packageRoot = Join-Path $TestRoot 'alpha14 synthetic package 中文 path'
+    $toolsDirectory = Join-Path $packageRoot 'tools'
+    $uiDirectory = Join-Path $packageRoot 'ui\windows'
+    [void][System.IO.Directory]::CreateDirectory($toolsDirectory)
+    [void][System.IO.Directory]::CreateDirectory($uiDirectory)
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha14.cmd') `
+        -Destination (Join-Path $packageRoot 'start-wirex-bridge.cmd') -ErrorAction Stop
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha14.ps1') `
+        -Destination (Join-Path $toolsDirectory 'start-wirex-bridge.ps1') -ErrorAction Stop
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'ui\windows\PortableConfig.psm1') `
+        -Destination (Join-Path $uiDirectory 'PortableConfig.psm1') -ErrorAction Stop
+    [System.IO.File]::WriteAllText((Join-Path $packageRoot 'start-bm-radio-bridge.ps1'), '', [System.Text.Encoding]::ASCII)
+    [System.IO.File]::WriteAllText((Join-Path $uiDirectory 'bridge-ui.ps1'), '', [System.Text.Encoding]::ASCII)
+    [System.IO.File]::WriteAllBytes((Join-Path $packageRoot 'wirex_bridge.exe'), [byte[]]@())
+    $capturePath = Join-Path $TestRoot 'alpha14 synthetic launch capture.json'
+    $fakeUi = @'
+param([string]$PackageDirectory, [string]$UserConfigDirectory, [switch]$RoutingDiagnostic, [switch]$RoutingDiagnosticAutoTest)
+Import-Module (Join-Path $PackageDirectory 'ui\windows\PortableConfig.psm1') -Force -ErrorAction Stop
+$configPath = Join-Path $PackageDirectory 'config.json'
+$config = Get-WirexPortableConfig -Path $configPath
+Save-WirexPortableConfig -Path $configPath -Config $config | Out-Null
+$capture = [ordered]@{
+    package_directory = [System.IO.Path]::GetFullPath($PackageDirectory)
+    user_config_directory = $UserConfigDirectory
+    config_path = [System.IO.Path]::GetFullPath($configPath)
+    routing_diagnostic = [bool]$RoutingDiagnostic
+    routing_diagnostic_auto_test = [bool]$RoutingDiagnosticAutoTest
+}
+[System.IO.File]::WriteAllText($env:WIREX_ALPHA14_CAPTURE,
+    (ConvertTo-Json -InputObject $capture -Compress), (New-Object System.Text.UTF8Encoding($false)))
+'@
+    [System.IO.File]::WriteAllText((Join-Path $packageRoot 'start-ui.ps1'), $fakeUi,
+        (New-Object System.Text.UTF8Encoding($false)))
+    $driverPath = Join-Path $TestRoot 'alpha14-invoke-launcher.cmd'
+    $driverLines = @(
+        '@echo off',
+        'setlocal',
+        'call "%WIREX_ALPHA14_PACKAGE%\start-wirex-bridge.cmd" -PackageDirectory "%WIREX_ALPHA14_PACKAGE%"',
+        'exit /b %ERRORLEVEL%'
+    )
+    [System.IO.File]::WriteAllText($driverPath, ([string]::Join("`r`n", $driverLines) + "`r`n"), [System.Text.Encoding]::ASCII)
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $env:ComSpec
+    $startInfo.Arguments = '/d /s /c "' + $driverPath + '"'
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.EnvironmentVariables['WIREX_ALPHA14_PACKAGE'] = $packageRoot
+    $startInfo.EnvironmentVariables['WIREX_ALPHA14_CAPTURE'] = $capturePath
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) { throw '无法启动 alpha14 合成 CMD 测试。' }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit(30000)) { throw 'alpha14 合成启动器测试超过30秒。' }
+        if (-not $stdoutTask.Wait(2000) -or -not $stderrTask.Wait(2000)) { throw 'alpha14 合成启动器输出未关闭。' }
+        $output = $stdoutTask.Result + $stderrTask.Result
+        if ($process.ExitCode -ne 0) { throw ('alpha14 合成启动器失败：' + $output) }
+    } finally { $process.Dispose() }
+    if (-not [System.IO.File]::Exists($capturePath)) { throw 'alpha14 合成 UI adapter 没有收到启动调用。' }
+    $capture = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($capturePath, [System.Text.Encoding]::UTF8)) -ErrorAction Stop
+    $expectedPackage = [System.IO.Path]::GetFullPath($packageRoot)
+    $expectedConfig = [System.IO.Path]::GetFullPath((Join-Path $packageRoot 'config.json'))
+    if (-not [string]::Equals([string]$capture.package_directory, $expectedPackage, [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string]$capture.config_path, $expectedConfig, [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::IsNullOrWhiteSpace([string]$capture.user_config_directory) -or
+        [bool]$capture.routing_diagnostic -or [bool]$capture.routing_diagnostic_auto_test) {
+        throw 'alpha14 默认启动没有将设置定位到packageRoot/config.json，或传入了UserConfigDirectory。'
+    }
+    if (-not [System.IO.File]::Exists($expectedConfig)) { throw 'alpha14 合成配置没有写入合成packageRoot。' }
+    Write-Output '通过：alpha14 CMD → PowerShell launcher → synthetic UI 使用 packageRoot/config.json，未传入旧配置目录。'
+}
+
 $assetPairs = @(
     @{ Path='wirex_bridge.exe'; Name='wirex_bridge.exe' },
     @{ Path='docs/连接配置.md'; Name='docs__connection-profile.md' },
@@ -909,6 +987,60 @@ Assert-True ($alpha13ReadmeText.Contains('4602.master.brandmeister.network') -an
     $alpha13ReadmeText.Contains('动态组') -and $alpha13ReadmeText.Contains('静态组')) 'alpha.13 README documents the default BM server and distinct group controls without bundling local preferences'
 Assert-True (-not $alpha13ReadmeText.Contains('BM 实机通过') -and -not $alpha13ReadmeText.Contains('射频验收通过')) 'alpha.13 README makes no BM or RF hardware validation claim'
 
+$alpha14Profile = Get-ReleaseProfile -Version 'v0.1.0-alpha.14'
+[void](Set-ReleaseVersion -Version 'v0.1.0-alpha.14')
+$alpha14Files = @(Get-ExpectedReleasePackageFiles)
+$alpha14Tests = @(Get-ExpectedReleaseTests)
+Assert-True ([string]$alpha14Profile.ReleaseScope -like 'R118 DIRECT:*') 'alpha.14 release metadata identifies the portable configuration scope'
+Assert-Equal $alpha14Files.Count ($alpha13Files.Count + 1) 'alpha.14 adds only PortableConfig.psm1 to the alpha.13 package inventory'
+Assert-True ([string]::Join('|', $alpha14Tests) -ceq [string]::Join('|', $alpha13Tests) -and
+    [string]::Join('|', $builderTestNames) -ceq [string]::Join('|', $alpha14Tests)) 'alpha.14 preserves exactly the same 40 Native tests in their existing order'
+Assert-True ($alpha14Files -ccontains 'ui/windows/PortableConfig.psm1' -and
+    @($alpha14Files | Where-Object { [string]$_ -match '(^|/)config\.json$|config\..*\.backup|(^|/)(credentials|tempSecrets)(/|$)' }).Count -eq 0) `
+    'alpha.14 adds PortableConfig while keeping user config, backups and secrets out of the fixed package inventory'
+Assert-True (@($alpha14Files | Where-Object { [string]$_ -ceq 'start-wirex-bridge.cmd' }).Count -eq 1 -and
+    @($alpha14Files | Where-Object { [string]$_ -ceq 'start-wirex-bridge-alpha14.cmd' }).Count -eq 0) `
+    'alpha.14 contains one canonical root CMD and no source-named copy'
+Assert-True (@($alpha14Profile.SourceFiles | Where-Object {
+    [string]$_.Source -ceq 'tools\start-wirex-bridge-alpha14.cmd' -and [string]$_.Destination -ceq 'start-wirex-bridge.cmd'
+}).Count -eq 1 -and @($alpha14Profile.SourceFiles | Where-Object {
+    [string]$_.Source -ceq 'tools\start-wirex-bridge-alpha14.ps1' -and [string]$_.Destination -ceq 'tools/start-wirex-bridge.ps1'
+}).Count -eq 1) 'alpha.14 maps its versioned launcher sources to canonical package entry paths'
+Assert-True ([string]$alpha14Profile.PackageReadme -ceq 'docs\releases\v0.1.0-alpha.14-package-README.md') 'alpha.14 profile selects its versioned package README'
+Assert-True ((Get-ReleaseAssetName -RelativePath 'ui/windows/PortableConfig.psm1') -ceq 'ui__windows__portable-config.psm1') `
+    'alpha.14 maps PortableConfig to its fixed ASCII asset name'
+$alpha14Excluded = @(Get-ReleaseExcludedPrivateFiles -Version 'v0.1.0-alpha.14')
+foreach ($requiredExcludedPath in @('config.json', 'config.*.backup*', 'credentials/', 'tempSecrets/')) {
+    Assert-True ($alpha14Excluded -ccontains $requiredExcludedPath) "alpha.14 manifest exclusion list declares $requiredExcludedPath"
+}
+Assert-True ((Get-ReleaseExcludedPrivateFiles -Version 'v0.1.0-alpha.13') -cnotcontains 'config.json') `
+    'alpha.14 portable-config exclusions do not rewrite historical alpha.13 manifests'
+$alpha14LauncherPath = Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha14.ps1'
+$alpha14LauncherBytes = [System.IO.File]::ReadAllBytes($alpha14LauncherPath)
+Assert-True ($alpha14LauncherBytes.Length -ge 3 -and $alpha14LauncherBytes[0] -eq 0xEF -and
+    $alpha14LauncherBytes[1] -eq 0xBB -and $alpha14LauncherBytes[2] -eq 0xBF) 'alpha.14 PowerShell launcher has a UTF-8 BOM for Windows PowerShell 5.1'
+$alpha14LauncherTokens = $null
+$alpha14LauncherErrors = $null
+[System.Management.Automation.Language.Parser]::ParseFile($alpha14LauncherPath, [ref]$alpha14LauncherTokens, [ref]$alpha14LauncherErrors) | Out-Null
+Assert-True ($alpha14LauncherErrors.Count -eq 0) ('alpha.14 launcher parses; parse errors={0}' -f $alpha14LauncherErrors.Count)
+$alpha14LauncherText = [System.IO.File]::ReadAllText($alpha14LauncherPath, [System.Text.Encoding]::UTF8)
+Assert-True ($alpha14LauncherText.Contains('. $uiLauncher -PackageDirectory $packageRoot') -and
+    -not $alpha14LauncherText.Contains('user-config-directory.txt') -and
+    -not $alpha14LauncherText.Contains('Resolve-PackageUserConfigDirectory')) `
+    'alpha.14 normal startup sends only packageRoot to the UI and does not resolve the legacy absolute pointer'
+$alpha14CmdPath = Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha14.cmd'
+$alpha14CmdBytes = [System.IO.File]::ReadAllBytes($alpha14CmdPath)
+Assert-True (@($alpha14CmdBytes | Where-Object { $_ -gt 127 }).Count -eq 0) 'alpha.14 root CMD source contains ASCII only'
+$alpha14Config = Import-Module (Join-Path $repositoryRoot 'ui\windows\PortableConfig.psm1') -Force -PassThru
+Remove-Module -ModuleInfo $alpha14Config -Force
+$alpha14PortableModule = Join-Path $repositoryRoot 'ui\windows\PortableConfig.psm1'
+$alpha14PortableBytes = [System.IO.File]::ReadAllBytes($alpha14PortableModule)
+Assert-True ($alpha14PortableBytes.Length -ge 3 -and $alpha14PortableBytes[0] -eq 0xEF -and
+    $alpha14PortableBytes[1] -eq 0xBB -and $alpha14PortableBytes[2] -eq 0xBF) 'alpha.14 PortableConfig module has a UTF-8 BOM for Windows PowerShell 5.1'
+
+[void](Set-ReleaseVersion -Version 'v0.1.0-alpha.1')
+Assert-Throws { Get-ReleaseAssetName -RelativePath 'ui/windows/PortableConfig.psm1' } 'alpha.1 does not accept the alpha.14 portable configuration module'
+
 [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.1')
 Assert-Throws { Get-ReleaseAssetName -RelativePath 'start-ui.cmd' } 'alpha.1 不接受 alpha.2 UI asset'
 Assert-True ((Get-ReleaseAssetName -RelativePath 'docs/连接配置.md') -ceq 'docs__connection-profile.md') `
@@ -923,6 +1055,7 @@ $approvedFixturePath = Join-Path $repositoryRoot 'private\fixtures\device-y.bin'
 $approvedFixtureHash = Test-ApprovedYFixture -Path $approvedFixturePath
 New-Item -ItemType Directory -Path $buildDirectory -Force | Out-Null
 try {
+    Test-Alpha14SyntheticLauncher -TestRoot $testRoot
     $alpha3ReadmeOutput = Join-Path $testRoot 'synthetic-alpha3-readme\README.md'
     New-Item -ItemType Directory -Path (Split-Path -Parent $alpha3ReadmeOutput) -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $repositoryRoot $alpha3ReadmeMap[0].Source) -Destination $alpha3ReadmeOutput
@@ -1367,6 +1500,67 @@ try {
     Write-Utf8NoBom -Path (Join-Path $alpha13PrivateDirectory 'bm-management-preferences.json') -Text '{"schema_version":1}'
     Assert-Throws { Assert-ReleasePackageInventory -PackageRoot $alpha13InventoryRoot -Version 'v0.1.0-alpha.13' } `
         'alpha.13 package inventory rejects local BM API-key path preferences'
+
+    $alpha14InventoryRoot = Join-Path $testRoot 'package-inventory-alpha14'
+    New-Item -ItemType Directory -Path $alpha14InventoryRoot -Force | Out-Null
+    $alpha14InventoryProfile = Get-ReleaseProfile -Version 'v0.1.0-alpha.14'
+    foreach ($relativePath in $alpha14InventoryProfile.Directories) {
+        New-Item -ItemType Directory -Path (Join-Path $alpha14InventoryRoot $relativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar)) -Force | Out-Null
+    }
+    foreach ($relativePath in ($alpha14InventoryProfile.PackageFiles | Where-Object { $_ -cne 'manifest.json' })) {
+        $fullPath = Join-Path $alpha14InventoryRoot $relativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+        $parent = Split-Path -Parent $fullPath
+        if (-not [System.IO.Directory]::Exists($parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+        if ($relativePath -ceq 'private/device-y.bin') {
+            Copy-Item -LiteralPath $approvedFixturePath -Destination $fullPath
+        } else {
+            Write-Utf8NoBom -Path $fullPath -Text ('synthetic alpha.14 inventory fixture: ' + $relativePath)
+        }
+    }
+    $alpha14InventoryRecords = @()
+    foreach ($relativePath in ($alpha14InventoryProfile.PackageFiles | Where-Object { $_ -cne 'manifest.json' } | Sort-Object)) {
+        $fullPath = Join-Path $alpha14InventoryRoot $relativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+        $item = Get-Item -LiteralPath $fullPath
+        $alpha14InventoryRecords += ,([ordered]@{
+            path = $relativePath
+            asset_name = [string]$alpha14InventoryProfile.AssetMap[$relativePath]
+            length_bytes = [long]$item.Length
+            sha256 = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            source = 'synthetic alpha.14 inventory fixture'
+        })
+    }
+    $alpha14InventoryManifest = [ordered]@{
+        schema_version = 1
+        package_status = 'awaiting_root_audit'
+        version = 'v0.1.0-alpha.14'
+        tag_candidate = 'v0.1.0-alpha.14'
+        manifest_asset_name = 'manifest.json'
+        approved_y_fixture = [ordered]@{
+            path = 'private/device-y.bin'
+            length_bytes = 100
+            sha256 = $approvedFixtureHash
+        }
+        excluded_private_files = @(Get-ReleaseExcludedPrivateFiles -Version 'v0.1.0-alpha.14')
+        files = $alpha14InventoryRecords
+    }
+    Write-Utf8NoBom -Path (Join-Path $alpha14InventoryRoot 'manifest.json') -Text ((ConvertTo-Json -InputObject $alpha14InventoryManifest -Depth 8) + [Environment]::NewLine)
+    Assert-True ((Assert-ReleasePackageInventory -PackageRoot $alpha14InventoryRoot -Version 'v0.1.0-alpha.14') -eq $null) `
+        'alpha.14 synthetic inventory accepts the portable-config module and the exact fixed asset list'
+    Assert-True (@($alpha14InventoryManifest.excluded_private_files | Where-Object { [string]$_ -ceq 'config.json' }).Count -eq 1 -and
+        @($alpha14InventoryManifest.excluded_private_files | Where-Object { [string]$_ -ceq 'config.*.backup*' }).Count -eq 1 -and
+        @($alpha14InventoryManifest.excluded_private_files | Where-Object { [string]$_ -ceq 'credentials/' }).Count -eq 1 -and
+        @($alpha14InventoryManifest.excluded_private_files | Where-Object { [string]$_ -ceq 'tempSecrets/' }).Count -eq 1) `
+        'alpha.14 manifest names the package-root config, backups, credential directory and temporary-secret directory as excluded'
+    Write-Utf8NoBom -Path (Join-Path $alpha14InventoryRoot 'config.json') -Text '{"synthetic":"user config"}'
+    Assert-Throws { Assert-ReleasePackageInventory -PackageRoot $alpha14InventoryRoot -Version 'v0.1.0-alpha.14' } `
+        'alpha.14 package inventory rejects a package-root user config file'
+    Remove-Item -LiteralPath (Join-Path $alpha14InventoryRoot 'config.json') -Force -ErrorAction Stop
+    $alpha14CredentialsDirectory = Join-Path $alpha14InventoryRoot 'credentials'
+    New-Item -ItemType Directory -Path $alpha14CredentialsDirectory -Force | Out-Null
+    Write-Utf8NoBom -Path (Join-Path $alpha14CredentialsDirectory 'synthetic-secret.txt') -Text 'synthetic-only'
+    Assert-Throws { Assert-ReleasePackageInventory -PackageRoot $alpha14InventoryRoot -Version 'v0.1.0-alpha.14' } `
+        'alpha.14 package inventory rejects a credentials directory and all files below it'
+    Remove-Item -LiteralPath $alpha14CredentialsDirectory -Recurse -Force -ErrorAction Stop
 
     $alpha2PackageRoot = Join-Path $testRoot 'package-alpha2'
     Copy-Item -LiteralPath $packageRoot -Destination $alpha2PackageRoot -Recurse

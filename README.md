@@ -1,11 +1,10 @@
 ﻿# WIREX Bridge：FTX-1 DIRECT 与 BrandMeister 语音桥接
 
-## 当前工作：R117 / Alpha 13
+## 当前工作：R118 / Alpha 14 源码冻结与本机包准备
 
-R117 已提交并构建 Alpha 13 本机测试版。BM 服务器选择、电台设备识别、CAT 操作与静态组管理已接入控制台；普通 WPF 回归通过 78 项，生产串口目录读取通过 16 项，RenderOnly 通过 79 项，四项旧 UI 兼容套件在 PS5.1/PS7 均通过。源码提交 `a33c485a0d6c1046497b94d5eddc9d74da8296e6` 的 Native 40 项 clean build 通过，Alpha 13 包已通过 root 只读审计。尚未进行 BM/CAT/电台硬件验收，也没有创建 ZIP、tag 或 GitHub Release。操作说明见 [Alpha 13 包内说明](docs/releases/v0.1.0-alpha.13-package-README.md)，构建、包审计与后续实机验收见 [R117 发布交接](docs/R117_发布交接.md)。
+R118 已完成统一便携配置、BM API Key 内存接入、自定义频道监听/发射目标、CAT 重连与频道事务收尾，以及 alpha14 固定清单和启动器集成。配置/BM 模块、发布工具合成检查与 status、identity、lifecycle、radio-cat、channels 五项 WPF 回归均在 Windows PowerShell 5.1 和 PowerShell 7 通过。频道回归每种 PowerShell 各 74 项断言通过；Native 当前代码的 40 项构建和 alpha14 本机文件夹仍待新源码提交后执行。没有读取或迁移真实配置，没有启动真实 BM、COM/HRI、音频、PTT 或 RF。未创建 ZIP、tag 或 GitHub Release。当前证据见 [R118 发布交接](docs/R118_发布交接.md)，用户操作说明源见 [Alpha 14 包内说明](docs/releases/v0.1.0-alpha.14-package-README.md)。
 
-以下为历史阶段记录；当前进度以 [R117 发布交接](docs/R117_发布交接.md) 为准。
-
+以下为历史阶段记录；当前进度以 [R118 发布交接](docs/R118_发布交接.md) 为准。
 ## R111 / alpha.9 源码集成准备
 
 当前默认用户绿色目录是 R110 验收的 `build/releases/v0.1.0-alpha.8`；alpha.9 源已冻结，clean build 和正式包尚未生成。alpha.9 包含分开的本机收听与起呼目标、真实通话记录、逐路由 TS、发射 CC 设置、单 ID RadioID 查询和本机音量显示。查询只由用户点击触发，查询缓存和频道收藏留在 canonical 配置目录；“静态”类别只整理本机收藏，程序没有读取或修改 BM 服务器订阅。音量设置与当前运行实际增益分别显示；RadioIdentity 模块已修复 Windows 网络读取 deadline 并通过根架构审查，UI 两尺寸 RenderOnly 与定向测试也已通过根审查。

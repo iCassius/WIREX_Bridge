@@ -209,6 +209,8 @@ int main()
           "46001 preset is a group call");
     check(listen_91->destination_id == 91U && listen_91->kind == CallKind::group,
           "TG91 preset targets group call 91");
+    check(!china->listen_only && !global->listen_only && listen->listen_only && listen_91->listen_only,
+          "only the two explicit listen presets carry a receive-only launch flag");
     check(bm_test_profile::policy_for(call_for(*china)) == TxPolicy::enabled &&
           bm_test_profile::policy_for(call_for(*global)) == TxPolicy::enabled,
           "parrot presets allow explicitly requested transmit");
@@ -217,14 +219,17 @@ int main()
           !bm_test_profile::permits_transmit(bm_test_profile::policy_for(parrot_call, true)),
           "explicit listen-only mode disables private parrot transmit too");
     const auto listen_call = call_for(*listen);
-    check(bm_test_profile::policy_for(listen_call) == TxPolicy::receive_only,
-          "46001 group preset is receive-only");
+    check(bm_test_profile::policy_for(listen_call, listen->listen_only) == TxPolicy::receive_only,
+          "listen-46001 preset is receive-only because its preset field requests it");
     const auto listen_91_call = call_for(*listen_91);
-    check(bm_test_profile::policy_for(listen_91_call) == TxPolicy::receive_only,
-          "TG91 group preset is receive-only");
+    check(bm_test_profile::policy_for(listen_91_call, listen_91->listen_only) == TxPolicy::receive_only,
+          "listen-91 preset is receive-only because its preset field requests it");
+    check(bm_test_profile::policy_for(listen_call) == TxPolicy::enabled &&
+          bm_test_profile::policy_for(listen_91_call) == TxPolicy::enabled,
+          "manual selection of group IDs 46001 and 91 leaves transmit enabled");
 
     bm_voice::BmVoicePipeline listen_pipeline;
-    const auto denied = bm_test_profile::begin_tx(bm_test_profile::policy_for(listen_call), listen_pipeline,
+    const auto denied = bm_test_profile::begin_tx(bm_test_profile::policy_for(listen_call, listen->listen_only), listen_pipeline,
         listen_call, bm_voice::Readiness{true, true}, bm_voice::TimePoint{});
     check(denied.status == TxStartStatus::denied_receive_only,
           "shared native transmit policy rejects T for 46001");
@@ -244,11 +249,11 @@ int main()
 
     bm_voice::BmVoicePipeline listen_91_pipeline;
     const auto listen_91_denied = bm_test_profile::begin_tx(
-        bm_test_profile::policy_for(listen_91_call), listen_91_pipeline, listen_91_call,
+        bm_test_profile::policy_for(listen_91_call, listen_91->listen_only), listen_91_pipeline, listen_91_call,
         bm_voice::Readiness{true, true}, bm_voice::TimePoint{});
-    check(!bm_test_profile::permits_transmit(bm_test_profile::policy_for(listen_91_call)) &&
+    check(!bm_test_profile::permits_transmit(bm_test_profile::policy_for(listen_91_call, listen_91->listen_only)) &&
               listen_91_denied.status == TxStartStatus::denied_receive_only,
-          "physical PTT and keyboard T share a transmit policy that rejects TG91 group calls");
+          "physical PTT and keyboard T remain blocked for the explicit listen-91 preset");
     check(listen_91_pipeline.snapshot().tx_state == bm_voice::TxState::idle &&
               !listen_91_pipeline.take_outbound().has_value(),
           "TG91 receive-only policy creates no TX state, LC, or DMRD packet");
@@ -266,29 +271,31 @@ int main()
     manual_ts1_pipeline.cancel_tx();
 
     auto manual_national_group = listen_call;
-    check(bm_test_profile::policy_for(manual_national_group) == TxPolicy::receive_only,
-          "the manual group-call configuration for TG 46001 is also receive-only");
+    check(bm_test_profile::policy_for(manual_national_group) == TxPolicy::enabled,
+          "manually configured group 46001 follows the explicit transmit policy");
     bm_voice::BmVoicePipeline manual_pipeline;
-    const auto manual_denied = bm_test_profile::begin_tx(
+    const auto manual_started = bm_test_profile::begin_tx(
         bm_test_profile::policy_for(manual_national_group), manual_pipeline, manual_national_group,
         bm_voice::Readiness{true, true}, bm_voice::TimePoint{});
-    check(manual_denied.status == TxStartStatus::denied_receive_only &&
-          manual_pipeline.snapshot().tx_state == bm_voice::TxState::idle &&
-          !manual_pipeline.take_outbound().has_value(),
-          "manual T for group 46001 creates no TX state, LC, or DMRD packet");
+    check(manual_started.status == TxStartStatus::started &&
+          manual_pipeline.snapshot().tx_state == bm_voice::TxState::active &&
+          manual_pipeline.take_outbound().has_value(),
+          "enabled manual group 46001 creates a normal TX start packet");
+    manual_pipeline.cancel_tx();
 
     auto manual_tg91_group = listen_91_call;
     manual_tg91_group.slot = dmr_call::Slot::ts1;
-    check(bm_test_profile::policy_for(manual_tg91_group) == TxPolicy::receive_only,
-          "manual group destination 91 is receive-only on either timeslot");
+    check(bm_test_profile::policy_for(manual_tg91_group) == TxPolicy::enabled,
+          "manual group destination 91 follows the explicit transmit policy on either timeslot");
     bm_voice::BmVoicePipeline manual_tg91_pipeline;
-    const auto manual_tg91_denied = bm_test_profile::begin_tx(
+    const auto manual_tg91_started = bm_test_profile::begin_tx(
         bm_test_profile::policy_for(manual_tg91_group), manual_tg91_pipeline, manual_tg91_group,
         bm_voice::Readiness{true, true}, bm_voice::TimePoint{});
-    check(manual_tg91_denied.status == TxStartStatus::denied_receive_only &&
-              manual_tg91_pipeline.snapshot().tx_state == bm_voice::TxState::idle &&
-              !manual_tg91_pipeline.take_outbound().has_value(),
-          "manual T for TG91 creates no TX state, LC, or DMRD packet");
+    check(manual_tg91_started.status == TxStartStatus::started &&
+              manual_tg91_pipeline.snapshot().tx_state == bm_voice::TxState::active &&
+              manual_tg91_pipeline.take_outbound().has_value(),
+          "enabled manual TG91 creates a normal TX start packet");
+    manual_tg91_pipeline.cancel_tx();
 
     auto other_manual_group = listen_call;
     other_manual_group.destination_id = 46002U;

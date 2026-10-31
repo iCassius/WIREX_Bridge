@@ -1,17 +1,12 @@
 ﻿# WIREX Bridge 交接入口
 
-## R117 / Alpha 13 发行交付与实机待验收（2026-10-30）
+## R118 / Alpha 14 当前交接（2026-11-01）
 
-R117 源码提交为 `a33c485a0d6c1046497b94d5eddc9d74da8296e6`。新建的 Native clean build 通过 40/40 项测试，warning/error 为 0；构建目录 `build/_work/wirex-bridge-a33c485-20261030-031608`，日志 `build/_work/alpha13-clean-build-a33c485-20261030-111607.log`，EXE SHA-256 为 `488a35e4d305cd8efa519f798ab7e82f37264aaba8d669bfcb8d0e84507b62ed`，provenance SHA-256 为 `40b5485d62598a2b3a31c9b912cee159215ab547534c38317b784100b7567ff4`。
+R118 源码范围已冻结，待建立本轮源码提交并从新提交做 Native clean build 与 alpha14 本机目录包。统一配置模块和 BM 管理模块分别在 Windows PowerShell 5.1/7 通过 53/45 项合成断言。发布工具测试在两版 PowerShell 各通过 package 579、publish 124、download 2,137 项断言。真实 WPF 的 status、identity、lifecycle、radio-cat 和 channels 回归在两版 PowerShell STA 均通过；channels 为 74 项断言，覆盖 TX/RX 双确认、RX失败安全停止、迟到 ACK、真实 HasExited 收尾后重连编辑。隔离 Native channels 诊断链已通过 schema v2 检查，尚待本轮 fresh build 后对 alpha14 包内 EXE 再跑检查。
 
-Alpha 13 本机包位于 `build/releases/v0.1.0-alpha.13`，root 已确认 40 个 manifest 资产、36 组 source mapping、Native 测试顺序与 fresh build 一致；状态为 `root_audit_passed`，最终 manifest SHA-256 为 `d75d375bdf42373c067ded915dbf19c8a7e4b4b00f2259299df9e00964f47b48`。Windows PowerShell 5.1 包启动检查、包内 EXE 的 `test-control.ps1` 与 `test-ui-control-v2.ps1` 均通过。没有启动真实 BM、CAT/COM、音频、PTT 或 RF，也没有创建 ZIP、tag 或 GitHub Release。
+当前没有读取或迁移 canonical 真实配置，没有更新任何配置指针；没有连接真实 BM、打开 COM/HRI、音频、PTT 或 RF。alpha14 仍是本机直接文件夹候选，不制作 ZIP、tag 或 GitHub Release。详细合同、命令和待验收边界见 [R118 发布交接](docs/R118_发布交接.md)。
 
-个人 `user-config-directory.txt` 指向现有 canonical `private/user-config`；canonical `bridge-directory.txt` 已指向 Alpha 13。切换前原始指针备份为 `private/config-backups/R117/bridge-directory.before-alpha13.20261030T032721Z.txt`，长度 93 字节、SHA-256 `c9b989b2d5c1d7abafd8636cf0298dd781ac6884b069b6eff85e9a3a65c30146`。connection profile、audio settings 与 password-file-path 的 SHA-256 仍分别为 `e4f053bdd1c9f08380cda7c2d3efc77877f7e15ae8c2538a40cf85221fa821ec`、`aa91098ae5cb5fe76d44b9e5062917bce922ed7c94f65214ee587574b283fe51` 和 `bb7cbf045f4057b191fbea0ee3127511f201a86cb748c95a25911f26cf0ab2ae`；没有读取密码正文。
-
-发布包文件夹、哈希和测试结果见 [R117 发布交接](docs/R117_发布交接.md) 与 [Alpha 13 本机测试版记录](docs/releases/v0.1.0-alpha.13.md)。硬件验收仍待进行，包括实际 BM API 读写、CAT/HRI、音频、PTT、RF 与 LCD 观察；目前没有任何此类验收标记为通过。
-
-以下为历史阶段记录；当前进度以 [R117 发布交接](docs/R117_发布交接.md) 为准。
-
+以下为历史阶段记录；当前进度以 [R118 发布交接](docs/R118_发布交接.md) 为准。
 ## R115 FTX-1 模式范围与后续开发计划（2026-10-30）
 
 本轮仅更新文档；没有改源码、配置、发行包或操作设备。详细功能范围、手册页码、验收门槛和未来实机记录要求见 [R115 模式范围与开发计划](docs/R115_文档功能范围与后续开发计划.md)。

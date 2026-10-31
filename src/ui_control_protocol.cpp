@@ -495,9 +495,6 @@ DispatchResult Dispatcher::handle(std::string_view json_line, const StatusSnapsh
                     talkgroup_routing::TxTarget target{};
                     valid = valid && routing_state::parse_tx_target(*target_value, target);
                     const bool enabled = enabled_value != nullptr && enabled_value->boolean_value;
-                    const bool protected_target = target.kind == dmr_call::CallKind::group &&
-                        (target.destination_id == 91U || target.destination_id == 46001U);
-                    if (valid && protected_target && enabled) valid = false;
                     if (valid) update = routing_.replace_tx_policy(revision->integer_value, target, enabled);
                 }
                 if (!valid) {

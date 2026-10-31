@@ -66,6 +66,7 @@ $script:alpha11TestNames = @(
 )
 $script:alpha12TestNames = @($script:alpha11TestNames)
 $script:alpha13TestNames = @($script:alpha12TestNames)
+$script:alpha14TestNames = @($script:alpha13TestNames)
 $script:activeReleaseVersion = 'v0.1.0-alpha.1'
 
 function Get-ReleaseProfile {
@@ -629,7 +630,38 @@ function Get-ReleaseProfile {
                 NotIncluded = $alpha13NotIncluded
             }
         }
-        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.13 release profiles are supported.' }
+        'v0.1.0-alpha.14' {
+            $alpha13 = Get-ReleaseProfile -Version 'v0.1.0-alpha.13'
+            $alpha14SourceFiles = @($alpha13.SourceFiles | Where-Object {
+                [string]$_.Destination -cne 'README.md' -and
+                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha13.cmd' -and
+                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha13.ps1'
+            }) + @(
+                @{ Source='docs\releases\v0.1.0-alpha.14-package-README.md'; Destination='README.md' },
+                @{ Source='tools\start-wirex-bridge-alpha14.cmd'; Destination='start-wirex-bridge.cmd' },
+                @{ Source='tools\start-wirex-bridge-alpha14.ps1'; Destination='tools/start-wirex-bridge.ps1' },
+                @{ Source='ui\windows\PortableConfig.psm1'; Destination='ui\windows\PortableConfig.psm1' }
+            )
+            $alpha14AssetMap = [ordered]@{}
+            foreach ($path in $alpha13.AssetMap.Keys) { $alpha14AssetMap[$path] = $alpha13.AssetMap[$path] }
+            $alpha14AssetMap['ui/windows/PortableConfig.psm1'] = 'ui__windows__portable-config.psm1'
+            $alpha14NotIncluded = @($alpha13.NotIncluded | ForEach-Object {
+                ([string]$_).Replace('alpha.13', 'alpha.14')
+            })
+            $alpha14NotIncluded += 'Generic package does not contain the user-created package-root config.json, its backups, or credentials.'
+            return [pscustomobject]@{
+                Version = 'v0.1.0-alpha.14'
+                TestNames = $script:alpha14TestNames
+                SourceFiles = $alpha14SourceFiles
+                PackageFiles = @($alpha13.PackageFiles) + 'ui/windows/PortableConfig.psm1'
+                Directories = @($alpha13.Directories)
+                AssetMap = $alpha14AssetMap
+                PackageReadme = 'docs\releases\v0.1.0-alpha.14-package-README.md'
+                ReleaseScope = 'R118 DIRECT: portable package-root settings, in-window radio credentials, device/audio preferences, and user-managed listen/PTT channel configuration'
+                NotIncluded = $alpha14NotIncluded
+            }
+        }
+        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.14 release profiles are supported.' }
     }
 }
 
@@ -818,6 +850,70 @@ function Get-ExpectedReleasePackageFiles {
     return (Get-ReleaseProfile -Version $script:activeReleaseVersion).PackageFiles
 }
 
+function Get-ReleaseExcludedPrivateFiles {
+    param([Parameter(Mandatory=$true)][string]$Version)
+    $excluded = @('private/bm-device-password.txt', 'connection-profile.json', 'audio-settings.json')
+    if ($Version -ceq 'v0.1.0-alpha.9') {
+        $excluded += @(
+            'private/user-config-directory.txt',
+            'private/user-config/radio-identity-cache.json',
+            'private/user-config/channel-favorites.json'
+        )
+    }
+    if ($Version -ceq 'v0.1.0-alpha.10') {
+        $excluded += @(
+            'private/user-config-directory.txt',
+            'private/user-config/radio-identity-cache.json',
+            'private/user-config/channel-favorites.json',
+            'private/user-config/password-file-path.txt'
+        )
+    }
+    if ($Version -ceq 'v0.1.0-alpha.11') {
+        $excluded += @(
+            'private/user-config-directory.txt',
+            'private/user-config/radio-identity-cache.json',
+            'private/user-config/channel-favorites.json',
+            'private/user-config/password-file-path.txt'
+        )
+    }
+    if ($Version -ceq 'v0.1.0-alpha.12') {
+        $excluded += @(
+            'private/user-config-directory.txt',
+            'private/user-config/radio-identity-cache.json',
+            'private/user-config/channel-favorites.json',
+            'private/user-config/password-file-path.txt',
+            'private/user-config/radio-control-preferences.json'
+        )
+    }
+    if ($Version -ceq 'v0.1.0-alpha.13') {
+        $excluded += @(
+            'private/user-config-directory.txt',
+            'private/user-config/radio-identity-cache.json',
+            'private/user-config/channel-favorites.json',
+            'private/user-config/password-file-path.txt',
+            'private/user-config/radio-control-preferences.json',
+            'private/user-config/bm-management-preferences.json',
+            'private/user-config/bm-server-preferences.json'
+        )
+    }
+    if ($Version -ceq 'v0.1.0-alpha.14') {
+        $excluded += @(
+            'config.json',
+            'config.*.backup*',
+            'credentials/',
+            'tempSecrets/',
+            'private/user-config-directory.txt',
+            'private/user-config/radio-identity-cache.json',
+            'private/user-config/channel-favorites.json',
+            'private/user-config/password-file-path.txt',
+            'private/user-config/radio-control-preferences.json',
+            'private/user-config/bm-management-preferences.json',
+            'private/user-config/bm-server-preferences.json'
+        )
+    }
+    return @($excluded)
+}
+
 function Get-ReleaseFileRecord {
     param(
         [Parameter(Mandatory=$true)][string]$PackageRoot,
@@ -981,50 +1077,7 @@ function Invoke-ReleasePackaging {
         New-Item -ItemType Directory -Path (Join-Path $stagingPath 'logs') -ErrorAction Stop | Out-Null
 
         $notIncludedText = @($profile.NotIncluded) -join '、'
-        $excludedPrivateFiles = @('private/bm-device-password.txt', 'connection-profile.json', 'audio-settings.json')
-        if ($Version -ceq 'v0.1.0-alpha.9') {
-            $excludedPrivateFiles += @(
-                'private/user-config-directory.txt',
-                'private/user-config/radio-identity-cache.json',
-                'private/user-config/channel-favorites.json'
-            )
-        }
-        if ($Version -ceq 'v0.1.0-alpha.10') {
-            $excludedPrivateFiles += @(
-                'private/user-config-directory.txt',
-                'private/user-config/radio-identity-cache.json',
-                'private/user-config/channel-favorites.json',
-                'private/user-config/password-file-path.txt'
-            )
-        }
-        if ($Version -ceq 'v0.1.0-alpha.11') {
-            $excludedPrivateFiles += @(
-                'private/user-config-directory.txt',
-                'private/user-config/radio-identity-cache.json',
-                'private/user-config/channel-favorites.json',
-                'private/user-config/password-file-path.txt'
-            )
-        }
-        if ($Version -ceq 'v0.1.0-alpha.12') {
-            $excludedPrivateFiles += @(
-                'private/user-config-directory.txt',
-                'private/user-config/radio-identity-cache.json',
-                'private/user-config/channel-favorites.json',
-                'private/user-config/password-file-path.txt',
-                'private/user-config/radio-control-preferences.json'
-            )
-        }
-        if ($Version -ceq 'v0.1.0-alpha.13') {
-            $excludedPrivateFiles += @(
-                'private/user-config-directory.txt',
-                'private/user-config/radio-identity-cache.json',
-                'private/user-config/channel-favorites.json',
-                'private/user-config/password-file-path.txt',
-                'private/user-config/radio-control-preferences.json',
-                'private/user-config/bm-management-preferences.json',
-                'private/user-config/bm-server-preferences.json'
-            )
-        }
+        $excludedPrivateFiles = @(Get-ReleaseExcludedPrivateFiles -Version $Version)
         $sourceText = @"
 WIREX Bridge $Version alpha 候选
 

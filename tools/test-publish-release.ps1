@@ -748,6 +748,65 @@ try {
     Assert-Throws { Assert-PublishPackage -PackageRoot $alpha13Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.13' } 'alpha.13 publisher rejects a local BM API-key path preference file'
     Remove-Item -LiteralPath $alpha13PrivateDirectory -Recurse -Force -ErrorAction Stop
 
+    $alpha14Root = Join-Path $testRoot 'package-alpha14'
+    Copy-Item -LiteralPath $alpha13Root -Destination $alpha14Root -Recurse
+    $alpha14Profile = Set-PublishProfile -Tag 'v0.1.0-alpha.14'
+    $alpha14NewAsset = 'ui/windows/PortableConfig.psm1'
+    $alpha14ModulePath = Join-Path $alpha14Root 'ui\windows\PortableConfig.psm1'
+    [System.IO.File]::WriteAllText($alpha14ModulePath, '# synthetic alpha.14 portable configuration module', [System.Text.UTF8Encoding]::new($true))
+    Write-Utf8NoBom -Path (Join-Path $alpha14Root 'README.md') -Text 'synthetic alpha.14 package README'
+    $alpha14LauncherPath = Join-Path $alpha14Root 'tools\start-wirex-bridge.ps1'
+    Write-Utf8NoBom -Path $alpha14LauncherPath -Text 'synthetic alpha.14 launcher'
+    $alpha14ManifestPath = Join-Path $alpha14Root 'manifest.json'
+    $alpha14Manifest = [System.IO.File]::ReadAllText($alpha14ManifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $alpha14Manifest.files = @($alpha14Manifest.files | Where-Object {
+        [string]$_.path -cne 'README.md' -and [string]$_.path -cne 'tools/start-wirex-bridge.ps1'
+    })
+    foreach ($relativePath in @('README.md', 'tools/start-wirex-bridge.ps1', $alpha14NewAsset)) {
+        $fullPath = Join-Path $alpha14Root $relativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+        $item = Get-Item -LiteralPath $fullPath
+        $alpha14Manifest.files += ,([ordered]@{
+            path = $relativePath
+            asset_name = [string]$alpha14Profile.AssetPathMap[$relativePath]
+            length_bytes = [long]$item.Length
+            sha256 = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            source = 'synthetic alpha.14 test content'
+        })
+    }
+    $alpha14Manifest.version = 'v0.1.0-alpha.14'
+    $alpha14Manifest.tag_candidate = 'v0.1.0-alpha.14'
+    $alpha14Manifest.release_scope = 'R118 DIRECT: portable package-root configuration'
+    $alpha14Manifest.build.passed_test_count = $alpha14Profile.TestNames.Count
+    $alpha14Manifest.build.passed_tests = @($alpha14Profile.TestNames)
+    $alpha14Manifest.excluded_private_files = @($alpha14Manifest.excluded_private_files) + @(
+        'config.json', 'config.*.backup*', 'credentials/', 'tempSecrets/'
+    )
+    Write-Utf8NoBom -Path $alpha14ManifestPath -Text ((ConvertTo-Json -InputObject $alpha14Manifest -Depth 12) + [Environment]::NewLine)
+    $alpha14Package = Assert-PublishPackage -PackageRoot $alpha14Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.14'
+    Assert-True ($alpha14Package.Assets.Count -eq ($alpha13Package.Assets.Count + 1)) `
+        'alpha.14 publisher accepts exactly one new PortableConfig module and the inherited manifest'
+    Assert-True ($alpha14Profile.AssetPathMap.Count -eq ($alpha13Profile.AssetPathMap.Count + 1)) `
+        'alpha.14 publisher inherits the complete alpha.13 allowlist and adds one exact module path'
+    Assert-True (@($alpha14Package.Assets | Where-Object { $_.Name -ceq 'ui__windows__portable-config.psm1' }).Count -eq 1) `
+        'alpha.14 publisher assigns PortableConfig its fixed ASCII asset name'
+    Assert-True (@($alpha14Package.Manifest.excluded_private_files | Where-Object { [string]$_ -ceq 'config.json' }).Count -eq 1 -and
+        @($alpha14Package.Manifest.excluded_private_files | Where-Object { [string]$_ -ceq 'config.*.backup*' }).Count -eq 1 -and
+        @($alpha14Package.Manifest.excluded_private_files | Where-Object { [string]$_ -ceq 'credentials/' }).Count -eq 1 -and
+        @($alpha14Package.Manifest.excluded_private_files | Where-Object { [string]$_ -ceq 'tempSecrets/' }).Count -eq 1) `
+        'alpha.14 publisher requires explicit config, backup, credentials and temporary-secret exclusions'
+    $alpha14Manifest.excluded_private_files = @($alpha14Manifest.excluded_private_files | Where-Object { [string]$_ -cne 'config.json' })
+    Write-Utf8NoBom -Path $alpha14ManifestPath -Text ((ConvertTo-Json -InputObject $alpha14Manifest -Depth 12) + [Environment]::NewLine)
+    Assert-Throws { Assert-PublishPackage -PackageRoot $alpha14Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.14' } `
+        'alpha.14 publisher rejects a manifest that omits the package-root config exclusion'
+    $alpha14Manifest.excluded_private_files += 'config.json'
+    Write-Utf8NoBom -Path $alpha14ManifestPath -Text ((ConvertTo-Json -InputObject $alpha14Manifest -Depth 12) + [Environment]::NewLine)
+    $alpha14CredentialDirectory = Join-Path $alpha14Root 'credentials'
+    New-Item -ItemType Directory -Path $alpha14CredentialDirectory -Force | Out-Null
+    Write-Utf8NoBom -Path (Join-Path $alpha14CredentialDirectory 'synthetic-only.txt') -Text 'synthetic-only'
+    Assert-Throws { Assert-PublishPackage -PackageRoot $alpha14Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.14' } `
+        'alpha.14 publisher rejects a credentials directory even when manifest files are fixed'
+    Remove-Item -LiteralPath $alpha14CredentialDirectory -Recurse -Force -ErrorAction Stop
+
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.9')
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.1')
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.1')

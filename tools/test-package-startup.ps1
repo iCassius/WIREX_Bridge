@@ -30,8 +30,8 @@ try {
     throw ('候选包 manifest.json 无法读取：{0}' -f $_.Exception.Message)
 }
 $packageVersion = [string]$packageManifest.version
-if (@('v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12', 'v0.1.0-alpha.13') -cnotcontains $packageVersion) {
-    throw ('包级启动检查只支持 alpha.9 至 alpha.13；manifest.version 为：{0}' -f $packageVersion)
+if (@('v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12', 'v0.1.0-alpha.13', 'v0.1.0-alpha.14') -cnotcontains $packageVersion) {
+    throw ('包级启动检查只支持 alpha.9 至 alpha.14；manifest.version 为：{0}' -f $packageVersion)
 }
 $releaseProfile = Set-ReleaseVersion -Version $packageVersion
 Assert-ReleasePackageInventory -PackageRoot $sourcePackage -Version $releaseProfile.Version | Out-Null
@@ -73,6 +73,20 @@ if ($packageVersion -ceq 'v0.1.0-alpha.13') {
         if ($moduleBytes.Length -lt 3 -or $moduleBytes[0] -ne 0xEF -or
             $moduleBytes[1] -ne 0xBB -or $moduleBytes[2] -ne 0xBF) {
             throw ('alpha.13 {0} 缺少 Windows PowerShell 5.1 需要的 UTF-8 BOM。' -f $moduleName)
+        }
+    }
+}
+if ($packageVersion -ceq 'v0.1.0-alpha.14') {
+    foreach ($moduleName in @(
+        'RadioCat.psm1', 'RadioCatUi.ps1', 'RadioDevices.psm1',
+        'BmServers.psm1', 'BmManagement.psm1', 'BmManagementUi.ps1', 'PortableConfig.psm1'
+    )) {
+        $modulePath = Join-Path $sourcePackage ('ui\windows\' + $moduleName)
+        if (-not [System.IO.File]::Exists($modulePath)) { throw ('alpha.14 包缺少运行模块：{0}' -f $moduleName) }
+        $moduleBytes = [System.IO.File]::ReadAllBytes($modulePath)
+        if ($moduleBytes.Length -lt 3 -or $moduleBytes[0] -ne 0xEF -or
+            $moduleBytes[1] -ne 0xBB -or $moduleBytes[2] -ne 0xBF) {
+            throw ('alpha.14 {0} 缺少 Windows PowerShell 5.1 需要的 UTF-8 BOM。' -f $moduleName)
         }
     }
 }
@@ -292,6 +306,7 @@ function Invoke-PackageEntryFromCmd {
     $startInfo.EnvironmentVariables['WIREX_STATUS_PATH'] = Join-Path $fixtureRoot 'status output'
     $startInfo.EnvironmentVariables['WIREX_PREPARATION_PATH'] = Join-Path $fixtureRoot 'preparation output.json'
     $startInfo.EnvironmentVariables['WIREX_USER_CONFIG_PATH'] = $UserConfigDirectory
+    $startInfo.EnvironmentVariables['WIREX_STARTUP_CAPTURE_PATH'] = Join-Path $fixtureRoot 'start capture.json'
 
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $startInfo
@@ -344,8 +359,16 @@ function Test-NoArgumentStartupFailurePrompt {
         $guardAt -lt 0 -or $messageAt -le $guardAt -or $pauseAt -le $messageAt -or $exitAt -le $pauseAt) {
         throw '唯一 CMD 未把 ASCII 错误提示和 pause 放在无参数启动失败分支中，或未保留原退出码。'
     }
-    [System.IO.File]::WriteAllText($pointerPath, "C:\\R110-invalid-one`r`nC:\\R110-invalid-two`r`n",
-        [System.Text.Encoding]::ASCII)
+    $originalUiLauncherBytes = $null
+    if ($packageVersion -ceq 'v0.1.0-alpha.14') {
+        $uiLauncherPath = Join-Path $packageCopy 'start-ui.ps1'
+        $originalUiLauncherBytes = [System.IO.File]::ReadAllBytes($uiLauncherPath)
+        [System.IO.File]::WriteAllText($uiLauncherPath, "throw 'synthetic startup failure only'`r`n",
+            (New-Object System.Text.UTF8Encoding($false)))
+    } else {
+        [System.IO.File]::WriteAllText($pointerPath, "C:\\R110-invalid-one`r`nC:\\R110-invalid-two`r`n",
+            [System.Text.Encoding]::ASCII)
+    }
     $driverLines = @(
         '@echo off',
         'setlocal',
@@ -388,7 +411,57 @@ function Test-NoArgumentStartupFailurePrompt {
         Write-Output '通过：真实无参数 CMD 启动失败显示 ASCII 提示并保留退出码2；静态检查确认 pause 仅位于交互式失败分支。'
     } finally {
         if ([System.IO.File]::Exists($pointerPath)) { [System.IO.File]::Delete($pointerPath) }
+        if ($null -ne $originalUiLauncherBytes) {
+            [System.IO.File]::WriteAllBytes((Join-Path $packageCopy 'start-ui.ps1'), $originalUiLauncherBytes)
+        }
         $process.Dispose()
+    }
+}
+
+function Test-Alpha14DefaultStartup {
+    $uiLauncherPath = Join-Path $packageCopy 'start-ui.ps1'
+    $originalUiLauncherBytes = [System.IO.File]::ReadAllBytes($uiLauncherPath)
+    $capturePath = Join-Path $fixtureRoot 'start capture.json'
+    $fakeUi = @'
+param([string]$PackageDirectory, [string]$UserConfigDirectory, [switch]$RoutingDiagnostic, [switch]$RoutingDiagnosticAutoTest)
+Import-Module (Join-Path $PackageDirectory 'ui\windows\PortableConfig.psm1') -Force -ErrorAction Stop
+$portablePath = Join-Path $PackageDirectory 'config.json'
+$portableConfig = Get-WirexPortableConfig -Path $portablePath
+Save-WirexPortableConfig -Path $portablePath -Config $portableConfig | Out-Null
+$result = [ordered]@{
+    package_directory = [System.IO.Path]::GetFullPath($PackageDirectory)
+    user_config_directory = $UserConfigDirectory
+    config_path = [System.IO.Path]::GetFullPath($portablePath)
+    routing_diagnostic = [bool]$RoutingDiagnostic
+    routing_diagnostic_auto_test = [bool]$RoutingDiagnosticAutoTest
+}
+[System.IO.File]::WriteAllText($env:WIREX_STARTUP_CAPTURE_PATH,
+    (ConvertTo-Json -InputObject $result -Compress), (New-Object System.Text.UTF8Encoding($false)))
+'@
+    try {
+        [System.IO.File]::WriteAllText($uiLauncherPath, $fakeUi, (New-Object System.Text.UTF8Encoding($false)))
+        $result = Invoke-PackageEntryFromCmd -Mode 'Start' -UserConfigDirectory '' -TimeoutSeconds 15
+        if ($result.ExitCode -ne 0) { throw ('alpha.14 default Start failed in the synthetic UI adapter: ' + $result.Output) }
+        if (-not [System.IO.File]::Exists($capturePath)) { throw 'alpha.14 Start did not reach the synthetic UI adapter.' }
+        $capture = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($capturePath, [System.Text.Encoding]::UTF8)) -ErrorAction Stop
+        $expectedPackageRoot = [System.IO.Path]::GetFullPath($packageCopy)
+        $expectedConfigPath = [System.IO.Path]::GetFullPath((Join-Path $packageCopy 'config.json'))
+        if (-not [string]::Equals([string]$capture.package_directory, $expectedPackageRoot,
+                [System.StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals([string]$capture.config_path, $expectedConfigPath,
+                [System.StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::IsNullOrWhiteSpace([string]$capture.user_config_directory) -or
+            [bool]$capture.routing_diagnostic -or [bool]$capture.routing_diagnostic_auto_test) {
+            throw 'alpha.14 default Start did not use only packageRoot and packageRoot/config.json.'
+        }
+        if (-not [System.IO.File]::Exists($expectedConfigPath)) { throw 'alpha.14 synthetic config was not saved inside the copied package root.' }
+        Write-Output '通过：alpha.14 默认 Start 把 packageRoot 传给 UI，未传 UserConfigDirectory；合成 config.json 写入拷贝包根目录。'
+    } finally {
+        [System.IO.File]::WriteAllBytes($uiLauncherPath, $originalUiLauncherBytes)
+        if ([System.IO.File]::Exists((Join-Path $packageCopy 'config.json'))) {
+            [System.IO.File]::Delete((Join-Path $packageCopy 'config.json'))
+        }
+        if ([System.IO.File]::Exists($capturePath)) { [System.IO.File]::Delete($capturePath) }
     }
 }
 
@@ -403,6 +476,7 @@ try {
     Copy-Item -LiteralPath $sourcePackage -Destination $packageCopy -Recurse
     $copied = $true
     Test-NoArgumentStartupFailurePrompt
+    if ($packageVersion -ceq 'v0.1.0-alpha.14') { Test-Alpha14DefaultStartup }
 
     $scriptFiles = @(Get-ChildItem -LiteralPath $packageCopy -Recurse -File | Where-Object {
         $_.Extension -in @('.ps1', '.psm1')
@@ -423,6 +497,14 @@ try {
 
     $modulePath = Join-Path $packageCopy 'bridge-user-config.psm1'
     Import-Module -Name $modulePath -Force -ErrorAction Stop
+    if ($packageVersion -ceq 'v0.1.0-alpha.14') {
+        $portableModulePath = Join-Path $packageCopy 'ui\windows\PortableConfig.psm1'
+        Import-Module -Name $portableModulePath -Force -ErrorAction Stop
+        $packagedConfigFiles = @(Get-ChildItem -LiteralPath $packageCopy -Recurse -File | Where-Object {
+            $_.Name -ceq 'config.json' -or $_.Name -match '^config\..+\.backup'
+        })
+        if ($packagedConfigFiles.Count -gt 0) { throw 'alpha.14 包含了用户 config.json 或配置备份。' }
+    }
     $connection = [pscustomobject][ordered]@{
         callsign='R110T'; gateway_id=[uint64]123456789; source_id=[uint64]1234567
         master='127.0.0.1'; master_port=[uint64]62031; color_code=[uint64]1
@@ -467,14 +549,31 @@ try {
     }
 
     [System.IO.Directory]::CreateDirectory($isolatedConfig) | Out-Null
-    $diagnosticConnection = [pscustomobject][ordered]@{
-        callsign='R110T'; gateway_id=[uint64]123456789; source_id=[uint64]1
-        master='127.0.0.1'; master_port=[uint64]62031; color_code=[uint64]1
+    if ($packageVersion -ceq 'v0.1.0-alpha.14') {
+        $diagnosticConfigPath = Join-Path $isolatedConfig 'config.json'
+        $diagnosticConfig = Get-WirexPortableConfig -Path $diagnosticConfigPath
+        $diagnosticConfig.connection.callsign = 'R110T'
+        $diagnosticConfig.connection.gateway_id = [uint64]123456789
+        $diagnosticConfig.connection.source_id = [uint64]1
+        $diagnosticConfig.connection.master = '127.0.0.1'
+        $diagnosticConfig.connection.master_port = [uint64]62031
+        $diagnosticConfig.connection.color_code = [uint64]1
+        $diagnosticConfig.connection.password = ''
+        $diagnosticConfig.connection.api_key = ''
+        $null = Save-WirexPortableConfig -Path $diagnosticConfigPath -Config $diagnosticConfig
+        if ([System.IO.File]::Exists((Join-Path $isolatedConfig 'connection-profile.json'))) {
+            throw 'alpha.14 隔离诊断仍使用旧 connection-profile.json。'
+        }
+    } else {
+        $diagnosticConnection = [pscustomobject][ordered]@{
+            callsign='R110T'; gateway_id=[uint64]123456789; source_id=[uint64]1
+            master='127.0.0.1'; master_port=[uint64]62031; color_code=[uint64]1
+        }
+        $diagnosticProfile = ConvertTo-BridgeUserConnectionProfile -Connection $diagnosticConnection -Devices $devices `
+            -TxTarget $txTarget -RxPolicy $policy -TransmitEnabled $false
+        Write-BridgeUserConnectionProfile -Path (Join-Path $isolatedConfig 'connection-profile.json') `
+            -Profile $diagnosticProfile
     }
-    $diagnosticProfile = ConvertTo-BridgeUserConnectionProfile -Connection $diagnosticConnection -Devices $devices `
-        -TxTarget $txTarget -RxPolicy $policy -TransmitEnabled $false
-    Write-BridgeUserConnectionProfile -Path (Join-Path $isolatedConfig 'connection-profile.json') `
-        -Profile $diagnosticProfile
     $fixture = [pscustomobject][ordered]@{
         schema_version=1; purpose='wirex-routing-diagnostic-test'
         fixture_id=[guid]::NewGuid().ToString('N'); source_id=1
@@ -489,14 +588,37 @@ try {
     $resultPath = Join-Path $isolatedConfig 'routing-diagnostic-result.json'
     if (-not [System.IO.File]::Exists($resultPath)) { throw '隔离路由诊断没有生成结果文件。' }
     $result = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($resultPath, [System.Text.Encoding]::UTF8)) -ErrorAction Stop
-    $dynamicGroupTest = $result.dynamic_group_action_test
-    if (-not [bool]$result.passed -or -not [bool]$result.offline_cancel_verified -or
-        -not [bool]$result.timeout_fence_verified -or -not [bool]$dynamicGroupTest.passed -or
-        [string]$dynamicGroupTest.local_listen_command -cne 'rx_policy.replace' -or
-        [string]$dynamicGroupTest.activation_command -cne 'network_subscription.quick_call_join' -or
-        [uint64]$dynamicGroupTest.frames_sent -ne 2 -or [bool]$dynamicGroupTest.bm_connected -or
-        [string]$dynamicGroupTest.bm_state -cne 'not_started' -or -not [bool]$dynamicGroupTest.used_memory_sink) {
-        throw ('隔离路由诊断结果不符合 offline RX/TX contract：{0}' -f $result.message)
+    if ($packageVersion -ceq 'v0.1.0-alpha.14') {
+        $channelFlowTest = $result.channel_flow_test
+        if ([int]$result.schema_version -ne 2 -or -not [bool]$result.passed -or
+            -not [bool]$channelFlowTest.passed -or [string]$channelFlowTest.channel_key -cne 'group:12345:1' -or
+            [string]$channelFlowTest.tx_command -cne 'tx_policy.replace' -or
+            [string]$channelFlowTest.rx_command -cne 'rx_policy.replace' -or
+            -not [bool]$channelFlowTest.root_config_saved -or
+            [string]$channelFlowTest.quick_call_command -cne 'network_subscription.quick_call_join' -or
+            [uint64]$channelFlowTest.frames_sent -ne 2 -or [bool]$channelFlowTest.bm_connected -or
+            -not [bool]$channelFlowTest.used_memory_sink -or
+            -not [bool]$channelFlowTest.routing_unchanged_after_activation -or
+            -not [bool]$channelFlowTest.normal_shutdown_requested) {
+            throw ('alpha.14 隔离频道诊断 schema 2 结果不符合双 ACK、组呼和退出检查：{0}' -f $result.message)
+        }
+        $savedDiagnosticConfig = Get-WirexPortableConfig -Path (Join-Path $isolatedConfig 'config.json')
+        if ([string]$savedDiagnosticConfig.tx_channel_id -cne 'group:12345:1' -or
+            @($savedDiagnosticConfig.channels | Where-Object {
+                [string]$_.kind -ceq 'group' -and [uint64]$_.id -eq 12345 -and [uint64]$_.slot -eq 1
+            }).Count -ne 1) {
+            throw 'alpha.14 诊断没有把频道和 TX 目标保存到隔离根目录 config.json。'
+        }
+    } else {
+        $dynamicGroupTest = $result.dynamic_group_action_test
+        if (-not [bool]$result.passed -or -not [bool]$result.offline_cancel_verified -or
+            -not [bool]$result.timeout_fence_verified -or -not [bool]$dynamicGroupTest.passed -or
+            [string]$dynamicGroupTest.local_listen_command -cne 'rx_policy.replace' -or
+            [string]$dynamicGroupTest.activation_command -cne 'network_subscription.quick_call_join' -or
+            [uint64]$dynamicGroupTest.frames_sent -ne 2 -or [bool]$dynamicGroupTest.bm_connected -or
+            [string]$dynamicGroupTest.bm_state -cne 'not_started' -or -not [bool]$dynamicGroupTest.used_memory_sink) {
+            throw ('隔离路由诊断结果不符合 offline RX/TX contract：{0}' -f $result.message)
+        }
     }
     $diagnosticProgressPath = Join-Path $isolatedConfig 'routing-diagnostic-progress.txt'
     if ([System.IO.File]::Exists($diagnosticProgressPath)) {

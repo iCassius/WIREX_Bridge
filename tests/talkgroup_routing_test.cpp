@@ -369,9 +369,9 @@ void test_dynamic_join_requires_explicit_enabled_idle_and_allowed_target()
     check(router.request_dynamic_join({3100U, Slot::ts2}, false).status == TxStartStatus::explicit_action_required,
         "dynamic join must require a direct user action");
     check(router.request_dynamic_join({91U, Slot::ts2}, true).status == TxStartStatus::dynamic_join_blocked,
-        "listen-only TG91 must remain blocked from dynamic join");
+        "an explicit deny-list blocks TG91 from dynamic join");
     check(router.request_dynamic_join({46001U, Slot::ts2}, true).status == TxStartStatus::dynamic_join_blocked,
-        "listen-only TG46001 must remain blocked from dynamic join");
+        "an explicit deny-list blocks TG46001 from dynamic join");
 
     RxPolicy rx{};
     rx.group_mode = GroupMode::all_delivered;
@@ -399,22 +399,33 @@ void test_dynamic_join_requires_explicit_enabled_idle_and_allowed_target()
     check(router.complete_tx_cleanup(joined.lease->id, true) == OperationStatus::completed,
         "dynamic short call lease ends only after cleanup confirmation");
 
-    Router mandatory_guard_router(local_id);
-    auto no_custom_deny = make_tx_policy(91U, CallKind::group, Slot::ts2, true);
-    no_custom_deny.dynamic_join_blocked_group_ids.clear();
-    check(install_tx(mandatory_guard_router, no_custom_deny),
-        "a target policy with an empty caller denylist should remain structurally valid");
-    check(mandatory_guard_router.begin_ptt().status == TxStartStatus::policy_forbidden_target,
-        "TG91 group TX must be blocked by a built-in receive-only guard");
-    check(mandatory_guard_router.request_dynamic_join({91U, Slot::ts2}, true).status == TxStartStatus::dynamic_join_blocked,
-        "TG91 Quick call must be blocked even when caller denylist is empty");
-    no_custom_deny.target.destination_id = 46001U;
-    check(install_tx(mandatory_guard_router, no_custom_deny),
-        "TG46001 policy should pass structural validation before mandatory guard");
-    check(mandatory_guard_router.begin_ptt().status == TxStartStatus::policy_forbidden_target,
-        "TG46001 group TX must be blocked by a built-in receive-only guard");
-    check(mandatory_guard_router.request_dynamic_join({46001U, Slot::ts2}, true).status == TxStartStatus::dynamic_join_blocked,
-        "TG46001 Quick call must be blocked even when caller denylist is empty");
+    for (const auto group_id : {91U, 46001U}) {
+        Router manually_selected_router(local_id);
+        auto manually_selected = make_tx_policy(group_id, CallKind::group, Slot::ts2, true);
+        manually_selected.dynamic_join_blocked_group_ids.clear();
+        check(install_tx(manually_selected_router, manually_selected),
+            "a manually selected group target with no deny-list should install");
+        const auto ptt = manually_selected_router.begin_ptt();
+        check(ptt.status == TxStartStatus::started && ptt.lease.has_value() &&
+              ptt.lease->target.destination_id == group_id,
+            "PTT may use manually selected TG91 or TG46001 according to enabled policy");
+        if (ptt.lease) {
+            check(manually_selected_router.release_tx(ptt.lease->id) == OperationStatus::completed &&
+                  manually_selected_router.complete_tx_eot(ptt.lease->id, true) == OperationStatus::completed &&
+                  manually_selected_router.complete_tx_cleanup(ptt.lease->id, true) == OperationStatus::completed,
+                "the manually selected PTT test releases its transmit lease cleanly");
+        }
+        const auto group_joined = manually_selected_router.request_dynamic_join({group_id, Slot::ts2}, true);
+        check(group_joined.status == TxStartStatus::started && group_joined.lease.has_value() &&
+              group_joined.lease->target.destination_id == group_id,
+            "explicit Quick Call may use TG91 or TG46001 when they are not on a deny-list");
+        if (group_joined.lease) {
+            check(manually_selected_router.release_tx(group_joined.lease->id) == OperationStatus::completed &&
+                  manually_selected_router.complete_tx_eot(group_joined.lease->id, true) == OperationStatus::completed &&
+                  manually_selected_router.complete_tx_cleanup(group_joined.lease->id, true) == OperationStatus::completed,
+                "the manually selected Quick Call test releases its transmit lease cleanly");
+        }
+    }
 }
 
 void test_permission_revocation_stops_active_tx_and_requires_ptt_release()

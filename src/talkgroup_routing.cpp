@@ -57,12 +57,6 @@ namespace {
     return false;
 }
 
-[[nodiscard]] bool protected_receive_only_target(const TxTarget& target) noexcept
-{
-    return target.kind == dmr_call::CallKind::group &&
-           (target.destination_id == 91U || target.destination_id == 46001U);
-}
-
 } // 匿名命名空间
 
 std::optional<RouteCandidate> Router::observe_candidate(
@@ -327,9 +321,6 @@ TxStartResult Router::begin_ptt() noexcept
     if (!valid_target(tx_policy_.target)) {
         return {TxStartStatus::invalid_target, std::nullopt};
     }
-    if (protected_receive_only_target(tx_policy_.target)) {
-        return {TxStartStatus::policy_forbidden_target, std::nullopt};
-    }
     return begin_tx(tx_policy_.target, TxPurpose::ptt);
 }
 
@@ -355,9 +346,6 @@ TxStartResult Router::request_dynamic_join(const GroupRoute& group,
         return {TxStartStatus::dynamic_join_blocked, std::nullopt};
     }
     const TxTarget target{group.destination_id, dmr_call::CallKind::group, group.slot};
-    if (protected_receive_only_target(target)) {
-        return {TxStartStatus::dynamic_join_blocked, std::nullopt};
-    }
     return begin_tx(target, TxPurpose::quick_call_join);
 }
 

@@ -4678,7 +4678,6 @@ bool make_routed_policies(
     transmit_policy = {};
     transmit_policy.transmit_enabled = wirex::bm_test_profile::permits_transmit(legacy_tx_policy);
     transmit_policy.dynamic_join_enabled = false;
-    transmit_policy.dynamic_join_blocked_group_ids = {91U, 46001U};
     transmit_policy.target = {call_template.destination_id, call_template.kind, call_template.slot};
     return true;
 }
@@ -5489,7 +5488,8 @@ int bm_bridge_main(int argc, wchar_t* argv[])
         call_template.kind = call_kind_text == "G" ? wirex::dmr_call::CallKind::group
                                                     : wirex::dmr_call::CallKind::private_call;
         call_template.color_code = static_cast<std::uint8_t>(color_code);
-        tx_policy = wirex::bm_test_profile::policy_for(call_template, listen_only);
+        const bool preset_listen_only = selected_preset.has_value() && selected_preset->listen_only;
+        tx_policy = wirex::bm_test_profile::policy_for(call_template, listen_only || preset_listen_only);
         receive_filter.destination_id = call_template.kind == wirex::dmr_call::CallKind::group
             ? call_template.destination_id : call_template.source_id;
         receive_filter.match_slot = true;
@@ -5744,6 +5744,7 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
     using PttGate = wirex::hri_ptt_gate::Gate;
     using PttLevel = wirex::hri_ptt_gate::Level;
     const bool continuous_run = !manual_ptt;
+    const bool launch_transmit_allowed = wirex::bm_test_profile::permits_transmit(tx_policy);
     ProfileSecretGuard secret_guard{profile};
     const HANDLE ui_pipe_handle = ui_pipe ? GetStdHandle(STD_INPUT_HANDLE) : INVALID_HANDLE_VALUE;
     wirex::ui_control::Parser ui_control_parser;
@@ -5868,9 +5869,10 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                                             const wirex::talkgroup_routing::TxTarget& target,
                                             bool enabled) {
             const auto* current = pipeline->routed_tx_policy();
-            if (current == nullptr) {
+            if (current == nullptr || (enabled && !launch_transmit_allowed)) {
                 return wirex::talkgroup_routing::PolicyUpdateResult{
-                    wirex::talkgroup_routing::PolicyUpdateStatus::invalid_policy, 0U, std::nullopt, std::nullopt};
+                    wirex::talkgroup_routing::PolicyUpdateStatus::invalid_policy,
+                    revision, std::nullopt, std::nullopt};
             }
             auto candidate = *current;
             candidate.target = target;

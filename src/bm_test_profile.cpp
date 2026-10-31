@@ -14,10 +14,10 @@ constexpr std::array<Preset, 4U> presets{{
      dmr_call::CallKind::private_call, 1U},
     {"listen-46001", "全国频道 46001（仅接收）", "BI7KGD", "43.129.83.124",
      461135501U, 4611355U, 46001U, 62031U, dmr_call::Slot::ts2,
-     dmr_call::CallKind::group, 1U},
+     dmr_call::CallKind::group, 1U, true},
     {"listen-91", "全球 TG91（仅接收）", "BI7KGD", "43.129.83.124",
      461135501U, 4611355U, 91U, 62031U, dmr_call::Slot::ts2,
-     dmr_call::CallKind::group, 1U},
+     dmr_call::CallKind::group, 1U, true},
 }};
 
 } // namespace
@@ -30,12 +30,8 @@ std::optional<Preset> find(std::string_view id) noexcept
     return std::nullopt;
 }
 
-TxPolicy policy_for(const dmr_call::CallConfig& call) noexcept
+TxPolicy policy_for(const dmr_call::CallConfig&) noexcept
 {
-    if ((call.destination_id == 46001U || call.destination_id == 91U) &&
-        call.kind == dmr_call::CallKind::group) {
-        return TxPolicy::receive_only;
-    }
     return TxPolicy::enabled;
 }
 

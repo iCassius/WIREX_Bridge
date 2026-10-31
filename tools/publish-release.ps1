@@ -49,6 +49,7 @@ $script:alpha11TestNames = @(
 )
 $script:alpha12TestNames = @($script:alpha11TestNames)
 $script:alpha13TestNames = @($script:alpha12TestNames)
+$script:alpha14TestNames = @($script:alpha13TestNames)
 
 function Set-PublishProfile {
     param([Parameter(Mandatory=$true)][string]$Tag)
@@ -261,7 +262,17 @@ function Set-PublishProfile {
             $script:expectedDirectories = @($alpha12.Directories)
             $script:expectedTestNames = $script:alpha13TestNames
         }
-        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.13 release profiles are supported.' }
+        'v0.1.0-alpha.14' {
+            $alpha13 = Set-PublishProfile -Tag 'v0.1.0-alpha.13'
+            $assetMap = [ordered]@{}
+            foreach ($path in $alpha13.AssetPathMap.Keys) { $assetMap[$path] = $alpha13.AssetPathMap[$path] }
+            $assetMap['ui/windows/PortableConfig.psm1'] = 'ui__windows__portable-config.psm1'
+            $script:publishTag = $Tag
+            $script:assetPathMap = $assetMap
+            $script:expectedDirectories = @($alpha13.Directories)
+            $script:expectedTestNames = $script:alpha14TestNames
+        }
+        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.14 release profiles are supported.' }
     }
     return [pscustomobject]@{
         Tag = $script:publishTag
@@ -392,6 +403,26 @@ function Assert-PublishPackage {
         )) {
             if ($excludedPrivateFiles -cnotcontains $requiredPath) {
                 throw 'Alpha 13 manifest must explicitly exclude the local radio and BM preference files.'
+            }
+        }
+    }
+    if ($Tag -ceq 'v0.1.0-alpha.14') {
+        $excludedPrivateFiles = @($manifest.excluded_private_files | ForEach-Object { [string]$_ })
+        foreach ($requiredPath in @(
+            'config.json',
+            'config.*.backup*',
+            'credentials/',
+            'tempSecrets/',
+            'private/user-config-directory.txt',
+            'private/user-config/radio-identity-cache.json',
+            'private/user-config/channel-favorites.json',
+            'private/user-config/password-file-path.txt',
+            'private/user-config/radio-control-preferences.json',
+            'private/user-config/bm-management-preferences.json',
+            'private/user-config/bm-server-preferences.json'
+        )) {
+            if ($excludedPrivateFiles -cnotcontains $requiredPath) {
+                throw 'Alpha 14 manifest must explicitly exclude the package-root configuration, backups, credentials, and legacy local preferences.'
             }
         }
     }
