@@ -6,6 +6,8 @@ R119 接入 CAT 首次状态查询和周期同步，查询忙碌时保持编辑�
 
 alpha15 源码提交为 `a9b2d6ad0d96b7dadd995d28e8b42bbd9ff9f080`。完整 Native build 在干净提交上通过 40/40 项，`compile_only=false`，MSVC warning/error 均为 0。绿色目录 `build/releases/v0.1.0-alpha.15` 有 41 项清单资产、37 项源码映射和 42 个通用文件（含 manifest）；root 独立审计通过，manifest 状态为 `root_audit_passed`。详细构建、包和测试哈希见 [alpha15 本机候选记录](docs/releases/v0.1.0-alpha.15.md) 与 [R119 发布交接](docs/R119_发布交接.md)。个人 `config.json` 作为本机覆盖文件存在于包目录，但不在 Generic 清单或 Git 中。本轮没有改 alpha14 配置或 legacy canonical；只在本机根目录启动器备份后切换到了 alpha15。没有制作 ZIP/tag/GitHub Release；没有操作真实 COM、BrandMeister、HRI、音频、PTT 或 RF。
 
+R119 收尾时，旧 alpha14 和临时构建已可恢复归档至 `private/build-retired/R119/`。root 核对 6 个源根共281个文件、50,305,486字节：所有文件长度一致，280个非敏感文件的 SHA-256 一致；个人配置与 alpha15 副本逐字节相同，原源路径均已移走。移动计划与日志见 [R119 发布交接](docs/R119_发布交接.md)。7个包级验证日志已移至 `private/build-history/R119/verification-logs/`，逐项长度与哈希记录在私有移动清单中；`build/_work/` 仅保留 alpha15 最终 Native 构建目录与 clean-build 日志。alpha15 的 HIL 仍待用户后续验收。
+
 ## R118 / Alpha 14 历史记录（root 审核通过）
 
 R118 源码最终提交为 f0105d7da667c2dbc1ca24d78f2b3b11e9be9eb6，已从干净工作树完成 Native 完整构建：40/40 项通过，日志没有 MSVC warning/error；provenance 标记 compile_only=false。Alpha14 本机目录位于 build/releases/v0.1.0-alpha.14，root 已独立核对包清单、构建来源、测试结果和 EXE，manifest.package_status 为 root_audit_passed。清单列出 41 项通用资产，连同 manifest 共 42 个文件；本机另有一份不纳入通用清单的 config.json。最终 manifest SHA-256 为 09a8448cd96c2f9a1c949b621d85d0add996d36756f25cfb6f596ad3747467b0。

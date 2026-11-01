@@ -8,6 +8,8 @@
 
 Windows PowerShell 5.1 的 package-startup、test-control、包目录下的 `test-ui-control-v2.ps1 -UiPackageDirectory` 和 package/publish/download 离线测试均通过。包内 capability 检查覆盖 alpha14 旧能力命令集与新增 `audio.gains.set`，IPC 真实诊断通过。个人 alpha15 配置从当前 alpha14 `config.json` 原字节复制并由 source PortableConfig 只读校验，包含在本机目录但不在通用 manifest 或 Git 中；本轮未读取 legacy canonical、未修改 alpha14 配置。根启动器备份后改为相对调用 alpha15 唯一 CMD，没有运行正常启动。没有制作 ZIP/tag/GitHub Release，也没有操作真实 COM、BrandMeister、HRI、音频、PTT 或 RF。后续个人配置变更从当前 alpha15 覆盖文件继续，不从 legacy canonical 重新导入。
 
+收尾归档已由 root 独立核对：`private/build-retired/R119/` 下6个源根共281个文件、50,305,486字节，全部长度与280个非敏感文件的SHA-256均无差异；个人配置与alpha15副本逐字节一致，所有源路径已移走。计划 `private/build-history/R119/R119-cleanup-plan.json` 的SHA-256为 `93deda77e6b684ba3f6d964d619aaa4335a37eeb341915de23c62f41706e1e2e`，移动日志 `R119-cleanup-move-journal.jsonl` 的SHA-256为 `07feaaf2ad4d90b335830fe756529fb8f3318f779a30f4bbc7cef6f2b4bd3c03`。7个本轮验证日志已可恢复移动到 `private/build-history/R119/verification-logs/`，逐项搬前/搬后长度和SHA-256见 `R119-verification-logs-move-manifest.json`（SHA-256 `c5ee1ec878d42cdb6fc5c6b0b2d33894339411f32a86a35c10e453ac795eb051`）。`build/_work/` 仅保留 alpha15 最终构建目录和它的 clean-build 日志；`build/releases/` 仅保留 alpha15。真实设备与RF HIL仍待用户验收。
+
 ## R118 / Alpha 14 历史交接（2026-11-01）
 
 源码提交 f0105d7da667c2dbc1ca24d78f2b3b11e9be9eb6 已推送。由该提交 fresh Native clean build：source_tree_clean=true、compile_only=false、40/40 测试通过，MSVC warning/error 诊断为0。root 独立审计确认 41 项 manifest 资产、37 项源码映射、40 项 Native 测试结果及 EXE/provenance 哈希一致；package_status=root_audit_passed，manifest SHA-256 为 09a8448cd96c2f9a1c949b621d85d0add996d36756f25cfb6f596ad3747467b0。通用包含 42 个物理文件，本机迁移后另有未纳入 manifest 的 config.json，因此发行目录共 43 个文件。
