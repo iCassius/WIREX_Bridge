@@ -1,12 +1,16 @@
 ﻿# WIREX Bridge：FTX-1 DIRECT 与 BrandMeister 语音桥接
 
-## 当前工作：R120 / Alpha 16 源码冻结与构建准备
+## 当前工作：R120 / Alpha 16 本机候选（root 包审计通过）
 
-R120 更新监听频道面板为每页固定 3×2 个卡片，增加紧凑分页；来话卡显示呼号和 DMR ID；BrandMeister 状态与延迟紧跟应用标题。CAT 串口控制与 Wires-X 核心分离，普通核心停止保留 CAT 会话，关闭应用时才收尾 CAT。连接配置和 CAT 设置仍写入用户自己的发行目录 `config.json`，包括用户要求持久保存的 BM API Key；Generic 发布 profile 不包含个人 `config.json`。
+R120 更新了监听频道卡片、来话身份资料、BM 标题栏和独立 CAT 串口控制。监听频道按 3 列 × 2 行分页；超过 6 个频道仍保留在后台并可翻页查看。BM 静态组添加按设备状态选择 API slot，删除时保留服务器返回的 slot。CAT 与 Wires-X 核心各自运行；CAT 正在执行用户写入或排队动作时，暂时禁止新的 Wires-X 启动。
 
-BrandMeister 静态组沿既有包路径读取 talkgroup 列表，并按设备状态选择添加 slot；删除时保留服务器返回的 slot。UI 在启动准备前和最终 HRI `--port` 确定后检查 CAT 端口冲突，相同 COM 会取消 Wires-X 启动并保留 CAT worker。离线 UI、CAT、BM 证据和发布边界见 [R120 发布交接](docs/R120_发布交接.md)、[UI 记录](docs/R120_UI.md)、[CAT 记录](docs/R120_CAT.md) 和 [BM 接口研究](docs/R120_BM接口研究.md)。Alpha 16 发布 profile 保留 Alpha 15 的 Generic 文件路径及 40 项 Native 测试顺序，只替换包内 README 与版本化启动器，不增加运行时资产。
+源码提交 52d2d95d1e163a6086bb5d429baf709b958eeafd 已推送到 origin/main。基于该干净提交完成 Native 完整构建，40/40 项通过，compile_only=false，provenance 标记 source_tree_clean=true，MSVC warning/error 均为 0。Alpha 16 本机候选包位于 build/releases/v0.1.0-alpha.16，root 已独立审计通过；manifest 状态为 root_audit_passed，列出 41 项通用资产、37 项源码映射，包含 manifest 共 42 个通用文件。
 
-当前离线用例通过：RenderOnly 139 项、channels 111 项、BM WPF 66 项、BM 模块 75 项、音量 81 项、便携配置 55 项；status 与 identity 通过。CAT WPF fake worker 专项 139 项、console 130 项在 PowerShell 7.6.5 与 Windows PowerShell 5.1 均通过。root 独立复核 channels、status、identity、音量、生命周期和 3×2 两尺寸截图；独立 review 未发现 P1/P2，源码已获准冻结。Alpha 16 包尚未构建，尚未运行正常启动，也未连接真实 BM、COM、HRI、音频、PTT 或 RF。本阶段没有读取、哈希、复制或写入 alpha15 个人配置；通用包不含个人 `config.json`。没有创建 ZIP、tag 或 GitHub Release。
+离线检查包括：RenderOnly 139 项、频道 111 项、BM 模块 75 项、BM WPF 66 项、音量 81 项、便携配置 55 项；status、identity、lifecycle 通过。CAT fake worker 139 项和 console 130 项在 PowerShell 7.6.5、Windows PowerShell 5.1 均通过。Windows PowerShell 5.1 的包启动、control 与 WPF control-v2 检查通过；最后一项在真实 WPF BridgeSupervisor→Native 管道上完成内存型音量回调的 ACK/status/revision 验证，没有打开音频设备。两种窗口尺寸的 RenderOnly 截图已由 root 检查。
+
+root 批准后，alpha16 本机 config.json 从当前 alpha15/config.json 原字节复制；两份文件均为 3893 字节并逐字节相同，alpha16 PortableConfig 只读解析通过。BM API Key 仍由用户个人 config.json 持久保存，通用包不收录该文件。没有记录配置字段、内容或哈希。根目录 start-my-bridge.cmd 已原字节备份至 private/config-backups/R120/start-my-bridge.cmd.before-alpha16-20261101-194416.bak，再改为 ASCII 相对调用 alpha16 唯一启动器；只做静态检查，没有运行正常启动。
+
+包与验证日志、哈希及范围见 [Alpha 16 本机候选记录](docs/releases/v0.1.0-alpha.16.md) 和 [R120 发布交接](docs/R120_发布交接.md)。本机候选不是 ZIP、Git tag 或 GitHub Release。本轮对照了公开 BM SPA/OpenAPI 资料；没有用个人 API Key 对账户写入静态组，也没有连接 BM 语音会话、COM/CAT、HRI、音频、PTT 或 RF；CAT/HRI、音频和 RF 等待实机验收。alpha16 包内 README 保持版本映射冻结，没有修改。旧的三个构建/发行根目录已可恢复归档到 private/build-retired/R120，共 210 个文件、43,078,040 字节；四份验证日志位于 private/build-history/R120/verification-logs/。归档清单和独立核验记录见 R120 发布交接。
 
 ## R119 / Alpha 15 本机目录（root 审计通过）
 

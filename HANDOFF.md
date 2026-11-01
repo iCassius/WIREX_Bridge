@@ -2,13 +2,15 @@
 
 ## R120 / Alpha 16 当前交接（2026-11-01）
 
-R120 UI 与 BM 静态组更新已进入候选集成。监听区域固定为 3 列 × 2 行，超过 6 个频道通过分页完整显示；来话资料、BM 标题栏和 CAT 独立控制已按要求调整。CAT 普通 query 不阻止保存 BM 设置或启动 Wires-X；CAT 写入或排队动作期间暂时禁止新的 Wires-X 启动。BM API Key 仍按用户要求保存在个人 `config.json`；通用包 profile 不包含该文件。
+R120 源码已提交并推送，Alpha 16 本机候选包已生成并通过 root 独立审计。提交为 52d2d95d1e163a6086bb5d429baf709b958eeafd；基于该干净提交完成 Native full40，40/40 通过，compile_only=false、MSVC warning/error 均为 0。root 核对 41 项通用资产、37 项源码映射、42 个通用文件、Native 40 项 provenance/order，以及 EXE、日志和 provenance 哈希；manifest 状态为 root_audit_passed。
 
-root 已独立复跑 111 项频道/WPF、status、identity、81 项音量、lifecycle 和 `git diff --check`，并查看 1360×850 与 1024×700 两张 RenderOnly 截图，确认卡片和标题栏没有覆盖。其它离线用例通过：RenderOnly 139 项、BM UI 66 项、BM 模块 75 项、便携配置 55 项。CAT 专项 139 项和 console 130 项真实 WPF fake worker 回归在 PowerShell 7.6.5 与 Windows PowerShell 5.1 均通过。独立 review 已关闭，没有新增 P1/P2；root 已批准 source freeze、提交、fresh Native build 与 alpha16 package。
+R120 UI 每页显示 3×2 个频道，来话卡显示 DMR ID 和已解析呼号链接；隐藏用户可见 TS 入口。BM 状态位于应用标题行，CAT 串口端口及连接/断开控制位于电台控制区域。BM 静态组添加依据只读设备状态选择 slot，删除保留列表原始 slot。CAT query 与普通核心停止各自独立；CAT 用户写入或排队动作期间，暂时禁止新的 Wires-X 启动。详细边界见 [R120 发布交接](docs/R120_发布交接.md)、[R120 UI](docs/R120_UI.md)、[R120 CAT](docs/R120_CAT.md) 和 [R120 BM 接口研究](docs/R120_BM接口研究.md)。
 
-Alpha 16 的 profile、候选包 README 和版本化启动器已准备；当前进入 source commit、fresh Native build 和包级离线验证。通用包不含个人 `config.json`。本阶段不会读取、哈希、复制或覆盖 alpha15 配置；不会正常启动，也不会访问真实 BM API、COM/CAT、HRI、音频、PTT 或 RF；不会更新根启动器、改 manifest 状态、清理旧包或生成 ZIP/tag/GitHub Release。
+离线检查已通过：RenderOnly 139、channels 111、BM 模块 75、BM WPF 66、CAT fake worker 139、console 130、音量 81、便携配置 55；CAT/console 在 PowerShell 7.6.5 和 Windows PowerShell 5.1 均通过，status、identity、lifecycle 通过。WinPS 5.1 包启动、独立 control、WPF control-v2 均通过；control-v2 通过匿名管道和 routing diagnostic 的内存音量回调验证 ACK/status/revision，没有连接电台、BM、音频或 RF。root 查看了两种窗口尺寸的 RenderOnly 截图，并独立复跑 channels、status、identity、gain 和 lifecycle。
 
-R120 详细候选范围、测试和 package staging 见 [R120 发布交接](docs/R120_发布交接.md)。UI、CAT 与 BM 源码范围分别见 [R120 UI](docs/R120_UI.md)、[R120 CAT](docs/R120_CAT.md) 和 [R120 BM 接口研究](docs/R120_BM接口研究.md)。
+root 批准后，从当前 alpha15/config.json 原字节复制到 alpha16 本机目录。两份配置均为 3893 字节、逐字节相同，alpha16 PortableConfig 只读校验合法；BM API Key 仍由用户个人 config.json 持久保存，通用包不收录该文件；没有记录配置值或哈希。根目录 start-my-bridge.cmd 已备份到 private/config-backups/R120/start-my-bridge.cmd.before-alpha16-20261101-194416.bak，再以 ASCII 相对路径调用 alpha16 唯一 CMD。仅作静态验证，未运行正常启动。通用 manifest 排除个人 config.json。
+
+候选包及构建、验证日志哈希见 [Alpha 16 本机候选记录](docs/releases/v0.1.0-alpha.16.md)。本轮对照了公开 BM SPA/OpenAPI 资料；没有用个人 API Key 对账户写入静态组，也没有连接 BM 语音会话、COM/CAT、HRI、音频设备，没有触发 PTT/RF；没有制作 ZIP、tag 或 GitHub Release。alpha16 包内 README 保持冻结。root 独立核对了可恢复归档：private/build-retired/R120 有三个旧根目录、210 个文件、43,078,040 字节，原来源路径已移走；alpha15 归档包的 41 项通用资产与旧 manifest 一致，归档配置与 alpha16 本机配置逐字节相同。四份验证日志保存在 private/build-history/R120/verification-logs/；计划和正式移动日志哈希见 R120 发布交接。build/_work 只保留最终 52d2d95 构建目录及 clean-build 日志，build/releases 只保留 alpha16。
 
 ## R119 / Alpha 15 历史交接（2026-11-01）
 
