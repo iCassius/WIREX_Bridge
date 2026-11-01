@@ -145,10 +145,7 @@
         </Border>
         <Border x:Name="BmStatusCard" Background="#1D2529" BorderBrush="#3C4A50" BorderThickness="1" Padding="8" Margin="2,0,0,0">
           <StackPanel>
-            <DockPanel LastChildFill="True"><TextBlock Text="BrandMeister" Foreground="#A8B5BB" FontSize="12" DockPanel.Dock="Left" Margin="0,0,8,0"/><TextBlock x:Name="BmValue" Text="" FontSize="13" FontWeight="Bold"/></DockPanel>
-            <StackPanel x:Name="BmRttMetric" Orientation="Horizontal" Visibility="Collapsed" Margin="0,2,0,0">
-              <TextBlock Text="往返" Foreground="#A8B5BB" FontSize="12" Margin="0,0,5,0"/><TextBlock x:Name="BmRttValue" Text="" FontSize="12" FontWeight="Bold"/>
-            </StackPanel>
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center"><TextBlock Text="BrandMeister" Foreground="#A8B5BB" FontSize="12" Margin="0,0,8,0"/><TextBlock x:Name="BmValue" Text="" FontSize="13" FontWeight="Bold" Margin="0,0,8,0"/><StackPanel x:Name="BmRttMetric" Orientation="Horizontal" Visibility="Collapsed"><TextBlock Text="往返" Foreground="#A8B5BB" FontSize="12" Margin="0,0,4,0"/><TextBlock x:Name="BmRttValue" Text="" FontSize="12" FontWeight="Bold"/></StackPanel></StackPanel>
             <TextBlock x:Name="BmDetail" Text="" FontSize="12" Foreground="#9BA9AE" Visibility="Collapsed"/>
           </StackPanel>
         </Border>
@@ -213,8 +210,14 @@
               </StackPanel>
             </Border>
             <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-              <StackPanel><TextBlock Text="BM API Key" Foreground="#A8B5BB" FontSize="12"/><PasswordBox x:Name="BmApiKeyBox"/></StackPanel>
-              <StackPanel Grid.Column="1"><TextBlock Text="BM 密码" Foreground="#A8B5BB" FontSize="12"/><PasswordBox x:Name="PasswordBox"/></StackPanel>
+              <StackPanel>
+                <TextBlock Foreground="#A8B5BB" FontSize="12"><Run Text="BM API Key  "/><Hyperlink x:Name="BmApiKeySetupLink" Tag="bm_api_key" Foreground="#9BE0AE"><Run Text="设置"/></Hyperlink></TextBlock>
+                <PasswordBox x:Name="BmApiKeyBox"/>
+              </StackPanel>
+              <StackPanel Grid.Column="1">
+                <TextBlock Foreground="#A8B5BB" FontSize="12"><Run Text="BM 密码  "/><Hyperlink x:Name="BmPasswordSetupLink" Tag="bm_password" Foreground="#9BE0AE"><Run Text="设置"/></Hyperlink></TextBlock>
+                <PasswordBox x:Name="PasswordBox"/>
+              </StackPanel>
             </Grid>
             <TextBlock x:Name="SettingsErrorText" Text="" Foreground="#EFC36F" FontSize="12" TextWrapping="Wrap" Margin="2,3" Visibility="Collapsed"/>
           </StackPanel>
@@ -239,11 +242,10 @@
                   <Grid.ColumnDefinitions><ColumnDefinition Width="1.4*"/><ColumnDefinition Width="1*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                   <StackPanel><TextBlock Text="频道 ID" Foreground="#A8B5BB" FontSize="12"/><TextBox x:Name="ChannelIdBox"/></StackPanel>
                   <StackPanel Grid.Column="1"><TextBlock Text="类型" Foreground="#A8B5BB" FontSize="12"/><ComboBox x:Name="ChannelKindBox" SelectedIndex="0"><ComboBoxItem Content="请选择" Tag="unknown"/><ComboBoxItem Content="单呼" Tag="private"/><ComboBoxItem Content="组呼" Tag="group"/></ComboBox></StackPanel>
-                  <Button x:Name="ChannelAdvancedButton" Grid.Column="2" Content="频道高级设置" Padding="7,4" VerticalAlignment="Bottom"/>
+                  <Button x:Name="ChannelAdvancedButton" Grid.Column="2" Content="时隙设置" Padding="7,4" VerticalAlignment="Bottom"/>
                   <Button x:Name="AddChannelButton" Grid.Column="3" Content="加入监听" Padding="8,5" Background="#28583C" BorderBrush="#64A477" VerticalAlignment="Bottom"/>
                 </Grid>
                 <CheckBox x:Name="MakeChannelTxTargetCheckBox" Content="同时设为PTT目标" IsChecked="False" Foreground="#EDF3F4" Margin="3,2,0,2"/>
-                <WrapPanel x:Name="ChannelListPanel"/>
                 <TextBlock x:Name="ChannelStatusText" Text="" Foreground="#EFC36F" FontSize="12" TextWrapping="Wrap" Margin="2,2,0,0" Visibility="Collapsed"/>
                 <Border x:Name="BmStaticGroupPanel" Background="#151C20" BorderBrush="#3C494F" BorderThickness="1" Padding="4" Margin="0,3,0,0" Visibility="Collapsed">
                   <StackPanel>
@@ -269,13 +271,13 @@
                 <TextBlock Text="音量" FontWeight="Bold" FontSize="12" Margin="0,0,0,2"/>
                 <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                   <StackPanel>
-                    <DockPanel><TextBlock Text="BM → 电台播放" Foreground="#A8B5BB" FontSize="12"/><TextBlock x:Name="PlaybackGainValueText" DockPanel.Dock="Right" Text="" Foreground="#9BE0AE" FontWeight="Bold" Margin="0,0,6,0"/></DockPanel>
+                    <DockPanel><TextBlock Text="播放增益" Foreground="#A8B5BB" FontSize="12"/><TextBlock x:Name="PlaybackGainValueText" DockPanel.Dock="Right" Text="" Foreground="#9BE0AE" FontWeight="Bold" Margin="0,0,6,0"/></DockPanel>
                     <Slider x:Name="PlaybackGainSlider" Minimum="0.25" Maximum="16" Value="1"/>
                     <TextBlock x:Name="PlaybackGainSavedValueText" Text="" Foreground="#9BA9AE" FontSize="12" Visibility="Collapsed"/>
                     <TextBlock x:Name="PlaybackGainRuntimeValueText" Text="" Foreground="#9BA9AE" FontSize="12" Visibility="Collapsed"/>
                   </StackPanel>
                   <StackPanel Grid.Column="1" Margin="8,0,0,0">
-                    <DockPanel><TextBlock Text="手咪 → BM 发送" Foreground="#A8B5BB" FontSize="12"/><TextBlock x:Name="TransmitGainValueText" DockPanel.Dock="Right" Text="" Foreground="#9BE0AE" FontWeight="Bold" Margin="0,0,6,0"/></DockPanel>
+                    <DockPanel><TextBlock Text="发送增益" Foreground="#A8B5BB" FontSize="12"/><TextBlock x:Name="TransmitGainValueText" DockPanel.Dock="Right" Text="" Foreground="#9BE0AE" FontWeight="Bold" Margin="0,0,6,0"/></DockPanel>
                     <Slider x:Name="TransmitGainSlider" Minimum="0.25" Maximum="16" Value="16"/>
                   </StackPanel>
                 </Grid>
@@ -285,14 +287,16 @@
 
             <Border x:Name="CatOperatingPanel" Background="#172024" BorderBrush="#46545B" BorderThickness="1" Padding="7" Margin="0,0,0,4" Visibility="Collapsed">
               <StackPanel>
-                <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                  <TextBlock Text="电台控制" FontWeight="Bold" FontSize="12" VerticalAlignment="Center"/>
-                  <Button x:Name="ReadRadioButton" Grid.Column="1" Content="读取电台" MinWidth="84" Padding="7,3"/>
+                <Grid>
+                  <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                  <TextBlock Text="电台控制" FontWeight="Bold" FontSize="12" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                  <StackPanel x:Name="CatObservedPanel" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Visibility="Collapsed" Margin="0,0,6,0">
+                    <TextBlock x:Name="CatObservedMainModeText" Text="" Foreground="#9BE0AE" FontSize="12" Margin="0,0,10,0"/>
+                    <TextBlock x:Name="CatObservedFrequencyText" Text="" Foreground="#9BE0AE" FontSize="12" FontWeight="Bold" Margin="0,0,10,0"/>
+                    <TextBlock x:Name="CatObservedPowerText" Text="" Foreground="#A8B5BB" FontSize="12"/>
+                  </StackPanel>
+                  <Button x:Name="ReadRadioButton" Grid.Column="2" Content="读取电台" MinWidth="84" Padding="7,3"/>
                 </Grid>
-                <StackPanel x:Name="CatObservedPanel" Visibility="Collapsed" Margin="0,2,0,4">
-                  <DockPanel><TextBlock x:Name="CatObservedMainModeText" Text="" Foreground="#9BE0AE" FontSize="12"/><TextBlock x:Name="CatObservedFrequencyText" Text="" Foreground="#9BE0AE" FontSize="12" FontWeight="Bold" DockPanel.Dock="Right"/></DockPanel>
-                  <TextBlock x:Name="CatObservedPowerText" Text="" Foreground="#A8B5BB" FontSize="12"/>
-                </StackPanel>
                 <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="1*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="1.15*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                   <ComboBox x:Name="CatMainModeBox" SelectedIndex="-1"><ComboBoxItem Content="FM" Tag="FM"/><ComboBoxItem Content="FM-N" Tag="FM-N"/><ComboBoxItem Content="C4FM-DN" Tag="C4FM-DN"/><ComboBoxItem Content="C4FM-VW" Tag="C4FM-VW"/></ComboBox>
                   <Button x:Name="ApplyCatModeButton" Grid.Column="1" Content="模式" MinWidth="58" Padding="6,3"/>

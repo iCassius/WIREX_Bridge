@@ -72,6 +72,8 @@ if (-not [System.IO.File]::Exists($script:portableConfigModulePath)) { throw '�
 $script:supervisorSource = Join-Path $script:uiRoot 'BridgeSupervisor.cs'
 $script:mainXamlPath = Join-Path $script:uiRoot 'MainWindow.xaml'
 $script:settingsXamlPath = Join-Path $script:uiRoot 'SettingsWindow.xaml'
+$script:bmApiKeySettingsUri = 'https://brandmeister.network/?page=profile'
+$script:bmPasswordSettingsUri = 'https://brandmeister.network/?page=selfcare'
 $script:radioCatModulePath = Join-Path $script:uiRoot 'RadioCat.psm1'
 $script:radioDevicesModulePath = Join-Path $script:uiRoot 'RadioDevices.psm1'
 $script:bmManagementModulePath = Join-Path $script:uiRoot 'BmManagement.psm1'
@@ -336,8 +338,26 @@ $script:activeProfile = $null
 $script:pendingCallTarget = $null
 $script:loadingCallTargetSelection = $false
 $script:savedPlaybackGainMilli = $null
+$script:savedTransmitGainMilli = $null
 $script:reportedPlaybackGainMilli = $null
 $script:reportedPlaybackClippedSamples = $null
+$script:audioGainNativeCapability = $false
+$script:audioGainCommandRejected = $false
+$script:audioGainRunId = ''
+$script:audioGainRevision = [uint64]0
+$script:audioGainActual = $null
+$script:audioGainRuntimeReady = $false
+$script:audioGainProgrammaticUpdate = $false
+$script:audioGainDraftRevision = [uint64]0
+$script:audioGainResolvedDraftRevision = [uint64]0
+$script:audioGainDraft = $null
+$script:audioGainPendingRequest = $null
+$script:audioGainExpiredRequests = @{}
+$script:audioGainAwaitingStatus = $false
+$script:audioGainTimedOutDraftRevision = [uint64]0
+$script:audioGainDebounceReady = $false
+$script:audioGainDebounceTimer = $null
+$script:audioGainStatusText = ''
 $script:callIdentityCache = @{}
 $script:identityQuery = $null
 $script:identityQueryQueue = New-Object 'System.Collections.Generic.List[object]'
@@ -530,6 +550,38 @@ function Get-UiControl {
     $control = $script:mainWindow.FindName($Name)
     if ($null -eq $control) { throw "主窗口缺少控件 $Name。" }
     return $control
+}
+
+function Open-UiSetupPage {
+    param([Parameter(Mandatory=$true)][ValidateSet('bm_api_key','bm_password')][string]$Kind)
+    $address = if ($Kind -ceq 'bm_api_key') { $script:bmApiKeySettingsUri } else { $script:bmPasswordSettingsUri }
+    $uri = [System.Uri]$address
+    if (-not $uri.IsAbsoluteUri -or $uri.Scheme -cne 'https' -or $uri.Host -cne 'brandmeister.network') {
+        throw '设置页面地址无效。'
+    }
+    if ($script:uiTestHooks.ContainsKey('OpenUri') -and $script:uiTestHooks.OpenUri -is [scriptblock]) {
+        & $script:uiTestHooks.OpenUri $uri.AbsoluteUri
+        return $true
+    }
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $uri.AbsoluteUri
+    $startInfo.UseShellExecute = $true
+    [void][System.Diagnostics.Process]::Start($startInfo)
+    return $true
+}
+
+function Register-UiSetupLinks {
+    if (-not $script:mainWindow) { return }
+    foreach ($linkName in @('BmApiKeySetupLink','BmPasswordSetupLink')) {
+        $setupLink = $script:mainWindow.FindName($linkName)
+        if ($setupLink -is [System.Windows.Documents.Hyperlink]) {
+            $setupLink.Add_Click({
+                param($sender,$eventArgs)
+                try { Open-UiSetupPage -Kind ([string]$sender.Tag) | Out-Null }
+                catch { Set-MainText -Name 'FooterText' -Text '无法打开设置页面。' }
+            })
+        }
+    }
 }
 
 function Get-SettingsControl {
@@ -856,43 +908,28 @@ function Update-UiPlaybackGainDisplay {
     param([object]$Record=$null)
     $runtimeText = ''
     $runtimeGain = $null
-    $clippedSamples = $null
-    $audioSamples = $null
-    if ($Record) {
+    if ($script:audioGainNativeCapability -and $script:audioGainActual) {
+        $playback = Format-UiGainMilli -GainMilli $script:audioGainActual.radio_playback_gain_milli
+        $transmit = Format-UiGainMilli -GainMilli $script:audioGainActual.mic_transmit_gain_milli
+        $runtimeGain = [uint32]$script:audioGainActual.radio_playback_gain_milli
+        $runtimeText = ('播放 {0} · 发送 {1}' -f $playback,$transmit)
+    } elseif ($Record) {
         $gainProperty = $Record.PSObject.Properties['rx_output_gain_milli']
         if ($gainProperty) {
             $gainLabel = Format-UiGainMilli -GainMilli $gainProperty.Value
             if ($gainLabel -cne '未知') {
                 $runtimeGain = [uint32]$gainProperty.Value
-                $clipProperty = $Record.PSObject.Properties['rx_pcm_clipped_samples']
-                if ($clipProperty -and $clipProperty.Value -isnot [bool]) {
-                    $parsedClipped = [uint64]0
-                    if ([uint64]::TryParse([string]$clipProperty.Value,[Globalization.NumberStyles]::None,
-                            [Globalization.CultureInfo]::InvariantCulture,[ref]$parsedClipped)) { $clippedSamples = $parsedClipped }
-                }
-                $sampleProperty = $Record.PSObject.Properties['rx_audio_samples']
-                if ($sampleProperty -and $sampleProperty.Value -isnot [bool]) {
-                    $parsedSamples = [uint64]0
-                    if ([uint64]::TryParse([string]$sampleProperty.Value,[Globalization.NumberStyles]::None,
-                            [Globalization.CultureInfo]::InvariantCulture,[ref]$parsedSamples)) { $audioSamples = $parsedSamples }
-                }
                 $runtimeText = '增益 ' + $gainLabel
-                if ($null -ne $clippedSamples) {
-                    $clipValue = [string]$clippedSamples
-                    if ($null -ne $audioSamples) { $clipValue += '/' + [string]$audioSamples }
-                    $runtimeText += ' · 削波 ' + $clipValue
-                }
             }
         }
     }
     $script:reportedPlaybackGainMilli = $runtimeGain
-    $script:reportedPlaybackClippedSamples = $clippedSamples
     if ($script:mainWindow) {
         $mainControl = $script:mainWindow.FindName('PlaybackGainStatusValue')
         if ($mainControl) {
-            $mainControl.Text = $runtimeText
-            $mainControl.Visibility = if ($runtimeText) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
-            $mainControl.Foreground = if ($null -eq $clippedSamples) { [Windows.Media.Brushes]::LightGreen } elseif ($clippedSamples -gt 0) { [Windows.Media.Brushes]::IndianRed } else { [Windows.Media.Brushes]::LightGreen }
+            if (-not $script:audioGainStatusText) { $mainControl.Text = $runtimeText }
+            $mainControl.Visibility = if ($runtimeText -or $script:audioGainStatusText) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+            $mainControl.Foreground = [Windows.Media.Brushes]::LightGreen
         }
     }
     if ($script:settingsWindow) {
@@ -905,7 +942,7 @@ function Update-UiPlaybackGainDisplay {
         if ($runtimeControl) {
             $runtimeControl.Text = $runtimeText
             $runtimeControl.Visibility = if ($runtimeText) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
-            $runtimeControl.Foreground = if ($null -eq $clippedSamples) { [Windows.Media.Brushes]::LightGreen } elseif ($clippedSamples -gt 0) { [Windows.Media.Brushes]::IndianRed } else { [Windows.Media.Brushes]::LightGreen }
+            $runtimeControl.Foreground = [Windows.Media.Brushes]::LightGreen
         }
     }
 }
@@ -1823,7 +1860,7 @@ function Get-UiChannelCallerLabel {
 }
 
 function New-UiChannelActionButton {
-    param([string]$Text,[object]$Channel,[ValidateSet('tx','remove','mute','advanced','quick_call')][string]$Action)
+    param([string]$Text,[object]$Channel,[ValidateSet('tx','remove','mute','advanced','quick_call','more')][string]$Action)
     $button = New-Object System.Windows.Controls.Button
     $button.Content = $Text
     $button.Tag = [pscustomobject]@{ channel=$Channel; action=$Action }
@@ -1839,17 +1876,47 @@ function New-UiChannelActionButton {
             'mute' { Set-UiChannelMuted -Channel $channel }
             'advanced' { Show-UiChannelAdvanced -Channel $channel }
             'quick_call' { Invoke-UiChannelQuickCall -Channel $channel }
+            'more' { Show-UiChannelActionMenu -Button $sender -Channel $channel }
         }
     })
     return $button
 }
 
+function Show-UiChannelActionMenu {
+    param([Parameter(Mandatory=$true)][System.Windows.Controls.Button]$Button,[Parameter(Mandatory=$true)][object]$Channel)
+    $menu = New-Object System.Windows.Controls.ContextMenu
+    $menu.PlacementTarget = $Button
+    $menu.Placement = [System.Windows.Controls.Primitives.PlacementMode]::Bottom
+    $quickItem = New-Object System.Windows.Controls.MenuItem
+    $quickItem.Header = '激活组'
+    $quickItem.Tag = $Channel
+    $quickCallReady = ($script:latestStatus -and [string]$script:latestStatus.bm_state -ceq 'ready') -or
+        ($RoutingDiagnostic -and $RoutingDiagnosticAutoTest)
+    $quickItem.IsEnabled = ([string]$Channel.kind -ceq 'group' -and [uint64]$Channel.id -ne 4000 -and
+        $script:quickCallCapabilities -and $script:controlConfirmed -and $quickCallReady -and
+        -not $script:channelMutationSafetyStopPending -and -not $script:pendingRoutingMutation -and
+        -not $script:pendingChannelMutation -and -not $script:routingMutationFence)
+    $quickItem.Add_Click({
+        param($sender,$eventArgs)
+        try { Invoke-UiChannelQuickCall -Channel $sender.Tag }
+        catch { Set-UiChannelStatus -Text $_.Exception.Message -Failed $true }
+    })
+    $slotItem = New-Object System.Windows.Controls.MenuItem
+    $slotItem.Header = '时隙设置'
+    $slotItem.Tag = $Channel
+    $slotItem.IsEnabled = (-not $script:channelMutationSafetyStopPending -and -not $script:pendingRoutingMutation -and
+        -not $script:pendingChannelStopMutation -and -not $script:pendingChannelMutation -and -not $script:routingMutationFence)
+    $slotItem.Add_Click({ param($sender,$eventArgs) Show-UiChannelAdvanced -Channel $sender.Tag })
+    [void]$menu.Items.Add($quickItem)
+    [void]$menu.Items.Add($slotItem)
+    $Button.ContextMenu = $menu
+    $menu.IsOpen = $true
+}
+
 function Update-UiChannelDisplays {
     if (-not $script:mainWindow) { return }
-    $channelList = $script:mainWindow.FindName('ChannelListPanel')
     $callCards = $script:mainWindow.FindName('ChannelCardsPanel')
-    if (-not $channelList -or -not $callCards) { return }
-    $channelList.Children.Clear()
+    if (-not $callCards) { return }
     $callCards.Children.Clear()
     $mutationUnlocked = (-not $script:channelMutationSafetyStopPending -and -not $script:pendingRoutingMutation -and -not $script:pendingChannelStopMutation -and
         -not $script:pendingChannelMutation -and -not $script:routingMutationFence)
@@ -1871,106 +1938,94 @@ function Update-UiChannelDisplays {
         $card.Background = [Windows.Media.BrushConverter]::new().ConvertFromString($(if ($isMuted) { '#1A2023' } else { '#1D2529' }))
         $card.BorderBrush = [Windows.Media.BrushConverter]::new().ConvertFromString($(if ($isTx) { '#82C596' } else { '#46545B' }))
         $card.BorderThickness = [Windows.Thickness]::new(1.0)
-        $card.Padding = [Windows.Thickness]::new(6.0,4.0,6.0,4.0)
+        $card.Padding = [Windows.Thickness]::new(5.0,4.0,5.0,4.0)
         $card.Margin = [Windows.Thickness]::new(2.0)
-        $card.Width = 320
-        $card.MinHeight = if ($call) { 76 } else { 54 }
-        $cardBody = New-Object System.Windows.Controls.StackPanel
-        $cardHeader = New-Object System.Windows.Controls.DockPanel
-        $cardHeader.LastChildFill = $false
+        $card.Width = 380
+        $card.Height = 120
+        $card.MinHeight = 120
+        $card.MaxHeight = 120
+        $card.Tag = [pscustomobject]@{ channel_key=$key; call_active=[bool]$call }
+        $cardBody = New-Object System.Windows.Controls.Grid
+        $leftColumn = New-Object System.Windows.Controls.ColumnDefinition
+        $leftColumn.Width = [Windows.GridLength]::new(1.0,[Windows.GridUnitType]::Star)
+        $buttonColumn = New-Object System.Windows.Controls.ColumnDefinition
+        $buttonColumn.Width = [Windows.GridLength]::new(154.0)
+        [void]$cardBody.ColumnDefinitions.Add($leftColumn)
+        [void]$cardBody.ColumnDefinitions.Add($buttonColumn)
+        $leftPanel = New-Object System.Windows.Controls.StackPanel
+        $leftPanel.Margin = [Windows.Thickness]::new(0.0,0.0,5.0,0.0)
         $cardTitle = New-Object System.Windows.Controls.TextBlock
         $cardTitle.Text = $label
-        $cardTitle.Width = 140
-        [Windows.Controls.DockPanel]::SetDock($cardTitle,[Windows.Controls.Dock]::Left)
-        $cardTitle.FontSize = 12
+        $cardTitle.FontSize = 13
+        $cardTitle.Height = 20
         $cardTitle.FontWeight = [Windows.FontWeights]::Bold
         $cardTitle.Foreground = if ($isMuted) { [Windows.Media.Brushes]::DarkGray } else { [Windows.Media.Brushes]::White }
         $cardTitle.TextTrimming = [Windows.TextTrimming]::CharacterEllipsis
-        [void]$cardHeader.Children.Add($cardTitle)
-        $headerActions = New-Object System.Windows.Controls.WrapPanel
-        [Windows.Controls.DockPanel]::SetDock($headerActions,[Windows.Controls.Dock]::Right)
-        $removeButton = New-UiChannelActionButton -Text '取消监听' -Channel $channel -Action remove
-        $removeButton.IsEnabled = $canReceiveMutation
-        $removeButton.Padding = [Windows.Thickness]::new(4.0,1.0,4.0,1.0)
-        [void]$headerActions.Children.Add($removeButton)
-        $muteButton = New-UiChannelActionButton -Text $(if ($isMuted) { '恢复收听' } else { '临时屏蔽' }) -Channel $channel -Action mute
-        $muteButton.IsEnabled = $canReceiveMutation
-        $muteButton.Padding = [Windows.Thickness]::new(4.0,1.0,4.0,1.0)
-        [void]$headerActions.Children.Add($muteButton)
-        [void]$cardHeader.Children.Add($headerActions)
-        if ($isTx) {
-            $tx = New-Object System.Windows.Controls.TextBlock
-            $tx.Text = 'PTT'
-            $tx.Foreground = [Windows.Media.Brushes]::LightGreen
-            $tx.FontSize = 10
-            $tx.FontWeight = [Windows.FontWeights]::Bold
-            $tx.Margin = [Windows.Thickness]::new(2.0,0.0,3.0,0.0)
-            [Windows.Controls.DockPanel]::SetDock($tx,[Windows.Controls.Dock]::Right)
-            [void]$cardHeader.Children.Add($tx)
-        }
-        [void]$cardBody.Children.Add($cardHeader)
+        [void]$leftPanel.Children.Add($cardTitle)
+        $callArea = New-Object System.Windows.Controls.Border
+        $callArea.Tag = 'ChannelCallArea'
+        $callArea.Height = 52
+        $callArea.MinHeight = 52
+        $callArea.MaxHeight = 52
+        $callArea.Padding = [Windows.Thickness]::new(4.0,2.0,4.0,2.0)
+        $callArea.Background = [Windows.Media.BrushConverter]::new().ConvertFromString($(if ($call) { '#17241D' } else { '#151C20' }))
+        $callArea.BorderBrush = [Windows.Media.BrushConverter]::new().ConvertFromString('#35434A')
+        $callArea.BorderThickness = [Windows.Thickness]::new(1.0)
+        $callArea.Margin = [Windows.Thickness]::new(0.0,1.0,0.0,0.0)
+        $callPanel = New-Object System.Windows.Controls.StackPanel
         if ($call) {
             $callSource = New-Object System.Windows.Controls.TextBlock
             $callSource.Text = Get-UiChannelCallerLabel -RadioId ([uint64]$call.current_call_source_id)
-            $callSource.FontSize = 16
+            $callSource.FontSize = 13
+            $callSource.Height = 20
             $callSource.FontWeight = [Windows.FontWeights]::Bold
             $callSource.Foreground = [Windows.Media.Brushes]::LightGreen
-            $callSource.Margin = [Windows.Thickness]::new(1.0,2.0,1.0,0.0)
             $callSource.TextTrimming = [Windows.TextTrimming]::CharacterEllipsis
-            [void]$cardBody.Children.Add($callSource)
+            [void]$callPanel.Children.Add($callSource)
             $callDetail = New-Object System.Windows.Controls.TextBlock
             $callDetail.Text = '当前来话'
-            $callDetail.FontSize = 11
+            $callDetail.FontSize = 10
             $callDetail.Foreground = [Windows.Media.Brushes]::Gainsboro
-            [void]$cardBody.Children.Add($callDetail)
+            [void]$callPanel.Children.Add($callDetail)
         }
+        $callArea.Child = $callPanel
+        [void]$leftPanel.Children.Add($callArea)
+        [void]$cardBody.Children.Add($leftPanel)
+
+        $actionGrid = New-Object System.Windows.Controls.Primitives.UniformGrid
+        $actionGrid.Columns = 2
+        $actionGrid.Rows = 2
+        $actionGrid.Width = 154
+        $actionGrid.Height = 98
+        $actionGrid.VerticalAlignment = [Windows.VerticalAlignment]::Center
+        [Windows.Controls.Grid]::SetColumn($actionGrid,1)
+        $txButton = New-UiChannelActionButton -Text $(if ($isTx) { '✓ 呼叫目标' } else { '设为呼叫' }) -Channel $channel -Action tx
+        $txButton.IsEnabled = ($canTxMutation -and -not $isTx)
+        $txButton.ToolTip = if ($isTx) { '已选为下次 PTT 呼叫目标' } else { '选择此频道作为下次 PTT 目标' }
+        $txButton.Height = 45
+        [void]$actionGrid.Children.Add($txButton)
+        $removeButton = New-UiChannelActionButton -Text '取消监听' -Channel $channel -Action remove
+        $removeButton.IsEnabled = $canReceiveMutation
+        $removeButton.Height = 45
+        [void]$actionGrid.Children.Add($removeButton)
+        $muteButton = New-UiChannelActionButton -Text $(if ($isMuted) { '恢复收听' } else { '临时屏蔽' }) -Channel $channel -Action mute
+        $muteButton.IsEnabled = $canReceiveMutation
+        $muteButton.Height = 45
+        [void]$actionGrid.Children.Add($muteButton)
+        if ([string]$channel.kind -ceq 'group' -and [uint64]$channel.id -ne 4000) {
+            $fourthButton = New-UiChannelActionButton -Text '更多' -Channel $channel -Action more
+            $fourthButton.ToolTip = '激活此动态组或调整时隙'
+            $fourthButton.IsEnabled = $mutationUnlocked
+        } else {
+            $fourthButton = New-UiChannelActionButton -Text '时隙设置' -Channel $channel -Action advanced
+            $fourthButton.ToolTip = '设置此频道的 TS1 或 TS2'
+            $fourthButton.IsEnabled = $mutationUnlocked
+        }
+        $fourthButton.Height = 45
+        [void]$actionGrid.Children.Add($fourthButton)
+        [void]$cardBody.Children.Add($actionGrid)
         $card.Child = $cardBody
         [void]$callCards.Children.Add($card)
-
-        $item = New-Object System.Windows.Controls.Border
-        $item.Background = [Windows.Media.BrushConverter]::new().ConvertFromString($(if ($isMuted) { '#202629' } elseif ($isTx) { '#24382D' } else { '#151C20' }))
-        $item.BorderBrush = [Windows.Media.BrushConverter]::new().ConvertFromString($(if ($isTx) { '#82C596' } elseif ($isMuted) { '#536066' } else { '#46545B' }))
-        $item.BorderThickness = [Windows.Thickness]::new(1.0)
-        $item.Padding = [Windows.Thickness]::new(4.0,2.0,4.0,2.0)
-        $item.Margin = [Windows.Thickness]::new(2.0)
-        $item.MinHeight = 34
-        $itemBody = New-Object System.Windows.Controls.StackPanel
-        $itemBody.Orientation = [System.Windows.Controls.Orientation]::Horizontal
-        $itemLabel = New-Object System.Windows.Controls.TextBlock
-        $itemLabel.Text = $label
-        $itemLabel.Width = 160
-        $itemLabel.VerticalAlignment = [Windows.VerticalAlignment]::Center
-        $itemLabel.TextTrimming = [Windows.TextTrimming]::CharacterEllipsis
-        $itemLabel.ToolTip = $label
-        [void]$itemBody.Children.Add($itemLabel)
-        if ($isTx) {
-            $selected = New-Object System.Windows.Controls.TextBlock
-            $selected.Text = '✓ PTT目标'
-            $selected.Foreground = [Windows.Media.Brushes]::LightGreen
-            $selected.FontWeight = [Windows.FontWeights]::Bold
-            $selected.FontSize = 11
-            $selected.VerticalAlignment = [Windows.VerticalAlignment]::Center
-            $selected.Margin = [Windows.Thickness]::new(4.0,0.0,4.0,0.0)
-            [void]$itemBody.Children.Add($selected)
-        } else {
-            $pttButton = New-UiChannelActionButton -Text '设为PTT' -Channel $channel -Action tx
-            $pttButton.IsEnabled = $canTxMutation
-            [void]$itemBody.Children.Add($pttButton)
-        }
-        $advancedButton = New-UiChannelActionButton -Text 'TS' -Channel $channel -Action advanced
-        $advancedButton.ToolTip = '时隙高级设置'
-        [void]$itemBody.Children.Add($advancedButton)
-        if ([string]$channel.kind -ceq 'group' -and [uint64]$channel.id -ne 4000) {
-            $quickButton = New-UiChannelActionButton -Text '激活组' -Channel $channel -Action quick_call
-            $quickCallReady = ($script:latestStatus -and [string]$script:latestStatus.bm_state -ceq 'ready') -or
-                ($RoutingDiagnostic -and $RoutingDiagnosticAutoTest)
-            $quickButton.IsEnabled = ($script:quickCallCapabilities -and $script:controlConfirmed -and
-                $quickCallReady -and $canTxMutation)
-            $quickButton.ToolTip = '按需加入此动态组'
-            [void]$itemBody.Children.Add($quickButton)
-        }
-        $item.Child = $itemBody
-        [void]$channelList.Children.Add($item)
     }
     $target = Get-UiChannelByKey -Key $script:txChannelKey
     Set-MainText -Name 'TransmitTargetValue' -Text $(if ($target) { ('PTT目标 · {0} {1} · TS{2}' -f $(if ($target.kind -ceq 'private') { '单呼' } else { '组呼' }),$target.id,$target.slot) } else { '' })
@@ -2656,6 +2711,14 @@ function Test-UiControlUnsigned {
     return ($parsed -ge $Minimum -and $parsed -le $Maximum)
 }
 
+function Test-UiAudioGainsValue {
+    param([object]$Gains)
+    return ((Test-UiExactControlFields -Record $Gains -Required @('revision','radio_playback_gain_milli','mic_transmit_gain_milli')) -and
+        (Test-UiControlUnsigned -Value $Gains.revision) -and
+        (Test-UiControlUnsigned -Value $Gains.radio_playback_gain_milli -Minimum 250 -Maximum 16000) -and
+        (Test-UiControlUnsigned -Value $Gains.mic_transmit_gain_milli -Minimum 250 -Maximum 16000))
+}
+
 function Test-UiRxPolicy {
     param([object]$Policy, [uint64]$LocalSourceId)
     $fields = @('group_mode','private_mode','allow_groups','allow_private_peers','local_private_routes','blocked_groups','blocked_source_ids')
@@ -2760,19 +2823,30 @@ function Test-UiRoutingCapabilityList {
     param([object]$Commands)
     if ($Commands -isnot [System.Array] -or @($Commands | Where-Object { $_ -isnot [string] }).Count -gt 0) { return $false }
     $joined = @($Commands) -join ','
-    return ($joined -ceq 'hello,status,shutdown' -or
-        $joined -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace' -or
-        $joined -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join' -or
-        $joined -ceq 'hello,status,shutdown,radio_identity.cache_upsert' -or
-        $joined -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,radio_identity.cache_upsert' -or
-        $joined -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join,radio_identity.cache_upsert')
+    $knownSets = @(
+        'hello,status,shutdown',
+        'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace',
+        'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join',
+        'hello,status,shutdown,radio_identity.cache_upsert',
+        'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,radio_identity.cache_upsert',
+        'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join,radio_identity.cache_upsert'
+    )
+    if ($knownSets -ccontains $joined) { return $true }
+    foreach ($known in $knownSets) {
+        if ($joined -ceq ($known + ',audio.gains.set')) { return $true }
+    }
+    return $false
 }
 
 function Test-UiControlSnapshot {
     param([object]$Snapshot)
     $names = @('mode','status','phase','media_seq','diagnostic','bm_state','hri_phase','hri_ready',
         'serial_open','wavein_open','waveout_open','radio_state')
-    if (-not (Test-UiExactControlFields -Record $Snapshot -Required $names)) { return $false }
+    $gainAdvertised = Test-UiAudioGainCapability -Capabilities ([string]$script:controlCapabilities)
+    if ($gainAdvertised) {
+        if (-not (Test-UiExactControlFields -Record $Snapshot -Required ($names + @('audio_gains'))) -or
+            -not (Test-UiAudioGainsValue -Gains $Snapshot.audio_gains)) { return $false }
+    } elseif (-not (Test-UiExactControlFields -Record $Snapshot -Required $names)) { return $false }
     foreach ($name in @('mode','status','phase','bm_state','hri_phase','radio_state')) {
         if ($Snapshot.PSObject.Properties[$name].Value -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$Snapshot.$name)) { return $false }
     }
@@ -2830,7 +2904,7 @@ function ConvertFrom-UiControlFrame {
     if ($record.type -cne 'control_result') { throw '控制协议 v2 只接受 control_ready 或 control_result。' }
     $common = @('schema_version','type','run_id','control_seq','request_id','command','result','replayed')
     $validCommands = @('hello','status','shutdown','routing.status','rx_policy.replace','tx_policy.replace',
-        'network_subscription.quick_call_join','radio_identity.cache_upsert')
+        'network_subscription.quick_call_join','radio_identity.cache_upsert','audio.gains.set')
     if ($record.command -isnot [string] -or $validCommands -cnotcontains $record.command) { throw 'control_result.command 无效。' }
     $specific = switch -CaseSensitive ([string]$record.command) {
         'hello' { @('supported_commands') }
@@ -2841,6 +2915,7 @@ function ConvertFrom-UiControlFrame {
         'tx_policy.replace' { @('routing') }
         'network_subscription.quick_call_join' { @('activation_status','destination_id','slot','frames_sent') }
         'radio_identity.cache_upsert' { @() }
+        'audio.gains.set' { @('audio_gains') }
     }
     if ($record.result -isnot [string] -or @('ok','unsupported','rejected') -cnotcontains $record.result) { throw 'control_result.result 无效。' }
     $requiredResultFields = if ($record.result -ceq 'ok') { $common + $specific } else { $common + @('error') }
@@ -2857,6 +2932,13 @@ function ConvertFrom-UiControlFrame {
             -not [uint64]::TryParse($Matches[1],[Globalization.NumberStyles]::None,
                 [Globalization.CultureInfo]::InvariantCulture,[ref]$identityRevision) -or $identityRevision -eq 0) {
             throw 'radio_identity.cache_upsert 的 request_id 无效。'
+        }
+    } elseif ($record.command -ceq 'audio.gains.set') {
+        $gainRevision = [uint64]0
+        if ([string]$record.request_id -cnotmatch '^audio-gains-([1-9][0-9]*)$' -or
+            -not [uint64]::TryParse($Matches[1],[Globalization.NumberStyles]::None,
+                [Globalization.CultureInfo]::InvariantCulture,[ref]$gainRevision) -or $gainRevision -eq 0) {
+            throw 'audio.gains.set 的 request_id 无效。'
         }
     } elseif (-not [guid]::TryParse([string]$record.request_id, [ref]$requestGuid)) {
         throw 'control_result.request_id 无效。'
@@ -2880,6 +2962,12 @@ function ConvertFrom-UiControlFrame {
                     -not (Test-UiControlUnsigned -Value $record.slot -Minimum 1 -Maximum 2) -or
                     -not (Test-UiControlUnsigned -Value $record.frames_sent -Minimum 2 -Maximum 2)) {
                     throw '动态组激活结果字段无效。'
+                }
+            }
+            'audio.gains.set' {
+                if (-not (Test-UiAudioGainsValue -Gains $record.audio_gains) -or
+                    [uint64]$record.audio_gains.revision -ne [uint64]$gainRevision) {
+                    throw '音量增益应用结果字段无效。'
                 }
             }
         }
@@ -2920,6 +3008,17 @@ function Reset-UiControlState {
     $script:identityNativeInFlight = $null
     $script:routingCapabilities = $false
     $script:quickCallCapabilities = $false
+    if (Get-Command -Name Reset-UiAudioGainRun -ErrorAction SilentlyContinue) {
+        Reset-UiAudioGainRun -RunId '' -Capability:$false -RestoreSavedValues
+    } else {
+        $script:audioGainNativeCapability = $false
+        $script:audioGainCommandRejected = $false
+        $script:audioGainRunId = ''
+        $script:audioGainRevision = [uint64]0
+        $script:audioGainActual = $null
+        $script:audioGainRuntimeReady = $false
+        $script:audioGainPendingRequest = $null
+    }
     $script:pendingQuickCall = $null
     $script:pendingDynamicLocalListen = $null
     $script:controlDiagnostic = $false
@@ -3015,14 +3114,28 @@ function Process-UiControlEvents {
             $script:controlRunId = [string]$record.run_id
             $script:controlDiagnostic = [bool]$record.diagnostic
             $script:controlCapabilities = @($record.supported_commands) -join ','
-            $script:routingCapabilities = ($script:controlCapabilities -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace' -or
-                $script:controlCapabilities -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join' -or
-                $script:controlCapabilities -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,radio_identity.cache_upsert' -or
-                $script:controlCapabilities -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join,radio_identity.cache_upsert')
-            $script:quickCallCapabilities = ($script:controlCapabilities -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join' -or
-                $script:controlCapabilities -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join,radio_identity.cache_upsert')
-            $script:identityNativeCapability = [string]$script:controlCapabilities -ceq 'hello,status,shutdown,radio_identity.cache_upsert' -or
-                ([string]$script:controlCapabilities).EndsWith(',radio_identity.cache_upsert',[StringComparison]::Ordinal)
+            $gainCapability = Test-UiAudioGainCapability -Capabilities $script:controlCapabilities
+            if (Get-Command -Name Reset-UiAudioGainRun -ErrorAction SilentlyContinue) {
+                Reset-UiAudioGainRun -RunId $script:controlRunId -Capability:$gainCapability -RestoreSavedValues
+            } else {
+                $script:audioGainNativeCapability = $gainCapability
+                $script:audioGainCommandRejected = $false
+                $script:audioGainRunId = $script:controlRunId
+                $script:audioGainRevision = [uint64]0
+                $script:audioGainActual = $null
+                $script:audioGainRuntimeReady = $false
+                $script:audioGainPendingRequest = $null
+            }
+            $capabilityBase = [string]$script:controlCapabilities
+            if ($gainCapability) { $capabilityBase = $capabilityBase.Substring(0,$capabilityBase.Length - ',audio.gains.set'.Length) }
+            $script:routingCapabilities = ($capabilityBase -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace' -or
+                $capabilityBase -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join' -or
+                $capabilityBase -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,radio_identity.cache_upsert' -or
+                $capabilityBase -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join,radio_identity.cache_upsert')
+            $script:quickCallCapabilities = ($capabilityBase -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join' -or
+                $capabilityBase -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join,radio_identity.cache_upsert')
+            $script:identityNativeCapability = $capabilityBase -ceq 'hello,status,shutdown,radio_identity.cache_upsert' -or
+                $capabilityBase.EndsWith(',radio_identity.cache_upsert',[StringComparison]::Ordinal)
             $requestId = [guid]::NewGuid().ToString('D')
             $script:pendingControlRequests[$requestId] = 'hello'
             Set-UiControlStatus -Text '核心已启动，正在确认本机控制通道' -Confirmed $false
@@ -3040,6 +3153,18 @@ function Process-UiControlEvents {
                 [void]$script:expiredIdentityNativeRequests.Remove($expiredIdentityKey)
                 continue
             }
+        }
+        if ($record.command -ceq 'audio.gains.set' -and $script:audioGainExpiredRequests.ContainsKey([string]$record.request_id)) {
+            [void](Consume-UiAudioGainExpiredResult -Record $record)
+            continue
+        }
+        if ($record.command -ceq 'audio.gains.set' -and $script:audioGainPendingRequest -and
+            [string]$script:audioGainPendingRequest.request_id -ceq [string]$record.request_id -and
+            [string]$script:audioGainPendingRequest.run_id -ceq [string]$record.run_id -and
+            ([DateTime]::UtcNow - [DateTime]$script:audioGainPendingRequest.started_utc).TotalSeconds -ge 8) {
+            [void](Expire-UiAudioGainRequest)
+            [void](Consume-UiAudioGainExpiredResult -Record $record)
+            continue
         }
         if (-not $script:pendingControlRequests.ContainsKey([string]$record.request_id) -or
             $script:pendingControlRequests[[string]$record.request_id] -cne [string]$record.command) {
@@ -3066,6 +3191,10 @@ function Process-UiControlEvents {
         }
         if ($record.result -cne 'ok') {
             $detail = if ($record.PSObject.Properties['error']) { [string]$record.error } else { [string]$record.result }
+            if ($record.command -ceq 'audio.gains.set') {
+                Complete-UiAudioGainFailure -Record $record
+                continue
+            }
             if ($record.command -ceq 'network_subscription.quick_call_join') {
                 if ($script:pendingQuickCall -and $script:pendingQuickCall.request_id -ceq [string]$record.request_id) {
                     $script:pendingQuickCall = $null
@@ -3164,6 +3293,7 @@ function Process-UiControlEvents {
                 Add-UiEvent '本机控制已确认'
                 if ($script:routingCapabilities) { Request-UiRoutingStatus }
                 if ($script:identityNativeCapability) { [void](Initialize-UiNativeIdentitySync) }
+                if ($script:audioGainNativeCapability) { Request-UiControlStatus }
             }
             'network_subscription.quick_call_join' {
                 $pendingQuickCall = $script:pendingQuickCall
@@ -3205,6 +3335,7 @@ function Process-UiControlEvents {
             }
             'status' {
                 $snapshot = $record.snapshot
+                if ($script:audioGainNativeCapability) { [void](Complete-UiAudioGainStatus -Snapshot $snapshot) }
                 if ([bool]$snapshot.diagnostic) {
                     $statusText = '仅本机诊断：未连接 BM、HRI 或音频设备'
                 } else {
@@ -3213,6 +3344,11 @@ function Process-UiControlEvents {
                 }
                 # This control snapshot never refreshes the v1 media cards or their freshness clock.
                 Set-UiControlStatus -Text $statusText -Confirmed $true
+            }
+            'audio.gains.set' {
+                if (-not (Complete-UiAudioGainResult -Record $record)) {
+                    Set-UiControlStatus -Text '核心返回了不匹配的增益确认' -Confirmed $false
+                }
             }
             { $_ -in @('routing.status','rx_policy.replace','tx_policy.replace') } {
                 if (-not $script:routingCapabilities) {
@@ -4037,6 +4173,331 @@ function Set-GainValueLabel {
     (Get-SettingsControl $LabelName).Text = ((Format-BridgeGain -GainMilli $milli) + 'x')
 }
 
+function Update-UiAudioGainValueLabels {
+    if (-not $script:mainWindow) { return }
+    foreach ($pair in @(@('PlaybackGainSlider','PlaybackGainValueText'),@('TransmitGainSlider','TransmitGainValueText'))) {
+        $slider = $script:mainWindow.FindName($pair[0])
+        $label = $script:mainWindow.FindName($pair[1])
+        if ($slider -and $label) {
+            $milli = Convert-UiGainSliderToMilli -Value ([double]$slider.Value)
+            $label.Text = (Format-BridgeGain -GainMilli $milli) + 'x'
+        }
+    }
+}
+
+function Set-UiAudioGainStatus {
+    param([AllowEmptyString()][string]$Text,[switch]$Failed)
+    $script:audioGainStatusText = $Text
+    if (-not $script:mainWindow) { return }
+    $control = $script:mainWindow.FindName('PlaybackGainStatusValue')
+    if (-not $control) { return }
+    $control.Text = $Text
+    $control.Visibility = if ($Text) { [Windows.Visibility]::Visible } else { [Windows.Visibility]::Collapsed }
+    $control.Foreground = if ($Failed) { [Windows.Media.Brushes]::Goldenrod } else { [Windows.Media.Brushes]::LightGreen }
+    if (-not $Text) { Update-UiPlaybackGainDisplay -Record $null }
+}
+
+function Test-UiAudioGainCapability {
+    param([AllowEmptyString()][string]$Capabilities)
+    return ([string]$Capabilities).EndsWith(',audio.gains.set',[StringComparison]::Ordinal)
+}
+
+function Set-UiAudioGainSliders {
+    param([Parameter(Mandatory=$true)][object]$Gains)
+    if (-not (Test-UiAudioGainsValue -Gains $Gains) -or -not $script:mainWindow) { return $false }
+    $wasUpdating = [bool]$script:audioGainProgrammaticUpdate
+    $script:audioGainProgrammaticUpdate = $true
+    try {
+        $play = $script:mainWindow.FindName('PlaybackGainSlider')
+        $mic = $script:mainWindow.FindName('TransmitGainSlider')
+        $play.Value = [double]([decimal]$Gains.radio_playback_gain_milli / [decimal]1000)
+        $mic.Value = [double]([decimal]$Gains.mic_transmit_gain_milli / [decimal]1000)
+    } finally { $script:audioGainProgrammaticUpdate = $wasUpdating }
+    Update-UiAudioGainValueLabels
+    return $true
+}
+
+function Update-UiAudioGainControls {
+    if (-not $script:mainWindow) { return }
+    $connected = ($script:supervisor -and -not $script:supervisor.HasExited)
+    $blocked = [bool]($script:preparationStarted -or $script:stopTask -or $script:nativeExitCleanupPending -or
+        $script:channelMutationSafetyStopPending)
+    $editable = if ($connected) {
+        ($script:audioGainNativeCapability -and -not $script:audioGainCommandRejected -and
+            $script:controlConfirmed -and $script:audioGainRuntimeReady -and -not $blocked)
+    } else { -not $blocked }
+    foreach ($name in @('PlaybackGainSlider','TransmitGainSlider')) {
+        $control = $script:mainWindow.FindName($name)
+        if ($control) { $control.IsEnabled = [bool]$editable }
+    }
+    Update-UiAudioGainValueLabels
+}
+
+function Reset-UiAudioGainRun {
+    param([string]$RunId='',[bool]$Capability=$false,[switch]$RestoreSavedValues)
+    if ($script:audioGainDebounceTimer) { $script:audioGainDebounceTimer.Stop() }
+    $script:audioGainNativeCapability = [bool]$Capability
+    $script:audioGainCommandRejected = $false
+    $script:audioGainRunId = $RunId
+    $script:audioGainRevision = [uint64]0
+    $script:audioGainActual = $null
+    $script:audioGainRuntimeReady = $false
+    $script:audioGainDraftRevision = [uint64]0
+    $script:audioGainResolvedDraftRevision = [uint64]0
+    $script:audioGainDraft = $null
+    $script:audioGainPendingRequest = $null
+    $script:audioGainExpiredRequests = @{}
+    $script:audioGainAwaitingStatus = $false
+    $script:audioGainTimedOutDraftRevision = [uint64]0
+    $script:audioGainDebounceReady = $false
+    if ($RestoreSavedValues -and $script:portableConfig -and $script:mainWindow) {
+        $values = [pscustomobject]@{
+            revision=[uint64]0
+            radio_playback_gain_milli=(Convert-UiGainSliderToMilli -Value ([double]$script:portableConfig.audio.radio_playback_gain))
+            mic_transmit_gain_milli=(Convert-UiGainSliderToMilli -Value ([double]$script:portableConfig.audio.mic_transmit_gain))
+        }
+        [void](Set-UiAudioGainSliders -Gains $values)
+    }
+    Set-UiAudioGainStatus -Text $(if ($Capability) { '正在读取当前增益' } else { '' })
+    Update-UiAudioGainControls
+}
+
+function Save-UiAudioGainsFromReadback {
+    param([Parameter(Mandatory=$true)][object]$Gains)
+    if (-not $script:portableConfig -or -not (Test-UiAudioGainsValue -Gains $Gains)) { return $false }
+    try {
+        $candidate = ConvertFrom-Json -InputObject (ConvertTo-Json -InputObject $script:portableConfig -Depth 24 -Compress) -ErrorAction Stop
+        $candidate.audio.radio_playback_gain = [decimal]$Gains.radio_playback_gain_milli / [decimal]1000
+        $candidate.audio.mic_transmit_gain = [decimal]$Gains.mic_transmit_gain_milli / [decimal]1000
+        $saved = Save-WirexPortableConfig -Path $script:portableConfigPath -Config $candidate
+        $script:portableConfig = $saved
+        $script:savedPlaybackGainMilli = [uint32]$Gains.radio_playback_gain_milli
+        $script:savedTransmitGainMilli = [uint32]$Gains.mic_transmit_gain_milli
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Apply-UiAudioGainReadback {
+    param([Parameter(Mandatory=$true)][object]$Gains,[switch]$Persist)
+    if (-not (Test-UiAudioGainsValue -Gains $Gains)) { return $false }
+    if ($script:audioGainActual -and [uint64]$Gains.revision -lt [uint64]$script:audioGainActual.revision) { return $false }
+    $script:audioGainActual = [pscustomobject][ordered]@{
+        revision=[uint64]$Gains.revision
+        radio_playback_gain_milli=[uint32]$Gains.radio_playback_gain_milli
+        mic_transmit_gain_milli=[uint32]$Gains.mic_transmit_gain_milli
+    }
+    if ([uint64]$Gains.revision -gt $script:audioGainRevision) { $script:audioGainRevision = [uint64]$Gains.revision }
+    $script:audioGainRuntimeReady = $true
+    if ($Persist -and -not (Save-UiAudioGainsFromReadback -Gains $Gains)) {
+        Set-UiAudioGainStatus -Text '运行增益已确认；本机配置保存失败。' -Failed
+    }
+    Update-UiPlaybackGainDisplay -Record $null
+    Update-UiAudioGainControls
+    return $true
+}
+
+function Start-UiAudioGainDebounce {
+    if (-not $script:audioGainDebounceTimer) {
+        $script:audioGainDebounceTimer = New-Object System.Windows.Threading.DispatcherTimer
+        $script:audioGainDebounceTimer.Interval = [TimeSpan]::FromMilliseconds(200)
+        $script:audioGainDebounceTimer.Add_Tick({
+            $script:audioGainDebounceTimer.Stop()
+            $script:audioGainDebounceReady = $true
+            [void](Start-UiAudioGainSet)
+        })
+    }
+    if ($script:audioGainDebounceTimer.IsEnabled) { return }
+    $script:audioGainDebounceReady = $false
+    $script:audioGainDebounceTimer.Start()
+}
+
+function Get-UiAudioGainDraft {
+    if (-not $script:mainWindow) { return $null }
+    return [pscustomobject][ordered]@{
+        radio_playback_gain_milli=[uint32](Convert-UiGainSliderToMilli -Value ([double]$script:mainWindow.FindName('PlaybackGainSlider').Value))
+        mic_transmit_gain_milli=[uint32](Convert-UiGainSliderToMilli -Value ([double]$script:mainWindow.FindName('TransmitGainSlider').Value))
+    }
+}
+
+function Start-UiAudioGainSet {
+    if (-not $script:audioGainDebounceReady -or $script:audioGainPendingRequest -or $script:audioGainAwaitingStatus -or
+        -not $script:audioGainNativeCapability -or -not $script:controlConfirmed -or -not $script:audioGainRuntimeReady -or
+        -not $script:supervisor -or $script:supervisor.HasExited -or $script:controlRunId -cne $script:audioGainRunId) { return $false }
+    $draft = Get-UiAudioGainDraft
+    if (-not $draft) { return $false }
+    if ($script:audioGainActual -and [uint32]$draft.radio_playback_gain_milli -eq [uint32]$script:audioGainActual.radio_playback_gain_milli -and
+        [uint32]$draft.mic_transmit_gain_milli -eq [uint32]$script:audioGainActual.mic_transmit_gain_milli) {
+        $script:audioGainResolvedDraftRevision = $script:audioGainDraftRevision
+        $script:audioGainDraft = $null
+        $script:audioGainDebounceReady = $false
+        Set-UiAudioGainStatus -Text '已应用'
+        return $true
+    }
+    $revisionBase = [uint64]$script:audioGainRevision
+    if ($script:audioGainActual -and [uint64]$script:audioGainActual.revision -gt $revisionBase) {
+        $revisionBase = [uint64]$script:audioGainActual.revision
+    }
+    if ($revisionBase -eq [uint64]::MaxValue) { throw '运行增益 revision 已达上限；请重新连接。' }
+    $revision = [uint64]($revisionBase + 1)
+    $requestId = 'audio-gains-' + $revision.ToString([Globalization.CultureInfo]::InvariantCulture)
+    $parameters = [ordered]@{
+        revision=$revision
+        radio_playback_gain_milli=[uint32]$draft.radio_playback_gain_milli
+        mic_transmit_gain_milli=[uint32]$draft.mic_transmit_gain_milli
+    }
+    $parametersJson = ConvertTo-Json -InputObject $parameters -Depth 3 -Compress
+    $pending = [pscustomobject][ordered]@{
+        request_id=$requestId; run_id=$script:controlRunId; revision=$revision
+        radio_playback_gain_milli=[uint32]$draft.radio_playback_gain_milli
+        mic_transmit_gain_milli=[uint32]$draft.mic_transmit_gain_milli
+        draft_revision=[uint64]$script:audioGainDraftRevision; started_utc=[DateTime]::UtcNow
+    }
+    $script:audioGainRevision = $revision
+    $script:audioGainPendingRequest = $pending
+    $script:audioGainDraft = $draft
+    $script:audioGainDebounceReady = $false
+    $script:pendingControlRequests[$requestId] = 'audio.gains.set'
+    Set-UiAudioGainStatus -Text '正在应用'
+    if (-not $script:supervisor.SendControlCommand($requestId,'audio.gains.set',$parametersJson)) {
+        [void]$script:pendingControlRequests.Remove($requestId)
+        $script:audioGainPendingRequest = $null
+        $script:audioGainAwaitingStatus = $true
+        $script:audioGainTimedOutDraftRevision = [uint64]$pending.draft_revision
+        Set-UiAudioGainStatus -Text '增益命令未送达；正在读取当前值。' -Failed
+        Request-UiControlStatus
+        return $false
+    }
+    return $true
+}
+
+function On-UiAudioGainValueChanged {
+    if ($script:audioGainProgrammaticUpdate -or $script:loadingSettings -or -not $script:mainWindow) { return }
+    Update-UiAudioGainValueLabels
+    $connected = ($script:supervisor -and -not $script:supervisor.HasExited)
+    if (-not $connected) {
+        [void](Save-UiAudioSettings)
+        Update-UiAudioGainControls
+        return
+    }
+    if (-not $script:audioGainNativeCapability -or -not $script:controlConfirmed -or -not $script:audioGainRuntimeReady) { return }
+    $script:audioGainDraftRevision++
+    $script:audioGainDraft = Get-UiAudioGainDraft
+    Start-UiAudioGainDebounce
+    Set-UiAudioGainStatus -Text '等待应用'
+}
+
+function Complete-UiAudioGainResult {
+    param([Parameter(Mandatory=$true)][object]$Record)
+    $pending = $script:audioGainPendingRequest
+    $matchingRequest = ($pending -and [string]$pending.request_id -ceq [string]$Record.request_id -and
+        [string]$pending.run_id -ceq [string]$Record.run_id -and [string]$pending.run_id -ceq $script:controlRunId)
+    if ($matchingRequest -and ([DateTime]::UtcNow - [DateTime]$pending.started_utc).TotalSeconds -ge 8) {
+        [void](Expire-UiAudioGainRequest)
+        return $false
+    }
+    if (-not $matchingRequest -or [uint64]$Record.audio_gains.revision -ne [uint64]$pending.revision) {
+        if ($matchingRequest) {
+            $script:audioGainTimedOutDraftRevision = [uint64]$pending.draft_revision
+            $script:audioGainPendingRequest = $null
+            $script:audioGainAwaitingStatus = $true
+        }
+        Set-UiAudioGainStatus -Text '增益确认与当前请求不匹配；正在读取当前值。' -Failed
+        Request-UiControlStatus
+        return $false
+    }
+    $newerDraft = ([uint64]$script:audioGainDraftRevision -gt [uint64]$pending.draft_revision)
+    $script:audioGainPendingRequest = $null
+    $script:audioGainAwaitingStatus = $false
+    $script:audioGainResolvedDraftRevision = [uint64]$pending.draft_revision
+    $applied = Apply-UiAudioGainReadback -Gains $Record.audio_gains -Persist
+    if (-not $applied) { return $false }
+    if (-not $newerDraft) {
+        [void](Set-UiAudioGainSliders -Gains $Record.audio_gains)
+        $script:audioGainDraft = $null
+    }
+    if ($script:audioGainStatusText -cne '运行增益已确认；本机配置保存失败。') {
+        Set-UiAudioGainStatus -Text $(if ($newerDraft) { '已确认上一组增益' } else { '已应用' })
+    }
+    if ($newerDraft -and $script:audioGainDebounceReady) { [void](Start-UiAudioGainSet) }
+    Update-UiAudioGainControls
+    return $applied
+}
+
+function Complete-UiAudioGainFailure {
+    param([Parameter(Mandatory=$true)][object]$Record)
+    if ($script:audioGainPendingRequest -and [string]$script:audioGainPendingRequest.request_id -ceq [string]$Record.request_id -and
+        [string]$script:audioGainPendingRequest.run_id -ceq [string]$Record.run_id) {
+        $script:audioGainTimedOutDraftRevision = [uint64]$script:audioGainPendingRequest.draft_revision
+    }
+    $script:audioGainPendingRequest = $null
+    $script:audioGainAwaitingStatus = $true
+    $script:audioGainDebounceReady = $false
+    if ([string]$Record.result -ceq 'unsupported') { $script:audioGainCommandRejected = $true }
+    Set-UiAudioGainStatus -Text '增益命令未应用；正在读取当前值。' -Failed
+    Update-UiAudioGainControls
+    Request-UiControlStatus
+}
+
+function Complete-UiAudioGainStatus {
+    param([Parameter(Mandatory=$true)][object]$Snapshot)
+    if (-not $script:audioGainNativeCapability -or -not (Test-UiAudioGainsValue -Gains $Snapshot.audio_gains)) { return $false }
+    $wasAwaitingStatus = [bool]$script:audioGainAwaitingStatus
+    $readback = $Snapshot.audio_gains
+    if (-not (Apply-UiAudioGainReadback -Gains $readback)) { return $false }
+    if ($wasAwaitingStatus) {
+        $script:audioGainAwaitingStatus = $false
+        if ([uint64]$script:audioGainDraftRevision -le [uint64]$script:audioGainTimedOutDraftRevision) {
+            [void](Set-UiAudioGainSliders -Gains $readback)
+            $script:audioGainResolvedDraftRevision = [uint64]$script:audioGainDraftRevision
+            $script:audioGainDraft = $null
+            $script:audioGainDebounceReady = $false
+            Set-UiAudioGainStatus -Text '已读取当前增益'
+        } else {
+            if (-not $script:audioGainDebounceReady) { Start-UiAudioGainDebounce }
+            else { [void](Start-UiAudioGainSet) }
+        }
+    } elseif (-not $script:audioGainPendingRequest -and
+        [uint64]$script:audioGainDraftRevision -le [uint64]$script:audioGainResolvedDraftRevision) {
+        [void](Set-UiAudioGainSliders -Gains $readback)
+        Set-UiAudioGainStatus -Text ''
+    }
+    Update-UiAudioGainControls
+    return $true
+}
+
+function Consume-UiAudioGainExpiredResult {
+    param([Parameter(Mandatory=$true)][object]$Record)
+    if ([string]$Record.command -cne 'audio.gains.set' -or
+        -not $script:audioGainExpiredRequests.ContainsKey([string]$Record.request_id)) { return $false }
+    [void]$script:audioGainExpiredRequests.Remove([string]$Record.request_id)
+    return $true
+}
+
+function Remember-UiAudioGainExpiredRequest {
+    param([Parameter(Mandatory=$true)][object]$Pending)
+    $script:audioGainExpiredRequests[[string]$Pending.request_id] = $Pending
+    if ($script:audioGainExpiredRequests.Count -gt 32) {
+        $oldest = @($script:audioGainExpiredRequests.GetEnumerator() | Sort-Object { [DateTime]$_.Value.started_utc } | Select-Object -First 1)
+        if ($oldest.Count -gt 0) { [void]$script:audioGainExpiredRequests.Remove([string]$oldest[0].Key) }
+    }
+}
+
+function Expire-UiAudioGainRequest {
+    if (-not $script:audioGainPendingRequest -or
+        ([DateTime]::UtcNow - [DateTime]$script:audioGainPendingRequest.started_utc).TotalSeconds -lt 8) { return $false }
+    $pending = $script:audioGainPendingRequest
+    [void]$script:pendingControlRequests.Remove([string]$pending.request_id)
+    Remember-UiAudioGainExpiredRequest -Pending $pending
+    $script:audioGainPendingRequest = $null
+    $script:audioGainAwaitingStatus = $true
+    $script:audioGainTimedOutDraftRevision = [uint64]$pending.draft_revision
+    Set-UiAudioGainStatus -Text '增益确认超时；正在读取当前值。' -Failed
+    Request-UiControlStatus
+    return $true
+}
+
 function Request-UiRoutingStatus {
     if (-not $script:supervisor -or $script:supervisor.HasExited -or -not $script:controlConfirmed -or -not $script:routingCapabilities) { return }
     if ($script:pendingRoutingStatusRequestId) { return }
@@ -4071,19 +4532,29 @@ function Save-UiRoutingMutationAfterAck {
 function Invoke-UiRoutingDiagnosticChannelQuickCallButton {
     param([Parameter(Mandatory=$true)][object]$Channel)
     $key=Get-UiChannelKey -Channel $Channel
-    $panel=$script:mainWindow.FindName('ChannelListPanel')
-    foreach($item in @($panel.Children)){
-        if($item -isnot [System.Windows.Controls.Border] -or $item.Child -isnot [System.Windows.Controls.StackPanel]){continue}
-        foreach($candidate in @($item.Child.Children)){
-            if($candidate -isnot [System.Windows.Controls.Button] -or -not $candidate.Tag -or [string]$candidate.Tag.action -cne 'quick_call'){continue}
+    $panel=$script:mainWindow.FindName('ChannelCardsPanel')
+    foreach($card in @($panel.Children)){
+        if($card -isnot [System.Windows.Controls.Border] -or $card.Child -isnot [System.Windows.Controls.Grid]){continue}
+        if($card.Child.Children.Count -lt 2){continue}
+        $actions=$card.Child.Children[1]
+        if($actions -isnot [System.Windows.Controls.Primitives.UniformGrid]){continue}
+        foreach($candidate in @($actions.Children)){
+            if($candidate -isnot [System.Windows.Controls.Button] -or -not $candidate.Tag -or [string]$candidate.Tag.action -cne 'more'){continue}
             if((Get-UiChannelKey -Channel $candidate.Tag.channel) -cne $key){continue}
-            if(-not $candidate.IsEnabled){throw '频道动态组激活按钮未启用。'}
+            if(-not $candidate.IsEnabled){throw '频道更多操作按钮未启用。'}
             $eventArgs=[System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)
             $candidate.RaiseEvent($eventArgs)
+            $menu=$candidate.ContextMenu
+            if(-not $menu -or -not $menu.IsOpen){throw '频道更多操作菜单未打开。'}
+            $quickItem=@($menu.Items | Where-Object { [string]$_.Header -ceq '激活组' }) | Select-Object -First 1
+            if(-not $quickItem -or -not $quickItem.IsEnabled){throw '频道激活组菜单项未启用。'}
+            $quickEvent=[System.Windows.RoutedEventArgs]::new([System.Windows.Controls.MenuItem]::ClickEvent)
+            $quickItem.RaiseEvent($quickEvent)
+            $menu.IsOpen=$false
             return
         }
     }
-    throw '没有找到本机诊断频道的实际激活按钮。'
+    throw '没有找到本机诊断频道的实际激活操作。'
 }
 
 function Start-UiRoutingDiagnosticAutoTest {
@@ -5128,6 +5599,7 @@ function On-UiTimerTick {
             Process-UiControlEvents
             if ($script:channelMutationSafetyStopPending) { return }
             [void](Expire-UiNativeIdentityUpdate)
+            [void](Expire-UiAudioGainRequest)
             if ($script:pendingQuickCall -and -not [bool]$script:pendingQuickCall.timed_out -and
                 ([DateTime]::UtcNow - [DateTime]$script:pendingQuickCall.started_utc).TotalSeconds -ge 8) {
                 $script:pendingQuickCall.timed_out = $true
@@ -5412,6 +5884,9 @@ function Apply-UiPortableConfigToControls {
     $baud=$script:mainWindow.FindName('CatBaudRateBox'); if ($baud) { [void](Set-UiComboValue -Combo $baud -Value ([string]$script:portableConfig.devices.cat_baud_rate)) }
     $play=$script:mainWindow.FindName('PlaybackGainSlider'); if ($play) { $play.Value=[double]$script:portableConfig.audio.radio_playback_gain }
     $mic=$script:mainWindow.FindName('TransmitGainSlider'); if ($mic) { $mic.Value=[double]$script:portableConfig.audio.mic_transmit_gain }
+    $script:savedPlaybackGainMilli=Convert-UiGainSliderToMilli -Value ([double]$script:portableConfig.audio.radio_playback_gain)
+    $script:savedTransmitGainMilli=Convert-UiGainSliderToMilli -Value ([double]$script:portableConfig.audio.mic_transmit_gain)
+    Update-UiAudioGainValueLabels
     Update-UiChannelDisplays
 }
 
@@ -5419,10 +5894,15 @@ function Set-ConnectionConfigLocked {
     $locked=[bool]($script:preparationStarted -or $script:stopTask -or $script:prepareStopAsync -or $script:nativeExitCleanupPending -or
         $script:channelMutationSafetyStopPending -or ($script:supervisor -and -not $script:supervisor.HasExited))
     foreach ($name in @('CallsignBox','GatewayBox','SourceBox','MasterPresetBox','MasterBox','MasterPortBox','ColorCodeBox','SerialBox',
-            'WaveInEndpointBox','WaveOutEndpointBox','RefreshDevicesButton','CatPortBox','CatBaudRateBox','BmApiKeyBox','PasswordBox','SaveSettingsButton')) {
+            'WaveInEndpointBox','WaveOutEndpointBox','RefreshDevicesButton','CatPortBox','CatBaudRateBox','PasswordBox')) {
         $control=if ($script:mainWindow) { $script:mainWindow.FindName($name) } else { $null }; if ($control) { $control.IsEnabled=-not $locked }
     }
+    $saveBlocked = [bool]($script:preparationStarted -or $script:stopTask -or $script:prepareStopAsync -or
+        $script:nativeExitCleanupPending -or $script:channelMutationSafetyStopPending -or $script:radioCatOperationPowerShell)
+    $saveButton = if ($script:mainWindow) { $script:mainWindow.FindName('SaveSettingsButton') } else { $null }
+    if ($saveButton) { $saveButton.IsEnabled = -not $saveBlocked }
     if (Get-Command Set-BmManagementUiControlState -ErrorAction SilentlyContinue) { Set-BmManagementUiControlState }
+    Update-UiAudioGainControls
 }
 
 function Set-ConnectionButtonState {
@@ -5498,8 +5978,11 @@ function Save-SettingsFromWindow {
         $waveOut=Get-UiComboValue -Combo (Get-UiControl 'WaveOutEndpointBox'); if ($waveOut) { $d.wave_out_endpoint_id=$waveOut }
         $cat=Get-UiControl 'CatPortBox'; if ($cat.Text) { $d.cat_port=([string]$cat.Text).Trim() }
         $baud=Get-UiComboValue -Combo (Get-UiControl 'CatBaudRateBox'); if ($baud) { $d.cat_baud_rate=[int]$baud }; $d.cat_stop_bits='Two'
-        $play=Get-UiControl 'PlaybackGainSlider'; if ($play) { $a.radio_playback_gain=[Math]::Round([decimal]$play.Value,3) }
-        $mic=Get-UiControl 'TransmitGainSlider'; if ($mic) { $a.mic_transmit_gain=[Math]::Round([decimal]$mic.Value,3) }
+        $runtimeConnected = ($script:supervisor -and -not $script:supervisor.HasExited)
+        if (-not $runtimeConnected) {
+            $play=Get-UiControl 'PlaybackGainSlider'; if ($play) { $a.radio_playback_gain=[Math]::Round([decimal]$play.Value,3) }
+            $mic=Get-UiControl 'TransmitGainSlider'; if ($mic) { $a.mic_transmit_gain=[Math]::Round([decimal]$mic.Value,3) }
+        }
         if ($script:radioControlPreferences -and $script:radioControlPreferences.desired_power_watts) { $d.desired_power_watts=[int]$script:radioControlPreferences.desired_power_watts }
         $script:portableConfig=Save-WirexPortableConfig -Path $script:portableConfigPath -Config $script:portableConfig
         $script:storedProfile=$null
@@ -5527,6 +6010,7 @@ function ConvertTo-UiOptionalUnsigned {
 
 function Save-UiAudioSettings {
     if (-not $script:portableConfig -or -not $script:mainWindow) { return $false }
+    if ($script:supervisor -and -not $script:supervisor.HasExited) { return $false }
     try {
         $play=[Math]::Round([decimal](Get-UiControl 'PlaybackGainSlider').Value,3)
         $mic=[Math]::Round([decimal](Get-UiControl 'TransmitGainSlider').Value,3)
@@ -5536,6 +6020,8 @@ function Save-UiAudioSettings {
         $script:portableConfig.audio.mic_transmit_gain=$mic
         $script:portableConfig=Save-WirexPortableConfig -Path $script:portableConfigPath -Config $script:portableConfig
         $script:savedPlaybackGainMilli=Convert-UiGainSliderToMilli -Value ([double]$play)
+        $script:savedTransmitGainMilli=Convert-UiGainSliderToMilli -Value ([double]$mic)
+        Update-UiAudioGainValueLabels
         return $true
     } catch {
         Set-UiChannelStatus -Text '音量设置保存失败。' -Failed $true
@@ -5693,6 +6179,7 @@ Set-OfflineDisplay
 $script:startupNeedsSettings = ($null -eq $script:storedProfile)
 if ($script:portableConfigError) { Set-MainText -Name 'FooterText' -Text $script:portableConfigError }
 Add-UiComboOpenHandlers -Window $script:mainWindow
+Register-UiSetupLinks
 (Get-UiControl 'ConnectButton').Add_Click({
     if ($script:supervisor -and -not $script:supervisor.HasExited) { Request-Reconnect; return }
     if ($script:profileEditable -or -not $script:storedProfile) { [void](Save-SettingsFromWindow -ConnectAfterSave); return }
@@ -5713,8 +6200,8 @@ Add-UiComboOpenHandlers -Window $script:mainWindow
         (Get-UiControl 'MasterPortBox').Text='62031'
     }
 })
-(Get-UiControl 'PlaybackGainSlider').Add_ValueChanged({ [void](Save-UiAudioSettings) })
-(Get-UiControl 'TransmitGainSlider').Add_ValueChanged({ [void](Save-UiAudioSettings) })
+(Get-UiControl 'PlaybackGainSlider').Add_ValueChanged({ On-UiAudioGainValueChanged })
+(Get-UiControl 'TransmitGainSlider').Add_ValueChanged({ On-UiAudioGainValueChanged })
 (Get-UiControl 'ChannelIdBox').Add_TextChanged({
     $id=([string](Get-UiControl 'ChannelIdBox').Text).Trim(); $kind=Get-UiControl 'ChannelKindBox'
     if ($id -in @('460997','9990')) { $kind.SelectedIndex=1 } elseif ($id -in @('91','46001')) { $kind.SelectedIndex=2 }
@@ -5836,10 +6323,19 @@ if ($RenderOnly) {
     $script:channels=@($script:channels)+@((New-UiChannelRecord -Id 91 -Kind group -Slot 2))
     $script:channels+=@((New-UiChannelRecord -Id 9990 -Kind private -Slot 2))
     Update-UiChannelDisplays
+    $script:mainWindow.FindName('CatOperatingPanel').Visibility=[Windows.Visibility]::Visible
+    $script:mainWindow.FindName('CatObservedMainModeText').Text='FM'
+    $script:mainWindow.FindName('CatObservedFrequencyText').Text='145.500 MHz'
+    $script:mainWindow.FindName('CatObservedPowerText').Text='25 W'
+    $script:mainWindow.FindName('CatObservedPanel').Visibility=[Windows.Visibility]::Visible
     $script:callIdentityCache['460997']=[pscustomobject]@{source_id=[uint32]460997;id=[uint32]460997;callsign='TEST';name='Sample Operator';status='found';display_name='TEST'}
     $history=[pscustomobject][ordered]@{run_id='render-fixture';current_call_valid=$true;current_call_generation=[uint64]1;current_call_source_id=[uint64]460997;current_call_destination_id=[uint64]3149876;current_call_slot=[uint64]2;current_call_kind='P';timestamp_utc_ms=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()}
     $catPanel=$script:mainWindow.FindName('RadioCatPanel');if($catPanel){$catPanel.Visibility=[Windows.Visibility]::Visible}
     $script:mainWindow.Show(); Invoke-UiDispatcherPriority -Priority ([System.Windows.Threading.DispatcherPriority]::Render)
+    Set-MainText -Name 'BmValue' -Text '已连接'
+    $script:mainWindow.FindName('BmRttValue').Text='42 ms · 3 次'
+    $script:mainWindow.FindName('BmRttValue').Visibility=[Windows.Visibility]::Visible
+    $script:mainWindow.FindName('BmRttMetric').Visibility=[Windows.Visibility]::Visible
     [void](Get-UiControl 'CallHistoryList').Items.Add([pscustomobject]@{text='10:00:00 · 单呼 · 本机 DMR ID 3149876 · TS2 · 来源 TEST · Sample Operator'})
     $script:latestStatus=[pscustomobject][ordered]@{run_id='render-fixture';current_call_valid=$true;current_call_generation=[uint64]1;current_call_source_id=[uint64]460997;current_call_destination_id=[uint64]3149876;current_call_slot=[uint64]2;current_call_kind='P'}
     $script:lastStatusUtc=[DateTime]::UtcNow
@@ -5861,12 +6357,11 @@ if ($RenderOnly) {
     $slotEvidence=Get-UiComboContrastEvidence -Combo $settings.FindName('ChannelSlotBox')
     $slotProbe=Test-UiComboMouseOpen -Combo $settings.FindName('ChannelSlotBox')
     $channelCardsEvidence=@($script:mainWindow.FindName('ChannelCardsPanel').Children | ForEach-Object {
-        [pscustomobject]@{height=[double]$_.ActualHeight;min_height=[double]$_.MinHeight;buttons=@(Get-UiVisualButtonTexts -Root $_);text=@(Get-UiVisualTextValues -Root $_)}
+        $callArea=@($_.Child.Children[0].Children | Where-Object { $_ -is [System.Windows.Controls.Border] -and [string]$_.Tag -ceq 'ChannelCallArea' }) | Select-Object -First 1
+        $actions=$_.Child.Children[1]
+        [pscustomobject]@{height=[double]$_.ActualHeight;min_height=[double]$_.MinHeight;call_active=[bool]$_.Tag.call_active;call_area_height=[double]$callArea.ActualHeight;action_count=[int]$actions.Children.Count;buttons=@(Get-UiVisualButtonTexts -Root $_);text=@(Get-UiVisualTextValues -Root $_)}
     })
-    $channelListEvidence=@($script:mainWindow.FindName('ChannelListPanel').Children | ForEach-Object {
-        [pscustomobject]@{height=[double]$_.ActualHeight;buttons=@(Get-UiVisualButtonTexts -Root $_);text=@(Get-UiVisualTextValues -Root $_)}
-    })
-    $controlNames=@('ConsoleTop','DashboardPanel','ConnectionConfigPanel','DailyControlsPanel','ConnectButton','SaveSettingsButton','ChannelConsolePanel','ChannelCardsScroll','ChannelIdBox','ChannelKindBox','AddChannelButton','ChannelListPanel','BmApiKeyBox','PasswordBox','RefreshDevicesButton','RadioDetailsExpander','CallHistoryList','CatMainModeBox','CatObservedMainModeText','CatObservedFrequencyText','CatObservedPowerText')
+    $controlNames=@('ConsoleTop','DashboardPanel','ConnectionConfigPanel','DailyControlsPanel','ConnectButton','SaveSettingsButton','ChannelConsolePanel','ChannelCardsScroll','ChannelCardsPanel','ChannelIdBox','ChannelKindBox','MakeChannelTxTargetCheckBox','ChannelAdvancedButton','AddChannelButton','BmStatusCard','BmValue','BmRttMetric','BmRttValue','BmApiKeyBox','PasswordBox','RefreshDevicesButton','RadioDetailsExpander','CallHistoryList','CatOperatingPanel','CatObservedPanel','CatObservedMainModeText','CatObservedFrequencyText','CatObservedPowerText','PlaybackGainSlider','TransmitGainSlider')
     $layout=[pscustomobject][ordered]@{
         render_only=$true; work_area_width=$script:workAreaWidth; work_area_height=$script:workAreaHeight
         max_window_width=$script:maxWindowWidth; max_window_height=$script:maxWindowHeight
@@ -5875,7 +6370,7 @@ if ($RenderOnly) {
         combo_contrast=@($comboContrast)+@($slotEvidence)
         combo_interaction=[pscustomobject][ordered]@{cat_port=$catPortProbe;advanced_slot=$slotProbe}
         channel_cards=@($script:channels | ForEach-Object { [pscustomobject]@{key=(Get-UiChannelKey -Channel $_);title=('{0} {1} · TS{2}' -f $_.kind,$_.id,$_.slot)} })
-        channel_card_layout=$channelCardsEvidence;channel_list_layout=$channelListEvidence
+        channel_card_layout=$channelCardsEvidence;channel_list_present=($null -ne $script:mainWindow.FindName('ChannelListPanel'))
         history_count=@((Get-UiControl 'CallHistoryList').Items).Count
         caller_card_text=@(Get-UiVisualTextValues -Root (Get-UiControl 'ChannelCardsPanel'))
         favorites_present=$false; transmit_enabled_control_present=$false; stop_bits_control_present=($null -ne $script:mainWindow.FindName('CatStopBitsBox'))

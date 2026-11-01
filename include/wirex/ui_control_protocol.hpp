@@ -113,6 +113,12 @@ struct StatusSnapshot {
     bool serial_open{false};
     bool wavein_open{false};
     bool waveout_open{false};
+    struct AudioGains {
+        std::uint64_t revision{};
+        std::uint32_t radio_playback_gain_milli{1000U};
+        std::uint32_t mic_transmit_gain_milli{16000U};
+    };
+    std::optional<AudioGains> audio_gains{};
 };
 
 struct DispatchResult {
@@ -143,6 +149,12 @@ struct RoutingCallbacks {
     std::function<QuickCallOutcome(const talkgroup_routing::GroupRoute&)> quick_call_join{};
     std::function<radio_identity_cache::UpsertResult(
         std::uint32_t, std::uint64_t, std::optional<std::string_view>)> update_radio_identity{};
+    struct AudioGainApplyResult {
+        bool applied{false};
+        std::uint32_t radio_playback_gain_milli{};
+        std::uint32_t mic_transmit_gain_milli{};
+    };
+    std::function<AudioGainApplyResult(std::uint32_t, std::uint32_t)> set_audio_gains{};
     std::function<std::string()> snapshot_json{};
 };
 
@@ -160,6 +172,11 @@ public:
     [[nodiscard]] bool supports_routing() const noexcept { return routing_enabled_; }
     [[nodiscard]] bool supports_quick_call() const noexcept { return quick_call_enabled_; }
     [[nodiscard]] bool supports_radio_identity() const noexcept { return radio_identity_enabled_; }
+    [[nodiscard]] bool supports_audio_gains() const noexcept { return audio_gains_enabled_; }
+    [[nodiscard]] std::uint64_t audio_gains_revision() const noexcept
+    {
+        return last_audio_gains_mutation_.has_value() ? last_audio_gains_mutation_->actual.revision : 0U;
+    }
     [[nodiscard]] std::uint64_t control_seq() const noexcept { return control_seq_; }
     [[nodiscard]] std::size_t cached_result_count() const noexcept
     {
@@ -176,6 +193,13 @@ private:
         bool shutdown_requested{false};
     };
 
+    struct AudioGainsMutation {
+        std::uint64_t revision{};
+        std::uint32_t requested_radio_playback_gain_milli{};
+        std::uint32_t requested_mic_transmit_gain_milli{};
+        StatusSnapshot::AudioGains actual{};
+    };
+
     [[nodiscard]] std::string serialize_result(std::string_view request_id,
                                               std::string_view command,
                                               std::string_view result,
@@ -190,6 +214,7 @@ private:
     bool routing_enabled_{false};
     bool quick_call_enabled_{false};
     bool radio_identity_enabled_{false};
+    bool audio_gains_enabled_{false};
     RoutingCallbacks routing_{};
     bool ready_emitted_{false};
     bool hello_seen_{false};
@@ -200,6 +225,7 @@ private:
     std::size_t non_shutdown_requests_{};
     std::map<std::string, CachedResult, std::less<>> cache_{};
     std::optional<CachedResult> cache_full_rejection_{};
+    std::optional<AudioGainsMutation> last_audio_gains_mutation_{};
 };
 
 } // namespace wirex::ui_control

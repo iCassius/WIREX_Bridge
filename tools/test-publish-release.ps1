@@ -807,6 +807,40 @@ try {
         'alpha.14 publisher rejects a credentials directory even when manifest files are fixed'
     Remove-Item -LiteralPath $alpha14CredentialDirectory -Recurse -Force -ErrorAction Stop
 
+    $alpha15Root = Join-Path $testRoot 'package-alpha15'
+    Copy-Item -LiteralPath $alpha14Root -Destination $alpha15Root -Recurse
+    $alpha15Profile = Set-PublishProfile -Tag 'v0.1.0-alpha.15'
+    Write-Utf8NoBom -Path (Join-Path $alpha15Root 'README.md') -Text 'synthetic alpha.15 package README'
+    $alpha15LauncherPath = Join-Path $alpha15Root 'tools\start-wirex-bridge.ps1'
+    Write-Utf8NoBom -Path $alpha15LauncherPath -Text 'synthetic alpha.15 launcher'
+    $alpha15ManifestPath = Join-Path $alpha15Root 'manifest.json'
+    $alpha15Manifest = [System.IO.File]::ReadAllText($alpha15ManifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    foreach ($relativePath in @('README.md', 'tools/start-wirex-bridge.ps1')) {
+        $fullPath = Join-Path $alpha15Root $relativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+        $record = @($alpha15Manifest.files | Where-Object { [string]$_.path -ceq $relativePath })
+        if ($record.Count -ne 1) { throw ('alpha.15 test fixture lacks a unique manifest record for ' + $relativePath) }
+        $record[0].length_bytes = [long](Get-Item -LiteralPath $fullPath).Length
+        $record[0].sha256 = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $record[0].source = 'synthetic alpha.15 test content'
+    }
+    $alpha15Manifest.version = 'v0.1.0-alpha.15'
+    $alpha15Manifest.tag_candidate = 'v0.1.0-alpha.15'
+    $alpha15Manifest.release_scope = 'R119 DIRECT: CAT polling stability and runtime audio gain control'
+    $alpha15Manifest.build.passed_test_count = $alpha15Profile.TestNames.Count
+    $alpha15Manifest.build.passed_tests = @($alpha15Profile.TestNames)
+    Write-Utf8NoBom -Path $alpha15ManifestPath -Text ((ConvertTo-Json -InputObject $alpha15Manifest -Depth 12) + [Environment]::NewLine)
+    $alpha15Package = Assert-PublishPackage -PackageRoot $alpha15Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.15'
+    Assert-True ($alpha15Package.Assets.Count -eq $alpha14Package.Assets.Count -and
+        $alpha15Profile.AssetPathMap.Count -eq $alpha14Profile.AssetPathMap.Count) `
+        'alpha.15 publisher accepts the unchanged alpha.14 asset inventory with its new versioned README and launcher source'
+    Assert-True (@($alpha15Package.Manifest.excluded_private_files | Where-Object { [string]$_ -ceq 'config.json' }).Count -eq 1 -and
+        @($alpha15Package.Manifest.excluded_private_files | Where-Object { [string]$_ -ceq 'credentials/' }).Count -eq 1) `
+        'alpha.15 manifest retains package-root configuration and credential exclusions'
+    $alpha15Manifest.excluded_private_files = @($alpha15Manifest.excluded_private_files | Where-Object { [string]$_ -cne 'config.json' })
+    Write-Utf8NoBom -Path $alpha15ManifestPath -Text ((ConvertTo-Json -InputObject $alpha15Manifest -Depth 12) + [Environment]::NewLine)
+    Assert-Throws { Assert-PublishPackage -PackageRoot $alpha15Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.15' } `
+        'alpha.15 publisher rejects a manifest that omits the package-root config exclusion'
+
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.9')
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.1')
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.1')

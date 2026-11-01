@@ -1,5 +1,8 @@
 ﻿[CmdletBinding()]
-param([Parameter(Mandatory=$true)][string]$NativeExecutable)
+param(
+    [Parameter(Mandatory=$true)][string]$NativeExecutable,
+    [string]$UiPackageDirectory = ''
+)
 
 $ErrorActionPreference = 'Stop'
 function Assert-UiControl {
@@ -36,12 +39,22 @@ function Assert-UiControlFrameRejected {
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $NativeExecutable = [System.IO.Path]::GetFullPath($NativeExecutable)
 if (-not [System.IO.File]::Exists($NativeExecutable)) { throw "缺少 Native 控制诊断核心：$NativeExecutable" }
-$uiScript = Join-Path $repoRoot 'ui\windows\bridge-ui.ps1'
+$uiWindowsDirectory = Join-Path $repoRoot 'ui\windows'
+if (-not [string]::IsNullOrWhiteSpace($UiPackageDirectory)) {
+    $UiPackageDirectory = [System.IO.Path]::GetFullPath($UiPackageDirectory)
+    $uiWindowsDirectory = Join-Path $UiPackageDirectory 'ui\windows'
+}
+$uiScript = Join-Path $uiWindowsDirectory 'bridge-ui.ps1'
+$supervisorSource = Join-Path $uiWindowsDirectory 'BridgeSupervisor.cs'
+if (-not [System.IO.File]::Exists($uiScript) -or -not [System.IO.File]::Exists($supervisorSource)) {
+    throw "缺少用于离线协议测试的 UI 文件：$uiWindowsDirectory"
+}
 $tokens = $null
 $parseErrors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($uiScript, [ref]$tokens, [ref]$parseErrors)
 Assert-UiControl ($parseErrors.Count -eq 0) 'bridge-ui.ps1 PowerShell 5.1 语法解析失败。'
-foreach ($functionName in @('Test-UiExactControlFields','Test-UiControlUnsigned','Test-UiControlSnapshot',
+foreach ($functionName in @('Test-UiExactControlFields','Test-UiControlUnsigned','Test-UiAudioGainsValue',
+        'Test-UiAudioGainCapability','Test-UiControlSnapshot',
         'Test-UiRxPolicy','Test-UiRoutingCapabilityList','Test-UiRoutingSnapshot','ConvertFrom-UiControlFrame')) {
     $functionAst = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $functionName }, $true)
     Assert-UiControl ($null -ne $functionAst) "缺少控制消息验证函数：$functionName"
@@ -52,13 +65,26 @@ $quickCallRoutingCommands = $legacyRoutingCommands + 'network_subscription.quick
 $identityBasicCommands = [string[]]@('hello','status','shutdown','radio_identity.cache_upsert')
 $identityRoutingCommands = $legacyRoutingCommands + 'radio_identity.cache_upsert'
 $identityQuickCallCommands = $quickCallRoutingCommands + 'radio_identity.cache_upsert'
+$audioBasicCommands = $legacyRoutingCommands[0..2] + 'audio.gains.set'
+$audioRoutingCommands = $legacyRoutingCommands + 'audio.gains.set'
+$audioQuickCallRoutingCommands = $quickCallRoutingCommands + 'audio.gains.set'
+$audioIdentityBasicCommands = $identityBasicCommands + 'audio.gains.set'
+$audioIdentityRoutingCommands = $identityRoutingCommands + 'audio.gains.set'
+$audioIdentityQuickCallCommands = $identityQuickCallCommands + 'audio.gains.set'
 Assert-UiControl (Test-UiRoutingCapabilityList -Commands $legacyRoutingCommands) '界面必须继续接受旧版六命令路由核心。'
 Assert-UiControl (Test-UiRoutingCapabilityList -Commands $quickCallRoutingCommands) '界面必须识别新增Quick Call命令能力。'
 Assert-UiControl (Test-UiRoutingCapabilityList -Commands $identityBasicCommands) '界面必须识别基础 Native identity capability。'
 Assert-UiControl (Test-UiRoutingCapabilityList -Commands $identityRoutingCommands) '界面必须识别带 Native identity 的路由能力集。'
 Assert-UiControl (Test-UiRoutingCapabilityList -Commands $identityQuickCallCommands) '界面必须识别带 Native identity 的完整能力集。'
-Add-Type -Path (Join-Path $repoRoot 'ui\windows\BridgeSupervisor.cs')
+Assert-UiControl (Test-UiRoutingCapabilityList -Commands $audioBasicCommands) '界面必须识别仅含音量控制的新版 Native 能力集。'
+Assert-UiControl (Test-UiRoutingCapabilityList -Commands $audioRoutingCommands) '界面必须识别路由与音量能力组合。'
+Assert-UiControl (Test-UiRoutingCapabilityList -Commands $audioQuickCallRoutingCommands) '界面必须识别动态组呼与音量能力组合。'
+Assert-UiControl (Test-UiRoutingCapabilityList -Commands $audioIdentityBasicCommands) '界面必须识别 identity 与音量能力组合。'
+Assert-UiControl (Test-UiRoutingCapabilityList -Commands $audioIdentityRoutingCommands) '界面必须识别路由、identity 与音量能力组合。'
+Assert-UiControl (Test-UiRoutingCapabilityList -Commands $audioIdentityQuickCallCommands) '界面必须识别完整 Native 能力组合。'
+Add-Type -Path $supervisorSource
 $supervisor = New-Object WirexBridge.Ui.BridgeSupervisor
+$noGainSupervisor = New-Object WirexBridge.Ui.BridgeSupervisor
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('wirex-ui-routing-control-' + [guid]::NewGuid().ToString('N'))
 [System.IO.Directory]::CreateDirectory($tempRoot) | Out-Null
 $passed = $false
@@ -66,7 +92,8 @@ try {
     $supervisor.Start($NativeExecutable, [string[]]@('--routing-diagnostic','--ui-pipe','--ui-control-version','2'), $tempRoot, 2)
     $readyLine = Wait-UiControlEvent -Supervisor $supervisor -Type 'control_ready' -Command '' -RequestId '' -TimeoutMilliseconds 10000
     $ready = ConvertFrom-UiControlFrame -Json $readyLine -ExpectedProcessId $supervisor.ProcessId
-    $expectedCommands = 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join,radio_identity.cache_upsert'
+    $expectedCommands = 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join,radio_identity.cache_upsert,audio.gains.set'
+    $script:controlCapabilities = @($ready.supported_commands) -join ','
     Assert-UiControl ([bool]$ready.diagnostic -and $ready.control_version -eq 2 -and
         (@($ready.supported_commands) -join ',' -ceq $expectedCommands)) 'ready 必须报告 v2 本地路由诊断与完整命令集。'
     Assert-UiControl $supervisor.SetControlRunId([string]$ready.run_id) 'Supervisor 必须锁定本次进程的 run_id。'
@@ -95,6 +122,85 @@ try {
     $status = ConvertFrom-UiControlFrame -Json $statusLine -LockedRunId $ready.run_id -LastControlSequence $lastControlSequence
     Assert-UiControl ($status.result -ceq 'ok' -and $status.routing.local_source_id -eq 1) 'routing.status 必须返回当前完整快照。'
     $lastControlSequence = [uint64]$status.control_seq
+
+    $initialStatusId = [guid]::NewGuid().ToString('D')
+    Assert-UiControl ($supervisor.SendControlCommand($initialStatusId,'status')) 'status 必须能查询 Native 实际音量初值。'
+    $initialStatusLine = Wait-UiControlEvent -Supervisor $supervisor -Type 'control_result' -Command 'status' -RequestId $initialStatusId
+    $initialStatus = ConvertFrom-UiControlFrame -Json $initialStatusLine -LockedRunId $ready.run_id -LastControlSequence $lastControlSequence
+    Assert-UiControl ($initialStatus.result -ceq 'ok' -and $initialStatus.snapshot.audio_gains.revision -eq 0 -and
+        $initialStatus.snapshot.audio_gains.radio_playback_gain_milli -eq 1000 -and
+        $initialStatus.snapshot.audio_gains.mic_transmit_gain_milli -eq 16000) 'status 必须返回默认增益和 revision=0。'
+    $lastControlSequence = [uint64]$initialStatus.control_seq
+
+    $gainRouteBefore = ConvertTo-Json -InputObject $status.routing -Depth 12 -Compress
+    $gainRequestId = 'audio-gains-1'
+    $gainParameters = '{"revision":1,"radio_playback_gain_milli":1250,"mic_transmit_gain_milli":8000}'
+    Assert-UiControl ($supervisor.SendControlCommand($gainRequestId,'audio.gains.set',$gainParameters)) `
+        'BridgeSupervisor 白名单必须允许有界的 Native 实时音量命令。'
+    $gainLine = Wait-UiControlEvent -Supervisor $supervisor -Type 'control_result' -Command 'audio.gains.set' -RequestId $gainRequestId
+    $gainAck = ConvertFrom-UiControlFrame -Json $gainLine -LockedRunId $ready.run_id -LastControlSequence $lastControlSequence
+    Assert-UiControl ($gainAck.result -ceq 'ok' -and $gainAck.audio_gains.revision -eq 1 -and
+        $gainAck.audio_gains.radio_playback_gain_milli -eq 1250 -and
+        $gainAck.audio_gains.mic_transmit_gain_milli -eq 8000 -and -not $gainAck.replayed) `
+        'Native 必须 ACK 两路增益的实际值和单调 revision。'
+    $lastControlSequence = [uint64]$gainAck.control_seq
+
+    Assert-UiControl ($supervisor.SendControlCommand($gainRequestId,'audio.gains.set',$gainParameters)) `
+        '最新音量值允许通过同 request ID 安全重放。'
+    $gainReplayLine = Wait-UiControlEvent -Supervisor $supervisor -Type 'control_result' -Command 'audio.gains.set' -RequestId $gainRequestId
+    $gainReplay = ConvertFrom-UiControlFrame -Json $gainReplayLine -LockedRunId $ready.run_id -LastControlSequence $lastControlSequence
+    Assert-UiControl ($gainReplay.result -ceq 'ok' -and $gainReplay.replayed -and
+        $gainReplay.audio_gains.radio_playback_gain_milli -eq 1250 -and
+        $gainReplay.audio_gains.mic_transmit_gain_milli -eq 8000) '最新 revision 重放必须返回相同实际音量且不再次应用。'
+    $lastControlSequence = [uint64]$gainReplay.control_seq
+
+    $gainConflictParameters = '{"revision":1,"radio_playback_gain_milli":2000,"mic_transmit_gain_milli":8000}'
+    Assert-UiControl ($supervisor.SendControlCommand($gainRequestId,'audio.gains.set',$gainConflictParameters)) '冲突音量 payload 应进入 Native 校验。'
+    $gainConflictLine = Wait-UiControlEvent -Supervisor $supervisor -Type 'control_result' -Command 'audio.gains.set' -RequestId $gainRequestId
+    $gainConflict = ConvertFrom-UiControlFrame -Json $gainConflictLine -LockedRunId $ready.run_id -LastControlSequence $lastControlSequence
+    Assert-UiControl ($gainConflict.result -ceq 'rejected' -and $gainConflict.error -ceq 'audio_gain_revision_conflict') `
+        '相同 revision 的不同音量对必须被拒绝。'
+    $lastControlSequence = [uint64]$gainConflict.control_seq
+
+    $invalidGainId = 'audio-gains-2'
+    Assert-UiControl ($supervisor.SendControlCommand($invalidGainId,'audio.gains.set',
+        '{"revision":2,"radio_playback_gain_milli":249,"mic_transmit_gain_milli":8000}')) '越界音量值应送 Native 做明确拒绝。'
+    $invalidGainLine = Wait-UiControlEvent -Supervisor $supervisor -Type 'control_result' -Command 'audio.gains.set' -RequestId $invalidGainId
+    $invalidGain = ConvertFrom-UiControlFrame -Json $invalidGainLine -LockedRunId $ready.run_id -LastControlSequence $lastControlSequence
+    Assert-UiControl ($invalidGain.result -ceq 'rejected' -and $invalidGain.error -ceq 'invalid_audio_gains') '0.249x 必须被 Native 拒绝。'
+    $lastControlSequence = [uint64]$invalidGain.control_seq
+
+    $secondGainParameters = '{"revision":2,"radio_playback_gain_milli":750,"mic_transmit_gain_milli":12000}'
+    Assert-UiControl ($supervisor.SendControlCommand($invalidGainId,'audio.gains.set',$secondGainParameters)) '失败 revision 不前进，修正后的同 revision 应可重试。'
+    $secondGainLine = Wait-UiControlEvent -Supervisor $supervisor -Type 'control_result' -Command 'audio.gains.set' -RequestId $invalidGainId
+    $secondGain = ConvertFrom-UiControlFrame -Json $secondGainLine -LockedRunId $ready.run_id -LastControlSequence $lastControlSequence
+    Assert-UiControl ($secondGain.result -ceq 'ok' -and $secondGain.audio_gains.revision -eq 2 -and
+        $secondGain.audio_gains.radio_playback_gain_milli -eq 750 -and
+        $secondGain.audio_gains.mic_transmit_gain_milli -eq 12000) '校正请求必须确认最新两个实际音量。'
+    $lastControlSequence = [uint64]$secondGain.control_seq
+
+    $gainStatusId = [guid]::NewGuid().ToString('D')
+    Assert-UiControl ($supervisor.SendControlCommand($gainStatusId,'status')) '音量更新后 Native 状态查询应可用。'
+    $gainStatusLine = Wait-UiControlEvent -Supervisor $supervisor -Type 'control_result' -Command 'status' -RequestId $gainStatusId
+    $gainStatus = ConvertFrom-UiControlFrame -Json $gainStatusLine -LockedRunId $ready.run_id -LastControlSequence $lastControlSequence
+    Assert-UiControl ($gainStatus.snapshot.audio_gains.revision -eq 2 -and
+        $gainStatus.snapshot.audio_gains.radio_playback_gain_milli -eq 750 -and
+        $gainStatus.snapshot.audio_gains.mic_transmit_gain_milli -eq 12000) 'status readback 必须与已应用 ACK 一致。'
+    $lastControlSequence = [uint64]$gainStatus.control_seq
+
+    $gainRouteStatusId = [guid]::NewGuid().ToString('D')
+    Assert-UiControl ($supervisor.SendControlCommand($gainRouteStatusId,'routing.status')) '增益更新不应关闭或改写路由状态。'
+    $gainRouteStatusLine = Wait-UiControlEvent -Supervisor $supervisor -Type 'control_result' -Command 'routing.status' -RequestId $gainRouteStatusId
+    $gainRouteStatus = ConvertFrom-UiControlFrame -Json $gainRouteStatusLine -LockedRunId $ready.run_id -LastControlSequence $lastControlSequence
+    Assert-UiControl ((ConvertTo-Json -InputObject $gainRouteStatus.routing -Depth 12 -Compress) -ceq $gainRouteBefore) `
+        '音量更新前后真实 Native 路由 JSON 必须逐字段一致。'
+    $lastControlSequence = [uint64]$gainRouteStatus.control_seq
+
+    Assert-UiControl (-not $supervisor.SendControlCommand('unsupported-audio-command','audio.gains.set',
+        ('{"revision":3,"radio_playback_gain_milli":1000,"mic_transmit_gain_milli":1000,"padding":"' + ('x' * 4096) + '"}'))) `
+        'audio.gains.set 仍必须遵守完整 4KiB 请求体限制。'
+    Assert-UiControl (-not $supervisor.SendControlCommand('unsupported-native-command','audio.gains.clear')) `
+        'BridgeSupervisor 仍必须拒绝不在固定白名单中的命令。'
 
     $identityParameters = '{"source_id":7654321,"revision":1,"callsign":"N0TEST"}'
     Assert-UiControl ($supervisor.SendControlCommand('radioid-1','radio_identity.cache_upsert',$identityParameters)) `
@@ -240,12 +346,42 @@ try {
     $exitCode = -1
     Assert-UiControl ($supervisor.TryGetExitCode([ref]$exitCode) -and $exitCode -eq 0) '本地协议诊断进程应以0退出。'
     Assert-UiControl ($initialPushBytes -gt 0) 'hello后必须收到初始routing_state push。'
+    $script:uiControlBacklog = New-Object 'System.Collections.Generic.Queue[string]'
+    $noGainSupervisor.Start($NativeExecutable, [string[]]@('--control-diagnostic','--ui-pipe','--ui-control-version','2'), $tempRoot, 2)
+    $noGainReadyLine = Wait-UiControlEvent -Supervisor $noGainSupervisor -Type 'control_ready' -Command '' -RequestId '' -TimeoutMilliseconds 10000
+    $noGainReady = ConvertFrom-UiControlFrame -Json $noGainReadyLine -ExpectedProcessId $noGainSupervisor.ProcessId
+    Assert-UiControl (-not ($noGainReady.supported_commands -contains 'audio.gains.set')) '没有 gain handler 的 Native control diagnostic 不得广告音量命令。'
+    $script:controlCapabilities = @($noGainReady.supported_commands) -join ','
+    Assert-UiControl $noGainSupervisor.SetControlRunId([string]$noGainReady.run_id) '基础诊断 Supervisor 必须锁定本次进程的 run_id。'
+    $noGainHelloId = [guid]::NewGuid().ToString('D')
+    Assert-UiControl ($noGainSupervisor.SendControlCommand($noGainHelloId,'hello')) '基础诊断 hello 必须可发送。'
+    $noGainHelloLine = Wait-UiControlEvent -Supervisor $noGainSupervisor -Type 'control_result' -Command 'hello' -RequestId $noGainHelloId
+    $noGainHello = ConvertFrom-UiControlFrame -Json $noGainHelloLine -LockedRunId $noGainReady.run_id -LastControlSequence ([uint64]$noGainReady.control_seq)
+    Assert-UiControl ($noGainHello.result -ceq 'ok' -and -not ($noGainHello.supported_commands -contains 'audio.gains.set')) 'hello 必须保持旧版无音量能力命令集。'
+    Assert-UiControl ($noGainSupervisor.SendControlCommand('audio-gains-1','audio.gains.set',
+        '{"revision":1,"radio_playback_gain_milli":1000,"mic_transmit_gain_milli":1000}')) '白名单允许的音量命令应送达无handler Native，由其回报 unsupported。'
+    $noGainLine = Wait-UiControlEvent -Supervisor $noGainSupervisor -Type 'control_result' -Command 'audio.gains.set' -RequestId 'audio-gains-1'
+    $noGain = ConvertFrom-UiControlFrame -Json $noGainLine -LockedRunId $noGainReady.run_id -LastControlSequence ([uint64]$noGainHello.control_seq)
+    Assert-UiControl ($noGain.result -ceq 'unsupported' -and $noGain.error -ceq 'command_not_supported') '无 handler 的 Native 必须返回明确 unsupported。'
+    $noGainShutdownId = [guid]::NewGuid().ToString('D')
+    Assert-UiControl ($noGainSupervisor.SendControlCommand($noGainShutdownId,'shutdown')) '基础诊断 shutdown 必须可发送。'
+    $noGainShutdownLine = Wait-UiControlEvent -Supervisor $noGainSupervisor -Type 'control_result' -Command 'shutdown' -RequestId $noGainShutdownId
+    $noGainShutdown = ConvertFrom-UiControlFrame -Json $noGainShutdownLine -LockedRunId $noGainReady.run_id -LastControlSequence ([uint64]$noGain.control_seq)
+    Assert-UiControl ($noGainShutdown.result -ceq 'ok' -and $noGainShutdown.shutdown_requested) '基础诊断 shutdown 应得到 ACK。'
+    $noGainSupervisor.CloseControlInput()
+    $noGainExitWatch = [Diagnostics.Stopwatch]::StartNew()
+    while (-not $noGainSupervisor.HasExited -and $noGainExitWatch.ElapsedMilliseconds -lt 5000) { Start-Sleep -Milliseconds 20 }
+    Assert-UiControl $noGainSupervisor.HasExited '基础控制诊断必须在 shutdown 与 EOF 后退出。'
+    $noGainExitCode = -1
+    Assert-UiControl ($noGainSupervisor.TryGetExitCode([ref]$noGainExitCode) -and $noGainExitCode -eq 0) '基础控制诊断必须以0退出。'
     $passed = $true
-    Write-Output ('通过：真实 WPF BridgeSupervisor→Native 路由诊断覆盖 ready/hello/status、{0}条组呼路由、{1}字节回执、4096/4097边界、下一发射目标和正常退出；未连接电台、BM、音频或RF。' -f $bestCount,[Math]::Max($largeAckBytes,$largePushBytes))
+    Write-Output ('通过：真实 WPF BridgeSupervisor→Native 诊断覆盖 audio.gains.set capability/ACK/status/revision、重放/冲突/范围拒绝、route 不变、无 handler 的旧能力集与 unsupported、{0}条组呼路由、{1}字节回执、4096/4097边界和正常退出；未连接电台、BM、音频或RF。' -f $bestCount,[Math]::Max($largeAckBytes,$largePushBytes))
 } finally {
-    if (-not $passed -and $supervisor.IsStarted -and -not $supervisor.HasExited) {
-        try { $stopTask = $supervisor.StopAsync(100); [void]$stopTask.Wait(5000) } catch { }
+    foreach ($ownedSupervisor in @($supervisor,$noGainSupervisor)) {
+        if (-not $passed -and $ownedSupervisor.IsStarted -and -not $ownedSupervisor.HasExited) {
+            try { $stopTask = $ownedSupervisor.StopAsync(100); [void]$stopTask.Wait(5000) } catch { }
+        }
+        $ownedSupervisor.Dispose()
     }
-    $supervisor.Dispose()
     if ([System.IO.Directory]::Exists($tempRoot)) { [System.IO.Directory]::Delete($tempRoot, $true) }
 }

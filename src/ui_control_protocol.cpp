@@ -9,27 +9,20 @@
 namespace wirex::ui_control {
 namespace {
 
-constexpr std::string_view basic_commands_json = "[\"hello\",\"status\",\"shutdown\"]";
-constexpr std::string_view basic_identity_commands_json =
-    "[\"hello\",\"status\",\"shutdown\",\"radio_identity.cache_upsert\"]";
-constexpr std::string_view routing_commands_json =
-    "[\"hello\",\"status\",\"shutdown\",\"routing.status\",\"rx_policy.replace\",\"tx_policy.replace\"]";
-constexpr std::string_view routing_identity_commands_json =
-    "[\"hello\",\"status\",\"shutdown\",\"routing.status\",\"rx_policy.replace\",\"tx_policy.replace\",\"radio_identity.cache_upsert\"]";
-constexpr std::string_view quick_call_commands_json =
-    "[\"hello\",\"status\",\"shutdown\",\"routing.status\",\"rx_policy.replace\",\"tx_policy.replace\",\"network_subscription.quick_call_join\"]";
-constexpr std::string_view quick_call_identity_commands_json =
-    "[\"hello\",\"status\",\"shutdown\",\"routing.status\",\"rx_policy.replace\",\"tx_policy.replace\",\"network_subscription.quick_call_join\",\"radio_identity.cache_upsert\"]";
-
-std::string_view supported_commands_json(bool routing_enabled,
-                                         bool quick_call_enabled,
-                                         bool radio_identity_enabled) noexcept
+std::string supported_commands_json(bool routing_enabled,
+                                    bool quick_call_enabled,
+                                    bool radio_identity_enabled,
+                                    bool audio_gains_enabled)
 {
-    if (!routing_enabled) return radio_identity_enabled
-        ? basic_identity_commands_json : basic_commands_json;
-    if (quick_call_enabled) return radio_identity_enabled
-        ? quick_call_identity_commands_json : quick_call_commands_json;
-    return radio_identity_enabled ? routing_identity_commands_json : routing_commands_json;
+    std::string commands{"[\"hello\",\"status\",\"shutdown\""};
+    if (routing_enabled) {
+        commands.append(",\"routing.status\",\"rx_policy.replace\",\"tx_policy.replace\"");
+        if (quick_call_enabled) commands.append(",\"network_subscription.quick_call_join\"");
+    }
+    if (radio_identity_enabled) commands.append(",\"radio_identity.cache_upsert\"");
+    if (audio_gains_enabled) commands.append(",\"audio.gains.set\"");
+    commands.push_back(']');
+    return commands;
 }
 
 bool valid_identifier(std::string_view value, std::size_t maximum) noexcept
@@ -108,7 +101,8 @@ bool parse_request(std::string_view input, Request& request, strict_json::Value&
     request.parameters = envelope.find("parameters");
     const bool mutating = request.command == "rx_policy.replace" || request.command == "tx_policy.replace" ||
         request.command == "network_subscription.quick_call_join" ||
-        request.command == "radio_identity.cache_upsert";
+        request.command == "radio_identity.cache_upsert" ||
+        request.command == "audio.gains.set";
     const auto expected_size = mutating ? 5U : 4U;
     if (envelope.object_value.size() != expected_size || (mutating &&
         (request.parameters == nullptr || request.parameters->type != strict_json::Value::Type::object)) ||
@@ -127,7 +121,29 @@ std::string expected_identity_request_id(std::uint64_t revision)
     return result;
 }
 
-std::string snapshot_json(const StatusSnapshot& snapshot)
+std::string expected_audio_gains_request_id(std::uint64_t revision)
+{
+    std::array<char, 20U> decimal{};
+    const auto converted = std::to_chars(decimal.data(), decimal.data() + decimal.size(), revision);
+    if (converted.ec != std::errc{}) return {};
+    std::string result{"audio-gains-"};
+    result.append(decimal.data(), converted.ptr);
+    return result;
+}
+
+bool valid_gain_milli(std::uint64_t value) noexcept
+{
+    return value >= 250U && value <= 16000U;
+}
+
+std::string audio_gains_json(const StatusSnapshot::AudioGains& gains)
+{
+    return "{\"revision\":" + std::to_string(gains.revision) +
+        ",\"radio_playback_gain_milli\":" + std::to_string(gains.radio_playback_gain_milli) +
+        ",\"mic_transmit_gain_milli\":" + std::to_string(gains.mic_transmit_gain_milli) + "}";
+}
+
+std::string snapshot_json(const StatusSnapshot& snapshot, bool include_audio_gains)
 {
     std::string output = "{\"mode\":" + json_escape(snapshot.mode) +
         ",\"status\":" + json_escape(snapshot.status) +
@@ -140,7 +156,12 @@ std::string snapshot_json(const StatusSnapshot& snapshot)
         ",\"serial_open\":" + (snapshot.serial_open ? "true" : "false") +
         ",\"wavein_open\":" + (snapshot.wavein_open ? "true" : "false") +
         ",\"waveout_open\":" + (snapshot.waveout_open ? "true" : "false") +
-        ",\"radio_state\":" + json_escape(snapshot.radio_state) + "}";
+        ",\"radio_state\":" + json_escape(snapshot.radio_state);
+    if (include_audio_gains && snapshot.audio_gains.has_value()) {
+        output.append(",\"audio_gains\":");
+        output.append(audio_gains_json(*snapshot.audio_gains));
+    }
+    output.push_back('}');
     return output;
 }
 
@@ -199,6 +220,7 @@ Dispatcher::Dispatcher(std::string run_id, bool diagnostic, RoutingCallbacks rou
                        static_cast<bool>(routing.snapshot_json)),
       quick_call_enabled_(routing_enabled_ && static_cast<bool>(routing.quick_call_join)),
       radio_identity_enabled_(static_cast<bool>(routing.update_radio_identity)),
+      audio_gains_enabled_(static_cast<bool>(routing.set_audio_gains)),
       routing_(std::move(routing))
 {
 }
@@ -209,7 +231,7 @@ std::string Dispatcher::ready_line(std::uint32_t process_id)
     ready_emitted_ = true;
     control_seq_ = 1U;
     const auto commands = supported_commands_json(
-        routing_enabled_, quick_call_enabled_, radio_identity_enabled_);
+        routing_enabled_, quick_call_enabled_, radio_identity_enabled_, audio_gains_enabled_);
     return "{\"schema_version\":2,\"type\":\"control_ready\",\"run_id\":" +
         json_escape(run_id_) + ",\"control_seq\":1,\"process_id\":" +
         std::to_string(process_id) + ",\"control_version\":2,\"supported_commands\":" +
@@ -273,6 +295,85 @@ DispatchResult Dispatcher::handle(std::string_view json_line, const StatusSnapsh
     }
     if (request.run_id != run_id_) {
         return {serialize_rejection(request.request_id, request.command, "stale_run_id"), false, true};
+    }
+
+    // 音量只保留最新接受的 revision 和两路值，避免拖动滑块消耗普通控制的 512 条重放预算。
+    if (request.command == "audio.gains.set") {
+        std::string_view error;
+        std::string result{"rejected"};
+        bool replayed = false;
+        std::optional<StatusSnapshot::AudioGains> actual;
+        if (request.schema_version != 2U) {
+            error = "unsupported_schema";
+        } else if (shutdown_requested_) {
+            error = "shutdown_in_progress";
+        } else if (!hello_seen_) {
+            error = "hello_required";
+        } else if (!audio_gains_enabled_) {
+            result = "unsupported";
+            error = "command_not_supported";
+        } else {
+            const auto* parameters = request.parameters;
+            const auto* revision = parameters != nullptr ? parameters->find("revision") : nullptr;
+            const auto* radio_gain = parameters != nullptr ? parameters->find("radio_playback_gain_milli") : nullptr;
+            const auto* mic_gain = parameters != nullptr ? parameters->find("mic_transmit_gain_milli") : nullptr;
+            const bool valid_fields = parameters != nullptr && parameters->type == strict_json::Value::Type::object &&
+                parameters->object_value.size() == 3U &&
+                revision != nullptr && revision->type == strict_json::Value::Type::unsigned_integer &&
+                revision->integer_value >= 1U &&
+                radio_gain != nullptr && radio_gain->type == strict_json::Value::Type::unsigned_integer &&
+                valid_gain_milli(radio_gain->integer_value) &&
+                mic_gain != nullptr && mic_gain->type == strict_json::Value::Type::unsigned_integer &&
+                valid_gain_milli(mic_gain->integer_value);
+            if (!valid_fields) {
+                error = "invalid_audio_gains";
+            } else if (request.request_id != expected_audio_gains_request_id(revision->integer_value)) {
+                error = "audio_gain_request_id_mismatch";
+            } else {
+                const auto requested_radio_gain = static_cast<std::uint32_t>(radio_gain->integer_value);
+                const auto requested_mic_gain = static_cast<std::uint32_t>(mic_gain->integer_value);
+                if (last_audio_gains_mutation_.has_value() &&
+                    revision->integer_value == last_audio_gains_mutation_->revision) {
+                    if (requested_radio_gain != last_audio_gains_mutation_->requested_radio_playback_gain_milli ||
+                        requested_mic_gain != last_audio_gains_mutation_->requested_mic_transmit_gain_milli) {
+                        error = "audio_gain_revision_conflict";
+                    } else {
+                        result = "ok";
+                        replayed = true;
+                        actual = last_audio_gains_mutation_->actual;
+                    }
+                } else if (last_audio_gains_mutation_.has_value() &&
+                           revision->integer_value < last_audio_gains_mutation_->revision) {
+                    error = "stale_audio_gain_revision";
+                } else {
+                    RoutingCallbacks::AudioGainApplyResult applied{};
+                    try { applied = routing_.set_audio_gains(requested_radio_gain, requested_mic_gain); }
+                    catch (...) { applied.applied = false; }
+                    if (!applied.applied || !valid_gain_milli(applied.radio_playback_gain_milli) ||
+                        !valid_gain_milli(applied.mic_transmit_gain_milli)) {
+                        error = "audio_gain_update_failed";
+                    } else {
+                        StatusSnapshot::AudioGains current{};
+                        current.revision = revision->integer_value;
+                        current.radio_playback_gain_milli = applied.radio_playback_gain_milli;
+                        current.mic_transmit_gain_milli = applied.mic_transmit_gain_milli;
+                        last_audio_gains_mutation_ = AudioGainsMutation{
+                            revision->integer_value, requested_radio_gain, requested_mic_gain, current};
+                        result = "ok";
+                        actual = current;
+                    }
+                }
+            }
+        }
+
+        std::string extra_json;
+        if (actual.has_value()) extra_json = "\"audio_gains\":" + audio_gains_json(*actual);
+        if (!error.empty()) {
+            if (!extra_json.empty()) extra_json.push_back(',');
+            extra_json.append("\"error\":");
+            extra_json.append(json_escape(error));
+        }
+        return {serialize_result(request.request_id, request.command, result, extra_json, replayed), false, false};
     }
 
     // 身份缓存有独立的全局 revision 和固定 128 条 LRU，不消耗普通控制请求的 512 条重放预算。
@@ -446,7 +547,7 @@ DispatchResult Dispatcher::handle(std::string_view json_line, const StatusSnapsh
         } else if (request.command == "hello") {
             cached.result = "ok";
             const auto commands = supported_commands_json(
-                routing_enabled_, quick_call_enabled_, radio_identity_enabled_);
+                routing_enabled_, quick_call_enabled_, radio_identity_enabled_, audio_gains_enabled_);
             cached.extra_json = "\"supported_commands\":" +
                 std::string(commands);
             mark_hello = true;
@@ -456,7 +557,7 @@ DispatchResult Dispatcher::handle(std::string_view json_line, const StatusSnapsh
                 cached.extra_json = "\"error\":\"hello_required\"";
             } else {
                 cached.result = "ok";
-                cached.extra_json = "\"snapshot\":" + snapshot_json(snapshot);
+                cached.extra_json = "\"snapshot\":" + snapshot_json(snapshot, audio_gains_enabled_);
             }
         } else if (request.command == "routing.status") {
             if (!hello_seen_) {

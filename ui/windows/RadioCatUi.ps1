@@ -470,11 +470,12 @@ function Set-UiRadioCatPowerSliderRange {
     try {
         $script:loadingRadioCatSettings = $true
         $slider.Tag = '__radio_cat_programmatic__'
-        $slider.Minimum = 5
-        $slider.Maximum = [double]$Maximum
+        if ([double]$slider.Minimum -ne 5.0) { $slider.Minimum = 5.0 }
+        if ([double]$slider.Maximum -ne [double]$Maximum) { $slider.Maximum = [double]$Maximum }
         $script:radioCatPowerNeedsUserChoice = $needsChoice
         $script:radioCatProgrammaticControlUpdate = $true
-        $slider.Value = if ($needsChoice) { 5.0 } else { [double]$sliderWatts }
+        $targetValue = if ($needsChoice) { 5.0 } else { [double]$sliderWatts }
+        if ([double]$slider.Value -ne $targetValue) { $slider.Value = $targetValue }
     } finally {
         $script:radioCatProgrammaticControlUpdate = $wasUpdating
         $slider.Tag = $oldTag
@@ -552,29 +553,9 @@ function Update-UiRadioCatObservationDisplay {
         $maximum = Get-UiRadioCatProperty -InputObject $powerCapability -Name 'maximum_watts'
         if ($maximum -is [int] -or $maximum -is [long]) {
             Set-UiRadioCatPowerSliderRange -Maximum ([int]$maximum)
-        } elseif (-not $script:radioCatResult) {
+        } else {
             $actualMaximum = if ([string]$value.path -ceq 'FieldHead') { 10 } else { 50 }
             Set-UiRadioCatPowerSliderRange -Maximum $actualMaximum
-        }
-        if ($script:radioCatEditDraft -and $null -eq $script:radioCatEditDraft.power) {
-            $slider = Find-UiRadioCatControl -Name 'CatPowerSlider'
-            if ($slider) {
-                $actualMaximum = if ([string]$value.path -ceq 'FieldHead') { 10 } else { 50 }
-                $script:radioCatProgrammaticControlUpdate = $true
-                $wasLoading = [bool]$script:loadingRadioCatSettings
-                $script:loadingRadioCatSettings = $true
-                $oldTag = $slider.Tag
-                try {
-                    $slider.Tag = '__radio_cat_programmatic__'
-                    $slider.Minimum = 5
-                    $slider.Maximum = [double]$actualMaximum
-                    $slider.Value = [double]$value.watts
-                } finally {
-                    $slider.Tag = $oldTag
-                    $script:loadingRadioCatSettings = $wasLoading
-                    $script:radioCatProgrammaticControlUpdate = $false
-                }
-            }
         }
     }
 }
@@ -594,13 +575,16 @@ function Update-UiRadioCatControls {
     }
     $busy = ($script:radioCatOperationPowerShell -or $script:radioModeApplyAfterStop -or $script:stopTask -or
         $script:preparationStarted -or $script:prepareStopAsync)
+    $writeBusy = ($script:radioCatOperationPowerShell -and [string]$script:radioCatOperationKind -cne 'query')
+    $editBusy = ($writeBusy -or $script:radioModeApplyAfterStop -or $script:stopTask -or
+        $script:preparationStarted -or $script:prepareStopAsync)
     $connectionLocked = [bool]($script:preparationStarted -or $script:stopTask -or $script:prepareStopAsync -or
         ($script:supervisor -and -not $script:supervisor.HasExited))
     foreach ($name in @('CatPortBox','CatBaudRateBox')) {
         Set-UiRadioCatControlEnabled -Name $name -Enabled (-not $busy -and -not $connectionLocked)
     }
     foreach ($name in @('CatMainModeBox','CatMainFrequencyMHzBox','CatPowerSlider')) {
-        Set-UiRadioCatControlEnabled -Name $name -Enabled (-not $busy)
+        Set-UiRadioCatControlEnabled -Name $name -Enabled (-not $editBusy)
     }
     $port = Get-UiRadioCatSelectedPort
     $portReady = ($port -and $port -match '^(?i:COM)[1-9][0-9]{0,2}$')
@@ -654,7 +638,7 @@ function Update-UiRadioCatControls {
                 (-not ($script:supervisor -and -not $script:supervisor.HasExited) -or $idle))
         }
     }
-    Set-UiRadioCatControlEnabled -Name 'CatPowerSlider' -Enabled (-not $busy)
+    Set-UiRadioCatControlEnabled -Name 'CatPowerSlider' -Enabled (-not $editBusy)
     $hasPowerDraft = ($script:radioCatEditDraft -and $null -ne $script:radioCatEditDraft.power)
     Set-UiRadioCatControlEnabled -Name 'ApplyCatPowerButton' -Enabled (-not $busy -and $portReady -and -not $portConflict -and
         $observationMatchesConnection -and $powerAllowed -and $hasPowerDraft -and -not $script:radioCatPowerNeedsUserChoice)

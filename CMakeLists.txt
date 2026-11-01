@@ -330,7 +330,7 @@ else()
 endif()
 
 add_executable(ui_control_protocol_v2_test tests/ui_control_protocol_v2_test.cpp)
-target_link_libraries(ui_control_protocol_v2_test PRIVATE wirex_ui_control_protocol)
+target_link_libraries(ui_control_protocol_v2_test PRIVATE wirex_ui_control_protocol wirex_pcm_gain)
 target_compile_features(ui_control_protocol_v2_test PRIVATE cxx_std_17)
 if(MSVC)
     target_compile_options(ui_control_protocol_v2_test PRIVATE /W4 /permissive- /utf-8)

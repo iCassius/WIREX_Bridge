@@ -1,6 +1,12 @@
 ﻿# WIREX Bridge 交接入口
 
-## R118 / Alpha 14 当前交接（2026-11-01）
+## R119 / Alpha 15 当前交接（2026-11-01）
+
+本轮 CAT/UI 与 Native 源码已经冻结，独立 review 未发现 P1/P2。R119 为 CAT 首次全状态查询及自动周期同步、查询期间编辑器与滑块保持稳定、单 worker 写操作门控、断连撤销写授权但保留观测值，以及运行时播放/麦克风增益能力协商。UI 通过既有观测字段显示 CAT readback；实时音量仅在 Native 同一 run 的 ready/hello 均声明 `audio.gains.set` 时启用，alpha14 旧命令集仍获兼容。测试和边界见 [R119 发布交接](docs/R119_发布交接.md)、[CAT 记录](docs/R119_CAT.md)、[UI 记录](docs/R119_UI.md) 和 [实时音量记录](docs/R119_实时音量.md)。
+
+目标本机候选为 `build/releases/v0.1.0-alpha.15`，Generic 资产路径继承 alpha14，不包含个人 `config.json`。提交、clean Native 40 项构建、正式包与包级 Windows PowerShell 5.1 验收正在本轮完成；包生成后先标记 `awaiting_root_audit`。本轮不迁移个人配置、不更改根 launcher、不制作 ZIP/tag/GitHub Release，也不操作真实 COM、BrandMeister、HRI、音频、PTT 或 RF。后续个人配置须从当前 alpha14 发行目录读取并复制，不能从 legacy canonical 重新导入。
+
+## R118 / Alpha 14 历史交接（2026-11-01）
 
 源码提交 f0105d7da667c2dbc1ca24d78f2b3b11e9be9eb6 已推送。由该提交 fresh Native clean build：source_tree_clean=true、compile_only=false、40/40 测试通过，MSVC warning/error 诊断为0。root 独立审计确认 41 项 manifest 资产、37 项源码映射、40 项 Native 测试结果及 EXE/provenance 哈希一致；package_status=root_audit_passed，manifest SHA-256 为 09a8448cd96c2f9a1c949b621d85d0add996d36756f25cfb6f596ad3747467b0。通用包含 42 个物理文件，本机迁移后另有未纳入 manifest 的 config.json，因此发行目录共 43 个文件。
 
@@ -12,7 +18,7 @@ PortableConfig/BM模块为55/45项断言；package/publish/download为579/124/2,
 
 根目录 start-my-bridge.cmd 已备份到 private/config-backups/R118/start-my-bridge.before-alpha14.20261101-123807.cmd，并改为相对调用 alpha14 的唯一 CMD；静态检查确认目标存在，未运行正常启动。没有连接真实 BM/COM/HRI/音频/PTT/RF，也没有制作 ZIP、tag 或 GitHub Release。
 
-以下为历史阶段记录；当前进度以 [R118 发布交接](docs/R118_发布交接.md) 为准。
+alpha14 当时的验收细节以 [R118 发布交接](docs/R118_发布交接.md) 为准；以下为更早阶段记录。
 ## R115 FTX-1 模式范围与后续开发计划（2026-10-30）
 
 本轮仅更新文档；没有改源码、配置、发行包或操作设备。详细功能范围、手册页码、验收门槛和未来实机记录要求见 [R115 模式范围与开发计划](docs/R115_文档功能范围与后续开发计划.md)。

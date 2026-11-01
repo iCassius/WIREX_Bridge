@@ -261,7 +261,7 @@ try {
         $script:uiTestHooks.CatOperation = New-UiConsoleCatOperationHook
         $script:uiTestHooks.NativeSupervisorFactory = {
             param([object]$Context)
-            $fake = [pscustomobject]@{ HasExited=$false; Operation=[string]$Context.operation; StopDelay=$false; StopRequested=$false; StopResult=$null }
+            $fake = [pscustomobject]@{ HasExited=$false; ProcessId=[uint32]48123; Operation=[string]$Context.operation; StopDelay=$false; StopRequested=$false; StopResult=$null }
             $fake | Add-Member -MemberType ScriptMethod -Name StopAsync -Value {
                 param([int]$TimeoutMs)
                 $this.StopRequested = $true
@@ -315,7 +315,8 @@ try {
         'CatObservedPanel','CatObservedMainModeText',
         'CatObservedFrequencyText','CatObservedPowerText','CatMainModeBox','ApplyCatModeButton','CatMainFrequencyMHzBox',
         'ApplyCatFrequencyButton','CatPowerSlider','CatDesiredPowerText','ApplyCatPowerButton','SerialBox',
-        'DeviceDiscoveryText','RefreshDevicesButton','RadioDetailsExpander','MasterPresetBox','MasterBox','MasterPortBox'
+        'DeviceDiscoveryText','RefreshDevicesButton','RadioDetailsExpander','MasterPresetBox','MasterBox','MasterPortBox',
+        'BmApiKeyBox','BmStaticGroupPanel','RefreshBmStaticGroupsButton','AddBmStaticGroupButton'
     )
     $missingControls = @($requiredControls | Where-Object { $null -eq $script:mainWindow.FindName($_) })
     Assert-UiConsole ($missingControls.Count -eq 0) ('实际 WPF MainWindow 缺少稳定控件：{0}' -f ($missingControls -join ', '))
@@ -452,6 +453,11 @@ try {
     Select-UiConsoleCatPortOption -PortName COM11
     Update-UiRadioCatControls
 
+    Assert-UiConsole ([string]::IsNullOrEmpty([string]$script:portableConfig.connection.api_key) -and
+        [string]::IsNullOrEmpty([string](Get-UiConsoleControl 'BmApiKeyBox').Password)) 'API-empty fixture is not isolated from any stored API key.'
+    Assert-UiConsole ((Get-UiConsoleControl 'BmStaticGroupPanel').Visibility -eq [System.Windows.Visibility]::Collapsed -and
+        -not (Get-UiConsoleControl 'RefreshBmStaticGroupsButton').IsEnabled -and
+        -not (Get-UiConsoleControl 'AddBmStaticGroupButton').IsEnabled) 'API-empty state did not hide/disable only BM static-group management.'
     $script:radioControlPreferences.desired_power_watts = 40
     Invoke-UiConsoleClick -Name 'ConnectButton'
     $connected = Invoke-UiConsoleDispatcherUntil -TimeoutMs 4000 -Condition { $script:supervisor -and -not $script:supervisor.HasExited }
@@ -463,6 +469,30 @@ try {
     Assert-UiConsole $firstQueryReady 'first CAT state query did not complete within its bound.'
     Assert-UiConsole ([string]$script:radioCatObservedConnectionKey -match '\|Two$') 'fake CAT operation did not use internal Two stop bits.'
     Assert-UiConsole ([string]$script:radioCatObserved.radio_id.value -ceq '0840' -and [int]$script:radioCatObserved.power.value.watts -eq 25) 'first query did not publish ID 0840 and actual 25 W state.'
+    $fakeProcessId = [uint32]$script:supervisor.ProcessId
+    $fakeReadyStatus = [pscustomobject][ordered]@{
+        run_id=('{0}-1' -f $fakeProcessId); seq=[int64]1
+        timestamp_utc_ms=[int64][DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); elapsed_ms=[int64]1000
+        event='runtime_snapshot'; bm_state='ready'; bm_failure='none'; radio_state='unknown'; hri_phase='exchanging'
+        audio_endpoints_validated=$true; hri_serial_open=$true; hri_ready=$true; hri_y_zero_ready=$true
+        wavein_state='open'; waveout_state='open'; last_rx_header_valid=$false; last_rx_source_id=[int64]0
+        last_rx_destination_id=[int64]0; last_rx_slot=[int64]1; last_rx_call_kind='G'
+        current_call_valid=$false; current_call_phase='none'; current_call_source_id=[int64]0
+        current_call_destination_id=[int64]0; current_call_slot=[int64]0; current_call_kind='none'
+        current_call_color_code=[int64]0; current_call_link_control_validated=$false
+        current_call_color_code_known=$false; current_call_generation=[int64]0; receive_media_state='idle'
+    }
+    Assert-UiConsole (Test-UiRunRecordAcceptance -Record $fakeReadyStatus -ExpectedProcessId $fakeProcessId `
+        -LockedRunId '' -LastSequence 0 -NowUtcMs ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())) `
+        'synthetic BM/HRI-ready status record did not meet the ordinary metadata checks.'
+    Apply-StatusRecord -Record $fakeReadyStatus
+    Assert-UiConsole ([string](Get-UiConsoleControl 'BmValue').Text -ceq '已连接' -and
+        [string](Get-UiConsoleControl 'RadioValue').Text -ceq 'HRI 就绪' -and
+        [string]$script:latestStatus.bm_state -ceq 'ready' -and [bool]$script:latestStatus.hri_ready) `
+        'API-empty fake Connect did not progress to the synthetic BM/HRI-ready UI state.'
+    Assert-UiConsole ((Get-UiConsoleControl 'BmStaticGroupPanel').Visibility -eq [System.Windows.Visibility]::Collapsed -and
+        -not (Get-UiConsoleControl 'RefreshBmStaticGroupsButton').IsEnabled -and
+        -not (Get-UiConsoleControl 'AddBmStaticGroupButton').IsEnabled) 'BM/HRI-ready connection state incorrectly enabled API-dependent static-group management without an API key.'
     Assert-UiConsole ((Get-UiConsoleControl 'ReadRadioButton').IsEnabled) ("connected right-side read operation was disabled after the first sample; port={0}, key={1}, selected={2}, text={3}, explicit={4}, result={5}, busy={6}" -f (Get-UiRadioCatSelectedPort), (Get-UiRadioCatConnectionKey), [string]$catPortBox.SelectedItem.Tag.Value, [string]$catPortBox.Text, [bool]$script:radioCatPortSelectionExplicit, [string]$script:radioCatResult.status, [bool]$script:radioCatOperationPowerShell)
     Assert-UiConsole ((Get-UiConsoleControl 'CatObservedPanel').Visibility -eq [System.Windows.Visibility]::Visible) 'CAT observation panel did not remain visible after the first confirmed read.'
     Assert-UiConsole ((Get-UiConsoleControl 'CatObservedMainModeText').Text -ceq 'FM' -and

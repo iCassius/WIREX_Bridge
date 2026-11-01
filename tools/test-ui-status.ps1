@@ -19,6 +19,7 @@ $wantedFunctions = @('Test-UiSourceIdentityRecord', 'Get-UiSourceIdentityDisplay
     'Get-UiRunDirectorySize', 'Invoke-UiRunLogRetention', 'Test-UiStatusRecord', 'Test-UiStatusFreshness',
     'Test-UiRunRecordAcceptance', 'Get-VisibleUiEventText', 'Apply-StatusRecord', 'Set-StaleDisplay',
     'Reset-UiControlState',
+    'Format-UiGainMilli', 'Update-UiPlaybackGainDisplay', 'Update-UiReceiveMetricsDisplay',
     'Format-ProfileTarget', 'Format-ProfileReceiveTarget', 'Set-MainTargetSummary', 'On-UiTimerTick',
     'Get-UiChannelKey', 'Get-UiChannelByKey', 'Get-UiChannelCurrentCall', 'Get-UiChannelCallerLabel',
     'New-UiChannelActionButton', 'Update-UiChannelDisplays', 'Update-CallTargetChoices', 'Set-OfflineDisplay')
@@ -28,12 +29,6 @@ foreach ($functionAst in $found) { Invoke-Expression $functionAst.Extent.Text }
 Import-Module -Name (Join-Path (Join-Path $repoRoot 'ui\windows') 'RadioIdentity.psm1') -Force
 $script:radioIdentityModuleLoaded = $true
 
-function Update-UiPlaybackGainDisplay {
-    param([object]$Record=$null)
-}
-function Update-UiReceiveMetricsDisplay {
-    param([object]$Record=$null)
-}
 function Add-UiCallHistoryRecord {
     param([Parameter(Mandatory=$true)][object]$Record)
 }
@@ -274,7 +269,13 @@ function New-TestChannelWindow {
         @{ name='ChannelListPanel'; type='panel' },
         @{ name='ChannelCardsPanel'; type='panel' },
         @{ name='ControlStatusButton'; type='button' },
-        @{ name='ControlProtocolValue'; type='text' }
+        @{ name='ControlProtocolValue'; type='text' },
+        @{ name='PlaybackGainStatusValue'; type='text' },
+        @{ name='BmRttMetric'; type='panel' },
+        @{ name='BmRttValue'; type='text' },
+        @{ name='RxNetworkMetric'; type='panel' },
+        @{ name='RxCallLossValue'; type='text' },
+        @{ name='RxSessionLossValue'; type='text' }
     )) {
         $control = switch ($item.type) {
             'panel' { New-Object System.Windows.Controls.WrapPanel }
@@ -290,18 +291,34 @@ function New-TestChannelWindow {
 function Get-TestChannelCardTexts {
     $panel = $script:mainWindow.FindName('ChannelCardsPanel')
     $texts = New-Object 'System.Collections.Generic.List[string]'
-    foreach ($card in @($panel.Children)) {
-        if ($card.Child -is [System.Windows.Controls.Panel]) {
-            foreach ($child in @($card.Child.Children)) {
-                if ($child -is [System.Windows.Controls.TextBlock]) { $texts.Add([string]$child.Text) }
-            }
+    function Add-TestVisualText {
+        param([object]$Node,[System.Collections.Generic.List[string]]$TextValues)
+        if ($null -eq $Node) { return }
+        if ($Node -is [System.Windows.Controls.TextBlock]) {
+            $TextValues.Add([string]$Node.Text)
+            return
         }
+        if ($Node -is [System.Windows.Controls.Border]) {
+            Add-TestVisualText -Node $Node.Child -TextValues $TextValues
+            return
+        }
+        if ($Node -is [System.Windows.Controls.Panel]) {
+            foreach ($child in @($Node.Children)) { Add-TestVisualText -Node $child -TextValues $TextValues }
+        }
+    }
+    foreach ($card in @($panel.Children)) {
+        Add-TestVisualText -Node $card -TextValues $texts
     }
     return @($texts.ToArray())
 }
 
 $script:mockUiFields = @{}
 $script:mockUiEvents = New-Object 'System.Collections.Generic.List[string]'
+$script:settingsWindow = $null
+$script:audioGainNativeCapability = $false
+$script:audioGainActual = $null
+$script:audioGainStatusText = ''
+$script:reportedPlaybackGainMilli = $null
 $script:supervisor = [pscustomobject]@{ ProcessId = [uint32]4120; HasExited = $false }
 $script:currentRunId = ''
 $script:lastSequence = [uint64]0
@@ -396,6 +413,23 @@ Assert-UiStatus ([string]::IsNullOrEmpty([string]$script:mockUiFields['HriSource
     [string]::IsNullOrEmpty([string]$script:mockUiFields['RadioDisplayValue']) -and
     $script:mockIdentityRows['recent'] -ceq 'Collapsed') ('过期身份状态应清空可见来话行并隐藏屏显区域：recent={0}, current={1}, display={2}' -f `
         $script:mockIdentityRows['recent'],$script:mockIdentityRows['current'],$script:mockUiFields['RadioDisplayValue'])
+
+$gainStatusControl = $script:mainWindow.FindName('PlaybackGainStatusValue')
+$script:audioGainNativeCapability = $false
+$script:audioGainActual = $null
+Update-UiPlaybackGainDisplay -Record $script:latestStatus
+Assert-UiStatus ($null -eq $script:reportedPlaybackGainMilli -and
+    $gainStatusControl.Visibility -eq [System.Windows.Visibility]::Collapsed) `
+    '旧 Native 状态没有音量回读时，运行增益显示应保持折叠。'
+$script:audioGainNativeCapability = $true
+$script:audioGainActual = [pscustomobject][ordered]@{
+    radio_playback_gain_milli=[uint32]1250; mic_transmit_gain_milli=[uint32]750
+}
+Update-UiPlaybackGainDisplay -Record $script:latestStatus
+Assert-UiStatus ($script:reportedPlaybackGainMilli -eq 1250 -and
+    $gainStatusControl.Text -ceq '播放 1.25x · 发送 0.75x' -and
+    $gainStatusControl.Visibility -eq [System.Windows.Visibility]::Visible) `
+    '带 audio.gains.set 的运行状态应从实际增益回读更新主界面状态。'
 
 function Complete-PreparationStop {}
 function Complete-UiDeviceDiscovery {}

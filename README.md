@@ -1,6 +1,12 @@
 ﻿# WIREX Bridge：FTX-1 DIRECT 与 BrandMeister 语音桥接
 
-## 当前工作：R118 / Alpha 14 本机包（root 审核通过）
+## 当前工作：R119 / Alpha 15 本机候选
+
+R119 接入 CAT 首次状态查询和周期同步，查询忙碌时保持编辑控件与滑块稳定；CAT 写操作仍要求当前连接代次和新鲜查询结果。实时音量只在 Native 明确公布 `audio.gains.set` 时提供运行中调整，alpha14 的旧能力集继续保留原启动增益行为。CAT 与 WPF 回归、旧能力兼容和离线 IPC 检查见 [R119 发布交接](docs/R119_发布交接.md)、[CAT 记录](docs/R119_CAT.md)、[UI 记录](docs/R119_UI.md) 和 [实时音量记录](docs/R119_实时音量.md)。
+
+alpha15 沿用 alpha14 的通用资产清单，替换既有 README 与唯一启动器；个人 `config.json` 不进入 Generic 包。本轮不迁移 alpha14 个人配置、不改根目录快捷方式，也不操作真实 COM、BrandMeister、HRI、音频、PTT 或 RF。源码提交、fresh Native build 和本机包均待本轮生成；包完成后状态保持 `awaiting_root_audit`，由 root 独立审计。
+
+## R118 / Alpha 14 历史记录（root 审核通过）
 
 R118 源码最终提交为 f0105d7da667c2dbc1ca24d78f2b3b11e9be9eb6，已从干净工作树完成 Native 完整构建：40/40 项通过，日志没有 MSVC warning/error；provenance 标记 compile_only=false。Alpha14 本机目录位于 build/releases/v0.1.0-alpha.14，root 已独立核对包清单、构建来源、测试结果和 EXE，manifest.package_status 为 root_audit_passed。清单列出 41 项通用资产，连同 manifest 共 42 个文件；本机另有一份不纳入通用清单的 config.json。最终 manifest SHA-256 为 09a8448cd96c2f9a1c949b621d85d0add996d36756f25cfb6f596ad3747467b0。
 
@@ -10,7 +16,7 @@ R118 源码最终提交为 f0105d7da667c2dbc1ca24d78f2b3b11e9be9eb6，已从干�
 
 本机 alpha14 配置已从明确指定的旧配置目录迁移；频道依次为 private:460997:2、group:46001:2、group:91:2，TX 目标仍为 private:460997:2。添加 TG91 只保存收听偏好，没有发起 QuickCall。本机启动快捷方式现调用 alpha14 目录中的唯一 CMD，原文件备份在 private/config-backups/R118。canonical 指针和旧设置文件保持原样；没有读取收藏，没有连接真实 BM/COM/HRI/音频/PTT/RF，也没有创建 ZIP、tag 或 GitHub Release。
 
-以下为历史阶段记录；当前进度以 [R118 发布交接](docs/R118_发布交接.md) 为准。
+alpha14 当时的验收细节以 [R118 发布交接](docs/R118_发布交接.md) 为准；以下为更早阶段记录。
 ## R111 / alpha.9 源码集成准备
 
 当前默认用户绿色目录是 R110 验收的 `build/releases/v0.1.0-alpha.8`；alpha.9 源已冻结，clean build 和正式包尚未生成。alpha.9 包含分开的本机收听与起呼目标、真实通话记录、逐路由 TS、发射 CC 设置、单 ID RadioID 查询和本机音量显示。查询只由用户点击触发，查询缓存和频道收藏留在 canonical 配置目录；“静态”类别只整理本机收藏，程序没有读取或修改 BM 服务器订阅。音量设置与当前运行实际增益分别显示；RadioIdentity 模块已修复 Windows 网络读取 deadline 并通过根架构审查，UI 两尺寸 RenderOnly 与定向测试也已通过根审查。

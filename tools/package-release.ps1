@@ -67,6 +67,7 @@ $script:alpha11TestNames = @(
 $script:alpha12TestNames = @($script:alpha11TestNames)
 $script:alpha13TestNames = @($script:alpha12TestNames)
 $script:alpha14TestNames = @($script:alpha13TestNames)
+$script:alpha15TestNames = @($script:alpha14TestNames)
 $script:activeReleaseVersion = 'v0.1.0-alpha.1'
 
 function Get-ReleaseProfile {
@@ -661,7 +662,33 @@ function Get-ReleaseProfile {
                 NotIncluded = $alpha14NotIncluded
             }
         }
-        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.14 release profiles are supported.' }
+        'v0.1.0-alpha.15' {
+            $alpha14 = Get-ReleaseProfile -Version 'v0.1.0-alpha.14'
+            $alpha15SourceFiles = @($alpha14.SourceFiles | Where-Object {
+                [string]$_.Destination -cne 'README.md' -and
+                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha14.cmd' -and
+                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha14.ps1'
+            }) + @(
+                @{ Source='docs\releases\v0.1.0-alpha.15-package-README.md'; Destination='README.md' },
+                @{ Source='tools\start-wirex-bridge-alpha15.cmd'; Destination='start-wirex-bridge.cmd' },
+                @{ Source='tools\start-wirex-bridge-alpha15.ps1'; Destination='tools/start-wirex-bridge.ps1' }
+            )
+            $alpha15NotIncluded = @($alpha14.NotIncluded | ForEach-Object {
+                ([string]$_).Replace('alpha.14', 'alpha.15')
+            })
+            return [pscustomobject]@{
+                Version = 'v0.1.0-alpha.15'
+                TestNames = $script:alpha15TestNames
+                SourceFiles = $alpha15SourceFiles
+                PackageFiles = @($alpha14.PackageFiles)
+                Directories = @($alpha14.Directories)
+                AssetMap = $alpha14.AssetMap
+                PackageReadme = 'docs\releases\v0.1.0-alpha.15-package-README.md'
+                ReleaseScope = 'R119 DIRECT: CAT polling stability and runtime audio gain control with alpha.14 package-root configuration compatibility'
+                NotIncluded = $alpha15NotIncluded
+            }
+        }
+        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.15 release profiles are supported.' }
     }
 }
 
@@ -896,7 +923,7 @@ function Get-ReleaseExcludedPrivateFiles {
             'private/user-config/bm-server-preferences.json'
         )
     }
-    if ($Version -ceq 'v0.1.0-alpha.14') {
+    if ($Version -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15')) {
         $excluded += @(
             'config.json',
             'config.*.backup*',

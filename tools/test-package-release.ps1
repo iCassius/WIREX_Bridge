@@ -32,22 +32,23 @@ function Write-Utf8NoBom {
 }
 
 function Test-Alpha14SyntheticLauncher {
-    param([Parameter(Mandatory=$true)][string]$TestRoot)
-    $packageRoot = Join-Path $TestRoot 'alpha14 synthetic package 中文 path'
+    param([Parameter(Mandatory=$true)][string]$TestRoot, [string]$Version = '14')
+    $alphaLabel = 'alpha.' + $Version
+    $packageRoot = Join-Path $TestRoot ('alpha' + $Version + ' synthetic package 中文 path')
     $toolsDirectory = Join-Path $packageRoot 'tools'
     $uiDirectory = Join-Path $packageRoot 'ui\windows'
     [void][System.IO.Directory]::CreateDirectory($toolsDirectory)
     [void][System.IO.Directory]::CreateDirectory($uiDirectory)
-    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha14.cmd') `
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot ('tools\start-wirex-bridge-alpha' + $Version + '.cmd')) `
         -Destination (Join-Path $packageRoot 'start-wirex-bridge.cmd') -ErrorAction Stop
-    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha14.ps1') `
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot ('tools\start-wirex-bridge-alpha' + $Version + '.ps1')) `
         -Destination (Join-Path $toolsDirectory 'start-wirex-bridge.ps1') -ErrorAction Stop
     Copy-Item -LiteralPath (Join-Path $repositoryRoot 'ui\windows\PortableConfig.psm1') `
         -Destination (Join-Path $uiDirectory 'PortableConfig.psm1') -ErrorAction Stop
     [System.IO.File]::WriteAllText((Join-Path $packageRoot 'start-bm-radio-bridge.ps1'), '', [System.Text.Encoding]::ASCII)
     [System.IO.File]::WriteAllText((Join-Path $uiDirectory 'bridge-ui.ps1'), '', [System.Text.Encoding]::ASCII)
     [System.IO.File]::WriteAllBytes((Join-Path $packageRoot 'wirex_bridge.exe'), [byte[]]@())
-    $capturePath = Join-Path $TestRoot 'alpha14 synthetic launch capture.json'
+    $capturePath = Join-Path $TestRoot ('alpha' + $Version + ' synthetic launch capture.json')
     $fakeUi = @'
 param([string]$PackageDirectory, [string]$UserConfigDirectory, [switch]$RoutingDiagnostic, [switch]$RoutingDiagnosticAutoTest)
 Import-Module (Join-Path $PackageDirectory 'ui\windows\PortableConfig.psm1') -Force -ErrorAction Stop
@@ -61,16 +62,16 @@ $capture = [ordered]@{
     routing_diagnostic = [bool]$RoutingDiagnostic
     routing_diagnostic_auto_test = [bool]$RoutingDiagnosticAutoTest
 }
-[System.IO.File]::WriteAllText($env:WIREX_ALPHA14_CAPTURE,
+[System.IO.File]::WriteAllText($env:WIREX_ALPHALAUNCH_CAPTURE,
     (ConvertTo-Json -InputObject $capture -Compress), (New-Object System.Text.UTF8Encoding($false)))
 '@
     [System.IO.File]::WriteAllText((Join-Path $packageRoot 'start-ui.ps1'), $fakeUi,
         (New-Object System.Text.UTF8Encoding($false)))
-    $driverPath = Join-Path $TestRoot 'alpha14-invoke-launcher.cmd'
+    $driverPath = Join-Path $TestRoot ('alpha' + $Version + '-invoke-launcher.cmd')
     $driverLines = @(
         '@echo off',
         'setlocal',
-        'call "%WIREX_ALPHA14_PACKAGE%\start-wirex-bridge.cmd" -PackageDirectory "%WIREX_ALPHA14_PACKAGE%"',
+        'call "%WIREX_ALPHALAUNCH_PACKAGE%\start-wirex-bridge.cmd" -PackageDirectory "%WIREX_ALPHALAUNCH_PACKAGE%"',
         'exit /b %ERRORLEVEL%'
     )
     [System.IO.File]::WriteAllText($driverPath, ([string]::Join("`r`n", $driverLines) + "`r`n"), [System.Text.Encoding]::ASCII)
@@ -82,20 +83,20 @@ $capture = [ordered]@{
     $startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
-    $startInfo.EnvironmentVariables['WIREX_ALPHA14_PACKAGE'] = $packageRoot
-    $startInfo.EnvironmentVariables['WIREX_ALPHA14_CAPTURE'] = $capturePath
+    $startInfo.EnvironmentVariables['WIREX_ALPHALAUNCH_PACKAGE'] = $packageRoot
+    $startInfo.EnvironmentVariables['WIREX_ALPHALAUNCH_CAPTURE'] = $capturePath
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $startInfo
     try {
-        if (-not $process.Start()) { throw '无法启动 alpha14 合成 CMD 测试。' }
+        if (-not $process.Start()) { throw ('无法启动 {0} 合成 CMD 测试。' -f $alphaLabel) }
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
-        if (-not $process.WaitForExit(30000)) { throw 'alpha14 合成启动器测试超过30秒。' }
-        if (-not $stdoutTask.Wait(2000) -or -not $stderrTask.Wait(2000)) { throw 'alpha14 合成启动器输出未关闭。' }
+        if (-not $process.WaitForExit(30000)) { throw ($alphaLabel + ' 合成启动器测试超过30秒。') }
+        if (-not $stdoutTask.Wait(2000) -or -not $stderrTask.Wait(2000)) { throw ($alphaLabel + ' 合成启动器输出未关闭。') }
         $output = $stdoutTask.Result + $stderrTask.Result
-        if ($process.ExitCode -ne 0) { throw ('alpha14 合成启动器失败：' + $output) }
+        if ($process.ExitCode -ne 0) { throw ($alphaLabel + ' 合成启动器失败：' + $output) }
     } finally { $process.Dispose() }
-    if (-not [System.IO.File]::Exists($capturePath)) { throw 'alpha14 合成 UI adapter 没有收到启动调用。' }
+    if (-not [System.IO.File]::Exists($capturePath)) { throw ($alphaLabel + ' 合成 UI adapter 没有收到启动调用。') }
     $capture = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($capturePath, [System.Text.Encoding]::UTF8)) -ErrorAction Stop
     $expectedPackage = [System.IO.Path]::GetFullPath($packageRoot)
     $expectedConfig = [System.IO.Path]::GetFullPath((Join-Path $packageRoot 'config.json'))
@@ -103,10 +104,10 @@ $capture = [ordered]@{
         -not [string]::Equals([string]$capture.config_path, $expectedConfig, [System.StringComparison]::OrdinalIgnoreCase) -or
         -not [string]::IsNullOrWhiteSpace([string]$capture.user_config_directory) -or
         [bool]$capture.routing_diagnostic -or [bool]$capture.routing_diagnostic_auto_test) {
-        throw 'alpha14 默认启动没有将设置定位到packageRoot/config.json，或传入了UserConfigDirectory。'
+        throw ($alphaLabel + ' 默认启动没有将设置定位到packageRoot/config.json，或传入了UserConfigDirectory。')
     }
-    if (-not [System.IO.File]::Exists($expectedConfig)) { throw 'alpha14 合成配置没有写入合成packageRoot。' }
-    Write-Output '通过：alpha14 CMD → PowerShell launcher → synthetic UI 使用 packageRoot/config.json，未传入旧配置目录。'
+    if (-not [System.IO.File]::Exists($expectedConfig)) { throw ($alphaLabel + ' 合成配置没有写入合成packageRoot。') }
+    Write-Output ('通过：{0} CMD → PowerShell launcher → synthetic UI 使用 packageRoot/config.json，未传入旧配置目录。' -f $alphaLabel)
 }
 
 $assetPairs = @(
@@ -1031,6 +1032,84 @@ Assert-True ($alpha14LauncherText.Contains('. $uiLauncher -PackageDirectory $pac
 $alpha14CmdPath = Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha14.cmd'
 $alpha14CmdBytes = [System.IO.File]::ReadAllBytes($alpha14CmdPath)
 Assert-True (@($alpha14CmdBytes | Where-Object { $_ -gt 127 }).Count -eq 0) 'alpha.14 root CMD source contains ASCII only'
+
+$alpha15Profile = Get-ReleaseProfile -Version 'v0.1.0-alpha.15'
+[void](Set-ReleaseVersion -Version 'v0.1.0-alpha.15')
+$alpha15Files = @(Get-ExpectedReleasePackageFiles)
+$alpha15Tests = @(Get-ExpectedReleaseTests)
+Assert-True ([string]$alpha15Profile.ReleaseScope -like 'R119 DIRECT:*') 'alpha.15 release metadata identifies the CAT and runtime audio scope'
+Assert-Equal $alpha15Files.Count $alpha14Files.Count 'alpha.15 inherits the exact alpha.14 package asset count'
+Assert-True ([string]::Join('|', $alpha15Files) -ceq [string]::Join('|', $alpha14Files) -and
+    [string]::Join('|', $alpha15Tests) -ceq [string]::Join('|', $alpha14Tests)) 'alpha.15 retains the alpha.14 package inventory and Native test sequence without adding runtime assets'
+Assert-True (@($alpha15Files | Where-Object { [string]$_ -ceq 'start-wirex-bridge.cmd' }).Count -eq 1 -and
+    @($alpha15Files | Where-Object { [string]$_ -ceq 'start-wirex-bridge-alpha15.cmd' }).Count -eq 0) `
+    'alpha.15 contains one canonical root CMD and no source-named copy'
+Assert-True (@($alpha15Profile.SourceFiles | Where-Object {
+    [string]$_.Source -ceq 'tools\start-wirex-bridge-alpha15.cmd' -and [string]$_.Destination -ceq 'start-wirex-bridge.cmd'
+}).Count -eq 1 -and @($alpha15Profile.SourceFiles | Where-Object {
+    [string]$_.Source -ceq 'tools\start-wirex-bridge-alpha15.ps1' -and [string]$_.Destination -ceq 'tools/start-wirex-bridge.ps1'
+}).Count -eq 1) 'alpha.15 maps its versioned launcher sources to canonical package entry paths'
+Assert-True ([string]$alpha15Profile.PackageReadme -ceq 'docs\releases\v0.1.0-alpha.15-package-README.md') 'alpha.15 profile selects its versioned package README'
+$alpha15Excluded = @(Get-ReleaseExcludedPrivateFiles -Version 'v0.1.0-alpha.15')
+foreach ($requiredExcludedPath in @('config.json', 'config.*.backup*', 'credentials/', 'tempSecrets/')) {
+    Assert-True ($alpha15Excluded -ccontains $requiredExcludedPath) "alpha.15 manifest exclusion list declares $requiredExcludedPath"
+}
+$alpha15LauncherPath = Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha15.ps1'
+$alpha15LauncherBytes = [System.IO.File]::ReadAllBytes($alpha15LauncherPath)
+Assert-True ($alpha15LauncherBytes.Length -ge 3 -and $alpha15LauncherBytes[0] -eq 0xEF -and
+    $alpha15LauncherBytes[1] -eq 0xBB -and $alpha15LauncherBytes[2] -eq 0xBF) 'alpha.15 PowerShell launcher has a UTF-8 BOM for Windows PowerShell 5.1'
+$alpha15LauncherTokens = $null
+$alpha15LauncherErrors = $null
+[System.Management.Automation.Language.Parser]::ParseFile($alpha15LauncherPath, [ref]$alpha15LauncherTokens, [ref]$alpha15LauncherErrors) | Out-Null
+Assert-True ($alpha15LauncherErrors.Count -eq 0) ('alpha.15 launcher parses; parse errors={0}' -f $alpha15LauncherErrors.Count)
+$alpha15LauncherText = [System.IO.File]::ReadAllText($alpha15LauncherPath, [System.Text.Encoding]::UTF8)
+Assert-True ($alpha15LauncherText.Contains('. $uiLauncher -PackageDirectory $packageRoot') -and
+    $alpha15LauncherText.Contains('alpha.15') -and -not $alpha15LauncherText.Contains('alpha.14') -and
+    -not $alpha15LauncherText.Contains('user-config-directory.txt') -and
+    -not $alpha15LauncherText.Contains('Resolve-PackageUserConfigDirectory')) `
+    'alpha.15 normal startup uses packageRoot and identifies the correct release version'
+$alpha15CmdPath = Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha15.cmd'
+$alpha15CmdBytes = [System.IO.File]::ReadAllBytes($alpha15CmdPath)
+Assert-True (@($alpha15CmdBytes | Where-Object { $_ -gt 127 }).Count -eq 0) 'alpha.15 root CMD source contains ASCII only'
+$alpha15PackageReadme = [System.IO.File]::ReadAllText((Join-Path $repositoryRoot $alpha15Profile.PackageReadme), [System.Text.Encoding]::UTF8)
+Assert-True ($alpha15PackageReadme.Contains('WIREX Bridge v0.1.0-alpha.15') -and
+    $alpha15PackageReadme.Contains('audio.gains.set') -and
+    -not $alpha15PackageReadme.Contains('实机验收结果')) 'alpha.15 README documents runtime gain capability and avoids hardware claims'
+
+$alpha15Profile = Get-ReleaseProfile -Version 'v0.1.0-alpha.15'
+[void](Set-ReleaseVersion -Version 'v0.1.0-alpha.15')
+$alpha15Files = @(Get-ExpectedReleasePackageFiles)
+$alpha15Tests = @(Get-ExpectedReleaseTests)
+Assert-True ([string]$alpha15Profile.ReleaseScope -like 'R119 DIRECT:*') 'alpha.15 release metadata identifies the CAT and runtime audio scope'
+Assert-Equal $alpha15Files.Count $alpha14Files.Count 'alpha.15 inherits the exact alpha.14 package asset count'
+Assert-True ([string]::Join('|', $alpha15Files) -ceq [string]::Join('|', $alpha14Files) -and
+    [string]::Join('|', $alpha15Tests) -ceq [string]::Join('|', $alpha14Tests)) 'alpha.15 retains the alpha.14 package inventory and Native test sequence without adding runtime assets'
+Assert-True (@($alpha15Files | Where-Object { [string]$_ -ceq 'start-wirex-bridge.cmd' }).Count -eq 1 -and
+    @($alpha15Files | Where-Object { [string]$_ -ceq 'start-wirex-bridge-alpha15.cmd' }).Count -eq 0) `
+    'alpha.15 contains one canonical root CMD and no source-named copy'
+Assert-True (@($alpha15Profile.SourceFiles | Where-Object {
+    [string]$_.Source -ceq 'tools\start-wirex-bridge-alpha15.cmd' -and [string]$_.Destination -ceq 'start-wirex-bridge.cmd'
+}).Count -eq 1 -and @($alpha15Profile.SourceFiles | Where-Object {
+    [string]$_.Source -ceq 'tools\start-wirex-bridge-alpha15.ps1' -and [string]$_.Destination -ceq 'tools/start-wirex-bridge.ps1'
+}).Count -eq 1) 'alpha.15 maps its versioned launcher sources to canonical package entry paths'
+Assert-True ([string]$alpha15Profile.PackageReadme -ceq 'docs\releases\v0.1.0-alpha.15-package-README.md') 'alpha.15 profile selects its versioned package README'
+$alpha15LauncherPath = Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha15.ps1'
+$alpha15LauncherBytes = [System.IO.File]::ReadAllBytes($alpha15LauncherPath)
+Assert-True ($alpha15LauncherBytes.Length -ge 3 -and $alpha15LauncherBytes[0] -eq 0xEF -and
+    $alpha15LauncherBytes[1] -eq 0xBB -and $alpha15LauncherBytes[2] -eq 0xBF) 'alpha.15 PowerShell launcher has a UTF-8 BOM for Windows PowerShell 5.1'
+$alpha15LauncherTokens = $null
+$alpha15LauncherErrors = $null
+[System.Management.Automation.Language.Parser]::ParseFile($alpha15LauncherPath, [ref]$alpha15LauncherTokens, [ref]$alpha15LauncherErrors) | Out-Null
+Assert-True ($alpha15LauncherErrors.Count -eq 0) ('alpha.15 launcher parses; parse errors={0}' -f $alpha15LauncherErrors.Count)
+$alpha15LauncherText = [System.IO.File]::ReadAllText($alpha15LauncherPath, [System.Text.Encoding]::UTF8)
+Assert-True ($alpha15LauncherText.Contains('. $uiLauncher -PackageDirectory $packageRoot') -and
+    $alpha15LauncherText.Contains('alpha.15') -and -not $alpha15LauncherText.Contains('alpha.14') -and
+    -not $alpha15LauncherText.Contains('user-config-directory.txt') -and
+    -not $alpha15LauncherText.Contains('Resolve-PackageUserConfigDirectory')) `
+    'alpha.15 normal startup uses packageRoot and identifies the correct release version'
+$alpha15CmdPath = Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha15.cmd'
+$alpha15CmdBytes = [System.IO.File]::ReadAllBytes($alpha15CmdPath)
+Assert-True (@($alpha15CmdBytes | Where-Object { $_ -gt 127 }).Count -eq 0) 'alpha.15 root CMD source contains ASCII only'
 $alpha14Config = Import-Module (Join-Path $repositoryRoot 'ui\windows\PortableConfig.psm1') -Force -PassThru
 Remove-Module -ModuleInfo $alpha14Config -Force
 $alpha14PortableModule = Join-Path $repositoryRoot 'ui\windows\PortableConfig.psm1'
@@ -1056,6 +1135,8 @@ $approvedFixtureHash = Test-ApprovedYFixture -Path $approvedFixturePath
 New-Item -ItemType Directory -Path $buildDirectory -Force | Out-Null
 try {
     Test-Alpha14SyntheticLauncher -TestRoot $testRoot
+    Test-Alpha14SyntheticLauncher -TestRoot $testRoot -Version '15'
+    Test-Alpha14SyntheticLauncher -TestRoot $testRoot -Version '15'
     $alpha3ReadmeOutput = Join-Path $testRoot 'synthetic-alpha3-readme\README.md'
     New-Item -ItemType Directory -Path (Split-Path -Parent $alpha3ReadmeOutput) -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $repositoryRoot $alpha3ReadmeMap[0].Source) -Destination $alpha3ReadmeOutput
@@ -1561,6 +1642,21 @@ try {
     Assert-Throws { Assert-ReleasePackageInventory -PackageRoot $alpha14InventoryRoot -Version 'v0.1.0-alpha.14' } `
         'alpha.14 package inventory rejects a credentials directory and all files below it'
     Remove-Item -LiteralPath $alpha14CredentialsDirectory -Recurse -Force -ErrorAction Stop
+
+    $alpha15InventoryRoot = Join-Path $testRoot 'package-inventory-alpha15'
+    Copy-Item -LiteralPath $alpha14InventoryRoot -Destination $alpha15InventoryRoot -Recurse
+    $alpha15InventoryManifestPath = Join-Path $alpha15InventoryRoot 'manifest.json'
+    $alpha15InventoryManifest = [System.IO.File]::ReadAllText($alpha15InventoryManifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $alpha15InventoryManifest.version = 'v0.1.0-alpha.15'
+    $alpha15InventoryManifest.tag_candidate = 'v0.1.0-alpha.15'
+    $alpha15InventoryManifest.excluded_private_files = @(Get-ReleaseExcludedPrivateFiles -Version 'v0.1.0-alpha.15')
+    Write-Utf8NoBom -Path $alpha15InventoryManifestPath -Text ((ConvertTo-Json -InputObject $alpha15InventoryManifest -Depth 8) + [Environment]::NewLine)
+    Assert-True ((Assert-ReleasePackageInventory -PackageRoot $alpha15InventoryRoot -Version 'v0.1.0-alpha.15') -eq $null) `
+        'alpha.15 synthetic inventory accepts the exact inherited alpha.14 asset list without adding runtime files'
+    Write-Utf8NoBom -Path (Join-Path $alpha15InventoryRoot 'config.json') -Text '{"synthetic":"user config"}'
+    Assert-Throws { Assert-ReleasePackageInventory -PackageRoot $alpha15InventoryRoot -Version 'v0.1.0-alpha.15' } `
+        'alpha.15 package inventory rejects a package-root user config file'
+    Remove-Item -LiteralPath (Join-Path $alpha15InventoryRoot 'config.json') -Force -ErrorAction Stop
 
     $alpha2PackageRoot = Join-Path $testRoot 'package-alpha2'
     Copy-Item -LiteralPath $packageRoot -Destination $alpha2PackageRoot -Recurse

@@ -4515,7 +4515,7 @@ void print_bm_bridge_help()
         L"--ui-control-version 2 必须与 --ui-pipe 一起使用，采用 schema_version=2 的有界 JSONL；支持 hello/status/routing.status/rx_policy.replace/tx_policy.replace/shutdown。\n"
         L"--routing-state-file ABS 使用严格 schema_version=1 的完整本地路由策略；在打开设备前校验。\n"
         L"--control-diagnostic --ui-pipe --ui-control-version 2 保留原三条控制诊断命令。\n"
-        L"--routing-diagnostic --ui-pipe --ui-control-version 2 使用合成本机ID=1测试真实 Native pipeline 路由策略，不访问网络或设备。\n"
+        L"--routing-diagnostic --ui-pipe --ui-control-version 2 使用合成本机ID=1测试 Native 路由策略和内存音量回调，不访问网络或设备。\n"
         L"  --hri-lcd-identity-candidate --port COMn --body-file ABS --file WAV --report-file ABS --field destination|source|local --callsign ASCII\n"
         L"                               单次本地WAV实验，仅替换一个呼号字段；1..8个无空格可见ASCII字符且含英文字母。\n"
         L"                               不连接BM；报告中的电台LCD显示状态保持 unknown。\n");
@@ -4796,6 +4796,8 @@ int run_control_diagnostic(bool routing_diagnostic)
     wirex::routing_state::ObservedSources observed_sources;
     wirex::ui_control::RoutingCallbacks routing_callbacks{};
     wirex::radio_identity_cache::Cache diagnostic_identity_cache;
+    std::uint32_t diagnostic_radio_playback_gain_milli = wirex::pcm_gain::unity_milli;
+    std::uint32_t diagnostic_mic_transmit_gain_milli = 16000U;
     routing_callbacks.update_radio_identity = [&](std::uint32_t source_id,
                                                    std::uint64_t revision,
                                                    std::optional<std::string_view> callsign) {
@@ -4835,6 +4837,13 @@ int run_control_diagnostic(bool routing_diagnostic)
             const auto* tx = pipeline->routed_tx_policy();
             if (rx == nullptr || tx == nullptr) return std::string{};
             return wirex::routing_state::routing_json(pipeline->routing_snapshot(), 1U, *rx, *tx, observed_sources);
+        };
+        routing_callbacks.set_audio_gains = [&](std::uint32_t radio_playback_gain_milli,
+                                                 std::uint32_t mic_transmit_gain_milli) {
+            diagnostic_radio_playback_gain_milli = radio_playback_gain_milli;
+            diagnostic_mic_transmit_gain_milli = mic_transmit_gain_milli;
+            return wirex::ui_control::RoutingCallbacks::AudioGainApplyResult{
+                true, diagnostic_radio_playback_gain_milli, diagnostic_mic_transmit_gain_milli};
         };
         routing_callbacks.quick_call_join = [&](const wirex::talkgroup_routing::GroupRoute& group) {
             using CallbackStatus = wirex::ui_control::RoutingCallbacks::QuickCallStatus;
@@ -4948,6 +4957,13 @@ int run_control_diagnostic(bool routing_diagnostic)
             return 2;
         }
         for (const auto& line : lines) {
+            if (dispatcher.supports_audio_gains()) {
+                snapshot.audio_gains = wirex::ui_control::StatusSnapshot::AudioGains{
+                    dispatcher.audio_gains_revision(), diagnostic_radio_playback_gain_milli,
+                    diagnostic_mic_transmit_gain_milli};
+            } else {
+                snapshot.audio_gains.reset();
+            }
             const auto response = dispatcher.handle(line, snapshot);
             if (!writer.write_line(response.json_line)) return 2;
             if (routing_diagnostic && dispatcher.hello_seen()) {
@@ -5892,6 +5908,17 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
             return callsign.has_value()
                 ? source_identity_cache.upsert(source_id, revision, *callsign)
                 : source_identity_cache.remove(source_id, revision);
+        };
+        callbacks.set_audio_gains = [&](std::uint32_t radio_playback_gain,
+                                         std::uint32_t mic_transmit_gain) {
+            // The control request and PCM consumers run on this same loop; both values become
+            // visible together before the next WaveIn buffer or WaveOut frame is processed.
+            radio_playback_gain_milli = radio_playback_gain;
+            mic_transmit_gain_milli = mic_transmit_gain;
+            counters.rx_output_gain_milli = radio_playback_gain_milli;
+            counters.tx_input_gain_milli = mic_transmit_gain_milli;
+            return wirex::ui_control::RoutingCallbacks::AudioGainApplyResult{
+                true, radio_playback_gain_milli, mic_transmit_gain_milli};
         };
         callbacks.snapshot_json = [&]() {
             const auto* rx = pipeline->routed_rx_policy();
@@ -7415,6 +7442,11 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                                 snapshot.serial_open = port.valid();
                                 snapshot.wavein_open = radio_input_open;
                                 snapshot.waveout_open = radio_output_open;
+                                if (ui_control_dispatcher->supports_audio_gains()) {
+                                    snapshot.audio_gains = wirex::ui_control::StatusSnapshot::AudioGains{
+                                        ui_control_dispatcher->audio_gains_revision(),
+                                        radio_playback_gain_milli, mic_transmit_gain_milli};
+                                }
                                 const auto response = ui_control_dispatcher->handle(control_line, snapshot);
                                 if (!ui_control_writer.write_line(response.json_line)) {
                                     set_failure("ui_control_stdout_write_failed");

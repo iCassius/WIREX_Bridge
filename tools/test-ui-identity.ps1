@@ -30,6 +30,7 @@ Assert-UiIdentity ($parseErrors.Count -eq 0) ("bridge-ui.ps1 必须能被 PowerS
 $functionNames = @(
     'Get-UiRadioIdentity','Get-UiNativeIdentityCallsign','Add-UiNativeIdentityMappingToQueue',
     'Save-UiNativeIdentityDeferredMapping','Test-AndMarkUiNativeIdentityCallRefresh','Expire-UiNativeIdentityUpdate',
+    'Expire-UiAudioGainRequest',
     'Initialize-UiNativeIdentitySync','Start-NextUiNativeIdentityUpdate','Complete-UiNativeIdentityUpdate',
     'Format-UiRadioIdentity','Format-UiRadioIdentityDetails',
     'Update-UiCallHistoryActionState','Update-UiIdentityActionState',
@@ -118,12 +119,23 @@ function New-TestWindow {
 function Get-TestChannelCardTexts {
     $panel = $script:mainWindow.FindName('ChannelCardsPanel')
     $texts = New-Object 'System.Collections.Generic.List[string]'
-    foreach ($card in @($panel.Children)) {
-        if ($card.Child -is [System.Windows.Controls.Panel]) {
-            foreach ($child in @($card.Child.Children)) {
-                if ($child -is [System.Windows.Controls.TextBlock]) { $texts.Add([string]$child.Text) }
-            }
+    function Add-TestVisualText {
+        param([object]$Node,[System.Collections.Generic.List[string]]$TextValues)
+        if ($null -eq $Node) { return }
+        if ($Node -is [System.Windows.Controls.TextBlock]) {
+            $TextValues.Add([string]$Node.Text)
+            return
         }
+        if ($Node -is [System.Windows.Controls.Border]) {
+            Add-TestVisualText -Node $Node.Child -TextValues $TextValues
+            return
+        }
+        if ($Node -is [System.Windows.Controls.Panel]) {
+            foreach ($child in @($Node.Children)) { Add-TestVisualText -Node $child -TextValues $TextValues }
+        }
+    }
+    foreach ($card in @($panel.Children)) {
+        Add-TestVisualText -Node $card -TextValues $texts
     }
     return @($texts.ToArray())
 }
@@ -159,6 +171,21 @@ function Initialize-TestState {
     $script:radioCatPowerNeedsUserChoice = $false
     $script:radioCatResult = $null
     $script:radioCatObserved = $null
+    $script:audioGainNativeCapability = $false
+    $script:audioGainCommandRejected = $false
+    $script:audioGainRunId = ''
+    $script:audioGainRevision = [uint64]0
+    $script:audioGainActual = $null
+    $script:audioGainRuntimeReady = $false
+    $script:audioGainPendingRequest = $null
+    $script:audioGainExpiredRequests = @{}
+    $script:audioGainAwaitingStatus = $false
+    $script:audioGainTimedOutDraftRevision = [uint64]0
+    $script:audioGainDraftRevision = [uint64]0
+    $script:audioGainResolvedDraftRevision = [uint64]0
+    $script:audioGainDraft = $null
+    $script:audioGainDebounceReady = $false
+    $script:audioGainStatusText = ''
     $script:radioModeApplyAfterStop = $null
     $script:radioModePreviousHriPortName = ''
     $script:RenderOnly = $false

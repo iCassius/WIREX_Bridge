@@ -28,6 +28,7 @@ Assert-RadioUi ($catParseErrors.Count -eq 0) 'RadioCatUi.ps1 无法解析。'
 $definitions = $ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] },$true)
 $catDefinitions = $catAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] },$true)
 Invoke-Expression ((@($definitions) + @($catDefinitions) | ForEach-Object { $_.Extent.Text }) -join "`r`n")
+Import-Module -Name (Join-Path $repoRoot 'tools\bridge-user-config.psm1') -Force
 Import-Module -Name $portableConfigModulePath -Force
 $script:productionRejectedReadbackValidator = (Get-Command Test-UiRadioCatRejectedPowerReadback).ScriptBlock
 $script:radioCatRejectedPowerReadbackInput = $null
@@ -358,6 +359,83 @@ try {
         $slider.Maximum,$slider.Value,$script:radioControlPreferences.desired_power_watts,$script:radioCatPowerPreferenceDirty,$script:radioCatPowerNeedsUserChoice,$script:radioCatEditDraft.power)
     Assert-RadioUi ([int]$script:radioControlPreferences.desired_power_watts -eq 40 -and -not $script:radioCatPowerPreferenceDirty -and
         $null -eq $script:radioCatEditDraft.power -and -not (Get-SettingsControl 'ApplyCatPowerButton').IsEnabled) '无草稿首读不得覆盖 40 W 偏好或启用功率写入。'
+
+    # A regular poll must keep the visible controls and current readout steady.
+    # The three write buttons are explicitly disabled while the query worker runs.
+    $modeControl = Get-SettingsControl 'CatMainModeBox'
+    $frequencyControl = Get-SettingsControl 'CatMainFrequencyMHzBox'
+    $slider = Get-SettingsControl 'CatPowerSlider'
+    $observedPanel = Get-SettingsControl 'CatObservedPanel'
+    $operatingPanel = Get-SettingsControl 'CatOperatingPanel'
+    $powerButton = Get-SettingsControl 'ApplyCatPowerButton'
+    $modeControl.Add_IsEnabledChanged({ $script:testModeEnableChanges++ })
+    $frequencyControl.Add_IsEnabledChanged({ $script:testFrequencyEnableChanges++ })
+    $slider.Add_IsEnabledChanged({ $script:testSliderEnableChanges++ })
+    $slider.Add_ValueChanged({ $script:testSliderValueChanges++ })
+    $script:testModeEnableChanges = 0
+    $script:testFrequencyEnableChanges = 0
+    $script:testSliderEnableChanges = 0
+    $script:testSliderValueChanges = 0
+    $slider.Value = 6
+    $script:testSliderValueChanges = 0
+    $readoutBeforePoll = @(
+        [string](Get-SettingsControl 'CatObservedMainModeText').Text,
+        [string](Get-SettingsControl 'CatObservedFrequencyText').Text,
+        [string](Get-SettingsControl 'CatObservedPowerText').Text
+    ) -join '|'
+    $modeSelectionBeforePoll = [string]$modeControl.SelectedItem.Tag
+    $frequencyTextBeforePoll = [string]$frequencyControl.Text
+    $editorVisibilityBeforePoll = @(
+        [string]$modeControl.Visibility,[string]$frequencyControl.Visibility,[string]$slider.Visibility
+    ) -join '|'
+    $sliderValueBeforePoll = [double]$slider.Value
+    $sliderMaximumBeforePoll = [double]$slider.Maximum
+    $script:radioCatPollingActive = $true
+    $script:radioCatPollingConnectionKey = Get-UiRadioCatConnectionKey
+    $script:radioCatPollNextUtc = [DateTime]::MinValue
+    $env:WIREX_R116_UI_CAT_DELAY = 'query'
+    $env:WIREX_R116_UI_CAT_DELAY_MS = '400'
+    [void](Invoke-UiRadioCatPollTick -Force)
+    Assert-RadioUi ($script:radioCatOperationPowerShell -and $script:radioCatOperationKind -ceq 'query') '周期 CAT query 没有保持为唯一在途操作。'
+    Assert-RadioUi ($observedPanel.Visibility -eq [System.Windows.Visibility]::Visible -and
+        $operatingPanel.Visibility -eq [System.Windows.Visibility]::Visible) '周期 query 期间 CAT 控制面板或观测面板被隐藏。'
+    Assert-RadioUi ($modeControl.IsEnabled -and $frequencyControl.IsEnabled -and $slider.IsEnabled) '周期 query 期间 MAIN 输入和功率滑块闪烁式禁用。'
+    Assert-RadioUi (-not (Get-SettingsControl 'ReadRadioButton').IsEnabled -and
+        -not (Get-SettingsControl 'ApplyCatModeButton').IsEnabled -and
+        -not (Get-SettingsControl 'ApplyCatFrequencyButton').IsEnabled -and -not $powerButton.IsEnabled) `
+        'query worker 在途时，读取按钮和三种 CAT 写入按钮必须明确禁用。'
+    $writeCountBeforePollBusy = ([regex]::Matches([System.IO.File]::ReadAllText($script:radioCatLogPath),'WRITE\|setPower')).Count
+    $writeDuringQueryRejected = $false
+    try { Start-UiRadioCatOperation -Operation setPower -PowerWatts 6 }
+    catch { $writeDuringQueryRejected = $_.Exception.Message -match '另一项 CAT-1 操作' }
+    Assert-RadioUi ($writeDuringQueryRejected -and
+        ([regex]::Matches([System.IO.File]::ReadAllText($script:radioCatLogPath),'WRITE\|setPower')).Count -eq $writeCountBeforePollBusy) `
+        'query worker 在途时，程序入口仍允许 CAT 写入。'
+    for ($stableTick = 0; $stableTick -lt 4; $stableTick++) {
+        [void](Update-UiRadioCatControls)
+        [void](Update-UiRadioCatObservationDisplay)
+    }
+    Assert-RadioUi ($observedPanel.Visibility -eq [System.Windows.Visibility]::Visible -and
+        $operatingPanel.Visibility -eq [System.Windows.Visibility]::Visible -and
+        (@([string](Get-SettingsControl 'CatObservedMainModeText').Text,[string](Get-SettingsControl 'CatObservedFrequencyText').Text,
+            [string](Get-SettingsControl 'CatObservedPowerText').Text) -join '|') -ceq $readoutBeforePoll -and
+        [string]$modeControl.SelectedItem.Tag -ceq $modeSelectionBeforePoll -and
+        [string]$frequencyControl.Text -ceq $frequencyTextBeforePoll -and
+        (@([string]$modeControl.Visibility,[string]$frequencyControl.Visibility,[string]$slider.Visibility) -join '|') -ceq $editorVisibilityBeforePoll -and
+        [double]$slider.Value -eq $sliderValueBeforePoll -and [double]$slider.Maximum -eq $sliderMaximumBeforePoll -and
+        $script:testModeEnableChanges -eq 0 -and $script:testFrequencyEnableChanges -eq 0 -and
+        $script:testSliderEnableChanges -eq 0 -and $script:testSliderValueChanges -eq 0) `
+        '重复 dispatcher 更新期间观测文字、滑块范围或滑块值发生变化。'
+    [void](Complete-TestCatRunspace -TimeoutMs 3000)
+    Remove-Item Env:\WIREX_R116_UI_CAT_DELAY -ErrorAction SilentlyContinue
+    Remove-Item Env:\WIREX_R116_UI_CAT_DELAY_MS -ErrorAction SilentlyContinue
+    Assert-RadioUi ($script:radioCatLastOperationStatus -ceq 'confirmed' -and
+        [int]$slider.Value -eq 6 -and [int]$script:radioCatEditDraft.power -eq 6 -and $powerButton.IsEnabled -and
+        [string]$modeControl.SelectedItem.Tag -ceq $modeSelectionBeforePoll -and [string]$frequencyControl.Text -ceq $frequencyTextBeforePoll) `
+        '周期 query 完成后没有刷新确认状态，或覆盖用户保留的功率草稿。'
+    Set-UiRadioCatDraft -Field power -Value $null
+    [void](Update-UiRadioCatControls)
+
     $script:profileEditable = $false
     $script:profileWriteAllowed = $false
     $script:storedProfile = [pscustomobject]@{ connection=[pscustomobject]@{ callsign=''; gateway_id=''; source_id=''; master=''; master_port=''; color_code=1 }; tx_target=[pscustomobject]@{ destination_id=91; kind='group'; slot=2 }; rx_policy=$null; transmit_enabled=$true }
@@ -399,11 +477,19 @@ try {
         [int]$script:radioControlPreferences.desired_power_watts -eq 40 -and -not $script:radioCatPowerNeedsUserChoice) '真实 WPF 滑块操作没有创建 6 W 草稿或改写了已保存偏好。'
     $setPowerButton = Get-SettingsControl 'ApplyCatPowerButton'
     Assert-RadioUi $setPowerButton.IsEnabled '用户选择 6 W 后应用功率按钮应启用。'
+    $script:lastStatusUtc = [DateTime]::UtcNow
     $clickArgs = New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent,$setPowerButton)
     $setPowerButton.RaiseEvent($clickArgs)
-    Assert-RadioUi (Wait-TestRadioCatLog -Pattern 'ARGS\|setPower\|.*PowerWatts=6' -TimeoutMs 1000) 'WPF 应用按钮没有把用户明确选择的 6 W 传给 CAT worker。'
+    Assert-RadioUi (Wait-TestRadioCatLog -Pattern 'ARGS\|setPower\|.*PowerWatts=6' -TimeoutMs 1000) `
+        ('WPF 应用按钮没有把用户明确选择的 6 W 传给 CAT worker。 status={0}, result={1}, button={2}, operation={3}' -f `
+            [string]$script:radioCatLastOperationStatus,[string]$script:radioCatResult.status,[bool]$setPowerButton.IsEnabled,
+            [string]$script:radioCatOperationKind)
     [void](Complete-TestCatRunspace -TimeoutMs 3000)
-    Assert-RadioUi ($script:radioCatLastOperationStatus -ceq 'confirmed') '范围内的 WPF 功率应用没有通过读回流程确认。'
+    Assert-RadioUi ($script:radioCatLastOperationStatus -ceq 'confirmed') `
+        ('范围内的 WPF 功率应用没有通过读回流程确认。 status={0}, operation={1}, result={2}, cancelled={3}, cleanup={4}' -f `
+            [string]$script:radioCatLastOperationStatus,[string]$script:radioCatOperationKind,
+            [string]$script:radioCatResult.status,[bool]$script:radioCatOperationCancelled,
+            [string]$script:radioCatResult.cleanup_status)
 
     # A closed, identity-confirmed rejection can refresh path limits and current PC readback without becoming success.
     $env:WIREX_R116_UI_CAT_PATH = 'Spa1'
@@ -749,7 +835,7 @@ try {
         ([regex]::Matches([System.IO.File]::ReadAllText($script:radioCatLogPath),'WRITE\|setPower')).Count -eq $writeCountBeforeStale) '取消后的 CAT 晚结果覆盖了未知状态或继续写入。'
     Remove-Item Env:\WIREX_R116_UI_CAT_DELAY -ErrorAction SilentlyContinue
 
-    Write-Output '通过：MainWindow CAT 控件保留 40 W 偏好；FieldHead 查询限幅且不自动应用；拒绝读回刷新限制但保留 rejected；身份异常清除旧能力；模式断开成功/失败、路由弹窗关闭不取消 MainWindow CAT 查询、停止退出撤销待办、并发查询拒绝、串口任务清理和过期空闲状态撤销均由真实 UI 函数加 fake CAT worker 执行。'
+    Write-Output '通过：周期 CAT query 不切换编辑控件启用态、不隐藏观测面板、不改变读值或滑块草稿；query 在途时读取和写入按钮禁用且单worker拒绝写入；R118功率范围、拒绝读回、重连清理和fresh-query授权回归均由真实 WPF 控件与fake CAT worker执行。'
 } finally {
     Remove-Item Env:\WIREX_R116_UI_CAT_DELAY -ErrorAction SilentlyContinue
     Remove-Item Env:\WIREX_R116_UI_CAT_DELAY_MS -ErrorAction SilentlyContinue

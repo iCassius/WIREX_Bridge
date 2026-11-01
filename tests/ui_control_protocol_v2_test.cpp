@@ -1,6 +1,9 @@
 #include "wirex/ui_control_protocol.hpp"
+#include "wirex/pcm_gain.hpp"
 
+#include <array>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -55,6 +58,16 @@ std::string radio_identity_clear_request(std::string_view run_id,
         "{\"source_id\":" + std::to_string(source_id) +
             ",\"revision\":" + std::to_string(revision) +
             ",\"callsign\":null}");
+}
+
+std::string audio_gains_request(std::string_view run_id, std::uint64_t revision,
+                                std::uint32_t radio_playback_gain_milli,
+                                std::uint32_t mic_transmit_gain_milli)
+{
+    return request_with_parameters(run_id, "audio-gains-" + std::to_string(revision), "audio.gains.set",
+        "{\"revision\":" + std::to_string(revision) +
+            ",\"radio_playback_gain_milli\":" + std::to_string(radio_playback_gain_milli) +
+            ",\"mic_transmit_gain_milli\":" + std::to_string(mic_transmit_gain_milli) + "}");
 }
 
 constexpr std::string_view empty_rx_policy =
@@ -745,6 +758,169 @@ void test_radio_identity_upserts_use_independent_revision_and_cache_budget()
           "ordinary control commands retain their budget after hundreds of identity updates");
 }
 
+void test_audio_gain_updates_use_independent_revision_and_cache_budget()
+{
+    using namespace wirex::ui_control;
+    std::uint32_t current_radio_playback_gain_milli = 1000U;
+    std::uint32_t current_mic_transmit_gain_milli = 16000U;
+    unsigned callback_count = 0U;
+    bool fail_callback = false;
+    bool return_invalid_readback = false;
+    bool throw_callback = false;
+    RoutingCallbacks callbacks{};
+    callbacks.set_audio_gains = [&](std::uint32_t radio_gain, std::uint32_t mic_gain) {
+        ++callback_count;
+        if (throw_callback) throw std::runtime_error("audio gain test callback failure");
+        if (fail_callback) {
+            return RoutingCallbacks::AudioGainApplyResult{
+                false, current_radio_playback_gain_milli, current_mic_transmit_gain_milli};
+        }
+        if (return_invalid_readback) {
+            return RoutingCallbacks::AudioGainApplyResult{true, 249U, mic_gain};
+        }
+        current_radio_playback_gain_milli = radio_gain;
+        current_mic_transmit_gain_milli = mic_gain;
+        return RoutingCallbacks::AudioGainApplyResult{
+            true, current_radio_playback_gain_milli, current_mic_transmit_gain_milli};
+    };
+    Dispatcher dispatcher("run-audio-gains", false, std::move(callbacks));
+    const auto ready = dispatcher.ready_line(9002U);
+    check(dispatcher.supports_audio_gains() &&
+              ready.find("\"supported_commands\":[\"hello\",\"status\",\"shutdown\",\"audio.gains.set\"]") != std::string::npos,
+          "Native advertises audio gain mutation only when the typed handler exists");
+    StatusSnapshot snapshot{};
+    snapshot.audio_gains = StatusSnapshot::AudioGains{0U, 1000U, 16000U};
+    const auto hello = dispatcher.handle(request("run-audio-gains", "hello-audio-gains", "hello"), snapshot);
+    check(hello.json_line.find("\"result\":\"ok\"") != std::string::npos &&
+              hello.json_line.find("\"audio.gains.set\"") != std::string::npos,
+          "hello confirms the audio gain capability published by control_ready");
+    const auto startup = dispatcher.handle(request("run-audio-gains", "startup-gains", "status"), snapshot);
+    check(startup.json_line.find(
+              "\"audio_gains\":{\"revision\":0,\"radio_playback_gain_milli\":1000,\"mic_transmit_gain_milli\":16000}") != std::string::npos,
+          "status reports the startup readback and revision zero");
+
+    const auto first_body = audio_gains_request("run-audio-gains", 1U, 2000U, 500U);
+    const auto first = dispatcher.handle(first_body, snapshot);
+    check(first.json_line.find("\"result\":\"ok\"") != std::string::npos &&
+              first.json_line.find(
+                  "\"audio_gains\":{\"revision\":1,\"radio_playback_gain_milli\":2000,\"mic_transmit_gain_milli\":500}") != std::string::npos &&
+              callback_count == 1U && current_radio_playback_gain_milli == 2000U &&
+              current_mic_transmit_gain_milli == 500U,
+          "one typed request applies both gain values and acknowledges the handler readback");
+
+    // These are the same two parameters consumed before each live playback/transmit PCM operation.
+    std::array<std::int16_t, 1U> playback_sample{{100}};
+    std::array<std::int16_t, 1U> microphone_sample{{100}};
+    const auto playback_result = wirex::pcm_gain::apply(
+        playback_sample.data(), playback_sample.size(), current_radio_playback_gain_milli);
+    const auto microphone_result = wirex::pcm_gain::apply(
+        microphone_sample.data(), microphone_sample.size(), current_mic_transmit_gain_milli);
+    check(playback_result.valid && playback_sample[0U] == 200 &&
+              microphone_result.valid && microphone_sample[0U] == 50,
+          "updated readback values change both directions of the PCM gain operation immediately");
+
+    const auto first_replay = dispatcher.handle(first_body, snapshot);
+    check(first_replay.json_line.find("\"result\":\"ok\"") != std::string::npos &&
+              first_replay.json_line.find("\"replayed\":true") != std::string::npos && callback_count == 1U,
+          "same latest revision and values are acknowledged without applying them twice");
+    const auto conflict = dispatcher.handle(audio_gains_request("run-audio-gains", 1U, 250U, 500U), snapshot);
+    check(conflict.json_line.find("\"error\":\"audio_gain_revision_conflict\"") != std::string::npos &&
+              current_radio_playback_gain_milli == 2000U && current_mic_transmit_gain_milli == 500U &&
+              callback_count == 1U,
+          "reusing the latest revision with a different pair cannot alter either gain");
+    const auto mismatched_id = request_with_parameters("run-audio-gains", "audio-gains-99", "audio.gains.set",
+        "{\"revision\":2,\"radio_playback_gain_milli\":2000,\"mic_transmit_gain_milli\":500}");
+    check(dispatcher.handle(mismatched_id, snapshot).json_line.find(
+              "\"error\":\"audio_gain_request_id_mismatch\"") != std::string::npos && callback_count == 1U,
+          "request ID must match the declared audio gain revision");
+
+    const auto second = dispatcher.handle(audio_gains_request("run-audio-gains", 2U, 250U, 16000U), snapshot);
+    check(second.json_line.find("\"result\":\"ok\"") != std::string::npos &&
+              current_radio_playback_gain_milli == 250U && current_mic_transmit_gain_milli == 16000U,
+          "inclusive lower and upper gain limits can be applied atomically");
+    const auto stale = dispatcher.handle(first_body, snapshot);
+    check(stale.json_line.find("\"error\":\"stale_audio_gain_revision\"") != std::string::npos &&
+              current_radio_playback_gain_milli == 250U && current_mic_transmit_gain_milli == 16000U,
+          "an older audio gain revision cannot roll back a newer pair");
+
+    fail_callback = true;
+    const auto failed = dispatcher.handle(audio_gains_request("run-audio-gains", 3U, 1500U, 3000U), snapshot);
+    check(failed.json_line.find("\"error\":\"audio_gain_update_failed\"") != std::string::npos &&
+              dispatcher.audio_gains_revision() == 2U && current_radio_playback_gain_milli == 250U &&
+              current_mic_transmit_gain_milli == 16000U,
+          "a failed handler does not advance revision, mutate the pair, or return success");
+    fail_callback = false;
+    return_invalid_readback = true;
+    const auto invalid_readback = dispatcher.handle(
+        audio_gains_request("run-audio-gains", 3U, 1500U, 3000U), snapshot);
+    check(invalid_readback.json_line.find("\"error\":\"audio_gain_update_failed\"") != std::string::npos &&
+              dispatcher.audio_gains_revision() == 2U && current_radio_playback_gain_milli == 250U &&
+              current_mic_transmit_gain_milli == 16000U,
+          "an out-of-range handler readback cannot be reported as a successful application");
+    return_invalid_readback = false;
+    throw_callback = true;
+    const auto thrown = dispatcher.handle(audio_gains_request("run-audio-gains", 3U, 1500U, 3000U), snapshot);
+    check(thrown.json_line.find("\"error\":\"audio_gain_update_failed\"") != std::string::npos &&
+              dispatcher.audio_gains_revision() == 2U && current_radio_playback_gain_milli == 250U &&
+              current_mic_transmit_gain_milli == 16000U,
+          "a throwing handler is rejected without pretending that either gain changed");
+    throw_callback = false;
+    const auto third = dispatcher.handle(audio_gains_request("run-audio-gains", 3U, 1500U, 3000U), snapshot);
+    check(third.json_line.find("\"result\":\"ok\"") != std::string::npos &&
+              dispatcher.audio_gains_revision() == 3U && callback_count == 6U,
+          "failed revision can be retried and advances only after a valid readback");
+
+    for (const auto invalid : {
+             audio_gains_request("run-audio-gains", 4U, 249U, 3000U),
+             audio_gains_request("run-audio-gains", 4U, 16001U, 3000U),
+             audio_gains_request("run-audio-gains", 4U, 1500U, 0U)}) {
+        check(dispatcher.handle(invalid, snapshot).json_line.find("\"error\":\"invalid_audio_gains\"") != std::string::npos,
+              "out-of-range audio gain requests are explicitly rejected");
+    }
+    const auto invalid_type = request_with_parameters("run-audio-gains", "audio-gains-4", "audio.gains.set",
+        "{\"revision\":4,\"radio_playback_gain_milli\":1.5,\"mic_transmit_gain_milli\":3000}");
+    check(dispatcher.handle(invalid_type, snapshot).json_line.find(
+              "\"error\":\"invalid_request\"") != std::string::npos,
+          "gain parameters must be JSON unsigned integers, not decimal values");
+
+    snapshot.audio_gains = StatusSnapshot::AudioGains{
+        dispatcher.audio_gains_revision(), current_radio_playback_gain_milli, current_mic_transmit_gain_milli};
+    const auto status = dispatcher.handle(request("run-audio-gains", "status-after-gains", "status"), snapshot);
+    check(status.json_line.find(
+              "\"audio_gains\":{\"revision\":3,\"radio_playback_gain_milli\":1500,\"mic_transmit_gain_milli\":3000}") != std::string::npos,
+          "status returns the latest actual runtime values and accepted revision");
+
+    for (std::uint64_t revision = 4U; revision <= 520U; ++revision) {
+        const auto radio = static_cast<std::uint32_t>(250U + (revision % 15751U));
+        const auto mic = static_cast<std::uint32_t>(16000U - (revision % 15751U));
+        const auto update = dispatcher.handle(audio_gains_request("run-audio-gains", revision, radio, mic), snapshot);
+        check(update.json_line.find("\"result\":\"ok\"") != std::string::npos,
+              "audio gain updates continue beyond the ordinary control replay capacity");
+    }
+    check(dispatcher.audio_gains_revision() == 520U && callback_count == 523U &&
+              dispatcher.cached_result_count() == 3U,
+          "more than 512 audio gain updates use constant-size latest-revision state while ordinary requests remain cached");
+
+    Dispatcher without_handler("run-no-audio-handler", false);
+    const auto unsupported_ready = without_handler.ready_line(9003U);
+    check(unsupported_ready.find("audio.gains.set") == std::string::npos,
+          "control_ready omits audio gain support when the implementation has no handler");
+    (void)without_handler.handle(request("run-no-audio-handler", "hello", "hello"), {});
+    const auto unsupported = without_handler.handle(
+        audio_gains_request("run-no-audio-handler", 1U, 1000U, 1000U), {});
+    check(unsupported.json_line.find("\"result\":\"unsupported\"") != std::string::npos &&
+              unsupported.json_line.find("\"error\":\"command_not_supported\"") != std::string::npos &&
+              without_handler.cached_result_count() == 1U,
+          "unsupported audio gain requests are rejected without consuming ordinary cache entries");
+    RoutingCallbacks next_run_callbacks{};
+    next_run_callbacks.set_audio_gains = [](std::uint32_t radio, std::uint32_t mic) {
+        return RoutingCallbacks::AudioGainApplyResult{true, radio, mic};
+    };
+    Dispatcher next_run("run-audio-gains-next", false, std::move(next_run_callbacks));
+    check(next_run.audio_gains_revision() == 0U,
+          "audio gain revision fence resets when a new native run starts");
+}
+
 } // namespace
 
 int main()
@@ -760,6 +936,7 @@ int main()
     test_cache_full_sentinel_precedes_routing_mutation();
     test_cache_capacity_reserves_shutdown();
     test_radio_identity_upserts_use_independent_revision_and_cache_budget();
+    test_audio_gain_updates_use_independent_revision_and_cache_budget();
     if (failures != 0) return 1;
     std::cout << "ui_control_protocol_v2_test: all assertions passed\n";
     return 0;

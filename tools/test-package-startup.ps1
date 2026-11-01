@@ -30,8 +30,8 @@ try {
     throw ('候选包 manifest.json 无法读取：{0}' -f $_.Exception.Message)
 }
 $packageVersion = [string]$packageManifest.version
-if (@('v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12', 'v0.1.0-alpha.13', 'v0.1.0-alpha.14') -cnotcontains $packageVersion) {
-    throw ('包级启动检查只支持 alpha.9 至 alpha.14；manifest.version 为：{0}' -f $packageVersion)
+if (@('v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12', 'v0.1.0-alpha.13', 'v0.1.0-alpha.14', 'v0.1.0-alpha.15') -cnotcontains $packageVersion) {
+    throw ('包级启动检查只支持 alpha.9 至 alpha.15；manifest.version 为：{0}' -f $packageVersion)
 }
 $releaseProfile = Set-ReleaseVersion -Version $packageVersion
 Assert-ReleasePackageInventory -PackageRoot $sourcePackage -Version $releaseProfile.Version | Out-Null
@@ -76,17 +76,17 @@ if ($packageVersion -ceq 'v0.1.0-alpha.13') {
         }
     }
 }
-if ($packageVersion -ceq 'v0.1.0-alpha.14') {
+if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15')) {
     foreach ($moduleName in @(
         'RadioCat.psm1', 'RadioCatUi.ps1', 'RadioDevices.psm1',
         'BmServers.psm1', 'BmManagement.psm1', 'BmManagementUi.ps1', 'PortableConfig.psm1'
     )) {
         $modulePath = Join-Path $sourcePackage ('ui\windows\' + $moduleName)
-        if (-not [System.IO.File]::Exists($modulePath)) { throw ('alpha.14 包缺少运行模块：{0}' -f $moduleName) }
+        if (-not [System.IO.File]::Exists($modulePath)) { throw ('{0} 包缺少运行模块：{1}' -f $packageLabel, $moduleName) }
         $moduleBytes = [System.IO.File]::ReadAllBytes($modulePath)
         if ($moduleBytes.Length -lt 3 -or $moduleBytes[0] -ne 0xEF -or
             $moduleBytes[1] -ne 0xBB -or $moduleBytes[2] -ne 0xBF) {
-            throw ('alpha.14 {0} 缺少 Windows PowerShell 5.1 需要的 UTF-8 BOM。' -f $moduleName)
+            throw ('{0} {1} 缺少 Windows PowerShell 5.1 需要的 UTF-8 BOM。' -f $packageLabel, $moduleName)
         }
     }
 }
@@ -360,7 +360,7 @@ function Test-NoArgumentStartupFailurePrompt {
         throw '唯一 CMD 未把 ASCII 错误提示和 pause 放在无参数启动失败分支中，或未保留原退出码。'
     }
     $originalUiLauncherBytes = $null
-    if ($packageVersion -ceq 'v0.1.0-alpha.14') {
+    if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15')) {
         $uiLauncherPath = Join-Path $packageCopy 'start-ui.ps1'
         $originalUiLauncherBytes = [System.IO.File]::ReadAllBytes($uiLauncherPath)
         [System.IO.File]::WriteAllText($uiLauncherPath, "throw 'synthetic startup failure only'`r`n",
@@ -441,8 +441,8 @@ $result = [ordered]@{
     try {
         [System.IO.File]::WriteAllText($uiLauncherPath, $fakeUi, (New-Object System.Text.UTF8Encoding($false)))
         $result = Invoke-PackageEntryFromCmd -Mode 'Start' -UserConfigDirectory '' -TimeoutSeconds 15
-        if ($result.ExitCode -ne 0) { throw ('alpha.14 default Start failed in the synthetic UI adapter: ' + $result.Output) }
-        if (-not [System.IO.File]::Exists($capturePath)) { throw 'alpha.14 Start did not reach the synthetic UI adapter.' }
+        if ($result.ExitCode -ne 0) { throw ($packageLabel + ' default Start failed in the synthetic UI adapter: ' + $result.Output) }
+        if (-not [System.IO.File]::Exists($capturePath)) { throw ($packageLabel + ' Start did not reach the synthetic UI adapter.') }
         $capture = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($capturePath, [System.Text.Encoding]::UTF8)) -ErrorAction Stop
         $expectedPackageRoot = [System.IO.Path]::GetFullPath($packageCopy)
         $expectedConfigPath = [System.IO.Path]::GetFullPath((Join-Path $packageCopy 'config.json'))
@@ -452,10 +452,10 @@ $result = [ordered]@{
                 [System.StringComparison]::OrdinalIgnoreCase) -or
             -not [string]::IsNullOrWhiteSpace([string]$capture.user_config_directory) -or
             [bool]$capture.routing_diagnostic -or [bool]$capture.routing_diagnostic_auto_test) {
-            throw 'alpha.14 default Start did not use only packageRoot and packageRoot/config.json.'
+            throw ($packageLabel + ' default Start did not use only packageRoot and packageRoot/config.json.')
         }
-        if (-not [System.IO.File]::Exists($expectedConfigPath)) { throw 'alpha.14 synthetic config was not saved inside the copied package root.' }
-        Write-Output '通过：alpha.14 默认 Start 把 packageRoot 传给 UI，未传 UserConfigDirectory；合成 config.json 写入拷贝包根目录。'
+        if (-not [System.IO.File]::Exists($expectedConfigPath)) { throw ($packageLabel + ' synthetic config was not saved inside the copied package root.') }
+        Write-Output ('通过：{0} 默认 Start 把 packageRoot 传给 UI，未传 UserConfigDirectory；合成 config.json 写入拷贝包根目录。' -f $packageLabel)
     } finally {
         [System.IO.File]::WriteAllBytes($uiLauncherPath, $originalUiLauncherBytes)
         if ([System.IO.File]::Exists((Join-Path $packageCopy 'config.json'))) {
@@ -463,6 +463,57 @@ $result = [ordered]@{
         }
         if ([System.IO.File]::Exists($capturePath)) { [System.IO.File]::Delete($capturePath) }
     }
+}
+
+function Test-Alpha15AudioControlCompatibility {
+    param([Parameter(Mandatory=$true)][string]$PackageRoot)
+    $uiPath = Join-Path $PackageRoot 'ui\windows\bridge-ui.ps1'
+    $supervisorPath = Join-Path $PackageRoot 'ui\windows\BridgeSupervisor.cs'
+    $tokens = $null
+    $parseErrors = $null
+    $uiAst = [System.Management.Automation.Language.Parser]::ParseFile($uiPath, [ref]$tokens, [ref]$parseErrors)
+    if ($parseErrors.Count -gt 0) { throw 'alpha.15 bridge-ui.ps1 cannot be parsed by Windows PowerShell 5.1.' }
+    foreach ($functionName in @('Test-UiRoutingCapabilityList','Test-UiAudioGainCapability')) {
+        $functionAst = $uiAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $functionName }, $true)
+        if ($null -eq $functionAst) { throw ('alpha.15 package UI is missing capability validator {0}.' -f $functionName) }
+        Invoke-Expression $functionAst.Extent.Text
+    }
+    $legacyCommands = [string[]]@('hello','status','shutdown','routing.status','rx_policy.replace',
+        'tx_policy.replace','network_subscription.quick_call_join','radio_identity.cache_upsert')
+    $audioCommands = [string[]]@($legacyCommands + 'audio.gains.set')
+    if (-not (Test-UiRoutingCapabilityList -Commands $legacyCommands) -or
+        -not (Test-UiRoutingCapabilityList -Commands $audioCommands)) {
+        throw 'alpha.15 UI capability validator must accept the alpha.14 command list and its audio.gains.set extension.'
+    }
+    $legacyText = $legacyCommands -join ','
+    $audioText = $audioCommands -join ','
+    if ((Test-UiAudioGainCapability -Capabilities $legacyText) -or
+        -not (Test-UiAudioGainCapability -Capabilities $audioText)) {
+        throw 'alpha.15 UI must enable runtime gain control only when the Native command list includes audio.gains.set.'
+    }
+
+    $supervisorText = [System.IO.File]::ReadAllText($supervisorPath, [System.Text.Encoding]::UTF8)
+    foreach ($requiredFragment in @(
+        'command == "audio.gains.set"',
+        'private const int ControlJsonLimitBytes = 4096;',
+        'if (bodyBytes.Length > ControlJsonLimitBytes) return null;'
+    )) {
+        if (-not $supervisorText.Contains($requiredFragment)) {
+            throw ('alpha.15 packaged BridgeSupervisor is missing the guarded audio command contract: {0}' -f $requiredFragment)
+        }
+    }
+    $controlTestPath = Join-Path $appRoot 'tools\test-ui-control-v2.ps1'
+    $nativeExecutable = Join-Path $PackageRoot 'wirex_bridge.exe'
+    $controlTestOutput = @(& (Join-Path $PSHOME 'powershell.exe') -NoLogo -NoProfile -STA `
+        -ExecutionPolicy Bypass -File $controlTestPath -NativeExecutable $nativeExecutable `
+        -UiPackageDirectory $PackageRoot 2>&1)
+    $controlTestExitCode = $LASTEXITCODE
+    if ($controlTestExitCode -ne 0) {
+        throw ('alpha.15 package-local v2/audio diagnostic failed with exit {0}: {1}' -f `
+            $controlTestExitCode, [string]::Join(' | ', @($controlTestOutput | ForEach-Object { [string]$_ })))
+    }
+    foreach ($outputLine in $controlTestOutput) { Write-Output $outputLine }
+    Write-Output '通过：alpha.15 包内 UI 接受带/不带 audio.gains.set 的 v2 命令集，并仅对新能力启用热调；Supervisor 精确门控且限制完整请求体 4096 字节。'
 }
 
 try {
@@ -476,7 +527,8 @@ try {
     Copy-Item -LiteralPath $sourcePackage -Destination $packageCopy -Recurse
     $copied = $true
     Test-NoArgumentStartupFailurePrompt
-    if ($packageVersion -ceq 'v0.1.0-alpha.14') { Test-Alpha14DefaultStartup }
+    if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15')) { Test-Alpha14DefaultStartup }
+    if ($packageVersion -ceq 'v0.1.0-alpha.15') { Test-Alpha15AudioControlCompatibility -PackageRoot $packageCopy }
 
     $scriptFiles = @(Get-ChildItem -LiteralPath $packageCopy -Recurse -File | Where-Object {
         $_.Extension -in @('.ps1', '.psm1')
@@ -497,13 +549,13 @@ try {
 
     $modulePath = Join-Path $packageCopy 'bridge-user-config.psm1'
     Import-Module -Name $modulePath -Force -ErrorAction Stop
-    if ($packageVersion -ceq 'v0.1.0-alpha.14') {
+    if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15')) {
         $portableModulePath = Join-Path $packageCopy 'ui\windows\PortableConfig.psm1'
         Import-Module -Name $portableModulePath -Force -ErrorAction Stop
         $packagedConfigFiles = @(Get-ChildItem -LiteralPath $packageCopy -Recurse -File | Where-Object {
             $_.Name -ceq 'config.json' -or $_.Name -match '^config\..+\.backup'
         })
-        if ($packagedConfigFiles.Count -gt 0) { throw 'alpha.14 包含了用户 config.json 或配置备份。' }
+        if ($packagedConfigFiles.Count -gt 0) { throw ($packageLabel + ' 包含了用户 config.json 或配置备份。') }
     }
     $connection = [pscustomobject][ordered]@{
         callsign='R110T'; gateway_id=[uint64]123456789; source_id=[uint64]1234567
@@ -549,7 +601,7 @@ try {
     }
 
     [System.IO.Directory]::CreateDirectory($isolatedConfig) | Out-Null
-    if ($packageVersion -ceq 'v0.1.0-alpha.14') {
+    if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15')) {
         $diagnosticConfigPath = Join-Path $isolatedConfig 'config.json'
         $diagnosticConfig = Get-WirexPortableConfig -Path $diagnosticConfigPath
         $diagnosticConfig.connection.callsign = 'R110T'
@@ -562,7 +614,7 @@ try {
         $diagnosticConfig.connection.api_key = ''
         $null = Save-WirexPortableConfig -Path $diagnosticConfigPath -Config $diagnosticConfig
         if ([System.IO.File]::Exists((Join-Path $isolatedConfig 'connection-profile.json'))) {
-            throw 'alpha.14 隔离诊断仍使用旧 connection-profile.json。'
+            throw ($packageLabel + ' 隔离诊断仍使用旧 connection-profile.json。')
         }
     } else {
         $diagnosticConnection = [pscustomobject][ordered]@{
@@ -588,7 +640,7 @@ try {
     $resultPath = Join-Path $isolatedConfig 'routing-diagnostic-result.json'
     if (-not [System.IO.File]::Exists($resultPath)) { throw '隔离路由诊断没有生成结果文件。' }
     $result = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($resultPath, [System.Text.Encoding]::UTF8)) -ErrorAction Stop
-    if ($packageVersion -ceq 'v0.1.0-alpha.14') {
+    if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15')) {
         $channelFlowTest = $result.channel_flow_test
         if ([int]$result.schema_version -ne 2 -or -not [bool]$result.passed -or
             -not [bool]$channelFlowTest.passed -or [string]$channelFlowTest.channel_key -cne 'group:12345:1' -or
@@ -600,14 +652,14 @@ try {
             -not [bool]$channelFlowTest.used_memory_sink -or
             -not [bool]$channelFlowTest.routing_unchanged_after_activation -or
             -not [bool]$channelFlowTest.normal_shutdown_requested) {
-            throw ('alpha.14 隔离频道诊断 schema 2 结果不符合双 ACK、组呼和退出检查：{0}' -f $result.message)
+            throw ('{0} 隔离频道诊断 schema 2 结果不符合双 ACK、组呼和退出检查：{1}' -f $packageLabel, $result.message)
         }
         $savedDiagnosticConfig = Get-WirexPortableConfig -Path (Join-Path $isolatedConfig 'config.json')
         if ([string]$savedDiagnosticConfig.tx_channel_id -cne 'group:12345:1' -or
             @($savedDiagnosticConfig.channels | Where-Object {
                 [string]$_.kind -ceq 'group' -and [uint64]$_.id -eq 12345 -and [uint64]$_.slot -eq 1
             }).Count -ne 1) {
-            throw 'alpha.14 诊断没有把频道和 TX 目标保存到隔离根目录 config.json。'
+            throw ($packageLabel + ' 诊断没有把频道和 TX 目标保存到隔离根目录 config.json。')
         }
     } else {
         $dynamicGroupTest = $result.dynamic_group_action_test

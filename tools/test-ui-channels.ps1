@@ -80,7 +80,9 @@ function Invoke-TestPreviewClick {
     $event.RoutedEvent = [System.Windows.UIElement]::PreviewMouseLeftButtonDownEvent
     $event.Source = $Element
     $Element.RaiseEvent($event)
-    [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{},[System.Windows.Threading.DispatcherPriority]::Background)
+    # Let WPF finish popup ownership/focus work before the assertion reads the
+    # resulting state. Background priority can run before popup activation settles.
+    [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{},[System.Windows.Threading.DispatcherPriority]::ApplicationIdle)
 }
 
 function Start-TestPendingChannelRemoval {
@@ -146,6 +148,7 @@ $radioCatPath = Join-Path $repoRoot 'ui\windows\RadioCatUi.ps1'
 $mainXamlPath = Join-Path $repoRoot 'ui\windows\MainWindow.xaml'
 $settingsXamlPath = Join-Path $repoRoot 'ui\windows\SettingsWindow.xaml'
 $portableConfigModulePath = Join-Path $repoRoot 'ui\windows\PortableConfig.psm1'
+$bridgeUserConfigModulePath = Join-Path $repoRoot 'tools\bridge-user-config.psm1'
 $mainTokens = $null; $mainErrors = $null
 $mainAst = [System.Management.Automation.Language.Parser]::ParseFile($uiPath,[ref]$mainTokens,[ref]$mainErrors)
 Assert-UiChannels ($mainErrors.Count -eq 0) 'bridge-ui.ps1 解析失败。'
@@ -162,18 +165,22 @@ $functionNames = @(
     'Import-WpfWindow','Get-UiControl','Get-SettingsControl','Get-UiChannelKey','Get-UiChannelTarget','Get-UiChannelByKey',
     'New-UiChannelRecord','Get-UiNativeRxPolicyForChannels','Get-UiChannelCurrentCall','Get-UiChannelCallerLabel',
     'ConvertFrom-UiPortableConfigToProfile','Save-UiPortableConfig','Fit-WpfWindowToWorkArea',
-    'Set-MainText','Set-UiChannelStatus','New-UiChannelActionButton','Update-UiChannelDisplays','Start-UiChannelMutation',
+    'Set-MainText','Set-UiChannelStatus','New-UiChannelActionButton','Show-UiChannelActionMenu','Update-UiChannelDisplays','Start-UiChannelMutation',
     'Get-UiChannelTargetFromRouting','Complete-UiChannelMutation','Add-UiChannelFromInputs','Remove-UiChannel','Set-UiChannelMuted',
-    'Invoke-UiSetCallTarget','Test-UiControlUnsigned','Test-UiExactControlFields','Test-UiRxPolicy','Copy-UiRxPolicy','Invoke-UiRoutingMutation',
+    'Invoke-UiSetCallTarget','Invoke-UiChannelQuickCall','Invoke-UiRoutingDiagnosticChannelQuickCallButton','Open-UiSetupPage','Register-UiSetupLinks',
+    'Test-UiControlUnsigned','Test-UiExactControlFields','Test-UiRxPolicy','Copy-UiRxPolicy','Invoke-UiRoutingMutation',
     'Complete-UiChannelMutationFailure','Add-UiComboOpenHandlers','Register-UiRadioCatPortTextInput','Get-UiRadioCatConnectionKey',
     'Get-UiHriPortName','Set-UiRadioCatText','Set-UiRadioCatControlEnabled','Find-UiRadioCatControl','Set-UiRadioCatControls',
     'Set-UiRadioCatPowerSliderRange','Get-UiRadioCatObservedValue','Update-UiRadioCatObservationDisplay','Update-UiRadioCatControls',
     'Initialize-UiSettingsWindow','Initialize-SettingsWindow','Set-UiComboValue','Complete-BridgeStopInternal','Complete-BridgeStop',
     'On-UiTimerTick','Request-UiRoutingStatus','Set-UiControlStatus','Set-UiOfflineDisplay','Set-OfflineDisplay',
     'Set-ConnectionButtonState','Set-ConnectionConfigLocked','Set-UiIdentityRowVisibility','Update-UiPlaybackGainDisplay',
+    'Test-UiAudioGainCapability','Update-UiAudioGainControls','Update-UiAudioGainValueLabels',
+    'Convert-UiGainSliderToMilli',
     'Complete-UiRadioCatOperationAndPersist','Complete-UiRadioCatOperation','Invoke-UiRadioCatPollTick','Process-UiControlEvents','Read-StatusUpdates',
     'Set-StaleDisplay','Complete-UiDeviceDiscovery','Complete-BridgePreparation','Clear-UiSessionTemp','Stop-UiRadioCatPolling','Update-RoutingDisplays',
     'Set-RoutingMutationPendingState','Set-RoutingEditorStatus','Add-UiEvent','Update-DynamicGroupControls','Reset-UiControlState',
+    'Expire-UiAudioGainRequest',
     'Get-UiSourceIdentityDisplay','Get-UiRadioCatSelectedPort','Get-UiRadioCatStopBits','Get-UiRadioCatBaudRate',
     'Update-UiReceiveMetricsDisplay','Update-UiIdentityActionState','Complete-UiIdentityQuery','Expire-UiNativeIdentityUpdate',
     'Start-UiChannelMutationSafetyStop','Clear-UiChannelMutationSafetyState'
@@ -182,15 +189,17 @@ $functionNames = @(
 $selected = @($allDefinitions | Where-Object { $functionNames -ccontains $_.Name })
 Invoke-Expression (($selected | ForEach-Object { $_.Extent.Text }) -join "`r`n")
 Import-Module -Name $portableConfigModulePath -Force
+Import-Module -Name $bridgeUserConfigModulePath -Force
 
 $mainXaml = [System.IO.File]::ReadAllText($mainXamlPath)
 $settingsXaml = [System.IO.File]::ReadAllText($settingsXamlPath)
 foreach ($forbidden in @('FavoritesPanel','FavoritesList','TransmitEnabledBox','CatStopBitsBox','FavoritesButton')) {
     Assert-UiChannels ($mainXaml -notmatch ('x:Name="' + [regex]::Escape($forbidden) + '"')) ("MainWindow.xaml 仍含已删除控件 {0}。" -f $forbidden)
 }
-foreach ($required in @('ChannelIdBox','ChannelKindBox','MakeChannelTxTargetCheckBox','AddChannelButton','ChannelListPanel','ChannelCardsPanel','CatPortBox')) {
+foreach ($required in @('ChannelIdBox','ChannelKindBox','MakeChannelTxTargetCheckBox','AddChannelButton','ChannelCardsPanel','CatPortBox','BmApiKeySetupLink','BmPasswordSetupLink')) {
     Assert-UiChannels ($mainXaml -match ('x:Name="' + [regex]::Escape($required) + '"')) ("MainWindow.xaml 缺少 {0}。" -f $required)
 }
+Assert-UiChannels ($mainXaml -notmatch 'x:Name="ChannelListPanel"') 'MainWindow.xaml 仍有重复频道清单。'
 Assert-UiChannels ($settingsXaml -match 'x:Name="ChannelSlotBox"') '高级频道窗缺少时隙下拉框。'
 
 $testRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('wirex-ui-channels-' + [guid]::NewGuid().ToString('N'))
@@ -213,6 +222,11 @@ $script:pendingDynamicCallTarget = $null; $script:stopTask = $null; $script:stat
 $script:nativeExitCleanupPending = $false; $script:nativeExitCleanupStarted = $false
 $script:radioModeApplyAfterStop = $null; $script:radioModePreviousHriPortName = ''; $script:closingAfterStop = $false; $script:reconnectAfterStop = $false
 $script:sessionTempDirectory = ''; $script:sessionPasswordPath = ''; $script:latestStatus = $null
+$script:quickCallCapabilities = $false
+$script:RoutingDiagnostic = $false; $script:RoutingDiagnosticAutoTest = $false
+$script:uiTestHooks = @{}
+$script:bmApiKeySettingsUri = 'https://brandmeister.network/?page=profile'
+$script:bmPasswordSettingsUri = 'https://brandmeister.network/?page=selfcare'
 $script:lastStatusUtc = [DateTime]::MinValue; $script:radioCatOperationPowerShell = $null
 $script:radioCatPowerPreferenceDirty = $false; $script:radioCatPowerNeedsUserChoice = $false
 $script:radioCatEditDraft = @{ mode=$null; frequency=$null; power=$null }
@@ -250,6 +264,7 @@ function Update-UiIdentityActionState { return }
 function Update-UiReceiveMetricsDisplay { param([object]$Record=$null) return }
 function Set-UiIdentityRowVisibility { param([string]$Row,[System.Windows.Visibility]$Visibility) return }
 function Update-UiPlaybackGainDisplay { param([object]$Record=$null) return }
+function Format-BridgeGain { param([uint32]$GainMilli) return ([double]$GainMilli / 1000.0).ToString('0.###',[Globalization.CultureInfo]::InvariantCulture) }
 function Update-DynamicGroupControls { return }
 function ConvertFrom-UiControlFrame { param([string]$Json,[string]$LockedRunId,[uint64]$LastControlSequence,[int]$ExpectedProcessId) return $script:testControlRecord }
 function Set-OfflineDisplay { param([string]$Reason='') return }
@@ -268,6 +283,30 @@ try {
     $script:txChannelKey = [string]$script:portableConfig.tx_channel_id
 
     $script:mainWindow = Open-TestMainWindow
+    $script:openedSetupUris = New-Object 'System.Collections.Generic.List[string]'
+    $script:uiTestHooks.OpenUri = { param($Uri) $script:openedSetupUris.Add([string]$Uri) }
+    Register-UiSetupLinks
+    foreach ($linkSpec in @(
+        [pscustomobject]@{ Name='BmApiKeySetupLink'; Kind='bm_api_key'; Uri='https://brandmeister.network/?page=profile' },
+        [pscustomobject]@{ Name='BmPasswordSetupLink'; Kind='bm_password'; Uri='https://brandmeister.network/?page=selfcare' }
+    )) {
+        $setupLink = $script:mainWindow.FindName($linkSpec.Name)
+        Assert-UiChannels ($setupLink -is [System.Windows.Documents.Hyperlink] -and [string]$setupLink.Tag -ceq $linkSpec.Kind) `
+            ("{0} 没有绑定正确的设置入口。" -f $linkSpec.Name)
+        $linkEvent = [System.Windows.RoutedEventArgs]::new([System.Windows.Documents.Hyperlink]::ClickEvent)
+        $setupLink.RaiseEvent($linkEvent)
+    }
+    Assert-UiChannels ($script:openedSetupUris.Count -eq 2 -and
+        $script:openedSetupUris[0] -ceq 'https://brandmeister.network/?page=profile' -and
+        $script:openedSetupUris[1] -ceq 'https://brandmeister.network/?page=selfcare') '设置链接没有把官方 HTTPS 地址交给隔离浏览器钩子。'
+    $script:uiTestHooks.Remove('OpenUri')
+    $script:supervisor = New-TestChannelSupervisor
+    Set-ConnectionConfigLocked
+    Assert-UiChannels ((Get-TestUiControl 'BmApiKeyBox').IsEnabled -and
+        -not (Get-TestUiControl 'PasswordBox').IsEnabled -and (Get-TestUiControl 'SaveSettingsButton').IsEnabled -and
+        $script:mainWindow.FindName('BmApiKeySetupLink').IsEnabled -and $script:mainWindow.FindName('BmPasswordSetupLink').IsEnabled) `
+        'BM连接期间 API Key 与设置链接被锁定，或密码字段未按连接状态锁定。'
+    $script:supervisor = $null
     $script:channelEditorSlot = 1
     $script:channels = @()
     $script:txChannelKey = ''
@@ -279,6 +318,10 @@ try {
     Assert-UiChannels ($script:channels.Count -eq 1 -and (Get-UiChannelKey -Channel $script:channels[0]) -ceq 'group:12345:1') '首次加入频道未按明确类型和 TS1 保存。'
     Assert-UiChannels ($script:txChannelKey -ceq 'group:12345:1') '空列表加入首频道后没有将首项设为默认 PTT 目标。'
     Assert-UiChannels ((Get-WirexPortableConfig -Path $script:portableConfigPath).tx_channel_id -ceq 'group:12345:1') '首次频道和默认 PTT 目标没有保存到临时根目录 config.json。'
+    $emptyKeyConfig = $script:portableConfig.PSObject.Copy()
+    $emptyKeyConfig.connection = $script:portableConfig.connection.PSObject.Copy()
+    $emptyKeyConfig.connection.api_key = ''
+    Assert-UiChannels ($null -ne (ConvertFrom-UiPortableConfigToProfile -Config $emptyKeyConfig)) 'BM API Key 为空时连接 Profile 被拒绝。'
 
     $sameGroupTs2 = New-UiChannelRecord -Id 12345 -Kind group -Slot 2
     $samePrivateTs1 = New-UiChannelRecord -Id 12345 -Kind private -Slot 1
@@ -293,9 +336,22 @@ try {
     $script:portableConfig = Save-WirexPortableConfig -Path $script:portableConfigPath -Config $script:portableConfig
     Assert-UiChannels ($script:channels.Count -eq 5 -and (Get-UiChannelKey -Channel $script:channels[0]) -ceq 'group:12345:1' -and
         (Get-WirexPortableConfig -Path $script:portableConfigPath).tx_channel_id -ceq 'group:91:2') '频道顺序或 91 PTT 目标未保存。'
-    $script:portableConfig.tx_channel_id = 'group:46001:2'
-    $script:portableConfig = Save-WirexPortableConfig -Path $script:portableConfigPath -Config $script:portableConfig
-    Assert-UiChannels ((Get-WirexPortableConfig -Path $script:portableConfigPath).tx_channel_id -ceq 'group:46001:2') '46001 作为显式 PTT 目标被配置层拒绝。'
+    Update-UiChannelDisplays
+    $targetCard = @($script:mainWindow.FindName('ChannelCardsPanel').Children | Where-Object { [string]$_.Tag.channel_key -ceq 'group:46001:2' }) | Select-Object -First 1
+    $targetButton = @($targetCard.Child.Children[1].Children | Where-Object { $_ -is [System.Windows.Controls.Button] -and [string]$_.Tag.action -ceq 'tx' }) | Select-Object -First 1
+    Assert-UiChannels ($targetButton -and $targetButton.Content -ceq '设为呼叫' -and $targetButton.IsEnabled) '频道卡没有给未选频道显示可用的“设为呼叫”按钮。'
+    $targetClick = [System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)
+    $targetButton.RaiseEvent($targetClick)
+    Assert-UiChannels ($script:txChannelKey -ceq 'group:46001:2' -and
+        (Get-WirexPortableConfig -Path $script:portableConfigPath).tx_channel_id -ceq 'group:46001:2' -and
+        $null -eq $script:pendingQuickCall -and -not $script:supervisor) '卡片按钮没有只选择下次呼叫目标，或误发了核心/呼叫命令。'
+    $selectedCard = @($script:mainWindow.FindName('ChannelCardsPanel').Children | Where-Object { [string]$_.Tag.channel_key -ceq 'group:46001:2' }) | Select-Object -First 1
+    $selectedTargetButton = @($selectedCard.Child.Children[1].Children | Where-Object { $_ -is [System.Windows.Controls.Button] -and [string]$_.Tag.action -ceq 'tx' }) | Select-Object -First 1
+    Assert-UiChannels ($selectedTargetButton.Content -ceq '✓ 呼叫目标' -and -not $selectedTargetButton.IsEnabled) '选中频道卡没有显示已选呼叫目标状态。'
+    $restoreTargetCard = @($script:mainWindow.FindName('ChannelCardsPanel').Children | Where-Object { [string]$_.Tag.channel_key -ceq 'group:91:2' }) | Select-Object -First 1
+    $restoreTargetButton = @($restoreTargetCard.Child.Children[1].Children | Where-Object { $_ -is [System.Windows.Controls.Button] -and [string]$_.Tag.action -ceq 'tx' }) | Select-Object -First 1
+    $restoreTargetButton.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))
+    Assert-UiChannels ($script:txChannelKey -ceq 'group:91:2') '卡片按钮不能在频道之间切换下次呼叫目标。'
 
     $script:portableConfig.connection.source_id = [uint64]123456
     $script:portableConfig.routing.blocked_source_ids = [uint64[]]@(7654321)
@@ -315,6 +371,16 @@ try {
     }
     $script:txChannelKey = 'group:91:2'
     $script:channels = @($script:channels)
+    $script:quickCallCapabilities = $true
+    $script:latestStatus = [pscustomobject]@{ bm_state='ready' }
+    Update-UiChannelDisplays
+    $commandCountBeforeQuickCall = $script:supervisor.Commands.Count
+    Invoke-UiRoutingDiagnosticChannelQuickCallButton -Channel ($script:channels | Where-Object { (Get-UiChannelKey -Channel $_) -ceq 'group:91:2' } | Select-Object -First 1)
+    Assert-UiChannels ($script:supervisor.Commands.Count -eq ($commandCountBeforeQuickCall + 1) -and
+        $script:supervisor.Commands[-1].command -ceq 'network_subscription.quick_call_join' -and
+        $script:pendingQuickCall -and $script:txChannelKey -ceq 'group:91:2') '频道卡更多菜单没有通过真实事件触发已有动态组激活操作。'
+    $script:pendingQuickCall = $null
+    $script:pendingControlRequests = @{}
     $beforeMute = [System.IO.File]::ReadAllText($script:portableConfigPath,[System.Text.Encoding]::UTF8)
     Set-UiChannelMuted -Channel ($script:channels | Where-Object { $_.kind -ceq 'private' } | Select-Object -First 1)
     Assert-UiChannels ($script:pendingRoutingMutation.command -ceq 'rx_policy.replace' -and
@@ -555,8 +621,9 @@ try {
 
     $script:mainWindow = Open-TestMainWindow
     $script:settingsWindow = Initialize-SettingsWindow
-    $script:settingsWindow.Opacity = 0
-    $script:settingsWindow.Show(); $script:settingsWindow.UpdateLayout()
+    $script:settingsWindow.Opacity = 1
+    $script:settingsWindow.Show(); [void]$script:settingsWindow.Activate(); $script:settingsWindow.UpdateLayout()
+    [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{},[System.Windows.Threading.DispatcherPriority]::ApplicationIdle)
     $slotBox = $script:settingsWindow.FindName('ChannelSlotBox')
     Assert-UiChannels (-not $slotBox.IsEditable) '频道高级时隙下拉框意外允许自由文本。'
     [void](Invoke-TestPreviewClick -Element $slotBox)
