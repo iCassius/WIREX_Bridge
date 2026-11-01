@@ -4,7 +4,9 @@
 
 本轮 CAT/UI 与 Native 源码已经冻结，独立 review 未发现 P1/P2。R119 为 CAT 首次全状态查询及自动周期同步、查询期间编辑器与滑块保持稳定、单 worker 写操作门控、断连撤销写授权但保留观测值，以及运行时播放/麦克风增益能力协商。UI 通过既有观测字段显示 CAT readback；实时音量仅在 Native 同一 run 的 ready/hello 均声明 `audio.gains.set` 时启用，alpha14 旧命令集仍获兼容。测试和边界见 [R119 发布交接](docs/R119_发布交接.md)、[CAT 记录](docs/R119_CAT.md)、[UI 记录](docs/R119_UI.md) 和 [实时音量记录](docs/R119_实时音量.md)。
 
-目标本机候选为 `build/releases/v0.1.0-alpha.15`，Generic 资产路径继承 alpha14，不包含个人 `config.json`。提交、clean Native 40 项构建、正式包与包级 Windows PowerShell 5.1 验收正在本轮完成；包生成后先标记 `awaiting_root_audit`。本轮不迁移个人配置、不更改根 launcher、不制作 ZIP/tag/GitHub Release，也不操作真实 COM、BrandMeister、HRI、音频、PTT 或 RF。后续个人配置须从当前 alpha14 发行目录读取并复制，不能从 legacy canonical 重新导入。
+源码提交 `a9b2d6ad0d96b7dadd995d28e8b42bbd9ff9f080` 已推送到 `origin/main`。由干净提交完成 fresh Native 40/40 构建，`source_tree_clean=true`、`compile_only=false`、MSVC warning/error 各 0。alpha15 绿色目录 `build/releases/v0.1.0-alpha.15` 有 41 条 manifest 资产、37 项源码映射、42 个通用文件；root 独立审计通过，`package_status=root_audit_passed`。manifest SHA-256 为 `5f224b57bd50f1f00c279e3de6f3ad3ad002224631215d56f440c22bb207a2eb`；构建、EXE、provenance、日志及包级测试哈希见 [alpha15 本机候选记录](docs/releases/v0.1.0-alpha.15.md) 与 [R119 发布交接](docs/R119_发布交接.md)。
+
+Windows PowerShell 5.1 的 package-startup、test-control、包目录下的 `test-ui-control-v2.ps1 -UiPackageDirectory` 和 package/publish/download 离线测试均通过。包内 capability 检查覆盖 alpha14 旧能力命令集与新增 `audio.gains.set`，IPC 真实诊断通过。个人 alpha15 配置从当前 alpha14 `config.json` 原字节复制并由 source PortableConfig 只读校验，包含在本机目录但不在通用 manifest 或 Git 中；本轮未读取 legacy canonical、未修改 alpha14 配置。根启动器备份后改为相对调用 alpha15 唯一 CMD，没有运行正常启动。没有制作 ZIP/tag/GitHub Release，也没有操作真实 COM、BrandMeister、HRI、音频、PTT 或 RF。后续个人配置变更从当前 alpha15 覆盖文件继续，不从 legacy canonical 重新导入。
 
 ## R118 / Alpha 14 历史交接（2026-11-01）
 

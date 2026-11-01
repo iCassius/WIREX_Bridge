@@ -1,10 +1,10 @@
 ﻿# WIREX Bridge：FTX-1 DIRECT 与 BrandMeister 语音桥接
 
-## 当前工作：R119 / Alpha 15 本机候选
+## 当前工作：R119 / Alpha 15 本机目录（root 审计通过）
 
 R119 接入 CAT 首次状态查询和周期同步，查询忙碌时保持编辑控件与滑块稳定；CAT 写操作仍要求当前连接代次和新鲜查询结果。实时音量只在 Native 明确公布 `audio.gains.set` 时提供运行中调整，alpha14 的旧能力集继续保留原启动增益行为。CAT 与 WPF 回归、旧能力兼容和离线 IPC 检查见 [R119 发布交接](docs/R119_发布交接.md)、[CAT 记录](docs/R119_CAT.md)、[UI 记录](docs/R119_UI.md) 和 [实时音量记录](docs/R119_实时音量.md)。
 
-alpha15 沿用 alpha14 的通用资产清单，替换既有 README 与唯一启动器；个人 `config.json` 不进入 Generic 包。本轮不迁移 alpha14 个人配置、不改根目录快捷方式，也不操作真实 COM、BrandMeister、HRI、音频、PTT 或 RF。源码提交、fresh Native build 和本机包均待本轮生成；包完成后状态保持 `awaiting_root_audit`，由 root 独立审计。
+alpha15 源码提交为 `a9b2d6ad0d96b7dadd995d28e8b42bbd9ff9f080`。完整 Native build 在干净提交上通过 40/40 项，`compile_only=false`，MSVC warning/error 均为 0。绿色目录 `build/releases/v0.1.0-alpha.15` 有 41 项清单资产、37 项源码映射和 42 个通用文件（含 manifest）；root 独立审计通过，manifest 状态为 `root_audit_passed`。详细构建、包和测试哈希见 [alpha15 本机候选记录](docs/releases/v0.1.0-alpha.15.md) 与 [R119 发布交接](docs/R119_发布交接.md)。个人 `config.json` 作为本机覆盖文件存在于包目录，但不在 Generic 清单或 Git 中。本轮没有改 alpha14 配置或 legacy canonical；只在本机根目录启动器备份后切换到了 alpha15。没有制作 ZIP/tag/GitHub Release；没有操作真实 COM、BrandMeister、HRI、音频、PTT 或 RF。
 
 ## R118 / Alpha 14 历史记录（root 审核通过）
 
