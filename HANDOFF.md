@@ -2,7 +2,7 @@
 
 ## R118 / Alpha 14 当前交接（2026-11-01）
 
-R118 源码范围已冻结，待建立本轮源码提交并从新提交做 Native clean build 与 alpha14 本机目录包。统一配置模块和 BM 管理模块分别在 Windows PowerShell 5.1/7 通过 53/45 项合成断言。发布工具测试在两版 PowerShell 各通过 package 579、publish 124、download 2,137 项断言。真实 WPF 的 status、identity、lifecycle、radio-cat 和 channels 回归在两版 PowerShell STA 均通过；channels 为 74 项断言，覆盖 TX/RX 双确认、RX失败安全停止、迟到 ACK、真实 HasExited 收尾后重连编辑。隔离 Native channels 诊断链已通过 schema v2 检查，尚待本轮 fresh build 后对 alpha14 包内 EXE 再跑检查。
+R118 首轮源码提交 4773592 已推送；本次跟进修正旧配置迁移语义。该修复提交后会从最终源码执行 Native clean build 与 alpha14 本机目录打包。统一配置模块和 BM 管理模块分别在 Windows PowerShell 5.1/7 通过 55/45 项合成断言；旧配置迁移会把 TX target 放在频道首项，并将 local_private_routes 原样归档，不会将本机 ID 建成 peer 频道。发布工具测试在两版 PowerShell 各通过 package 579、publish 124、download 2,137 项断言。真实 WPF 的 status、identity、lifecycle、radio-cat 和 channels 回归在两版 PowerShell STA 均通过；channels 为 74 项断言，覆盖 TX/RX 双确认、RX失败安全停止、迟到 ACK、真实 HasExited 收尾后重连编辑。隔离 Native channels 诊断链已通过 schema v2 检查，尚待本轮 fresh build 后对 alpha14 包内 EXE 再跑检查。
 
 当前没有读取或迁移 canonical 真实配置，没有更新任何配置指针；没有连接真实 BM、打开 COM/HRI、音频、PTT 或 RF。alpha14 仍是本机直接文件夹候选，不制作 ZIP、tag 或 GitHub Release。详细合同、命令和待验收边界见 [R118 发布交接](docs/R118_发布交接.md)。
 

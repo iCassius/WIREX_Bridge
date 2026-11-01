@@ -407,10 +407,9 @@ function Import-WirexLegacyConfig {
             $config.devices.wave_out_endpoint_id = [string]$profile.devices.wave_out_endpoint_id
             $routes = $profile.rx_policy
             $channels = New-Object 'System.Collections.Generic.List[object]'
+            Add-WirexMigratedChannel -Channels $channels -Id ([uint64]$profile.tx_target.destination_id) -Kind ([string]$profile.tx_target.kind) -Slot ([uint64]$profile.tx_target.slot)
             foreach ($route in @($routes.allow_groups)) { Add-WirexMigratedChannel -Channels $channels -Id ([uint64]$route.destination_id) -Kind group -Slot ([uint64]$route.slot) }
             foreach ($route in @($routes.allow_private_peers)) { Add-WirexMigratedChannel -Channels $channels -Id ([uint64]$route.source_id) -Kind private -Slot ([uint64]$route.slot) }
-            foreach ($route in @($routes.local_private_routes)) { Add-WirexMigratedChannel -Channels $channels -Id ([uint64]$route.local_destination_id) -Kind private -Slot ([uint64]$route.slot) }
-            Add-WirexMigratedChannel -Channels $channels -Id ([uint64]$profile.tx_target.destination_id) -Kind ([string]$profile.tx_target.kind) -Slot ([uint64]$profile.tx_target.slot)
             if ($channels.Count -eq 0) { Add-WirexMigratedChannel -Channels $channels -Id 460997 -Kind private -Slot 2 }
             $config.channels = [object[]]$channels.ToArray()
             $config.tx_channel_id = Get-WirexChannelKey -Channel ([pscustomobject]@{ id=[uint64]$profile.tx_target.destination_id; kind=[string]$profile.tx_target.kind; slot=[int]$profile.tx_target.slot })

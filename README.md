@@ -2,7 +2,7 @@
 
 ## 当前工作：R118 / Alpha 14 源码冻结与本机包准备
 
-R118 已完成统一便携配置、BM API Key 内存接入、自定义频道监听/发射目标、CAT 重连与频道事务收尾，以及 alpha14 固定清单和启动器集成。配置/BM 模块、发布工具合成检查与 status、identity、lifecycle、radio-cat、channels 五项 WPF 回归均在 Windows PowerShell 5.1 和 PowerShell 7 通过。频道回归每种 PowerShell 各 74 项断言通过；Native 当前代码的 40 项构建和 alpha14 本机文件夹仍待新源码提交后执行。没有读取或迁移真实配置，没有启动真实 BM、COM/HRI、音频、PTT 或 RF。未创建 ZIP、tag 或 GitHub Release。当前证据见 [R118 发布交接](docs/R118_发布交接.md)，用户操作说明源见 [Alpha 14 包内说明](docs/releases/v0.1.0-alpha.14-package-README.md)。
+R118 已完成统一便携配置（迁移保留 TX target 为首项，本机私呼接收路由只归档不伪造 peer 频道）、BM API Key 内存接入、自定义频道监听/发射目标、CAT 重连与频道事务收尾，以及 alpha14 固定清单和启动器集成。配置/BM 模块、发布工具合成检查与 status、identity、lifecycle、radio-cat、channels 五项 WPF 回归均在 Windows PowerShell 5.1 和 PowerShell 7 通过。频道回归每种 PowerShell 各 74 项断言通过；Native 40 项 clean build 和 alpha14 本机文件夹将在本次迁移修复提交后生成。没有读取或迁移真实配置，没有启动真实 BM、COM/HRI、音频、PTT 或 RF。未创建 ZIP、tag 或 GitHub Release。当前证据见 [R118 发布交接](docs/R118_发布交接.md)，用户操作说明源见 [Alpha 14 包内说明](docs/releases/v0.1.0-alpha.14-package-README.md)。
 
 以下为历史阶段记录；当前进度以 [R118 发布交接](docs/R118_发布交接.md) 为准。
 ## R111 / alpha.9 源码集成准备
