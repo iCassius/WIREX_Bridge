@@ -2,11 +2,13 @@
 
 ## R118 / Alpha 14 当前交接（2026-11-01）
 
-源码提交 f0105d7da667c2dbc1ca24d78f2b3b11e9be9eb6 已推送。由该提交 fresh Native clean build：source_tree_clean=true、compile_only=false、40/40 测试通过，MSVC warning/error 诊断为0。Alpha14 位于 build/releases/v0.1.0-alpha.14，41个 manifest 资产、42个物理文件，package_status=awaiting_root_audit。包启动检查、包内 EXE control 和真实 WPF BridgeSupervisor→Native control v2 检查均通过。
+源码提交 f0105d7da667c2dbc1ca24d78f2b3b11e9be9eb6 已推送。由该提交 fresh Native clean build：source_tree_clean=true、compile_only=false、40/40 测试通过，MSVC warning/error 诊断为0。root 独立审计确认 41 项 manifest 资产、37 项源码映射、40 项 Native 测试结果及 EXE/provenance 哈希一致；package_status=root_audit_passed，manifest SHA-256 为 09a8448cd96c2f9a1c949b621d85d0add996d36756f25cfb6f596ad3747467b0。通用包含 42 个物理文件，本机迁移后另有未纳入 manifest 的 config.json，因此发行目录共 43 个文件。
 
 PortableConfig/BM模块为55/45项断言；package/publish/download为579/124/2,137项离线断言；status、identity、lifecycle、radio-cat、channels五项WPF回归在PS5.1/PS7 STA均通过，channels每版74项。包和构建哈希、命令及证据见 [R118 发布交接](docs/R118_发布交接.md)。
 
-没有读取或迁移真实用户配置、修改canonical指针、操作旧本机启动器、连接真实BM/COM/HRI/音频/PTT/RF，也没有制作ZIP、tag或GitHub Release。旧配置迁移仍待单独批准。
+旧设置已按显式目录迁移到 alpha14 根目录 config.json。TX 目标和首频道为 private:460997:2，旧组呼频道为 group:46001:2；旧 local_private_routes 只归档在 legacy 快照中，没有转换为本机 ID 私呼频道。迁移发现凭据存在（true），文档和日志未记录凭据值或外部凭据路径。4 份迁移前已存在的受保护旧设置文件在迁移后逐字节未变；旧收藏未读取或迁移，canonical 指针未修改。
+
+根目录 start-my-bridge.cmd 已备份到 private/config-backups/R118/start-my-bridge.before-alpha14.20261101-123807.cmd，并改为相对调用 alpha14 的唯一 CMD；静态检查确认目标存在，未运行正常启动。没有连接真实 BM/COM/HRI/音频/PTT/RF，也没有制作 ZIP、tag 或 GitHub Release。
 
 以下为历史阶段记录；当前进度以 [R118 发布交接](docs/R118_发布交接.md) 为准。
 ## R115 FTX-1 模式范围与后续开发计划（2026-10-30）
