@@ -1,8 +1,12 @@
 ﻿# WIREX Bridge：FTX-1 DIRECT 与 BrandMeister 语音桥接
 
-## 当前工作：R118 / Alpha 14 源码冻结与本机包准备
+## 当前工作：R118 / Alpha 14 本机候选包（等待 root 审计）
 
-R118 已完成统一便携配置（迁移保留 TX target 为首项，本机私呼接收路由只归档不伪造 peer 频道）、BM API Key 内存接入、自定义频道监听/发射目标、CAT 重连与频道事务收尾，以及 alpha14 固定清单和启动器集成。配置/BM 模块、发布工具合成检查与 status、identity、lifecycle、radio-cat、channels 五项 WPF 回归均在 Windows PowerShell 5.1 和 PowerShell 7 通过。频道回归每种 PowerShell 各 74 项断言通过；Native 40 项 clean build 和 alpha14 本机文件夹将在本次迁移修复提交后生成。没有读取或迁移真实配置，没有启动真实 BM、COM/HRI、音频、PTT 或 RF。未创建 ZIP、tag 或 GitHub Release。当前证据见 [R118 发布交接](docs/R118_发布交接.md)，用户操作说明源见 [Alpha 14 包内说明](docs/releases/v0.1.0-alpha.14-package-README.md)。
+R118 源码最终提交为 f0105d7da667c2dbc1ca24d78f2b3b11e9be9eb6，已从干净工作树完成 Native 完整构建：40/40 项通过，日志没有 MSVC warning/error；provenance 标记 compile_only=false。Alpha14 本机目录位于 build/releases/v0.1.0-alpha.14，manifest 列出 41 项资产，连同 manifest 共 42 个文件，状态仍是 awaiting_root_audit。Windows PowerShell 5.1 包启动、包内 EXE control 与 WPF→Native control v2 检查全部通过。
+
+便携配置 55 项、BM 管理 45 项，以及 package/publish/download 579/124/2,137 项合成检查均在 PowerShell 5.1/7 通过。status、identity、lifecycle、radio-cat、channels 五项 WPF 回归在两版 PowerShell STA 均通过。详细哈希和命令见 [R118 发布交接](docs/R118_发布交接.md)，用户操作见 [Alpha 14 包内说明](docs/releases/v0.1.0-alpha.14-package-README.md)。
+
+本轮没有读取或迁移真实配置、修改 canonical 指针、连接真实 BM/COM/HRI/音频/PTT/RF，也没有创建 ZIP、tag 或 GitHub Release。
 
 以下为历史阶段记录；当前进度以 [R118 发布交接](docs/R118_发布交接.md) 为准。
 ## R111 / alpha.9 源码集成准备

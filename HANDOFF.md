@@ -2,9 +2,11 @@
 
 ## R118 / Alpha 14 当前交接（2026-11-01）
 
-R118 首轮源码提交 4773592 已推送；本次跟进修正旧配置迁移语义。该修复提交后会从最终源码执行 Native clean build 与 alpha14 本机目录打包。统一配置模块和 BM 管理模块分别在 Windows PowerShell 5.1/7 通过 55/45 项合成断言；旧配置迁移会把 TX target 放在频道首项，并将 local_private_routes 原样归档，不会将本机 ID 建成 peer 频道。发布工具测试在两版 PowerShell 各通过 package 579、publish 124、download 2,137 项断言。真实 WPF 的 status、identity、lifecycle、radio-cat 和 channels 回归在两版 PowerShell STA 均通过；channels 为 74 项断言，覆盖 TX/RX 双确认、RX失败安全停止、迟到 ACK、真实 HasExited 收尾后重连编辑。隔离 Native channels 诊断链已通过 schema v2 检查，尚待本轮 fresh build 后对 alpha14 包内 EXE 再跑检查。
+源码提交 f0105d7da667c2dbc1ca24d78f2b3b11e9be9eb6 已推送。由该提交 fresh Native clean build：source_tree_clean=true、compile_only=false、40/40 测试通过，MSVC warning/error 诊断为0。Alpha14 位于 build/releases/v0.1.0-alpha.14，41个 manifest 资产、42个物理文件，package_status=awaiting_root_audit。包启动检查、包内 EXE control 和真实 WPF BridgeSupervisor→Native control v2 检查均通过。
 
-当前没有读取或迁移 canonical 真实配置，没有更新任何配置指针；没有连接真实 BM、打开 COM/HRI、音频、PTT 或 RF。alpha14 仍是本机直接文件夹候选，不制作 ZIP、tag 或 GitHub Release。详细合同、命令和待验收边界见 [R118 发布交接](docs/R118_发布交接.md)。
+PortableConfig/BM模块为55/45项断言；package/publish/download为579/124/2,137项离线断言；status、identity、lifecycle、radio-cat、channels五项WPF回归在PS5.1/PS7 STA均通过，channels每版74项。包和构建哈希、命令及证据见 [R118 发布交接](docs/R118_发布交接.md)。
+
+没有读取或迁移真实用户配置、修改canonical指针、操作旧本机启动器、连接真实BM/COM/HRI/音频/PTT/RF，也没有制作ZIP、tag或GitHub Release。旧配置迁移仍待单独批准。
 
 以下为历史阶段记录；当前进度以 [R118 发布交接](docs/R118_发布交接.md) 为准。
 ## R115 FTX-1 模式范围与后续开发计划（2026-10-30）
