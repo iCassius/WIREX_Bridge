@@ -6,7 +6,7 @@
 
 PortableConfig/BM模块为55/45项断言；package/publish/download为579/124/2,137项离线断言；status、identity、lifecycle、radio-cat、channels五项WPF回归在PS5.1/PS7 STA均通过，channels每版74项。包和构建哈希、命令及证据见 [R118 发布交接](docs/R118_发布交接.md)。
 
-旧设置已按显式目录迁移到 alpha14 根目录 config.json。TX 目标和首频道为 private:460997:2，旧组呼频道为 group:46001:2；旧 local_private_routes 只归档在 legacy 快照中，没有转换为本机 ID 私呼频道。迁移发现凭据存在（true），文档和日志未记录凭据值或外部凭据路径。4 份迁移前已存在的受保护旧设置文件在迁移后逐字节未变；旧收藏未读取或迁移，canonical 指针未修改。
+旧设置已按显式目录迁移到 alpha14 根目录 config.json。频道顺序为 private:460997:2、group:46001:2、group:91:2，TX 目标保持 private:460997:2；追加 TG91 只保存频道，没有发起 QuickCall。旧 local_private_routes 只归档在 legacy 快照中，没有转换为本机 ID 私呼频道。迁移发现凭据存在（true），文档和日志未记录凭据值或外部凭据路径。4 份迁移前已存在的受保护旧设置文件在迁移后逐字节未变；旧收藏未读取或迁移，canonical 指针未修改。
 
 根目录 start-my-bridge.cmd 已备份到 private/config-backups/R118/start-my-bridge.before-alpha14.20261101-123807.cmd，并改为相对调用 alpha14 的唯一 CMD；静态检查确认目标存在，未运行正常启动。没有连接真实 BM/COM/HRI/音频/PTT/RF，也没有制作 ZIP、tag 或 GitHub Release。
 
