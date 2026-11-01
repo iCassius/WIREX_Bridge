@@ -4,6 +4,8 @@
 
 R118 源码最终提交为 f0105d7da667c2dbc1ca24d78f2b3b11e9be9eb6，已从干净工作树完成 Native 完整构建：40/40 项通过，日志没有 MSVC warning/error；provenance 标记 compile_only=false。Alpha14 本机目录位于 build/releases/v0.1.0-alpha.14，root 已独立核对包清单、构建来源、测试结果和 EXE，manifest.package_status 为 root_audit_passed。清单列出 41 项通用资产，连同 manifest 共 42 个文件；本机另有一份不纳入通用清单的 config.json。最终 manifest SHA-256 为 09a8448cd96c2f9a1c949b621d85d0add996d36756f25cfb6f596ad3747467b0。
 
+旧构建已归档至可恢复目录 `private/build-retired/R118/`，独立校验了503个文件共88,485,916字节；`build/_work/` 仅保留本次 f0105d7 完整构建和日志，`build/releases/` 仅保留 alpha14。归档清单、计划和逐文件移动记录见 [R118 发布交接](docs/R118_发布交接.md)。
+
 便携配置 55 项、BM 管理 45 项，以及 package/publish/download 579/124/2,137 项合成检查均在 PowerShell 5.1/7 通过。status、identity、lifecycle、radio-cat、channels 五项 WPF 回归在两版 PowerShell STA 均通过。详细哈希和命令见 [R118 发布交接](docs/R118_发布交接.md)，用户操作见 [Alpha 14 包内说明](docs/releases/v0.1.0-alpha.14-package-README.md)。
 
 本机 alpha14 配置已从明确指定的旧配置目录迁移；频道依次为 private:460997:2、group:46001:2、group:91:2，TX 目标仍为 private:460997:2。添加 TG91 只保存收听偏好，没有发起 QuickCall。本机启动快捷方式现调用 alpha14 目录中的唯一 CMD，原文件备份在 private/config-backups/R118。canonical 指针和旧设置文件保持原样；没有读取收藏，没有连接真实 BM/COM/HRI/音频/PTT/RF，也没有创建 ZIP、tag 或 GitHub Release。

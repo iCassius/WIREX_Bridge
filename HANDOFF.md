@@ -4,6 +4,8 @@
 
 源码提交 f0105d7da667c2dbc1ca24d78f2b3b11e9be9eb6 已推送。由该提交 fresh Native clean build：source_tree_clean=true、compile_only=false、40/40 测试通过，MSVC warning/error 诊断为0。root 独立审计确认 41 项 manifest 资产、37 项源码映射、40 项 Native 测试结果及 EXE/provenance 哈希一致；package_status=root_audit_passed，manifest SHA-256 为 09a8448cd96c2f9a1c949b621d85d0add996d36756f25cfb6f596ad3747467b0。通用包含 42 个物理文件，本机迁移后另有未纳入 manifest 的 config.json，因此发行目录共 43 个文件。
 
+旧构建已可恢复地归档至 `private/build-retired/R118/`，目录和日志保留原名称。归档涵盖7个源根项目，共503个文件、88,485,916字节；独立验收逐项核对源与目标的长度和哈希，结果0差异，且源路径均已不存在。归档计划位于 `private/build-history/R118/R118-build-retirement-plan.md`（SHA-256 `7593198430f3e8cc70970a644e7fe2a1a485d8a7a17332b3241b33d91e49e88d`），移动日志位于 `private/build-history/R118/R118-build-retirement-move-journal.jsonl`（SHA-256 `8d4c2ae37e298263e9697f96cfd4eb41efa683a1996389e97af92af466527e1d`）。`build/_work/` 仅保留最终 f0105d7 clean build 和对应日志；`build/releases/` 仅保留 alpha14。
+
 PortableConfig/BM模块为55/45项断言；package/publish/download为579/124/2,137项离线断言；status、identity、lifecycle、radio-cat、channels五项WPF回归在PS5.1/PS7 STA均通过，channels每版74项。包和构建哈希、命令及证据见 [R118 发布交接](docs/R118_发布交接.md)。
 
 旧设置已按显式目录迁移到 alpha14 根目录 config.json。频道顺序为 private:460997:2、group:46001:2、group:91:2，TX 目标保持 private:460997:2；追加 TG91 只保存频道，没有发起 QuickCall。旧 local_private_routes 只归档在 legacy 快照中，没有转换为本机 ID 私呼频道。迁移发现凭据存在（true），文档和日志未记录凭据值或外部凭据路径。4 份迁移前已存在的受保护旧设置文件在迁移后逐字节未变；旧收藏未读取或迁移，canonical 指针未修改。
