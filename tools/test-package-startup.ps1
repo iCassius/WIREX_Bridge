@@ -30,8 +30,8 @@ try {
     throw ('候选包 manifest.json 无法读取：{0}' -f $_.Exception.Message)
 }
 $packageVersion = [string]$packageManifest.version
-if (@('v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12', 'v0.1.0-alpha.13', 'v0.1.0-alpha.14', 'v0.1.0-alpha.15') -cnotcontains $packageVersion) {
-    throw ('包级启动检查只支持 alpha.9 至 alpha.15；manifest.version 为：{0}' -f $packageVersion)
+if (@('v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12', 'v0.1.0-alpha.13', 'v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16') -cnotcontains $packageVersion) {
+    throw ('包级启动检查只支持 alpha.9 至 alpha.16；manifest.version 为：{0}' -f $packageVersion)
 }
 $releaseProfile = Set-ReleaseVersion -Version $packageVersion
 Assert-ReleasePackageInventory -PackageRoot $sourcePackage -Version $releaseProfile.Version | Out-Null
@@ -76,7 +76,7 @@ if ($packageVersion -ceq 'v0.1.0-alpha.13') {
         }
     }
 }
-if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15')) {
+if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16')) {
     foreach ($moduleName in @(
         'RadioCat.psm1', 'RadioCatUi.ps1', 'RadioDevices.psm1',
         'BmServers.psm1', 'BmManagement.psm1', 'BmManagementUi.ps1', 'PortableConfig.psm1'
@@ -360,7 +360,7 @@ function Test-NoArgumentStartupFailurePrompt {
         throw '唯一 CMD 未把 ASCII 错误提示和 pause 放在无参数启动失败分支中，或未保留原退出码。'
     }
     $originalUiLauncherBytes = $null
-    if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15')) {
+    if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16')) {
         $uiLauncherPath = Join-Path $packageCopy 'start-ui.ps1'
         $originalUiLauncherBytes = [System.IO.File]::ReadAllBytes($uiLauncherPath)
         [System.IO.File]::WriteAllText($uiLauncherPath, "throw 'synthetic startup failure only'`r`n",
@@ -472,10 +472,10 @@ function Test-Alpha15AudioControlCompatibility {
     $tokens = $null
     $parseErrors = $null
     $uiAst = [System.Management.Automation.Language.Parser]::ParseFile($uiPath, [ref]$tokens, [ref]$parseErrors)
-    if ($parseErrors.Count -gt 0) { throw 'alpha.15 bridge-ui.ps1 cannot be parsed by Windows PowerShell 5.1.' }
+    if ($parseErrors.Count -gt 0) { throw ($packageLabel + ' bridge-ui.ps1 cannot be parsed by Windows PowerShell 5.1.') }
     foreach ($functionName in @('Test-UiRoutingCapabilityList','Test-UiAudioGainCapability')) {
         $functionAst = $uiAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $functionName }, $true)
-        if ($null -eq $functionAst) { throw ('alpha.15 package UI is missing capability validator {0}.' -f $functionName) }
+        if ($null -eq $functionAst) { throw ('{0} package UI is missing capability validator {1}.' -f $packageLabel, $functionName) }
         Invoke-Expression $functionAst.Extent.Text
     }
     $legacyCommands = [string[]]@('hello','status','shutdown','routing.status','rx_policy.replace',
@@ -483,13 +483,13 @@ function Test-Alpha15AudioControlCompatibility {
     $audioCommands = [string[]]@($legacyCommands + 'audio.gains.set')
     if (-not (Test-UiRoutingCapabilityList -Commands $legacyCommands) -or
         -not (Test-UiRoutingCapabilityList -Commands $audioCommands)) {
-        throw 'alpha.15 UI capability validator must accept the alpha.14 command list and its audio.gains.set extension.'
+        throw ($packageLabel + ' UI capability validator must accept the alpha.14 command list and its audio.gains.set extension.')
     }
     $legacyText = $legacyCommands -join ','
     $audioText = $audioCommands -join ','
     if ((Test-UiAudioGainCapability -Capabilities $legacyText) -or
         -not (Test-UiAudioGainCapability -Capabilities $audioText)) {
-        throw 'alpha.15 UI must enable runtime gain control only when the Native command list includes audio.gains.set.'
+        throw ($packageLabel + ' UI must enable runtime gain control only when the Native command list includes audio.gains.set.')
     }
 
     $supervisorText = [System.IO.File]::ReadAllText($supervisorPath, [System.Text.Encoding]::UTF8)
@@ -499,7 +499,7 @@ function Test-Alpha15AudioControlCompatibility {
         'if (bodyBytes.Length > ControlJsonLimitBytes) return null;'
     )) {
         if (-not $supervisorText.Contains($requiredFragment)) {
-            throw ('alpha.15 packaged BridgeSupervisor is missing the guarded audio command contract: {0}' -f $requiredFragment)
+            throw ('{0} packaged BridgeSupervisor is missing the guarded audio command contract: {1}' -f $packageLabel, $requiredFragment)
         }
     }
     $controlTestPath = Join-Path $appRoot 'tools\test-ui-control-v2.ps1'
@@ -509,11 +509,11 @@ function Test-Alpha15AudioControlCompatibility {
         -UiPackageDirectory $PackageRoot 2>&1)
     $controlTestExitCode = $LASTEXITCODE
     if ($controlTestExitCode -ne 0) {
-        throw ('alpha.15 package-local v2/audio diagnostic failed with exit {0}: {1}' -f `
-            $controlTestExitCode, [string]::Join(' | ', @($controlTestOutput | ForEach-Object { [string]$_ })))
+        throw ('{0} package-local v2/audio diagnostic failed with exit {1}: {2}' -f `
+            $packageLabel, $controlTestExitCode, [string]::Join(' | ', @($controlTestOutput | ForEach-Object { [string]$_ })))
     }
     foreach ($outputLine in $controlTestOutput) { Write-Output $outputLine }
-    Write-Output '通过：alpha.15 包内 UI 接受带/不带 audio.gains.set 的 v2 命令集，并仅对新能力启用热调；Supervisor 精确门控且限制完整请求体 4096 字节。'
+    Write-Output ('通过：{0} 包内 UI 接受带/不带 audio.gains.set 的 v2 命令集，并仅对新能力启用热调；Supervisor 精确门控且限制完整请求体 4096 字节。' -f $packageLabel)
 }
 
 try {
@@ -527,8 +527,8 @@ try {
     Copy-Item -LiteralPath $sourcePackage -Destination $packageCopy -Recurse
     $copied = $true
     Test-NoArgumentStartupFailurePrompt
-    if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15')) { Test-Alpha14DefaultStartup }
-    if ($packageVersion -ceq 'v0.1.0-alpha.15') { Test-Alpha15AudioControlCompatibility -PackageRoot $packageCopy }
+    if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16')) { Test-Alpha14DefaultStartup }
+    if ($packageVersion -cin @('v0.1.0-alpha.15', 'v0.1.0-alpha.16')) { Test-Alpha15AudioControlCompatibility -PackageRoot $packageCopy }
 
     $scriptFiles = @(Get-ChildItem -LiteralPath $packageCopy -Recurse -File | Where-Object {
         $_.Extension -in @('.ps1', '.psm1')
@@ -549,7 +549,7 @@ try {
 
     $modulePath = Join-Path $packageCopy 'bridge-user-config.psm1'
     Import-Module -Name $modulePath -Force -ErrorAction Stop
-    if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15')) {
+    if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16')) {
         $portableModulePath = Join-Path $packageCopy 'ui\windows\PortableConfig.psm1'
         Import-Module -Name $portableModulePath -Force -ErrorAction Stop
         $packagedConfigFiles = @(Get-ChildItem -LiteralPath $packageCopy -Recurse -File | Where-Object {
@@ -601,7 +601,7 @@ try {
     }
 
     [System.IO.Directory]::CreateDirectory($isolatedConfig) | Out-Null
-    if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15')) {
+    if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16')) {
         $diagnosticConfigPath = Join-Path $isolatedConfig 'config.json'
         $diagnosticConfig = Get-WirexPortableConfig -Path $diagnosticConfigPath
         $diagnosticConfig.connection.callsign = 'R110T'
@@ -640,7 +640,7 @@ try {
     $resultPath = Join-Path $isolatedConfig 'routing-diagnostic-result.json'
     if (-not [System.IO.File]::Exists($resultPath)) { throw '隔离路由诊断没有生成结果文件。' }
     $result = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($resultPath, [System.Text.Encoding]::UTF8)) -ErrorAction Stop
-    if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15')) {
+    if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16')) {
         $channelFlowTest = $result.channel_flow_test
         if ([int]$result.schema_version -ne 2 -or -not [bool]$result.passed -or
             -not [bool]$channelFlowTest.passed -or [string]$channelFlowTest.channel_key -cne 'group:12345:1' -or

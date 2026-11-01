@@ -1,6 +1,14 @@
 ﻿# WIREX Bridge：FTX-1 DIRECT 与 BrandMeister 语音桥接
 
-## 当前工作：R119 / Alpha 15 本机目录（root 审计通过）
+## 当前工作：R120 / Alpha 16 源码冻结与构建准备
+
+R120 更新监听频道面板为每页固定 3×2 个卡片，增加紧凑分页；来话卡显示呼号和 DMR ID；BrandMeister 状态与延迟紧跟应用标题。CAT 串口控制与 Wires-X 核心分离，普通核心停止保留 CAT 会话，关闭应用时才收尾 CAT。连接配置和 CAT 设置仍写入用户自己的发行目录 `config.json`，包括用户要求持久保存的 BM API Key；Generic 发布 profile 不包含个人 `config.json`。
+
+BrandMeister 静态组沿既有包路径读取 talkgroup 列表，并按设备状态选择添加 slot；删除时保留服务器返回的 slot。UI 在启动准备前和最终 HRI `--port` 确定后检查 CAT 端口冲突，相同 COM 会取消 Wires-X 启动并保留 CAT worker。离线 UI、CAT、BM 证据和发布边界见 [R120 发布交接](docs/R120_发布交接.md)、[UI 记录](docs/R120_UI.md)、[CAT 记录](docs/R120_CAT.md) 和 [BM 接口研究](docs/R120_BM接口研究.md)。Alpha 16 发布 profile 保留 Alpha 15 的 Generic 文件路径及 40 项 Native 测试顺序，只替换包内 README 与版本化启动器，不增加运行时资产。
+
+当前离线用例通过：RenderOnly 139 项、channels 111 项、BM WPF 66 项、BM 模块 75 项、音量 81 项、便携配置 55 项；status 与 identity 通过。CAT WPF fake worker 专项 139 项、console 130 项在 PowerShell 7.6.5 与 Windows PowerShell 5.1 均通过。root 独立复核 channels、status、identity、音量、生命周期和 3×2 两尺寸截图；独立 review 未发现 P1/P2，源码已获准冻结。Alpha 16 包尚未构建，尚未运行正常启动，也未连接真实 BM、COM、HRI、音频、PTT 或 RF。本阶段没有读取、哈希、复制或写入 alpha15 个人配置；通用包不含个人 `config.json`。没有创建 ZIP、tag 或 GitHub Release。
+
+## R119 / Alpha 15 本机目录（root 审计通过）
 
 R119 接入 CAT 首次状态查询和周期同步，查询忙碌时保持编辑控件与滑块稳定；CAT 写操作仍要求当前连接代次和新鲜查询结果。实时音量只在 Native 明确公布 `audio.gains.set` 时提供运行中调整，alpha14 的旧能力集继续保留原启动增益行为。CAT 与 WPF 回归、旧能力兼容和离线 IPC 检查见 [R119 发布交接](docs/R119_发布交接.md)、[CAT 记录](docs/R119_CAT.md)、[UI 记录](docs/R119_UI.md) 和 [实时音量记录](docs/R119_实时音量.md)。
 

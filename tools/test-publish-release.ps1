@@ -841,6 +841,40 @@ try {
     Assert-Throws { Assert-PublishPackage -PackageRoot $alpha15Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.15' } `
         'alpha.15 publisher rejects a manifest that omits the package-root config exclusion'
 
+    $alpha16Root = Join-Path $testRoot 'package-alpha16'
+    Copy-Item -LiteralPath $alpha14Root -Destination $alpha16Root -Recurse
+    $alpha16Profile = Set-PublishProfile -Tag 'v0.1.0-alpha.16'
+    Write-Utf8NoBom -Path (Join-Path $alpha16Root 'README.md') -Text 'synthetic alpha.16 package README'
+    $alpha16LauncherPath = Join-Path $alpha16Root 'tools\start-wirex-bridge.ps1'
+    Write-Utf8NoBom -Path $alpha16LauncherPath -Text 'synthetic alpha.16 launcher'
+    $alpha16ManifestPath = Join-Path $alpha16Root 'manifest.json'
+    $alpha16Manifest = [System.IO.File]::ReadAllText($alpha16ManifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    foreach ($relativePath in @('README.md', 'tools/start-wirex-bridge.ps1')) {
+        $fullPath = Join-Path $alpha16Root $relativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+        $record = @($alpha16Manifest.files | Where-Object { [string]$_.path -ceq $relativePath })
+        if ($record.Count -ne 1) { throw ('alpha.16 test fixture lacks a unique manifest record for ' + $relativePath) }
+        $record[0].length_bytes = [long](Get-Item -LiteralPath $fullPath).Length
+        $record[0].sha256 = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $record[0].source = 'synthetic alpha.16 test content'
+    }
+    $alpha16Manifest.version = 'v0.1.0-alpha.16'
+    $alpha16Manifest.tag_candidate = 'v0.1.0-alpha.16'
+    $alpha16Manifest.release_scope = 'R120 DIRECT: BrandMeister static talkgroup management'
+    $alpha16Manifest.build.passed_test_count = $alpha16Profile.TestNames.Count
+    $alpha16Manifest.build.passed_tests = @($alpha16Profile.TestNames)
+    Write-Utf8NoBom -Path $alpha16ManifestPath -Text ((ConvertTo-Json -InputObject $alpha16Manifest -Depth 12) + [Environment]::NewLine)
+    $alpha16Package = Assert-PublishPackage -PackageRoot $alpha16Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.16'
+    Assert-True ($alpha16Package.Assets.Count -eq $alpha15Package.Assets.Count -and
+        $alpha16Profile.AssetPathMap.Count -eq $alpha15Profile.AssetPathMap.Count) `
+        'alpha.16 publisher accepts the unchanged alpha.15 asset inventory with only its versioned README and launcher source'
+    Assert-True (@($alpha16Package.Manifest.excluded_private_files | Where-Object { [string]$_ -ceq 'config.json' }).Count -eq 1 -and
+        @($alpha16Package.Manifest.excluded_private_files | Where-Object { [string]$_ -ceq 'credentials/' }).Count -eq 1) `
+        'alpha.16 manifest retains package-root configuration and credential exclusions'
+    $alpha16Manifest.excluded_private_files = @($alpha16Manifest.excluded_private_files | Where-Object { [string]$_ -cne 'config.json' })
+    Write-Utf8NoBom -Path $alpha16ManifestPath -Text ((ConvertTo-Json -InputObject $alpha16Manifest -Depth 12) + [Environment]::NewLine)
+    Assert-Throws { Assert-PublishPackage -PackageRoot $alpha16Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.16' } `
+        'alpha.16 publisher rejects a manifest that omits the package-root config exclusion'
+
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.9')
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.1')
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.1')

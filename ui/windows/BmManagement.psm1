@@ -61,7 +61,7 @@ function Invoke-BmManagementRequest {
     param(
         [Parameter(Mandatory = $true)][ValidateSet('GET', 'POST', 'DELETE')][string]$Method,
         [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string]$DeviceId,
-        [Parameter(Mandatory = $true)][ValidateSet('profile', 'talkgroup')][string]$Resource,
+        [Parameter(Mandatory = $true)][ValidateSet('device', 'profile', 'talkgroup')][string]$Resource,
         [Parameter()][AllowNull()][string]$ResourceSuffix = '',
         [Parameter()][AllowEmptyString()][string]$ApiKey,
         [Parameter()][AllowEmptyString()][string]$ApiKeyFilePath,
@@ -79,12 +79,16 @@ function Invoke-BmManagementRequest {
     if (-not [uint64]::TryParse($DeviceId, [ref]$deviceNumber) -or $deviceNumber -lt 1 -or $deviceNumber -gt 4294967295) {
         throw [System.ArgumentException]::new('BM 设备 ID 必须是 1 到 4294967295 的十进制整数。')
     }
+    if ($Resource -ceq 'device' -and ($Method -cne 'GET' -or $ResourceSuffix)) {
+        throw [System.ArgumentException]::new('BM 设备信息只允许使用无后缀 GET 路径。')
+    }
     if ($ResourceSuffix -and ($ResourceSuffix -notmatch '^/[0-9]+/[0-9]+$' -or $Resource -cne 'talkgroup' -or $Method -cne 'DELETE')) {
         throw [System.ArgumentException]::new('BM API 路径参数无效。')
     }
 
-    $uriText = '{0}{1}{2}/{3}{4}' -f $script:BmManagementApiOrigin, $script:BmManagementApiPrefix,
-        [System.Uri]::EscapeDataString($DeviceId), $Resource, $ResourceSuffix
+    $resourcePath = if ($Resource -ceq 'device') { '' } else { '/' + $Resource + $ResourceSuffix }
+    $uriText = '{0}{1}{2}{3}' -f $script:BmManagementApiOrigin, $script:BmManagementApiPrefix,
+        [System.Uri]::EscapeDataString($DeviceId), $resourcePath
     $uri = [System.Uri]$uriText
     if ($uri.Scheme -cne 'https' -or $uri.Host -cne 'api.brandmeister.network' -or $uri.Port -ne 443) {
         throw [System.InvalidOperationException]::new('BM API 只允许使用官方 HTTPS 服务地址。')
@@ -203,22 +207,29 @@ function Invoke-BmManagementRequest {
     }
 }
 
-function ConvertFrom-BmStaticSubscriptionProfile {
+function ConvertFrom-BmStaticSubscriptionList {
     param(
         [Parameter(Mandatory = $true)][string]$Json,
         [Parameter(Mandatory = $true)][string]$DeviceId
     )
 
-    try { $profile = ConvertFrom-Json -InputObject $Json -ErrorAction Stop }
-    catch { throw [System.InvalidOperationException]::new('BM API 返回的静态组资料不是有效 JSON。') }
-    if ($null -eq $profile -or $null -eq $profile.PSObject.Properties['staticSubscriptions'] -or
-        $profile.staticSubscriptions -isnot [System.Array]) {
-        throw [System.InvalidOperationException]::new('BM API 返回的资料缺少静态组列表。')
+    $jsonText = $Json.Trim()
+    if ($jsonText.Length -gt 0 -and $jsonText[0] -eq [char]0xFEFF) {
+        $jsonText = $jsonText.Substring(1).TrimStart()
     }
+    if ($jsonText.Length -lt 2 -or $jsonText[0] -cne '[' -or $jsonText[$jsonText.Length - 1] -cne ']') {
+        throw [System.InvalidOperationException]::new('BM API 静态组列表必须是 JSON 数组。')
+    }
+
+    try {
+        $parsed = ConvertFrom-Json -InputObject $jsonText -ErrorAction Stop
+        if ($parsed -is [System.Array]) { $items = $parsed } else { $items = @($parsed) }
+    }
+    catch { throw [System.InvalidOperationException]::new('BM API 返回的静态组列表不是有效 JSON。') }
 
     $groups = @()
     $seen = @{}
-    foreach ($item in @($profile.staticSubscriptions)) {
+    foreach ($item in $items) {
         if ($null -eq $item -or $null -eq $item.PSObject.Properties['talkgroup'] -or
             $null -eq $item.PSObject.Properties['slot']) {
             throw [System.InvalidOperationException]::new('BM API 静态组项目缺少 TG 或时隙。')
@@ -255,15 +266,69 @@ function Get-BmStaticGroups {
         [Parameter()][scriptblock]$Transport
     )
 
-    $response = Invoke-BmManagementRequest -Method GET -DeviceId $DeviceId -Resource profile `
+    $response = Invoke-BmManagementRequest -Method GET -DeviceId $DeviceId -Resource talkgroup `
         -ApiKey $ApiKey -ApiKeyFilePath $ApiKeyFilePath -TimeoutMs $TimeoutMs -CancellationToken $CancellationToken -Transport $Transport
-    $groups = @(ConvertFrom-BmStaticSubscriptionProfile -Json $response.body -DeviceId $DeviceId)
+    $groups = @(ConvertFrom-BmStaticSubscriptionList -Json $response.body -DeviceId $DeviceId)
     return [pscustomobject][ordered]@{
         operation = 'get_static_groups'
         device_id = [string]$DeviceId
         success = $true
         groups = $groups
         retrieved_utc = [DateTime]::UtcNow.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+    }
+}
+
+function Get-BmStaticGroupAddContext {
+    [CmdletBinding()]
+    param(
+        [Parameter()][AllowEmptyString()][string]$ApiKey,
+        [Parameter()][AllowEmptyString()][string]$ApiKeyFilePath,
+        [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string]$DeviceId,
+        [Parameter()][ValidateRange(1, 10000)][int]$TimeoutMs = $script:BmManagementDefaultTimeoutMs,
+        [Parameter()][System.Threading.CancellationToken]$CancellationToken = [System.Threading.CancellationToken]::None,
+        [Parameter()][scriptblock]$Transport
+    )
+
+    $response = Invoke-BmManagementRequest -Method GET -DeviceId $DeviceId -Resource device `
+        -ApiKey $ApiKey -ApiKeyFilePath $ApiKeyFilePath -TimeoutMs $TimeoutMs -CancellationToken $CancellationToken -Transport $Transport
+    try {
+        $device = ConvertFrom-Json -InputObject $response.body -ErrorAction Stop
+    } catch {
+        return [pscustomobject][ordered]@{ operation = 'get_static_group_add_context'; device_id = [string]$DeviceId; success = $false; status = $null; add_slot = $null }
+    }
+    if ($null -eq $device -or $device -is [System.Array] -or
+        $null -eq $device.PSObject.Properties['id'] -or $null -eq $device.PSObject.Properties['status']) {
+        return [pscustomobject][ordered]@{ operation = 'get_static_group_add_context'; device_id = [string]$DeviceId; success = $false; status = $null; add_slot = $null }
+    }
+
+    $returnedId = [string]$device.id
+    $normalizedId = [uint64]0
+    if ($returnedId -notmatch '^[0-9]{1,10}$' -or -not [uint64]::TryParse($returnedId, [ref]$normalizedId) -or
+        $normalizedId -lt 1 -or $normalizedId -gt 4294967295 -or
+        $normalizedId.ToString([Globalization.CultureInfo]::InvariantCulture) -cne [string]$DeviceId) {
+        return [pscustomobject][ordered]@{ operation = 'get_static_group_add_context'; device_id = [string]$DeviceId; success = $false; status = $null; add_slot = $null }
+    }
+
+    $statusValue = $device.status
+    if ($null -eq $statusValue -or $statusValue -is [bool] -or $statusValue -is [string] -or
+        $statusValue.GetType().Name -notin @('Byte','SByte','Int16','UInt16','Int32','UInt32','Int64','UInt64')) {
+        return [pscustomobject][ordered]@{ operation = 'get_static_group_add_context'; device_id = [string]$DeviceId; success = $false; status = $null; add_slot = $null }
+    }
+    $statusNumber = [int64]0
+    if (-not [int64]::TryParse([string]$statusValue, [ref]$statusNumber)) {
+        return [pscustomobject][ordered]@{ operation = 'get_static_group_add_context'; device_id = [string]$DeviceId; success = $false; status = $null; add_slot = $null }
+    }
+    if ($statusNumber -lt 0 -or $statusNumber -gt 4) {
+        return [pscustomobject][ordered]@{ operation = 'get_static_group_add_context'; device_id = [string]$DeviceId; success = $false; status = [int64]$statusNumber; add_slot = $null }
+    }
+
+    $addSlot = if ($statusNumber -eq 4) { 0 } else { 2 }
+    return [pscustomobject][ordered]@{
+        operation = 'get_static_group_add_context'
+        device_id = [string]$DeviceId
+        success = $true
+        status = [int]$statusNumber
+        add_slot = [int]$addSlot
     }
 }
 
@@ -274,7 +339,7 @@ function Add-BmStaticGroup {
         [Parameter()][AllowEmptyString()][string]$ApiKeyFilePath,
         [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string]$DeviceId,
         [Parameter(Mandatory = $true)][ValidateRange(1, 16777215)][uint64]$Talkgroup,
-        [Parameter(Mandatory = $true)][ValidateRange(1, 2)][int]$Slot,
+        [Parameter(Mandatory = $true)][ValidateRange(0, 2)][int]$Slot,
         [Parameter()][ValidateRange(1, 10000)][int]$TimeoutMs = $script:BmManagementDefaultTimeoutMs,
         [Parameter()][System.Threading.CancellationToken]$CancellationToken = [System.Threading.CancellationToken]::None,
         [Parameter()][scriptblock]$Transport
@@ -355,4 +420,4 @@ function Complete-BmStaticGroupWrite {
     }
 }
 
-Export-ModuleMember -Function Get-BmStaticGroups, Add-BmStaticGroup, Remove-BmStaticGroup
+Export-ModuleMember -Function Get-BmStaticGroups, Get-BmStaticGroupAddContext, Add-BmStaticGroup, Remove-BmStaticGroup

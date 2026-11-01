@@ -33,7 +33,7 @@ function Test-ReleaseTag {
         $Tag -ceq 'v0.1.0-alpha.9' -or $Tag -ceq 'v0.1.0-alpha.10' -or
         $Tag -ceq 'v0.1.0-alpha.11' -or $Tag -ceq 'v0.1.0-alpha.12' -or
         $Tag -ceq 'v0.1.0-alpha.13' -or $Tag -ceq 'v0.1.0-alpha.14' -or
-        $Tag -ceq 'v0.1.0-alpha.15')
+        $Tag -ceq 'v0.1.0-alpha.15' -or $Tag -ceq 'v0.1.0-alpha.16')
 }
 
 function Get-ExpectedReleaseTests {
@@ -79,7 +79,8 @@ function Get-ExpectedReleaseTests {
         'v0.1.0-alpha.13' { return @(Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.12') }
         'v0.1.0-alpha.14' { return @(Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.13') }
         'v0.1.0-alpha.15' { return @(Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.14') }
-        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.15 are supported.' }
+        'v0.1.0-alpha.16' { return @(Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.15') }
+        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.16 are supported.' }
     }
 }
 
@@ -242,7 +243,8 @@ function Get-ExpectedReleaseFiles {
             return $alpha14
         }
         'v0.1.0-alpha.15' { return @(Get-ExpectedReleaseFiles -Tag 'v0.1.0-alpha.14') }
-        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.15 are supported.' }
+        'v0.1.0-alpha.16' { return @(Get-ExpectedReleaseFiles -Tag 'v0.1.0-alpha.15') }
+        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.16 are supported.' }
     }
 }
 
@@ -464,7 +466,7 @@ function Test-ManifestDocument {
             if ($excluded -cnotcontains $required) { throw 'alpha.13 manifest 未明确排除本机 BM 路径偏好、设备偏好、个人配置指针、缓存、收藏与密码路径。' }
         }
     }
-    if ($RequestedTag -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15')) {
+    if ($RequestedTag -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16')) {
         foreach ($required in @(
             'config.json', 'config.*.backup*', 'credentials/', 'tempSecrets/',
             'private/user-config-directory.txt', 'private/user-config/radio-identity-cache.json',
@@ -473,7 +475,7 @@ function Test-ManifestDocument {
             'private/user-config/bm-server-preferences.json'
         )) {
             if ($excluded -cnotcontains $required) {
-                throw 'alpha.14/15 manifest 未明确排除 package-root 配置文件、备份、凭据和旧版个人偏好。'
+                throw 'alpha.14/15/16 manifest 未明确排除 package-root 配置文件、备份、凭据和旧版个人偏好。'
             }
         }
     }
@@ -562,7 +564,7 @@ function Test-BuildProvenanceDocument {
 
 function Select-ReleaseCandidate {
     param([object[]]$Releases, [Parameter(Mandatory=$true)][string]$RequestedTag, [switch]$AllowDraft)
-    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.15 are supported.' }
+    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.16 are supported.' }
     $matches = @($Releases | Where-Object { [string]$_.tag_name -ceq $RequestedTag })
     if ($matches.Count -ne 1) { throw 'GitHub Release 列表中没有唯一匹配的 tag。' }
     $release = $matches[0]
@@ -733,7 +735,7 @@ function New-GitHubApiUri {
     )
     switch ($Kind) {
         'tag' {
-            if (-not (Test-ReleaseTag -Tag $Tag)) { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.15 are supported.' }
+            if (-not (Test-ReleaseTag -Tag $Tag)) { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.16 are supported.' }
             return [Uri]($script:githubApiRoot + '/releases/tags/' + $Tag)
         }
         'list' {
@@ -936,7 +938,7 @@ function Invoke-ReleaseDownload {
     param([Parameter(Mandatory=$true)][string]$RequestedTag,
           [Parameter(Mandatory=$true)][string]$OutputDirectory,
           [switch]$AllowDraft)
-    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.15 are supported.' }
+    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.16 are supported.' }
     $context = Get-DownloadDestinationContext -Destination $OutputDirectory
     $token = Get-GitCredentialToken
     $stagingCreated = $false

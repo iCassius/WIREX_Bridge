@@ -68,6 +68,7 @@ $script:alpha12TestNames = @($script:alpha11TestNames)
 $script:alpha13TestNames = @($script:alpha12TestNames)
 $script:alpha14TestNames = @($script:alpha13TestNames)
 $script:alpha15TestNames = @($script:alpha14TestNames)
+$script:alpha16TestNames = @($script:alpha15TestNames)
 $script:activeReleaseVersion = 'v0.1.0-alpha.1'
 
 function Get-ReleaseProfile {
@@ -688,7 +689,33 @@ function Get-ReleaseProfile {
                 NotIncluded = $alpha15NotIncluded
             }
         }
-        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.15 release profiles are supported.' }
+        'v0.1.0-alpha.16' {
+            $alpha15 = Get-ReleaseProfile -Version 'v0.1.0-alpha.15'
+            $alpha16SourceFiles = @($alpha15.SourceFiles | Where-Object {
+                [string]$_.Destination -cne 'README.md' -and
+                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha15.cmd' -and
+                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha15.ps1'
+            }) + @(
+                @{ Source='docs\releases\v0.1.0-alpha.16-package-README.md'; Destination='README.md' },
+                @{ Source='tools\start-wirex-bridge-alpha16.cmd'; Destination='start-wirex-bridge.cmd' },
+                @{ Source='tools\start-wirex-bridge-alpha16.ps1'; Destination='tools/start-wirex-bridge.ps1' }
+            )
+            $alpha16NotIncluded = @($alpha15.NotIncluded | ForEach-Object {
+                ([string]$_).Replace('alpha.15', 'alpha.16')
+            })
+            return [pscustomobject]@{
+                Version = 'v0.1.0-alpha.16'
+                TestNames = $script:alpha16TestNames
+                SourceFiles = $alpha16SourceFiles
+                PackageFiles = @($alpha15.PackageFiles)
+                Directories = @($alpha15.Directories)
+                AssetMap = $alpha15.AssetMap
+                PackageReadme = 'docs\releases\v0.1.0-alpha.16-package-README.md'
+                ReleaseScope = 'R120 DIRECT: refreshed BrandMeister static talkgroup list and device-status-driven add slot selection, inheriting alpha.15 runtime assets and Native test sequence'
+                NotIncluded = $alpha16NotIncluded
+            }
+        }
+        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.16 release profiles are supported.' }
     }
 }
 
@@ -923,7 +950,7 @@ function Get-ReleaseExcludedPrivateFiles {
             'private/user-config/bm-server-preferences.json'
         )
     }
-    if ($Version -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15')) {
+    if ($Version -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16')) {
         $excluded += @(
             'config.json',
             'config.*.backup*',

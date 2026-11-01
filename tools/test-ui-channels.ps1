@@ -148,6 +148,7 @@ $radioCatPath = Join-Path $repoRoot 'ui\windows\RadioCatUi.ps1'
 $mainXamlPath = Join-Path $repoRoot 'ui\windows\MainWindow.xaml'
 $settingsXamlPath = Join-Path $repoRoot 'ui\windows\SettingsWindow.xaml'
 $portableConfigModulePath = Join-Path $repoRoot 'ui\windows\PortableConfig.psm1'
+$radioIdentityModulePath = Join-Path $repoRoot 'ui\windows\RadioIdentity.psm1'
 $bridgeUserConfigModulePath = Join-Path $repoRoot 'tools\bridge-user-config.psm1'
 $mainTokens = $null; $mainErrors = $null
 $mainAst = [System.Management.Automation.Language.Parser]::ParseFile($uiPath,[ref]$mainTokens,[ref]$mainErrors)
@@ -156,7 +157,7 @@ $catTokens = $null; $catErrors = $null
 $catAst = [System.Management.Automation.Language.Parser]::ParseFile($radioCatPath,[ref]$catTokens,[ref]$catErrors)
 Assert-UiChannels ($catErrors.Count -eq 0) 'RadioCatUi.ps1 解析失败。'
 $mainDefinitions = @($mainAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] },$true))
-foreach ($name in @('Import-UiPortableConfig','Save-UiChannelAdvancedSlot','Set-ConnectionButtonState','Set-ConnectionConfigLocked')) {
+foreach ($name in @('Import-UiPortableConfig','Set-ConnectionButtonState','Set-ConnectionConfigLocked','Update-UiChannelDisplays','Set-UiChannelPage')) {
     $matches = @($mainDefinitions | Where-Object { $_.Name -ceq $name })
     Assert-UiChannels ($matches.Count -eq 1) ("{0} 应只有一个函数定义，实际为 {1}。" -f $name,$matches.Count)
 }
@@ -165,8 +166,11 @@ $functionNames = @(
     'Import-WpfWindow','Get-UiControl','Get-SettingsControl','Get-UiChannelKey','Get-UiChannelTarget','Get-UiChannelByKey',
     'New-UiChannelRecord','Get-UiNativeRxPolicyForChannels','Get-UiChannelCurrentCall','Get-UiChannelCallerLabel',
     'ConvertFrom-UiPortableConfigToProfile','Save-UiPortableConfig','Fit-WpfWindowToWorkArea',
-    'Set-MainText','Set-UiChannelStatus','New-UiChannelActionButton','Show-UiChannelActionMenu','Update-UiChannelDisplays','Start-UiChannelMutation',
+    'Set-MainText','Set-UiChannelStatus','New-UiChannelActionButton','Update-UiChannelDisplays','Set-UiChannelPage','Start-UiChannelMutation',
+    'Get-UiChannelCallerDetails','New-UiDmIdLinkTextBlock','Open-UiDmIdProfile','Get-UiNativeIdentityCallsign',
     'Get-UiChannelTargetFromRouting','Complete-UiChannelMutation','Add-UiChannelFromInputs','Remove-UiChannel','Set-UiChannelMuted',
+    'Save-SettingsFromWindow','ConvertTo-UiOptionalUnsigned','Get-UiComboValue','Request-Reconnect','Start-BridgeRun',
+    'Get-UiRadioCatPortConflictMessage','Test-UiRadioCatUserActionBusy','Get-UiRadioCatSessionState',
     'Invoke-UiSetCallTarget','Invoke-UiChannelQuickCall','Invoke-UiRoutingDiagnosticChannelQuickCallButton','Open-UiSetupPage','Register-UiSetupLinks',
     'Test-UiControlUnsigned','Test-UiExactControlFields','Test-UiRxPolicy','Copy-UiRxPolicy','Invoke-UiRoutingMutation',
     'Complete-UiChannelMutationFailure','Add-UiComboOpenHandlers','Register-UiRadioCatPortTextInput','Get-UiRadioCatConnectionKey',
@@ -177,22 +181,28 @@ $functionNames = @(
     'Set-ConnectionButtonState','Set-ConnectionConfigLocked','Set-UiIdentityRowVisibility','Update-UiPlaybackGainDisplay',
     'Test-UiAudioGainCapability','Update-UiAudioGainControls','Update-UiAudioGainValueLabels',
     'Convert-UiGainSliderToMilli',
-    'Complete-UiRadioCatOperationAndPersist','Complete-UiRadioCatOperation','Invoke-UiRadioCatPollTick','Process-UiControlEvents','Read-StatusUpdates',
+    'Complete-UiRadioCatOperationAndPersist','Complete-UiRadioCatOperation','Invoke-UiRadioCatPollTick','Start-UiRadioCatOperation',
+    'Test-UiRadioCatHardwareAccessAllowed','Test-UiRadioCatExplicitFakeHook','Test-UiRadioCatPortConflictWithHri',
+    'Get-UiRadioCatHriPortForOperation','Process-UiControlEvents','Read-StatusUpdates',
     'Set-StaleDisplay','Complete-UiDeviceDiscovery','Complete-BridgePreparation','Clear-UiSessionTemp','Stop-UiRadioCatPolling','Update-RoutingDisplays',
     'Set-RoutingMutationPendingState','Set-RoutingEditorStatus','Add-UiEvent','Update-DynamicGroupControls','Reset-UiControlState',
     'Expire-UiAudioGainRequest',
     'Get-UiSourceIdentityDisplay','Get-UiRadioCatSelectedPort','Get-UiRadioCatStopBits','Get-UiRadioCatBaudRate',
     'Update-UiReceiveMetricsDisplay','Update-UiIdentityActionState','Complete-UiIdentityQuery','Expire-UiNativeIdentityUpdate',
-    'Start-UiChannelMutationSafetyStop','Clear-UiChannelMutationSafetyState'
+    'Start-UiChannelMutationSafetyStop','Clear-UiChannelMutationSafetyState','Get-UiVisualTextValues'
 )
 # Extract the selected functions by their own AST names; this keeps the test tied to production bodies.
 $selected = @($allDefinitions | Where-Object { $functionNames -ccontains $_.Name })
 Invoke-Expression (($selected | ForEach-Object { $_.Extent.Text }) -join "`r`n")
+$script:actualStartBridgeRun = (Get-Command Start-BridgeRun -CommandType Function).ScriptBlock
+$script:actualCompleteBridgePreparation = (Get-Command Complete-BridgePreparation -CommandType Function).ScriptBlock
 Import-Module -Name $portableConfigModulePath -Force
+Import-Module -Name $radioIdentityModulePath -Force
 Import-Module -Name $bridgeUserConfigModulePath -Force
 
 $mainXaml = [System.IO.File]::ReadAllText($mainXamlPath)
 $settingsXaml = [System.IO.File]::ReadAllText($settingsXamlPath)
+$bridgeSource = [System.IO.File]::ReadAllText($uiPath)
 foreach ($forbidden in @('FavoritesPanel','FavoritesList','TransmitEnabledBox','CatStopBitsBox','FavoritesButton')) {
     Assert-UiChannels ($mainXaml -notmatch ('x:Name="' + [regex]::Escape($forbidden) + '"')) ("MainWindow.xaml 仍含已删除控件 {0}。" -f $forbidden)
 }
@@ -200,7 +210,22 @@ foreach ($required in @('ChannelIdBox','ChannelKindBox','MakeChannelTxTargetChec
     Assert-UiChannels ($mainXaml -match ('x:Name="' + [regex]::Escape($required) + '"')) ("MainWindow.xaml 缺少 {0}。" -f $required)
 }
 Assert-UiChannels ($mainXaml -notmatch 'x:Name="ChannelListPanel"') 'MainWindow.xaml 仍有重复频道清单。'
-Assert-UiChannels ($settingsXaml -match 'x:Name="ChannelSlotBox"') '高级频道窗缺少时隙下拉框。'
+Assert-UiChannels ($mainXaml -notmatch 'ReadRadioButton|读取电台' -and
+    $mainXaml -match 'Content="连接串口"' -and $mainXaml -match 'Content="断开串口"') '电台控制仍显示读取按钮，或串口连接/断开标签错误。'
+Assert-UiChannels ($mainXaml -match 'Rows="2" Columns="3"' -and
+    $mainXaml -notmatch 'ChannelAdvancedButton|Content="TS1"|Content="TS2"' -and
+    $settingsXaml -notmatch 'ChannelSlotBox|TS1|TS2|时隙') '主界面或频道说明窗口仍暴露时隙入口。'
+Assert-UiChannels ($mainXaml -match 'ChannelPagePreviousButton' -and $mainXaml -match 'ChannelPageNextButton') '3×2频道面板缺少分页按钮。'
+Assert-UiChannels ($bridgeSource -match '\$pagePreviousButton\.Add_Click\(\{ Set-UiChannelPage -Delta -1 \}\)' -and
+    $bridgeSource -match '\$pageNextButton\.Add_Click\(\{ Set-UiChannelPage -Delta 1 \}\)') '分页按钮没有绑定到对应的翻页动作。'
+Assert-UiChannels ($bridgeSource -match '(?s)if \(-not \$script:isolatedUiMode -and -not \$NoAutoConnect\)\s*\{\s*\[void\]\(Connect-UiRadioCatSession -Automatic\)\s*\}') `
+    '隔离/NoAutoConnect启动路径没有跳过自动 CAT 连接。'
+Assert-UiChannels ($bridgeSource -match '(?s)function Start-BridgeRun\s*\{\s*if \(Test-UiRadioCatUserActionBusy\)' -and
+    $bridgeSource -match '(?s)function Complete-BridgePreparation\s*\{.*?if \(Test-UiRadioCatUserActionBusy\)') '直接和准备完成的 HRI 启动路径没有检查 CAT 用户动作。'
+Assert-UiChannels ($bridgeSource -match '(?s)function Start-BridgeRun\s*\{.*?Get-UiRadioCatPortConflictMessage -HriPortName \$savedHriPort' -and
+    $bridgeSource -match '(?s)function Complete-BridgePreparation\s*\{.*?Get-UiRadioCatPortConflictMessage -HriPortName \$preparedRadioPort.*?\.Start\(') `
+    'Wires-X 启动前与设备预检完成后没有按各自 HRI 串口检查 CAT 冲突。'
+Assert-UiChannels ($mainXaml -notmatch 'BmStaticGroupSlotBox|Content="TS1"|Content="TS2"') 'BM静态组仍定义时隙选择器。'
 
 $testRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('wirex-ui-channels-' + [guid]::NewGuid().ToString('N'))
 [void][System.IO.Directory]::CreateDirectory($testRoot)
@@ -212,6 +237,7 @@ $script:mainWindow = $null; $script:settingsWindow = $null
 $script:profilePath = ''
 $script:bmServerSelectionPreferenceId = 'bm-china-4602'
 $script:channels = @(); $script:txChannelKey = ''; $script:mutedChannelKeys = @{}
+$script:channelPageIndex = 0
 $script:pendingRoutingMutation = $null; $script:pendingChannelMutation = $null; $script:pendingChannelStopMutation = $null
 $script:channelMutationSafetyStopPending = $false
 $script:routingMutationFence = $false; $script:activeRouting = $null; $script:activeProfile = $null; $script:storedProfile = $null
@@ -225,8 +251,9 @@ $script:sessionTempDirectory = ''; $script:sessionPasswordPath = ''; $script:lat
 $script:quickCallCapabilities = $false
 $script:RoutingDiagnostic = $false; $script:RoutingDiagnosticAutoTest = $false
 $script:uiTestHooks = @{}
-$script:bmApiKeySettingsUri = 'https://brandmeister.network/?page=profile'
-$script:bmPasswordSettingsUri = 'https://brandmeister.network/?page=selfcare'
+$script:bmApiKeySettingsUri = 'https://brandmeister.network/#/profile/api'
+$script:bmPasswordSettingsUri = 'https://brandmeister.network/#/selfcare'
+$script:bmProfileUriTemplate = 'https://brandmeister.network/#/profile/{0}'
 $script:lastStatusUtc = [DateTime]::MinValue; $script:radioCatOperationPowerShell = $null
 $script:radioCatPowerPreferenceDirty = $false; $script:radioCatPowerNeedsUserChoice = $false
 $script:radioCatEditDraft = @{ mode=$null; frequency=$null; power=$null }
@@ -249,6 +276,8 @@ if ($rootConfigExistedBefore) {
 
 # Offline stubs keep the actual channel functions and WPF callbacks under test without starting external services.
 function Update-UiRadioCatControls { $script:testCatControlsUpdated++ }
+function Format-ProfileTarget { param([object]$Profile) return 'TG 91' }
+function Set-MainTargetSummary { param([object]$Profile,[string]$OverallLabel) return }
 function Invoke-UiRadioCatPollTick { return $false }
 function Complete-UiRadioCatOperationAndPersist { return $false }
 function Complete-UiRadioCatOperation { return $false }
@@ -287,8 +316,8 @@ try {
     $script:uiTestHooks.OpenUri = { param($Uri) $script:openedSetupUris.Add([string]$Uri) }
     Register-UiSetupLinks
     foreach ($linkSpec in @(
-        [pscustomobject]@{ Name='BmApiKeySetupLink'; Kind='bm_api_key'; Uri='https://brandmeister.network/?page=profile' },
-        [pscustomobject]@{ Name='BmPasswordSetupLink'; Kind='bm_password'; Uri='https://brandmeister.network/?page=selfcare' }
+        [pscustomobject]@{ Name='BmApiKeySetupLink'; Kind='bm_api_key'; Uri='https://brandmeister.network/#/profile/api' },
+        [pscustomobject]@{ Name='BmPasswordSetupLink'; Kind='bm_password'; Uri='https://brandmeister.network/#/selfcare' }
     )) {
         $setupLink = $script:mainWindow.FindName($linkSpec.Name)
         Assert-UiChannels ($setupLink -is [System.Windows.Documents.Hyperlink] -and [string]$setupLink.Tag -ceq $linkSpec.Kind) `
@@ -297,17 +326,18 @@ try {
         $setupLink.RaiseEvent($linkEvent)
     }
     Assert-UiChannels ($script:openedSetupUris.Count -eq 2 -and
-        $script:openedSetupUris[0] -ceq 'https://brandmeister.network/?page=profile' -and
-        $script:openedSetupUris[1] -ceq 'https://brandmeister.network/?page=selfcare') '设置链接没有把官方 HTTPS 地址交给隔离浏览器钩子。'
+        $script:openedSetupUris[0] -ceq 'https://brandmeister.network/#/profile/api' -and
+        $script:openedSetupUris[1] -ceq 'https://brandmeister.network/#/selfcare') '设置链接没有把官方 HTTPS 地址交给隔离浏览器钩子。'
     $script:uiTestHooks.Remove('OpenUri')
     $script:supervisor = New-TestChannelSupervisor
     Set-ConnectionConfigLocked
     Assert-UiChannels ((Get-TestUiControl 'BmApiKeyBox').IsEnabled -and
         -not (Get-TestUiControl 'PasswordBox').IsEnabled -and (Get-TestUiControl 'SaveSettingsButton').IsEnabled -and
-        $script:mainWindow.FindName('BmApiKeySetupLink').IsEnabled -and $script:mainWindow.FindName('BmPasswordSetupLink').IsEnabled) `
-        'BM连接期间 API Key 与设置链接被锁定，或密码字段未按连接状态锁定。'
+        $script:mainWindow.FindName('BmApiKeySetupLink').IsEnabled -and $script:mainWindow.FindName('BmPasswordSetupLink').IsEnabled -and
+        (Get-TestUiControl 'CatPortBox').IsEnabled -and (Get-TestUiControl 'CatBaudRateBox').IsEnabled) `
+        '连接期间 API Key 或 CAT 端口被错误锁定，或密码字段未按连接状态锁定。'
     $script:supervisor = $null
-    $script:channelEditorSlot = 1
+    $script:channelEditorSlot = 2
     $script:channels = @()
     $script:txChannelKey = ''
     $script:mutedChannelKeys = @{}
@@ -315,26 +345,28 @@ try {
     $kindBox.SelectedItem = @($kindBox.Items | Where-Object { [string]$_.Tag -ceq 'group' })[0]
     (Get-TestUiControl 'ChannelIdBox').Text = '12345'
     Add-UiChannelFromInputs
-    Assert-UiChannels ($script:channels.Count -eq 1 -and (Get-UiChannelKey -Channel $script:channels[0]) -ceq 'group:12345:1') '首次加入频道未按明确类型和 TS1 保存。'
-    Assert-UiChannels ($script:txChannelKey -ceq 'group:12345:1') '空列表加入首频道后没有将首项设为默认 PTT 目标。'
-    Assert-UiChannels ((Get-WirexPortableConfig -Path $script:portableConfigPath).tx_channel_id -ceq 'group:12345:1') '首次频道和默认 PTT 目标没有保存到临时根目录 config.json。'
+    Assert-UiChannels ($script:channels.Count -eq 1 -and (Get-UiChannelKey -Channel $script:channels[0]) -ceq 'group:12345:2') '新频道没有使用内部默认网络参数。'
+    Assert-UiChannels ($script:txChannelKey -ceq 'group:12345:2') '空列表加入首频道后没有将首项设为默认 PTT 目标。'
+    Assert-UiChannels ((Get-WirexPortableConfig -Path $script:portableConfigPath).tx_channel_id -ceq 'group:12345:2') '首次频道和默认 PTT 目标没有保存到临时根目录 config.json。'
     $emptyKeyConfig = $script:portableConfig.PSObject.Copy()
     $emptyKeyConfig.connection = $script:portableConfig.connection.PSObject.Copy()
     $emptyKeyConfig.connection.api_key = ''
     Assert-UiChannels ($null -ne (ConvertFrom-UiPortableConfigToProfile -Config $emptyKeyConfig)) 'BM API Key 为空时连接 Profile 被拒绝。'
 
+    $script:channels = @()
     $sameGroupTs2 = New-UiChannelRecord -Id 12345 -Kind group -Slot 2
+    $sameGroupTs1 = New-UiChannelRecord -Id 12345 -Kind group -Slot 1
     $samePrivateTs1 = New-UiChannelRecord -Id 12345 -Kind private -Slot 1
     Assert-UiChannels ((Get-UiChannelKey -Channel $sameGroupTs2) -cne (Get-UiChannelKey -Channel $samePrivateTs1)) 'kind/slot 没有参与频道元组 key。'
     Assert-UiChannels ((Get-UiChannelKey -Channel $sameGroupTs2) -ceq 'group:12345:2' -and
         (Get-UiChannelKey -Channel $samePrivateTs1) -ceq 'private:12345:1') '同 ID 的不同 kind/slot 被混为一个频道。'
     $script:channels = @($script:channels) + @($sameGroupTs2,$samePrivateTs1,
-        (New-UiChannelRecord -Id 91 -Kind group -Slot 2),(New-UiChannelRecord -Id 46001 -Kind group -Slot 2))
+        (New-UiChannelRecord -Id 91 -Kind group -Slot 2),(New-UiChannelRecord -Id 46001 -Kind group -Slot 2),$sameGroupTs1)
     $script:txChannelKey = 'group:91:2'
     $script:portableConfig.channels = [object[]]$script:channels
     $script:portableConfig.tx_channel_id = $script:txChannelKey
     $script:portableConfig = Save-WirexPortableConfig -Path $script:portableConfigPath -Config $script:portableConfig
-    Assert-UiChannels ($script:channels.Count -eq 5 -and (Get-UiChannelKey -Channel $script:channels[0]) -ceq 'group:12345:1' -and
+    Assert-UiChannels ($script:channels.Count -eq 5 -and (Get-UiChannelKey -Channel $script:channels[0]) -ceq 'group:12345:2' -and
         (Get-WirexPortableConfig -Path $script:portableConfigPath).tx_channel_id -ceq 'group:91:2') '频道顺序或 91 PTT 目标未保存。'
     Update-UiChannelDisplays
     $targetCard = @($script:mainWindow.FindName('ChannelCardsPanel').Children | Where-Object { [string]$_.Tag.channel_key -ceq 'group:46001:2' }) | Select-Object -First 1
@@ -375,10 +407,17 @@ try {
     $script:latestStatus = [pscustomobject]@{ bm_state='ready' }
     Update-UiChannelDisplays
     $commandCountBeforeQuickCall = $script:supervisor.Commands.Count
-    Invoke-UiRoutingDiagnosticChannelQuickCallButton -Channel ($script:channels | Where-Object { (Get-UiChannelKey -Channel $_) -ceq 'group:91:2' } | Select-Object -First 1)
+    $groupCard = @($script:mainWindow.FindName('ChannelCardsPanel').Children | Where-Object { [string]$_.Tag.channel_key -ceq 'group:91:2' }) | Select-Object -First 1
+    $quickCallButton = @($groupCard.Child.Children[1].Children | Where-Object { $_ -is [System.Windows.Controls.Button] -and [string]$_.Tag.action -ceq 'quick_call' }) | Select-Object -First 1
+    Assert-UiChannels ($quickCallButton -and $quickCallButton.Content -ceq '激活组' -and $quickCallButton.IsEnabled) '组呼频道没有直接显示可用的激活组按钮。'
+    $quickCallButton.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))
     Assert-UiChannels ($script:supervisor.Commands.Count -eq ($commandCountBeforeQuickCall + 1) -and
         $script:supervisor.Commands[-1].command -ceq 'network_subscription.quick_call_join' -and
-        $script:pendingQuickCall -and $script:txChannelKey -ceq 'group:91:2') '频道卡更多菜单没有通过真实事件触发已有动态组激活操作。'
+        $script:pendingQuickCall -and $script:txChannelKey -ceq 'group:91:2') '组呼卡的直接按钮没有通过真实事件触发动态组激活。'
+    $privateCard = @($script:mainWindow.FindName('ChannelCardsPanel').Children | Where-Object { [string]$_.Tag.channel_key -ceq 'private:12345:1' }) | Select-Object -First 1
+    $privateActions = $privateCard.Child.Children[1]
+    Assert-UiChannels ($privateActions.Children.Count -eq 4 -and
+        @($privateActions.Children | Where-Object { $_ -is [System.Windows.Controls.Button] }).Count -eq 3) '私呼卡第四个操作格没有留空。'
     $script:pendingQuickCall = $null
     $script:pendingControlRequests = @{}
     $beforeMute = [System.IO.File]::ReadAllText($script:portableConfigPath,[System.Text.Encoding]::UTF8)
@@ -605,6 +644,7 @@ try {
     $catPort = Get-TestUiControl 'CatPortBox'
     $script:mainWindow.Opacity = 1
     [void]$script:mainWindow.Activate()
+    (Get-TestUiControl 'CatOperatingPanel').Visibility = [System.Windows.Visibility]::Visible
     (Get-TestUiControl 'RadioCatPanel').Visibility = [System.Windows.Visibility]::Visible
     $script:mainWindow.UpdateLayout()
     Assert-UiChannels ($catPort.IsEditable) 'CAT 端口字段不再是可编辑组合框。'
@@ -624,10 +664,247 @@ try {
     $script:settingsWindow.Opacity = 1
     $script:settingsWindow.Show(); [void]$script:settingsWindow.Activate(); $script:settingsWindow.UpdateLayout()
     [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{},[System.Windows.Threading.DispatcherPriority]::ApplicationIdle)
-    $slotBox = $script:settingsWindow.FindName('ChannelSlotBox')
-    Assert-UiChannels (-not $slotBox.IsEditable) '频道高级时隙下拉框意外允许自由文本。'
-    [void](Invoke-TestPreviewClick -Element $slotBox)
-    Assert-UiChannels ($slotBox.IsDropDownOpen) '点击频道高级时隙下拉框主体没有打开 TS1/TS2 选项。'
+    Assert-UiChannels ($null -eq $script:settingsWindow.FindName('ChannelSlotBox')) '频道说明窗口仍显示时隙选择器。'
+
+    $savedCallerChannels = @($script:channels); $savedCallerTxKey = $script:txChannelKey
+    $savedCallerStatus = $script:latestStatus; $savedCallerCache = @{} + $script:callIdentityCache
+    $script:channels = @((New-UiChannelRecord -Id 460997 -Kind private -Slot 2))
+    $script:txChannelKey = ''
+    $script:latestStatus = [pscustomobject]@{current_call_valid=$true;current_call_kind='P';current_call_slot=[uint64]2;
+        current_call_source_id=[uint64]460997;current_call_destination_id=[uint64]123456}
+    $script:callIdentityCache['460997'] = [pscustomobject]@{source_id=[uint32]460997;id=[uint32]460997;callsign='N0TEST';name='Sample Operator';status='found';display_name='N0TEST'}
+    Update-UiChannelDisplays
+    $callerCard = @($script:mainWindow.FindName('ChannelCardsPanel').Children | Where-Object { [string]$_.Tag.channel_key -ceq 'private:460997:2' }) | Select-Object -First 1
+    $callerArea = @($callerCard.Child.Children[0].Children | Where-Object { $_ -is [System.Windows.Controls.Border] -and [string]$_.Tag -ceq 'ChannelCallArea' }) | Select-Object -First 1
+    $callerVisualText = @(Get-UiVisualTextValues -Root $callerArea)
+    Assert-UiChannels ($callerVisualText -contains 'N0TEST · Sample Operator' -and $callerVisualText -contains 'DMR ID 460997') '来话卡没有放大显示呼号/姓名并在下一行显示 DMR ID。'
+    $callerIdText = @($callerArea.Child.Children | Where-Object { $_ -is [System.Windows.Controls.TextBlock] }) | Select-Object -Last 1
+    $callerIdLink = @($callerIdText.Inlines | Where-Object { $_ -is [System.Windows.Documents.Hyperlink] }) | Select-Object -First 1
+    Assert-UiChannels ($callerIdLink -and [string]$callerIdLink.Tag.callsign -ceq 'N0TEST') '已解析呼号时 DMR ID 没有连接到对应的 BM profile。'
+    $script:openedProfileUris = New-Object 'System.Collections.Generic.List[string]'
+    $savedIdentityModuleLoaded = $script:radioIdentityModuleLoaded
+    $script:radioIdentityModuleLoaded = $true
+    $script:uiTestHooks.OpenUri = { param($Uri) $script:openedProfileUris.Add([string]$Uri) }
+    $callerIdLink.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Documents.Hyperlink]::ClickEvent))
+    Assert-UiChannels ($script:openedProfileUris.Count -eq 1 -and $script:openedProfileUris[0] -ceq 'https://brandmeister.network/#/profile/N0TEST') 'DMR ID 链接没有把已验证的呼号 profile URL 交给隔离打开器。'
+    $script:uiTestHooks.Remove('OpenUri')
+    $script:radioIdentityModuleLoaded = $savedIdentityModuleLoaded
+    [void]$script:callIdentityCache.Remove('460997')
+    Update-UiChannelDisplays
+    $unknownCallerCard = @($script:mainWindow.FindName('ChannelCardsPanel').Children | Where-Object { [string]$_.Tag.channel_key -ceq 'private:460997:2' }) | Select-Object -First 1
+    $unknownCallerArea = @($unknownCallerCard.Child.Children[0].Children | Where-Object { $_ -is [System.Windows.Controls.Border] -and [string]$_.Tag -ceq 'ChannelCallArea' }) | Select-Object -First 1
+    $unknownText = @(Get-UiVisualTextValues -Root $unknownCallerArea)
+    Assert-UiChannels ($unknownText -contains 'DMR ID 460997' -and $unknownText.Count -eq 1 -and
+        @($unknownCallerArea.Child.Children[0].Inlines | Where-Object { $_ -is [System.Windows.Documents.Hyperlink] }).Count -eq 0) '未知呼号没有以单一 DMR ID 回退显示，或打开了未经验证的链接。'
+    $script:channels = $savedCallerChannels; $script:txChannelKey = $savedCallerTxKey
+    $script:latestStatus = $savedCallerStatus; $script:callIdentityCache = $savedCallerCache
+    Update-UiChannelDisplays
+
+    $savedPageChannels = @($script:channels); $savedPageTxKey = $script:txChannelKey
+    $savedPageMuted = $script:mutedChannelKeys; $savedPageIndex = $script:channelPageIndex
+    $script:channels = @((6000..6007 | ForEach-Object { New-UiChannelRecord -Id $_ -Kind group -Slot 2 }))
+    $script:txChannelKey = 'group:6000:2'; $script:mutedChannelKeys = @{}; $script:channelPageIndex = 0
+    Update-UiChannelDisplays
+    Assert-UiChannels ($script:mainWindow.FindName('ChannelPageNav').IsVisible -and
+        $script:mainWindow.FindName('ChannelPageText').Text -ceq '1 / 2' -and
+        $script:mainWindow.FindName('ChannelCardsPanel').Children.Count -eq 6) '超过六个频道时第一页没有显示六个槽位和紧凑页码。'
+    Set-UiChannelPage -Delta 1
+    $pageTwoCards = @($script:mainWindow.FindName('ChannelCardsPanel').Children)
+    Assert-UiChannels ($script:channelPageIndex -eq 1 -and $script:mainWindow.FindName('ChannelPageText').Text -ceq '2 / 2' -and
+        @($pageTwoCards | Where-Object { -not $_.Tag.blank }).Count -eq 2 -and
+        @($pageTwoCards | Where-Object { $_.Tag.blank }).Count -eq 4 -and $script:channels.Count -eq 8) '第二页没有保留剩余频道与四个纯空白槽。'
+    Set-UiChannelPage -Delta -1
+    Assert-UiChannels ($script:channelPageIndex -eq 0 -and $script:channels.Count -eq 8) '翻页返回时没有保留完整监听频道列表。'
+    $script:channels = $savedPageChannels; $script:txChannelKey = $savedPageTxKey
+    $script:mutedChannelKeys = $savedPageMuted; $script:channelPageIndex = $savedPageIndex
+    Update-UiChannelDisplays
+
+    $script:testBridgeRunRequests = 0
+    function Start-BridgeRun { $script:testBridgeRunRequests++ }
+    $script:radioCatOperationPowerShell = [pscustomobject]@{ fake_query=$true }
+    $fakeCatQuery = $script:radioCatOperationPowerShell
+    $script:radioCatOperationKind = 'query'
+    $script:radioCatQueuedAction = $null
+    $script:radioCatPendingModeFrequencyRequest = $null
+    $script:radioModeApplyAfterStop = $null
+    $script:radioCatSessionRequested = $true
+    $script:radioCatSessionConnected = $true
+    $script:radioCatPollingActive = $true
+    $script:radioCatSessionState = 'polling'
+    $script:radioCatSessionShutdown = $false
+    $script:radioCatOperationCancelled = $false
+    $script:supervisor = $null; $script:preparationStarted = $false; $script:preparePowerShell = $null
+    (Get-TestUiControl 'CallsignBox').Text = 'N0TEST'
+    (Get-TestUiControl 'GatewayBox').Text = '12345'
+    (Get-TestUiControl 'SourceBox').Text = '123456'
+    (Get-TestUiControl 'MasterBox').Text = '43.129.83.124'
+    (Get-TestUiControl 'MasterPortBox').Text = '62031'
+    (Get-TestUiControl 'ColorCodeBox').Text = '1'
+    (Get-TestUiControl 'PasswordBox').Password = 'synthetic-password-7a91'
+    (Get-TestUiControl 'BmApiKeyBox').Password = 'synthetic-api-key-42bf'
+    Set-ConnectionButtonState
+    Assert-UiChannels ((Get-TestUiControl 'ConnectButton').IsEnabled -and (Get-TestUiControl 'SaveSettingsButton').IsEnabled -and
+        -not (Test-UiRadioCatUserActionBusy)) '普通 CAT 查询正在运行时连接或保存按钮被错误锁定。'
+    $saveDuringQuery = [bool](Save-SettingsFromWindow)
+    Assert-UiChannels ($saveDuringQuery -and [object]::ReferenceEquals($script:radioCatOperationPowerShell,$fakeCatQuery) -and
+        -not $script:radioCatOperationCancelled) '普通 CAT 查询期间保存设置失败，或保存操作取消了 CAT worker。'
+    Request-Reconnect
+    Assert-UiChannels ($script:testBridgeRunRequests -eq 1 -and [object]::ReferenceEquals($script:radioCatOperationPowerShell,$fakeCatQuery) -and
+        -not $script:radioCatOperationCancelled) '普通 CAT 查询期间启动 Wires-X 被阻止，或连接流程取消了 CAT worker。'
+
+    $script:radioCatOperationKind = 'setPower'
+    Set-ConnectionButtonState
+    $configBeforeCatWrite = [System.IO.File]::ReadAllText($script:portableConfigPath,[System.Text.Encoding]::UTF8)
+    $saveDuringCatWrite = Save-SettingsFromWindow
+    Request-Reconnect
+    $configAfterCatWrite = [System.IO.File]::ReadAllText($script:portableConfigPath,[System.Text.Encoding]::UTF8)
+    Assert-UiChannels (-not (Get-TestUiControl 'ConnectButton').IsEnabled -and -not (Get-TestUiControl 'SaveSettingsButton').IsEnabled -and
+        -not $saveDuringCatWrite -and $configAfterCatWrite -ceq $configBeforeCatWrite -and $script:testBridgeRunRequests -eq 1 -and
+        [object]::ReferenceEquals($script:radioCatOperationPowerShell,$fakeCatQuery)) 'CAT 写入期间新 Wires-X 启动/保存没有被暂时阻止，或 CAT worker 被改变。'
+    $script:radioCatOperationPowerShell = $null; $script:radioCatOperationKind = ''
+    $script:radioCatQueuedAction = $null; $script:radioCatPendingModeFrequencyRequest = $null; $script:radioModeApplyAfterStop = $null
+    $script:radioCatSessionRequested = $false; $script:radioCatSessionConnected = $false; $script:radioCatPollingActive = $false
+    $script:radioCatSessionState = 'disconnected'; $script:radioCatOperationCancelled = $false
+    Set-ConnectionButtonState
+
+    # Keep a fake CAT query in flight while the bridge checks the same saved
+    # HRI port. The isolated hook sleeps without importing the hardware module.
+    $script:NoAutoConnect = $true
+    $script:UiTestFixture = $true
+    $script:RoutingDiagnostic = $false
+    $script:isolatedUiMode = $true
+    $script:deviceCatalog = $null
+    $script:radioCatModuleAvailable = $true
+    $script:radioCatSessionRequested = $false
+    $script:radioCatSessionConnected = $false
+    $script:radioCatPollingActive = $false
+    $script:radioCatSessionState = 'disconnected'
+    $script:radioCatSessionShutdown = $false
+    $script:radioCatSessionGeneration = 0
+    $script:radioCatManualDisconnect = $false
+    $script:radioCatOperationPowerShell = $null
+    $script:radioCatOperationAsync = $null
+    $script:radioCatOperationKind = ''
+    $script:radioCatOperationPortName = ''
+    $script:radioCatOperationCancelled = $false
+    $script:radioCatQueuedAction = $null
+    $script:radioCatPendingModeFrequencyRequest = $null
+    $script:radioModeApplyAfterStop = $null
+    $script:preparationStarted = $false
+    $script:prepareStopAsync = $null
+    $script:supervisor = $null
+    $script:statusStream = $null
+    $script:portableConfig = [pscustomobject]@{ fake_isolated_config=$true }
+    $script:storedProfile = [pscustomobject]@{
+        devices=[pscustomobject]@{ serial_port='COM5' }
+        tx_target=[pscustomobject]@{ destination_id=[uint64]91; kind='group' }
+        rx_policy=$null
+    }
+    $catPortControl = Get-TestUiControl 'CatPortBox'
+    $catPortControl.SelectedItem = $null
+    $catPortControl.Text = 'COM5'
+    $script:radioCatPortSelectionExplicit = $true
+    $script:radioCatPortTextEditExplicit = $true
+    $catHookMarker = Join-Path $testRoot 'fake-cat-query-started.txt'
+    $catHookText = @"
+param([object]`$Context)
+[System.IO.File]::WriteAllText('$catHookMarker','fake')
+Start-Sleep -Seconds 30
+return [pscustomobject]@{ operation='query'; status='cancelled'; port_name=[string]`$Context.port }
+"@
+    $script:uiTestHooks.CatOperation = [scriptblock]::Create($catHookText)
+    $fakeCatQueryHook = $script:uiTestHooks.CatOperation
+    Start-UiRadioCatOperation -Operation query
+    $portGateCatWorker = $script:radioCatOperationPowerShell
+    $catHookWait = [System.Diagnostics.Stopwatch]::StartNew()
+    while (-not [System.IO.File]::Exists($catHookMarker) -and $catHookWait.ElapsedMilliseconds -lt 3000) { Start-Sleep -Milliseconds 10 }
+    $script:radioCatSessionRequested = $true
+    $script:radioCatSessionState = 'polling'
+    $script:radioCatPollingActive = $true
+    $script:radioCatPollingConnectionKey = 'COM5|38400|Two'
+    Assert-UiChannels ((Get-UiRadioCatSessionState).operation -ceq 'query' -and
+        -not (Get-UiRadioCatSessionState).user_action_busy -and
+        $script:radioCatOperationPowerShell -and $script:radioCatOperationPortName -ceq 'COM5' -and
+        (Get-UiRadioCatSelectedPort) -ceq 'COM5' -and $script:deviceCatalog -eq $null -and $script:NoAutoConnect -and
+        [System.IO.File]::Exists($catHookMarker)) `
+        'NoAutoConnect/无设备目录下的手动 CAT COM5 fake query 未建立为独立会话。'
+    $script:uiTestHooks.Remove('CatOperation')
+    $script:portGateNativeFactoryCalls = 0
+    $script:uiTestHooks.NativeSupervisorFactory = {
+        param([object]$Context)
+        $script:portGateNativeFactoryCalls++
+        return [pscustomobject]@{ HasExited=$false; ProcessId=[uint32]8811; Operation=[string]$Context.operation }
+    }
+    Set-Item -Path Function:\Start-BridgeRun -Value $script:actualStartBridgeRun
+    Start-BridgeRun
+    $samePortFooter = [string](Get-TestUiControl 'FooterText').Text
+    Assert-UiChannels ($script:portGateNativeFactoryCalls -eq 0 -and $null -eq $script:supervisor -and
+        [object]::ReferenceEquals($script:radioCatOperationPowerShell,$portGateCatWorker) -and
+        $script:radioCatOperationPortName -ceq 'COM5' -and $samePortFooter -match 'COM5' -and $samePortFooter -match '断开 CAT') `
+        ('同一 COM5 上的 CAT query 没有阻止 Wires-X 启动，或丢失了实际端口提示。 factory={0}, supervisor={1}, CAT={2}, footer={3}' -f `
+            $script:portGateNativeFactoryCalls,[bool]$script:supervisor,[bool]$script:radioCatOperationPowerShell,$samePortFooter)
+
+    # A disconnected session may still own a frozen operation port until the
+    # fake worker releases. That port remains reserved for the final HRI check.
+    $script:radioCatSessionRequested = $false
+    $script:radioCatSessionConnected = $false
+    $script:radioCatPollingActive = $false
+    $script:radioCatSessionState = 'disconnecting'
+    $script:radioCatManualDisconnect = $true
+    Start-BridgeRun
+    Assert-UiChannels ($script:portGateNativeFactoryCalls -eq 0 -and $null -eq $script:supervisor -and
+        $script:radioCatOperationPowerShell -and $script:radioCatOperationPortName -ceq 'COM5' -and
+        ([string](Get-TestUiControl 'FooterText').Text) -match 'COM5') `
+        'CAT 已断开但 worker 仍释放期间，Wires-X 未检查冻结的 COM5。'
+
+    $script:storedProfile.devices.serial_port = 'COM6'
+    Start-BridgeRun
+    Assert-UiChannels ($script:portGateNativeFactoryCalls -eq 1 -and $script:supervisor -and
+        [object]::ReferenceEquals($script:radioCatOperationPowerShell,$portGateCatWorker) -and $script:radioCatOperationPortName -ceq 'COM5') `
+        'CAT COM5 query 期间不同的 HRI COM6 没有继续启动 fake supervisor。'
+    $script:supervisor = $null
+    $script:activeHriPortName = ''
+    $script:storedProfile.devices.serial_port = 'COM5'
+
+    # The post-preparation gate must use the validated final --port, even when
+    # the saved profile was changed after preparation began.
+    $script:prepareDirectory = Join-Path $testRoot 'prepared-port-conflict'
+    [void][System.IO.Directory]::CreateDirectory($script:prepareDirectory)
+    $script:preparedRunDirectory = $script:prepareDirectory
+    $script:configDirectory = $testRoot
+    $script:nativeExecutable = 'fake-native.exe'
+    $script:releaseDirectory = $testRoot
+    [System.IO.File]::WriteAllText((Join-Path $script:prepareDirectory 'preparation.json'),'{}',[System.Text.UTF8Encoding]::new($false))
+    $script:testValidatedPreparation = [pscustomobject]@{
+        Arguments=[string[]]@('--port','COM5'); Executable='fake-native.exe'; StatusPath=(Join-Path $script:prepareDirectory 'status.jsonl')
+    }
+    function Test-UiPreparationRecord {
+        param([object]$Record,[string]$RunDirectory,[string]$RunRoot,[string]$ExpectedExecutable)
+        return $script:testValidatedPreparation
+    }
+    $script:preparePowerShell = [System.Management.Automation.PowerShell]::Create()
+    [void]$script:preparePowerShell.AddScript('$null')
+    $script:prepareAsync = $script:preparePowerShell.BeginInvoke()
+    $prepareWait = [System.Diagnostics.Stopwatch]::StartNew()
+    while (-not $script:prepareAsync.IsCompleted -and $prepareWait.ElapsedMilliseconds -lt 3000) { Start-Sleep -Milliseconds 10 }
+    Assert-UiChannels ($script:prepareAsync.IsCompleted) 'fake preparation worker did not finish before the final HRI port check.'
+    Set-Item -Path Function:\Complete-BridgePreparation -Value $script:actualCompleteBridgePreparation
+    Complete-BridgePreparation
+    Assert-UiChannels ($null -eq $script:supervisor -and -not $script:preparationStarted -and
+        [object]::ReferenceEquals($script:radioCatOperationPowerShell,$portGateCatWorker) -and $script:radioCatOperationPortName -ceq 'COM5' -and
+        ([string](Get-TestUiControl 'FooterText').Text) -match 'COM5') `
+        '设备预检最终 --port 与仍释放中的 CAT COM5 冲突时仍构造了 supervisor 或清除了 CAT worker。'
+
+    # The fake worker uses no production CAT module; end it before closing WPF.
+    if ($script:radioCatOperationPowerShell) {
+        $catStop = $script:radioCatOperationPowerShell.BeginStop($null,$null)
+        if ($catStop.AsyncWaitHandle.WaitOne(3000)) { $script:radioCatOperationPowerShell.EndStop($catStop) }
+        try { $script:radioCatOperationPowerShell.Dispose() } catch { }
+        $script:radioCatOperationPowerShell = $null
+        $script:radioCatOperationAsync = $null
+        $script:radioCatOperationKind = ''
+        $script:radioCatOperationPortName = ''
+    }
 
     $commandText = New-Object 'System.Collections.Generic.List[string]'
     foreach ($testSupervisor in $script:allTestSupervisors) {

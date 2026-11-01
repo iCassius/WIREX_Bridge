@@ -27,7 +27,7 @@ $script:releaseAssetRedirectHosts = @(
 )
 $script:assertionCount = 0
 $downloadProfiles = @{}
-foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12', 'v0.1.0-alpha.13', 'v0.1.0-alpha.14', 'v0.1.0-alpha.15')) {
+foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12', 'v0.1.0-alpha.13', 'v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16')) {
     $downloadProfiles[$tag] = [pscustomobject]@{
         Files = @(Get-ExpectedReleaseFiles -Tag $tag)
         Tests = @(Get-ExpectedReleaseTests -Tag $tag)
@@ -90,7 +90,7 @@ function New-TestManifest {
             'private/user-config/radio-control-preferences.json', 'private/user-config/bm-management-preferences.json',
             'private/user-config/bm-server-preferences.json')
     }
-    if ($Tag -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15')) {
+    if ($Tag -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16')) {
         $excludedPrivateFiles += @(
             'config.json', 'config.*.backup*', 'credentials/', 'tempSecrets/',
             'private/user-config-directory.txt', 'private/user-config/radio-identity-cache.json',
@@ -594,6 +594,32 @@ $invalidAlpha15Config.files += [pscustomobject]@{
 Assert-Throws { Test-ManifestDocument -Manifest $invalidAlpha15Config -RequestedTag 'v0.1.0-alpha.15' } `
     'alpha.15 downloader rejects a user-created package-root config file in the generic package'
 
+$alpha16Manifest = New-TestManifest -Tag 'v0.1.0-alpha.16'
+$alpha16Manifest.release_scope = 'R120 DIRECT: BrandMeister static talkgroup management inheriting alpha.15 runtime assets'
+$alpha16Validated = Test-ManifestDocument -Manifest $alpha16Manifest -RequestedTag 'v0.1.0-alpha.16'
+$alpha15ExpectedFiles = @(Get-ExpectedReleaseFiles -Tag 'v0.1.0-alpha.15')
+Assert-True ($alpha16Validated.Files.Count -eq $alpha15ExpectedFiles.Count -and
+    [string]::Join('|', @($alpha16Validated.Files | ForEach-Object { [string]$_.path })) -ceq
+        [string]::Join('|', @($alpha15ExpectedFiles | ForEach-Object { [string]$_.Path }))) `
+    'alpha.16 downloader keeps the exact alpha.15 asset inventory without adding a runtime file'
+$expectedAlpha16Tests = @(Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.15')
+Assert-True (@($alpha16Manifest.build.passed_tests).Count -eq 40 -and
+    [string]::Join('|', @($alpha16Manifest.build.passed_tests)) -ceq [string]::Join('|', $expectedAlpha16Tests)) `
+    'alpha.16 pins the inherited 40 Native tests in the alpha.15 order'
+Assert-True (Test-ReleaseTag -Tag 'v0.1.0-alpha.16') 'alpha.16 is an explicitly supported release tag'
+$missingAlpha16ConfigExclusion = New-TestManifest -Tag 'v0.1.0-alpha.16'
+$missingAlpha16ConfigExclusion.excluded_private_files = @($missingAlpha16ConfigExclusion.excluded_private_files | Where-Object {
+    [string]$_ -cne 'config.json'
+})
+Assert-Throws { Test-ManifestDocument -Manifest $missingAlpha16ConfigExclusion -RequestedTag 'v0.1.0-alpha.16' } `
+    'alpha.16 downloader rejects a manifest that omits the package-root config exclusion'
+$invalidAlpha16Config = New-TestManifest -Tag 'v0.1.0-alpha.16'
+$invalidAlpha16Config.files += [pscustomobject]@{
+    path='config.json'; asset_name='config.json'; length_bytes=1; sha256=('0' * 64); source='synthetic forbidden user config'
+}
+Assert-Throws { Test-ManifestDocument -Manifest $invalidAlpha16Config -RequestedTag 'v0.1.0-alpha.16' } `
+    'alpha.16 downloader rejects a user-created package-root config file in the generic package'
+
 $publishedAlpha11 = [pscustomobject]@{ tag_name='v0.1.0-alpha.11'; draft=$false; prerelease=$true }
 Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha11) -RequestedTag 'v0.1.0-alpha.11').tag_name -ceq 'v0.1.0-alpha.11') 'alpha.11 is selected by exact tag'
 $publishedAlpha12 = [pscustomobject]@{ tag_name='v0.1.0-alpha.12'; draft=$false; prerelease=$true }
@@ -604,6 +630,8 @@ $publishedAlpha14 = [pscustomobject]@{ tag_name='v0.1.0-alpha.14'; draft=$false;
 Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha14) -RequestedTag 'v0.1.0-alpha.14').tag_name -ceq 'v0.1.0-alpha.14') 'alpha.14 is selected by exact tag'
 $publishedAlpha15 = [pscustomobject]@{ tag_name='v0.1.0-alpha.15'; draft=$false; prerelease=$true }
 Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha15) -RequestedTag 'v0.1.0-alpha.15').tag_name -ceq 'v0.1.0-alpha.15') 'alpha.15 is selected by exact tag'
+$publishedAlpha16 = [pscustomobject]@{ tag_name='v0.1.0-alpha.16'; draft=$false; prerelease=$true }
+Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha16) -RequestedTag 'v0.1.0-alpha.16').tag_name -ceq 'v0.1.0-alpha.16') 'alpha.16 is selected by exact tag'
 
 $goodAssets = New-TestAssetList -Manifest $validManifest
 $release = [pscustomobject]@{ assets=$goodAssets; target_commitish=[string]$validManifest.source.commit }
@@ -746,7 +774,7 @@ try {
 
 . (Join-Path $PSScriptRoot 'package-release.ps1')
 . (Join-Path $PSScriptRoot 'publish-release.ps1')
-foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12', 'v0.1.0-alpha.13', 'v0.1.0-alpha.14', 'v0.1.0-alpha.15')) {
+foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12', 'v0.1.0-alpha.13', 'v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16')) {
     $packageProfile = Set-ReleaseVersion -Version $tag
     $packagePaths = @($packageProfile.PackageFiles | Where-Object { $_ -cne 'manifest.json' })
     $downloadFiles = @($downloadProfiles[$tag].Files)

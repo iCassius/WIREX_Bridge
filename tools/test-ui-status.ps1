@@ -22,6 +22,7 @@ $wantedFunctions = @('Test-UiSourceIdentityRecord', 'Get-UiSourceIdentityDisplay
     'Format-UiGainMilli', 'Update-UiPlaybackGainDisplay', 'Update-UiReceiveMetricsDisplay',
     'Format-ProfileTarget', 'Format-ProfileReceiveTarget', 'Set-MainTargetSummary', 'On-UiTimerTick',
     'Get-UiChannelKey', 'Get-UiChannelByKey', 'Get-UiChannelCurrentCall', 'Get-UiChannelCallerLabel',
+    'Get-UiChannelCallerDetails', 'New-UiDmIdLinkTextBlock',
     'New-UiChannelActionButton', 'Update-UiChannelDisplays', 'Update-CallTargetChoices', 'Set-OfflineDisplay')
 $found = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wantedFunctions -ccontains $node.Name }, $true))
 Assert-UiStatus ($found.Count -eq $wantedFunctions.Count) '没有找到状态记录验证函数。'
@@ -291,11 +292,28 @@ function New-TestChannelWindow {
 function Get-TestChannelCardTexts {
     $panel = $script:mainWindow.FindName('ChannelCardsPanel')
     $texts = New-Object 'System.Collections.Generic.List[string]'
+    function Get-TestInlineText {
+        param([object]$Inline)
+        if ($Inline -is [System.Windows.Documents.Run]) { return [string]$Inline.Text }
+        if ($Inline -is [System.Windows.Documents.LineBreak]) { return "`n" }
+        if ($Inline -is [System.Windows.Documents.Span]) {
+            $builder = New-Object System.Text.StringBuilder
+            foreach ($child in $Inline.Inlines) { [void]$builder.Append((Get-TestInlineText -Inline $child)) }
+            return $builder.ToString()
+        }
+        return ''
+    }
     function Add-TestVisualText {
         param([object]$Node,[System.Collections.Generic.List[string]]$TextValues)
         if ($null -eq $Node) { return }
         if ($Node -is [System.Windows.Controls.TextBlock]) {
-            $TextValues.Add([string]$Node.Text)
+            $text = [string]$Node.Text
+            if ($Node.Inlines.Count -gt 0) {
+                $builder = New-Object System.Text.StringBuilder
+                foreach ($inline in $Node.Inlines) { [void]$builder.Append((Get-TestInlineText -Inline $inline)) }
+                $text = $builder.ToString().Trim()
+            }
+            $TextValues.Add($text)
             return
         }
         if ($Node -is [System.Windows.Controls.Border]) {
@@ -328,6 +346,7 @@ $script:activeTargetLabel = 'TG 91 · TS2'
 $script:lastUiBmState = ''
 $script:lastUiHriState = ''
 $script:mainWindow = New-TestChannelWindow
+$script:channelPageIndex = 0
 $script:channels = @([pscustomobject][ordered]@{ id=[uint64]91; kind='group'; slot=[int]2; name='91' })
 $script:txChannelKey = 'group:91:2'
 $script:mutedChannelKeys = @{}
@@ -375,7 +394,8 @@ $active.lcd_source_identity = [pscustomobject][ordered]@{
 }
 Apply-StatusRecord -Record $active
  $cardTexts = @(Get-TestChannelCardTexts)
-Assert-UiStatus ($script:lastSequence -eq 3 -and $cardTexts -contains 'DMR ID 1234' -and $cardTexts -contains '当前来话') '活动组呼未在匹配的频道卡片显示来话 DMR ID。'
+Assert-UiStatus ($script:lastSequence -eq 3 -and $cardTexts -contains '组呼 91' -and $cardTexts -contains 'DMR ID 1234') `
+    ('活动组呼未在匹配的频道卡片显示来话 DMR ID。 cards=[' + ($cardTexts -join '|') + ']')
 Assert-UiStatus (@($cardTexts | Where-Object { $_ -match 'CC|LC|接收中|缓冲中|未知' }).Count -eq 0) '频道来话卡片应只显示频道和来话身份，不显示协议字段或推测状态。'
 Assert-UiStatus ($script:mockUiFields['HriSourceIdentityValue'] -ceq 'ID1234 · 已准备' -and
     $script:mockUiFields['RadioDisplayValue'] -ceq 'FTX-1 屏幕：未知') '活动来话没有显示已准备的 HRI 来源标签并将屏显保留为未知。'

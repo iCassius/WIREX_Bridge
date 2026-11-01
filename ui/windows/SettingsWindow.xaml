@@ -1,53 +1,18 @@
 ﻿<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="频道高级设置" Width="420" Height="230" MinWidth="390" MinHeight="210"
+        Title="频道说明" Width="420" Height="185" MinWidth="390" MinHeight="170"
         WindowStartupLocation="CenterOwner" Background="#111619" Foreground="#EDF3F4"
         FontFamily="Segoe UI, Microsoft YaHei UI">
   <Window.Resources>
     <Style TargetType="TextBlock"><Setter Property="Foreground" Value="#EDF3F4"/></Style>
-    <Style TargetType="TextBox"><Setter Property="Background" Value="#12191C"/><Setter Property="Foreground" Value="#F2F6F7"/><Setter Property="BorderBrush" Value="#64747C"/><Setter Property="Padding" Value="7,4"/><Setter Property="Margin" Value="2,1"/></Style>
-    <Style TargetType="ComboBox">
-      <Setter Property="Foreground" Value="#F2F6F7"/><Setter Property="Background" Value="#12191C"/>
-      <Setter Property="BorderBrush" Value="#64747C"/><Setter Property="BorderThickness" Value="1"/>
-      <Setter Property="Padding" Value="6,4"/><Setter Property="Margin" Value="2,1"/><Setter Property="MinHeight" Value="29"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="ComboBox">
-            <Grid SnapsToDevicePixels="True">
-              <Border x:Name="Chrome" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="2"/>
-              <ContentPresenter x:Name="PART_SelectionBoxItem" Margin="7,0,29,0" VerticalAlignment="Center" IsHitTestVisible="False" Content="{TemplateBinding SelectionBoxItem}" ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"/>
-              <ToggleButton x:Name="DropDownToggle" Width="25" HorizontalAlignment="Right" Focusable="False" ClickMode="Press" IsChecked="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}">
-                <ToggleButton.Template><ControlTemplate TargetType="ToggleButton"><Border x:Name="ArrowChrome" Background="Transparent"><TextBlock Text="▾" Foreground="#E6EEF0" FontSize="13" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ArrowChrome" Property="Background" Value="#34474F"/></Trigger><Trigger Property="IsPressed" Value="True"><Setter TargetName="ArrowChrome" Property="Background" Value="#28533B"/></Trigger></ControlTemplate.Triggers></ControlTemplate></ToggleButton.Template>
-              </ToggleButton>
-              <Popup x:Name="PART_Popup" Placement="Bottom" IsOpen="{TemplateBinding IsDropDownOpen}" AllowsTransparency="True" Focusable="False" PopupAnimation="Fade">
-                <Border Background="#182126" BorderBrush="#64747C" BorderThickness="1" MaxHeight="240" MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}">
-                  <ScrollViewer Margin="1" CanContentScroll="True" SnapsToDevicePixels="True"><ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained"/></ScrollViewer>
-                </Border>
-              </Popup>
-            </Grid>
-            <ControlTemplate.Triggers>
-              <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter TargetName="Chrome" Property="BorderBrush" Value="#9BE0AE"/></Trigger>
-              <Trigger Property="IsEnabled" Value="False"><Setter TargetName="Chrome" Property="Background" Value="#20272B"/><Setter TargetName="Chrome" Property="BorderBrush" Value="#3D484D"/><Setter Property="Foreground" Value="#8A969B"/></Trigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
-    <Style TargetType="ComboBoxItem"><Setter Property="Background" Value="#182126"/><Setter Property="Foreground" Value="#F2F6F7"/><Setter Property="Padding" Value="7,5"/><Style.Triggers><Trigger Property="IsHighlighted" Value="True"><Setter Property="Background" Value="#34474F"/></Trigger><Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="#28533B"/></Trigger></Style.Triggers></Style>
     <Style TargetType="Button"><Setter Property="Foreground" Value="#F0F4F5"/><Setter Property="Background" Value="#2B383E"/><Setter Property="BorderBrush" Value="#718189"/><Setter Property="Padding" Value="9,5"/><Setter Property="FontWeight" Value="Bold"/><Setter Property="Margin" Value="2"/></Style>
   </Window.Resources>
   <Grid Margin="12">
     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-    <TextBlock Grid.Row="0" Text="频道高级设置" FontSize="16" FontWeight="Bold" Margin="2,0,0,8"/>
-    <StackPanel Grid.Row="1">
-      <TextBlock Text="时隙" Foreground="#A8B5BB" FontSize="12"/>
-      <ComboBox x:Name="ChannelSlotBox" SelectedIndex="1"><ComboBoxItem Content="TS1" Tag="1"/><ComboBoxItem Content="TS2" Tag="2"/></ComboBox>
-      <TextBlock x:Name="ChannelAdvancedNameText" Text="" Foreground="#9BA9AE" FontSize="12" Margin="3,4,0,0"/>
-      <TextBlock x:Name="SettingsErrorText" Text="" Foreground="#EFC36F" FontSize="12" TextWrapping="Wrap" Margin="2,4" Visibility="Collapsed"/>
-    </StackPanel>
-    <Grid Grid.Row="2" Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+    <TextBlock Grid.Row="0" Text="频道说明" FontSize="16" FontWeight="Bold" Margin="2,0,0,8"/>
+    <TextBlock Grid.Row="1" Text="现有频道继续使用已保存的网络参数。新加入的频道使用默认参数。" Foreground="#A8B5BB" FontSize="13" TextWrapping="Wrap" Margin="3,4"/>
+    <Grid Grid.Row="2" Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
       <Button x:Name="CancelSettingsButton" Grid.Column="1" Content="关闭" MinWidth="78"/>
-      <Button x:Name="SaveSettingsButton" Grid.Column="2" Content="保存" MinWidth="78" Background="#28583C" BorderBrush="#64A477"/>
     </Grid>
   </Grid>
 </Window>

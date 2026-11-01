@@ -1,6 +1,16 @@
 ﻿# WIREX Bridge 交接入口
 
-## R119 / Alpha 15 当前交接（2026-11-01）
+## R120 / Alpha 16 当前交接（2026-11-01）
+
+R120 UI 与 BM 静态组更新已进入候选集成。监听区域固定为 3 列 × 2 行，超过 6 个频道通过分页完整显示；来话资料、BM 标题栏和 CAT 独立控制已按要求调整。CAT 普通 query 不阻止保存 BM 设置或启动 Wires-X；CAT 写入或排队动作期间暂时禁止新的 Wires-X 启动。BM API Key 仍按用户要求保存在个人 `config.json`；通用包 profile 不包含该文件。
+
+root 已独立复跑 111 项频道/WPF、status、identity、81 项音量、lifecycle 和 `git diff --check`，并查看 1360×850 与 1024×700 两张 RenderOnly 截图，确认卡片和标题栏没有覆盖。其它离线用例通过：RenderOnly 139 项、BM UI 66 项、BM 模块 75 项、便携配置 55 项。CAT 专项 139 项和 console 130 项真实 WPF fake worker 回归在 PowerShell 7.6.5 与 Windows PowerShell 5.1 均通过。独立 review 已关闭，没有新增 P1/P2；root 已批准 source freeze、提交、fresh Native build 与 alpha16 package。
+
+Alpha 16 的 profile、候选包 README 和版本化启动器已准备；当前进入 source commit、fresh Native build 和包级离线验证。通用包不含个人 `config.json`。本阶段不会读取、哈希、复制或覆盖 alpha15 配置；不会正常启动，也不会访问真实 BM API、COM/CAT、HRI、音频、PTT 或 RF；不会更新根启动器、改 manifest 状态、清理旧包或生成 ZIP/tag/GitHub Release。
+
+R120 详细候选范围、测试和 package staging 见 [R120 发布交接](docs/R120_发布交接.md)。UI、CAT 与 BM 源码范围分别见 [R120 UI](docs/R120_UI.md)、[R120 CAT](docs/R120_CAT.md) 和 [R120 BM 接口研究](docs/R120_BM接口研究.md)。
+
+## R119 / Alpha 15 历史交接（2026-11-01）
 
 本轮 CAT/UI 与 Native 源码已经冻结，独立 review 未发现 P1/P2。R119 为 CAT 首次全状态查询及自动周期同步、查询期间编辑器与滑块保持稳定、单 worker 写操作门控、断连撤销写授权但保留观测值，以及运行时播放/麦克风增益能力协商。UI 通过既有观测字段显示 CAT readback；实时音量仅在 Native 同一 run 的 ready/hello 均声明 `audio.gains.set` 时启用，alpha14 旧命令集仍获兼容。测试和边界见 [R119 发布交接](docs/R119_发布交接.md)、[CAT 记录](docs/R119_CAT.md)、[UI 记录](docs/R119_UI.md) 和 [实时音量记录](docs/R119_实时音量.md)。
 

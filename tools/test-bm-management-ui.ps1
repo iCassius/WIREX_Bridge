@@ -25,13 +25,11 @@ function New-BmManagementUiTestWindow {
     $window.Content = $rootPanel
 
     $controls = [ordered]@{
-        BmApiKeyPathBox = (New-Object System.Windows.Controls.TextBox)
-        BrowseBmApiKeyButton = (New-Object System.Windows.Controls.Button)
+        BmApiKeyBox = (New-Object System.Windows.Controls.PasswordBox)
         BmStaticGroupPanel = (New-Object System.Windows.Controls.Border)
         BmStaticGroupSourceValue = (New-Object System.Windows.Controls.TextBlock)
         BmStaticGroupsList = (New-Object System.Windows.Controls.ListBox)
         BmStaticGroupIdBox = (New-Object System.Windows.Controls.TextBox)
-        BmStaticGroupSlotBox = (New-Object System.Windows.Controls.ComboBox)
         AddBmStaticGroupButton = (New-Object System.Windows.Controls.Button)
         RemoveBmStaticGroupButton = (New-Object System.Windows.Controls.Button)
         RefreshBmStaticGroupsButton = (New-Object System.Windows.Controls.Button)
@@ -41,13 +39,6 @@ function New-BmManagementUiTestWindow {
         $window.RegisterName([string]$entry.Key, $entry.Value)
         [void]$rootPanel.Children.Add($entry.Value)
     }
-    $slotOne = New-Object System.Windows.Controls.ComboBoxItem
-    $slotOne.Content = 'TS1'; $slotOne.Tag = '1'
-    $slotTwo = New-Object System.Windows.Controls.ComboBoxItem
-    $slotTwo.Content = 'TS2'; $slotTwo.Tag = '2'
-    [void]$controls.BmStaticGroupSlotBox.Items.Add($slotOne)
-    [void]$controls.BmStaticGroupSlotBox.Items.Add($slotTwo)
-    $controls.BmStaticGroupSlotBox.SelectedIndex = 1
     return $window
 }
 
@@ -100,8 +91,8 @@ $script:storedProfile = [pscustomobject]@{
 $script:activeProfile = $null
 $script:bmManagementModulePath = $modulePath
 $script:bmManagementModuleAvailable = $true
-$script:bmManagementPreferences = [pscustomobject][ordered]@{ schema_version = 1; api_key_file_path = '' }
-$script:bmManagementPreferencesPath = Join-Path ([System.IO.Path]::GetTempPath()) 'bm-management-ui-test-prefs.json'
+$script:portableConfig = [pscustomobject][ordered]@{ connection = [pscustomobject][ordered]@{ api_key = '' } }
+$script:portableConfigPath = Join-Path ([System.IO.Path]::GetTempPath()) 'bm-management-ui-test-config.json'
 $script:bmManagementUiTransportRequired = $true
 
 $state = [pscustomobject]@{
@@ -129,18 +120,15 @@ $script:bmManagementUiTransportOverride = {
     return $response
 }.GetNewClosure()
 
-function Save-BmManagementPreferences {
-    param([string]$Path, [string]$ApiKeyFilePath)
-    $script:bmManagementPreferences.api_key_file_path = [string]$ApiKeyFilePath
+function Save-WirexPortableConfig {
+    param([string]$Path, [object]$Config)
+    return $Config
 }
 
 $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
 $tempDirectory = Join-Path $tempRoot ('bm-management-ui-' + [guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $tempDirectory
-$keyPath = Join-Path $tempDirectory 'synthetic-api-key.txt'
 $fakeToken = ('a' * 100) + '.' + ('b' * 100) + '.' + ('c' * 100)
-$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-[System.IO.File]::WriteAllText($keyPath, $fakeToken, $utf8NoBom)
 
 try {
     . $adapterPath
@@ -150,47 +138,89 @@ try {
     Assert-BmManagementUi ($window.FindName('AddBmStaticGroupButton').Visibility -eq [System.Windows.Visibility]::Collapsed) 'no-key initialization must hide write controls'
     Assert-BmManagementUi ($state.requests.Count -eq 0) 'no-key initialization must make no API request'
 
-    $window.FindName('BmApiKeyPathBox').Text = $keyPath
-    [void](Save-BmManagementUiPathPreference -Path $keyPath)
-    Set-BmFakeResponses @([pscustomobject]@{ status_code = 200; body = '{"staticSubscriptions":[]}' })
+    $window.FindName('BmApiKeyBox').Password = $fakeToken
+    Set-BmFakeResponses @(
+        [pscustomobject]@{ status_code = 200; body = '[]' },
+        [pscustomobject]@{ status_code = 200; body = '{"id":461135501,"status":4}' }
+    )
     Assert-BmManagementUi (Request-BmManagementUiRefresh) 'configured API path should start a GET'
     Wait-BmManagementUiIdle
-    Assert-BmManagementUi ($state.requests.Count -eq 1 -and $state.requests[0].method -ceq 'GET') 'configured path should issue exactly one GET'
-    Assert-BmManagementUi ($state.requests[0].uri -ceq 'https://api.brandmeister.network/v2/device/461135501/profile') 'UI GET should use the frozen profile gateway ID'
+    Assert-BmManagementUi ($state.requests.Count -eq 2 -and $state.requests[0].method -ceq 'GET' -and $state.requests[1].method -ceq 'GET') 'refresh should read the static list and device metadata once each'
+    Assert-BmManagementUi ($state.requests[0].uri -ceq 'https://api.brandmeister.network/v2/device/461135501/talkgroup') 'UI static list GET should use the dedicated talkgroup endpoint'
+    Assert-BmManagementUi ($state.requests[1].uri -ceq 'https://api.brandmeister.network/v2/device/461135501') 'UI metadata GET should use the device endpoint'
     $authObserved = [string]$state.seen_auths[0]
     Assert-BmManagementUi ($authObserved -ceq ('Bearer ' + $fakeToken)) ("fake auth header should be exact (length={0}, bearer={1}, exact={2})" -f $authObserved.Length, $authObserved.StartsWith('Bearer '), ($authObserved -ceq ('Bearer ' + $fakeToken)))
     Assert-BmManagementUi ($window.FindName('BmStaticGroupPanel').Visibility -eq [System.Windows.Visibility]::Visible) 'a successful GET should expose the BM static panel'
     Assert-BmManagementUi ($window.FindName('BmStaticGroupsList').Visibility -eq [System.Windows.Visibility]::Visible) 'an empty successful GET should show an empty list'
     Assert-BmManagementUi ($window.FindName('BmStaticGroupsList').Items.Count -eq 0) 'an empty GET should remain a real empty list'
-    Assert-BmManagementUi ($window.FindName('AddBmStaticGroupButton').Visibility -eq [System.Windows.Visibility]::Visible) 'a successful GET should expose Add'
-    Assert-BmManagementUi ($script:bmManagementStatus -ceq 'loaded' -and $script:bmManagementGroups.Count -eq 0) 'empty server list should be represented as loaded and empty'
-    $preferenceJson = ConvertTo-Json -InputObject $script:bmManagementPreferences -Compress
-    Assert-BmManagementUi (-not $preferenceJson.Contains($fakeToken) -and -not $window.FindName('BmStaticGroupStatus').Text.Contains($fakeToken)) 'the synthetic token must not enter preferences or UI status'
+    Assert-BmManagementUi ($window.FindName('AddBmStaticGroupButton').Visibility -eq [System.Windows.Visibility]::Visible -and $window.FindName('AddBmStaticGroupButton').IsEnabled) 'a valid simplex status should enable Add'
+    Assert-BmManagementUi ($script:bmManagementStatus -ceq 'loaded' -and $script:bmManagementGroups.Count -eq 0 -and $script:bmManagementAddContext.add_slot -eq 0) 'empty list and status 4 should load with API slot 0'
+    $configJson = ConvertTo-Json -InputObject $script:portableConfig -Compress
+    Assert-BmManagementUi (-not $configJson.Contains($fakeToken) -and -not $window.FindName('BmStaticGroupStatus').Text.Contains($fakeToken)) 'the synthetic token must not enter saved config or UI status'
 
     $window.FindName('BmStaticGroupIdBox').Text = '12345'
-    $window.FindName('BmStaticGroupSlotBox').SelectedIndex = 0
     Set-BmFakeResponses @(
         [pscustomobject]@{ status_code = 201; body = '' },
-        [pscustomobject]@{ status_code = 200; body = '{"staticSubscriptions":[{"talkgroup":12345,"slot":1}]}' }
+        [pscustomobject]@{ status_code = 200; body = '[{"talkgroup":12345,"slot":0}]' }
     )
-    Assert-BmManagementUi (Start-BmManagementUiRequest -Operation Add) 'Add should start only after a successful current-device GET'
+    Assert-BmManagementUi (Start-BmManagementUiRequest -Operation Add) 'Add should start only after list and device status have loaded'
     Wait-BmManagementUiIdle
-    Assert-BmManagementUi ($state.requests.Count -eq 2 -and $state.requests[0].method -ceq 'POST' -and $state.requests[1].method -ceq 'GET') 'Add should issue one POST followed by one readback GET'
+    Assert-BmManagementUi ($state.requests.Count -eq 2 -and $state.requests[0].method -ceq 'POST' -and $state.requests[1].method -ceq 'GET') 'Add should issue one POST followed by one talkgroup readback, without another device GET'
     $addBody = ConvertFrom-Json -InputObject $state.requests[0].body
-    Assert-BmManagementUi ([uint64]$addBody.group -eq 12345 -and [int]$addBody.slot -eq 1) 'Add should send only the selected TG and timeslot'
+    Assert-BmManagementUi ([uint64]$addBody.group -eq 12345 -and [int]$addBody.slot -eq 0) 'status 4 should drive Add to API slot 0'
     Assert-BmManagementUi ($script:bmManagementLastWriteAccepted -and $script:bmManagementLastReadbackStatus -ceq 'confirmed') 'Add should record confirmed write and readback'
-    Assert-BmManagementUi ($window.FindName('BmStaticGroupsList').Items.Count -eq 1 -and $window.FindName('BmStaticGroupsList').Items[0].text -ceq 'TG 12345 · TS1') 'Add should display only the group returned by BM'
+    Assert-BmManagementUi ($window.FindName('BmStaticGroupsList').Items.Count -eq 1 -and $window.FindName('BmStaticGroupsList').Items[0].text -ceq 'TG 12345' -and [int]$window.FindName('BmStaticGroupsList').Items[0].slot -eq 0) 'Add should display TG only while retaining the original row slot'
 
     $window.FindName('BmStaticGroupsList').SelectedIndex = 0
     Set-BmFakeResponses @(
         [pscustomobject]@{ status_code = 204; body = '' },
-        [pscustomobject]@{ status_code = 200; body = '{"staticSubscriptions":[]}' }
+        [pscustomobject]@{ status_code = 200; body = '[]' }
     )
     Assert-BmManagementUi (Start-BmManagementUiRequest -Operation Remove) 'Remove should start for a selected current-device static group'
     Wait-BmManagementUiIdle
     Assert-BmManagementUi ($state.requests.Count -eq 2 -and $state.requests[0].method -ceq 'DELETE' -and $state.requests[1].method -ceq 'GET') 'Remove should issue one DELETE followed by one readback GET'
-    Assert-BmManagementUi ($state.requests[0].uri -ceq 'https://api.brandmeister.network/v2/device/461135501/talkgroup/1/12345') 'Remove should target the selected TS and TG'
+    Assert-BmManagementUi ($state.requests[0].uri -ceq 'https://api.brandmeister.network/v2/device/461135501/talkgroup/0/12345') 'Remove should use the selected row original slot and TG'
     Assert-BmManagementUi ($window.FindName('BmStaticGroupsList').Items.Count -eq 0 -and $script:bmManagementLastReadbackStatus -ceq 'confirmed') 'confirmed Remove should display the empty BM list'
+
+    foreach ($invalidStatusBody in @(
+        '{"id":461135501,"status":null}',
+        '{"id":461135501,"status":5}',
+        '{"id":461135502,"status":4}',
+        '{"id":461135501}'
+    )) {
+        Set-BmFakeResponses @(
+            [pscustomobject]@{ status_code = 200; body = '[]' },
+            [pscustomobject]@{ status_code = 200; body = $invalidStatusBody }
+        )
+        Assert-BmManagementUi (Request-BmManagementUiRefresh) 'refresh should keep reading the list when device status is incomplete'
+        Wait-BmManagementUiIdle
+        Assert-BmManagementUi ($script:bmManagementStatus -ceq 'loaded' -and $window.FindName('BmStaticGroupsList').Visibility -eq [System.Windows.Visibility]::Visible) 'device status errors should leave the static list readable'
+        Assert-BmManagementUi (-not $window.FindName('AddBmStaticGroupButton').IsEnabled -and $null -eq $script:bmManagementAddContext) 'missing, invalid, or mismatched device status must disable Add'
+        if ($invalidStatusBody -ceq '{"id":461135501,"status":5}') {
+            Assert-BmManagementUi ($window.FindName('BmStaticGroupStatus').Text.Contains('5')) 'a numeric unknown status should be shown as a short current value'
+        }
+        $requestCount = $state.requests.Count
+        Assert-BmManagementUi (-not (Start-BmManagementUiRequest -Operation Add)) 'Add should reject unknown device context before creating a worker'
+        Assert-BmManagementUi ($state.requests.Count -eq $requestCount) 'disabled Add must make no API call'
+    }
+
+    Set-BmFakeResponses @(
+        [pscustomobject]@{ status_code = 200; body = '[]' },
+        [pscustomobject]@{ status_code = 200; body = '{"id":461135501,"status":0}' }
+    )
+    Assert-BmManagementUi (Request-BmManagementUiRefresh) 'valid network-linked status should restore Add'
+    Wait-BmManagementUiIdle
+    Assert-BmManagementUi ($window.FindName('AddBmStaticGroupButton').IsEnabled -and $script:bmManagementAddContext.add_slot -eq 2) 'valid loaded status 0 should use API slot 2'
+    $window.FindName('BmStaticGroupIdBox').Text = '23455'
+    Set-BmFakeResponses @(
+        [pscustomobject]@{ status_code = 201; body = '' },
+        [pscustomobject]@{ status_code = 200; body = '[{"talkgroup":23455,"slot":2}]' }
+    )
+    Assert-BmManagementUi (Start-BmManagementUiRequest -Operation Add) 'Add should accept the loaded network slot context'
+    Wait-BmManagementUiIdle
+    $networkAddBody = ConvertFrom-Json -InputObject $state.requests[0].body
+    Assert-BmManagementUi ([int]$networkAddBody.slot -eq 2 -and $state.requests.Count -eq 2) 'network status Add should use slot 2 and only a dedicated GET readback'
+    Assert-BmManagementUi ($window.FindName('BmStaticGroupsList').Items[0].text -ceq 'TG 23455') 'network Add should retain the TG-only display'
 
     $window.FindName('BmStaticGroupIdBox').Text = '23456'
     Set-BmFakeResponses @(
@@ -202,6 +232,27 @@ try {
     Assert-BmManagementUi ($state.requests.Count -eq 2 -and $state.requests[0].method -ceq 'POST') 'an unconfirmed Add must not retry its POST'
     Assert-BmManagementUi ($script:bmManagementLastWriteAccepted -and $script:bmManagementLastReadbackStatus -ceq 'unavailable') 'accepted but unreadable Add must retain the unconfirmed state'
     Assert-BmManagementUi ($script:bmManagementGroups.Count -eq 0 -and $window.FindName('BmStaticGroupsList').Visibility -eq [System.Windows.Visibility]::Collapsed) 'unconfirmed readback must not create a fictional list row'
+
+    $newFakeToken = ('d' * 100) + '.' + ('e' * 100) + '.' + ('f' * 100)
+    $window.FindName('BmApiKeyBox').Password = $newFakeToken
+    Set-BmFakeResponses @(
+        [pscustomobject]@{ status_code = 200; body = '[]' },
+        [pscustomobject]@{ status_code = 200; body = '{"id":461135501,"status":2}' }
+    )
+    [void](Poll-BmManagementUi)
+    Wait-BmManagementUiIdle
+    Assert-BmManagementUi ($state.requests.Count -eq 2 -and $state.seen_auths[0] -ceq ('Bearer ' + $newFakeToken)) 'API key change should trigger a fresh list and device-context read'
+    Assert-BmManagementUi ($script:bmManagementAddContext.add_slot -eq 2 -and $script:bmManagementObservedApiKey -ceq $newFakeToken) 'new API key context should be cached for the current device'
+
+    $script:storedProfile.connection.gateway_id = [uint64]461135502
+    Set-BmFakeResponses @(
+        [pscustomobject]@{ status_code = 200; body = '[]' },
+        [pscustomobject]@{ status_code = 200; body = '{"id":461135502,"status":4}' }
+    )
+    [void](Poll-BmManagementUi)
+    Wait-BmManagementUiIdle
+    Assert-BmManagementUi ($state.requests.Count -eq 2 -and $state.requests[0].uri -ceq 'https://api.brandmeister.network/v2/device/461135502/talkgroup' -and $state.requests[1].uri -ceq 'https://api.brandmeister.network/v2/device/461135502') 'device ID change should refresh list and metadata once for the new device'
+    Assert-BmManagementUi ($script:bmManagementAddContext.add_slot -eq 0 -and $script:bmManagementObservedDeviceId -ceq '461135502') 'new device status should replace the prior Add context'
 
     $state.block_next = $true
     Assert-BmManagementUi (Request-BmManagementUiRefresh) 'refresh should start before disposal test'

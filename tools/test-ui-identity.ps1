@@ -41,7 +41,8 @@ $functionNames = @(
     'Complete-UiIdentityQueryResources','Stop-UiIdentityQuery','Complete-UiIdentityQuery',
     'Get-UiCallHistoryKey','Add-UiCallHistoryRecord','Request-StopAndExit','On-UiTimerTick',
     'Get-UiChannelKey','Get-UiChannelTarget','Get-UiChannelByKey','Get-UiChannelCurrentCall',
-    'Get-UiChannelCallerLabel','New-UiChannelActionButton','Update-UiChannelDisplays'
+    'Get-UiChannelCallerLabel','Get-UiChannelCallerDetails','New-UiDmIdLinkTextBlock',
+    'New-UiChannelActionButton','Update-UiChannelDisplays'
 )
 foreach ($name in $functionNames) {
     $functionAst = $uiAst.Find({ param($node)
@@ -119,11 +120,28 @@ function New-TestWindow {
 function Get-TestChannelCardTexts {
     $panel = $script:mainWindow.FindName('ChannelCardsPanel')
     $texts = New-Object 'System.Collections.Generic.List[string]'
+    function Get-TestInlineText {
+        param([object]$Inline)
+        if ($Inline -is [System.Windows.Documents.Run]) { return [string]$Inline.Text }
+        if ($Inline -is [System.Windows.Documents.LineBreak]) { return "`n" }
+        if ($Inline -is [System.Windows.Documents.Span]) {
+            $builder = New-Object System.Text.StringBuilder
+            foreach ($child in $Inline.Inlines) { [void]$builder.Append((Get-TestInlineText -Inline $child)) }
+            return $builder.ToString()
+        }
+        return ''
+    }
     function Add-TestVisualText {
         param([object]$Node,[System.Collections.Generic.List[string]]$TextValues)
         if ($null -eq $Node) { return }
         if ($Node -is [System.Windows.Controls.TextBlock]) {
-            $TextValues.Add([string]$Node.Text)
+            $text = [string]$Node.Text
+            if ($Node.Inlines.Count -gt 0) {
+                $builder = New-Object System.Text.StringBuilder
+                foreach ($inline in $Node.Inlines) { [void]$builder.Append((Get-TestInlineText -Inline $inline)) }
+                $text = $builder.ToString().Trim()
+            }
+            $TextValues.Add($text)
             return
         }
         if ($Node -is [System.Windows.Controls.Border]) {
@@ -143,6 +161,7 @@ function Get-TestChannelCardTexts {
 function Initialize-TestState {
     param([Parameter(Mandatory=$true)][string]$TestDirectory,[Parameter(Mandatory=$true)][string]$ApiBaseUri)
     $script:mainWindow = New-TestWindow
+    $script:channelPageIndex = 0
     $script:channels = @([pscustomobject][ordered]@{ id=[uint64]91; kind='group'; slot=[int]2; name='91' })
     $script:txChannelKey = 'group:91:2'
     $script:mutedChannelKeys = @{}
@@ -395,7 +414,7 @@ try {
         '成功结果必须先关闭并释放本查询独占的 runspace。'
     $currentLabel = [string](@(Get-TestChannelCardTexts | Where-Object { $_ -match 'N0TEST|DMR ID 7654321' } | Select-Object -First 1))
     $historyLabel = [string](Get-UiControl 'CallHistoryList').Items[0].source_label
-    Assert-UiIdentity ($currentLabel -ceq 'N0TEST · DMR ID 7654321' -and $historyLabel -match 'N0TEST') `
+    Assert-UiIdentity ($currentLabel -ceq 'N0TEST' -and @((Get-TestChannelCardTexts) | Where-Object { $_ -ceq 'DMR ID 7654321' }).Count -eq 1 -and $historyLabel -match 'N0TEST') `
         ("成功查询应更新匹配频道卡片和历史呼号。 card=[$currentLabel], history=[$historyLabel], identity_status=[$($queryOwned.identity_result.status)], error=[$($queryOwned.error_code)], sent=[$($script:identityNativeSent.Count)], diagnostic=[$(if ([IO.File]::Exists($script:identityDiagnosticPath)) { [IO.File]::ReadAllText($script:identityDiagnosticPath,[Text.Encoding]::UTF8) })]")
     $script:callIdentityCache['7654321'] = [pscustomobject][ordered]@{
         source_id=[uint64]7654321; callsign='N0TEST'; name='Test Operator'; display_name='N0TEST'; status='found'
