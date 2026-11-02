@@ -5076,15 +5076,32 @@ function Start-UiRoutingDiagnosticAutoTest {
         $kindBox=Get-UiControl 'ChannelKindBox'
         $kindBox.SelectedItem=@($kindBox.Items|Where-Object {[string]$_.Tag -ceq 'group'})[0]
         $script:routingDiagnosticOriginalTxKey=[string]$script:txChannelKey
+        if(-not $script:routingDiagnosticOriginalTxKey -and $script:storedProfile -and $script:storedProfile.PSObject.Properties['tx_channel_id']){
+            $script:routingDiagnosticOriginalTxKey=[string]$script:storedProfile.tx_channel_id
+        }
+        if([string]::IsNullOrWhiteSpace($script:routingDiagnosticOriginalTxKey) -or
+            -not (Get-UiChannelByKey -Key $script:routingDiagnosticOriginalTxKey)) { throw 'original-tx' }
         $button=Get-UiControl 'AddChannelButton'
         $eventArgs=[System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)
         $button.RaiseEvent($eventArgs)
-        if(-not $script:pendingChannelMutation -or [string]$script:pendingChannelMutation.stage -cne 'rx' -or
-            -not $script:pendingRoutingMutation -or [string]$script:pendingRoutingMutation.command -cne 'rx_policy.replace' -or
+        $pendingStage=if($script:pendingChannelMutation){[string]$script:pendingChannelMutation.stage}else{''}
+        $pendingCommand=if($script:pendingRoutingMutation){[string]$script:pendingRoutingMutation.command}else{''}
+        $pendingTxTargetKey=''
+        if($script:pendingRoutingMutation -and $script:pendingRoutingMutation.target){
+            $target=$script:pendingRoutingMutation.target
+            $pendingTxTargetKey=Get-UiChannelKey -Channel ([pscustomobject]@{
+                id=[uint64]$target.destination_id;kind=[string]$target.kind;slot=[int]$target.slot
+            })
+        }
+        $validRxStart=($pendingStage -ceq 'rx' -and $pendingCommand -ceq 'rx_policy.replace')
+        $validTxStart=($pendingStage -ceq 'tx' -and $pendingCommand -ceq 'tx_policy.replace' -and
+            $pendingTxTargetKey -ceq $script:routingDiagnosticOriginalTxKey)
+        if(-not $script:pendingChannelMutation -or -not $script:pendingRoutingMutation -or
+            (-not $validRxStart -and -not $validTxStart) -or
             [string]$script:pendingChannelMutation.tx_key -cne $script:routingDiagnosticOriginalTxKey){
             throw 'add-channel'
         }
-        Write-UiRoutingDiagnosticProgress -Message 'channel-add-clicked-listen-update-sent'
+        Write-UiRoutingDiagnosticProgress -Message $(if($validTxStart){'channel-add-clicked-tx-sync-sent'}else{'channel-add-clicked-listen-update-sent'})
     }catch{
         Write-UiRoutingDiagnosticProgress -Message 'channel-add-initialization-failed'
         Fail-UiRoutingDiagnosticAutoTest -Message '隔离频道诊断无法通过主窗口频道添加流程启动。'
@@ -5094,17 +5111,36 @@ function Start-UiRoutingDiagnosticAutoTest {
 function Complete-UiRoutingDiagnosticAutoTest {
     param([AllowNull()][object]$Mutation,[Parameter(Mandatory=$true)][object]$Routing)
     try{
-        if($script:routingDiagnosticAutoTestPhase -eq 1){
-            $actualTxKey = if ($Routing.tx_target) { Get-UiChannelKey -Channel ([pscustomobject]@{
+        $actualTxKey=''
+        if ($Routing.tx_target) { $actualTxKey = Get-UiChannelKey -Channel ([pscustomobject]@{
                 id=[uint64]$Routing.tx_target.destination_id; kind=[string]$Routing.tx_target.kind; slot=[int]$Routing.tx_target.slot
-            }) } else { '' }
+            }) }
+        if($script:routingDiagnosticAutoTestPhase -eq 1 -and $Mutation -and
+            [string]$Mutation.command -ceq 'tx_policy.replace'){
+            $mutationTxKey=''
+            if($Mutation.target){$mutationTxKey=Get-UiChannelKey -Channel ([pscustomobject]@{
+                id=[uint64]$Mutation.target.destination_id;kind=[string]$Mutation.target.kind;slot=[int]$Mutation.target.slot
+            })}
+            if($mutationTxKey -cne $script:routingDiagnosticOriginalTxKey -or
+                $actualTxKey -cne $script:routingDiagnosticOriginalTxKey -or
+                -not $script:pendingChannelMutation -or [string]$script:pendingChannelMutation.stage -cne 'rx' -or
+                -not [bool]$script:pendingChannelMutation.tx_applied -or
+                -not $script:pendingRoutingMutation -or [string]$script:pendingRoutingMutation.command -cne 'rx_policy.replace'){
+                throw 'tx-ack'
+            }
+            $script:routingDiagnosticChannelFlowTest.tx_command='tx_policy.replace'
+            $script:routingDiagnosticAutoTestPhase=2
+            Write-UiRoutingDiagnosticProgress -Message 'original-tx-target-confirmed-listen-update-sent'
+            return
+        }
+        if($script:routingDiagnosticAutoTestPhase -in @(1,2)){
             $expectedGroup=@($Routing.rx_policy.allow_groups|Where-Object {[uint64]$_.destination_id -eq 12345 -and [uint64]$_.slot -eq 1}).Count -eq 1
             if(-not $Mutation -or [string]$Mutation.command -cne 'rx_policy.replace' -or -not $expectedGroup -or
-                $actualTxKey -cne $script:routingDiagnosticOriginalTxKey -or -not [bool]$Routing.transmit_enabled){throw 'rx-ack'}
+                $actualTxKey -cne $script:routingDiagnosticOriginalTxKey){throw 'rx-ack'}
             $saved=Get-WirexPortableConfig -Path $script:portableConfigPath
             if([string]$saved.tx_channel_id -cne $script:routingDiagnosticOriginalTxKey -or
                 @($saved.channels|Where-Object {[string]$_.kind -ceq 'group' -and [uint64]$_.id -eq 12345 -and [uint64]$_.slot -eq 1}).Count -ne 1){throw 'root-config'}
-            $script:routingDiagnosticChannelFlowTest.tx_command='unchanged'
+            if($script:routingDiagnosticAutoTestPhase -eq 1){$script:routingDiagnosticChannelFlowTest.tx_command='unchanged'}
             $script:routingDiagnosticChannelFlowTest.rx_command=[string]$Mutation.command
             $script:routingDiagnosticChannelFlowTest.ptt_unchanged_after_add=$true
             $script:routingDiagnosticChannelFlowTest.root_config_saved=$true
@@ -5139,7 +5175,7 @@ function Complete-UiRoutingDiagnosticAutoTest {
             $script:routingDiagnosticChannelFlowTest.routing_unchanged_after_activation=$true
             $script:routingDiagnosticChannelFlowTest.normal_shutdown_requested=$true
             Write-UiRoutingDiagnosticProgress -Message 'channel-flow-test-passed'
-            Write-UiRoutingDiagnosticResult -Passed $true -Message '本地Native IPC确认加入频道只更新RX、保留原PTT目标，并验证组呼激活仅通过内存接收器。' -Routing $Routing
+            Write-UiRoutingDiagnosticResult -Passed $true -Message '本地Native IPC确认添加监听频道后原PTT目标保持不变，并验证组呼激活仅通过内存接收器。' -Routing $Routing
             Request-StopAndExit
             return
         }

@@ -721,27 +721,58 @@ try {
     $resultPath = Join-Path $isolatedConfig 'routing-diagnostic-result.json'
     if (-not [System.IO.File]::Exists($resultPath)) { throw '隔离路由诊断没有生成结果文件。' }
     $result = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($resultPath, [System.Text.Encoding]::UTF8)) -ErrorAction Stop
+    $diagnosticTxCommand = ''
     if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17', 'v0.1.0-alpha.18')) {
         $channelFlowTest = $result.channel_flow_test
-        if ([int]$result.schema_version -ne 2 -or -not [bool]$result.passed -or
-            -not [bool]$channelFlowTest.passed -or [string]$channelFlowTest.channel_key -cne 'group:12345:1' -or
-            [string]$channelFlowTest.tx_command -cne 'unchanged' -or
-            [string]$channelFlowTest.rx_command -cne 'rx_policy.replace' -or
-            -not [bool]$channelFlowTest.ptt_unchanged_after_add -or
-            -not [bool]$channelFlowTest.root_config_saved -or
-            [string]$channelFlowTest.quick_call_command -cne 'network_subscription.quick_call_join' -or
-            [uint64]$channelFlowTest.frames_sent -ne 2 -or [bool]$channelFlowTest.bm_connected -or
-            -not [bool]$channelFlowTest.used_memory_sink -or
-            -not [bool]$channelFlowTest.routing_unchanged_after_activation -or
-            -not [bool]$channelFlowTest.normal_shutdown_requested) {
-            throw ('{0} 隔离频道诊断 schema 2 结果不符合双 ACK、组呼和退出检查：{1}' -f $packageLabel, $result.message)
-        }
+        $diagnosticTxCommand = [string]$channelFlowTest.tx_command
         $savedDiagnosticConfig = Get-WirexPortableConfig -Path (Join-Path $isolatedConfig 'config.json')
-        if ([string]$savedDiagnosticConfig.tx_channel_id -cne [string]$diagnosticConfig.tx_channel_id -or
-            @($savedDiagnosticConfig.channels | Where-Object {
+        if ($packageVersion -ceq 'v0.1.0-alpha.18') {
+            $diagnosticTxTargetKey = ''
+            if ($result.tx_target) {
+                $diagnosticTxTargetKey = '{0}:{1}:{2}' -f [string]$result.tx_target.kind,[uint64]$result.tx_target.destination_id,[uint64]$result.tx_target.slot
+            }
+            if ([int]$result.schema_version -ne 2 -or -not [bool]$result.passed -or
+                -not [bool]$channelFlowTest.passed -or [string]$channelFlowTest.channel_key -cne 'group:12345:1' -or
+                [string]$channelFlowTest.tx_command -cnotin @('unchanged','tx_policy.replace') -or
+                [string]$channelFlowTest.rx_command -cne 'rx_policy.replace' -or
+                -not [bool]$channelFlowTest.ptt_unchanged_after_add -or
+                [string]$diagnosticTxTargetKey -cne [string]$diagnosticConfig.tx_channel_id -or
+                -not [bool]$channelFlowTest.root_config_saved -or
+                [string]$channelFlowTest.quick_call_command -cne 'network_subscription.quick_call_join' -or
+                [uint64]$channelFlowTest.frames_sent -ne 2 -or [bool]$channelFlowTest.bm_connected -or
+                -not [bool]$channelFlowTest.used_memory_sink -or
+                -not [bool]$channelFlowTest.routing_unchanged_after_activation -or
+                -not [bool]$channelFlowTest.normal_shutdown_requested) {
+                throw ('{0} 隔离频道诊断 schema 2 结果不符合保留原PTT目标、监听更新 ACK、组呼和退出检查：{1}' -f $packageLabel, $result.message)
+            }
+            if ([string]$savedDiagnosticConfig.tx_channel_id -cne [string]$diagnosticConfig.tx_channel_id -or
+                @($savedDiagnosticConfig.channels | Where-Object {
+                    [string]$_.kind -ceq 'group' -and [uint64]$_.id -eq 12345 -and [uint64]$_.slot -eq 1
+                }).Count -ne 1) {
+                throw ($packageLabel + ' 诊断没有把新监听频道保存到隔离配置，或添加频道时更改了现有 PTT 目标。')
+            }
+        } else {
+            if ([int]$result.schema_version -ne 2 -or -not [bool]$result.passed -or
+                -not [bool]$channelFlowTest.passed -or [string]$channelFlowTest.channel_key -cne 'group:12345:1' -or
+                [string]$channelFlowTest.tx_command -cne 'tx_policy.replace' -or
+                [string]$channelFlowTest.rx_command -cne 'rx_policy.replace' -or
+                -not [bool]$channelFlowTest.root_config_saved -or
+                [string]$channelFlowTest.quick_call_command -cne 'network_subscription.quick_call_join' -or
+                [uint64]$channelFlowTest.frames_sent -ne 2 -or [bool]$channelFlowTest.bm_connected -or
+                -not [bool]$channelFlowTest.used_memory_sink -or
+                -not [bool]$channelFlowTest.routing_unchanged_after_activation -or
+                -not [bool]$channelFlowTest.normal_shutdown_requested -or
+                -not $result.tx_target -or [uint64]$result.tx_target.destination_id -ne 12345 -or
+                [string]$result.tx_target.kind -cne 'group' -or [uint64]$result.tx_target.slot -ne 1 -or
+                -not [bool]$result.transmit_enabled -or
+                [string]$savedDiagnosticConfig.tx_channel_id -cne 'group:12345:1') {
+                throw ('{0} 隔离频道诊断 schema 2 结果不符合旧版切换PTT目标、RX更新、组呼和退出检查：{1}' -f $packageLabel, $result.message)
+            }
+            if (@($savedDiagnosticConfig.channels | Where-Object {
                 [string]$_.kind -ceq 'group' -and [uint64]$_.id -eq 12345 -and [uint64]$_.slot -eq 1
             }).Count -ne 1) {
-            throw ($packageLabel + ' 诊断没有把新监听频道保存到隔离配置，或添加频道时更改了现有 PTT 目标。')
+                throw ($packageLabel + ' 旧版隔离诊断没有把测试频道保存为PTT目标。')
+            }
         }
     } else {
         $dynamicGroupTest = $result.dynamic_group_action_test
@@ -766,7 +797,7 @@ try {
         throw '隔离路由诊断触碰了密码指针或常规运行目录。'
     }
 
-    Write-Output ('{0} 包级检查通过：{1} 个 PowerShell 文件均由 Windows PowerShell 5.1 解析；唯一 ASCII CMD 经包含空格和中文的包路径进入 PrepareOnly 与隔离 RoutingDiagnosticAutoTest。' -f $packageLabel, $scriptFiles.Count)
+    Write-Output ('{0} 包级检查通过：{1} 个 PowerShell 文件均由 Windows PowerShell 5.1 解析；唯一 ASCII CMD 经包含空格和中文的包路径进入 PrepareOnly 与隔离 RoutingDiagnosticAutoTest；channel_flow_test.tx_command={2}。' -f $packageLabel, $scriptFiles.Count,$diagnosticTxCommand)
 } finally {
     if ([System.IO.Directory]::Exists($testRoot)) {
         $resolvedTestRoot = [System.IO.Path]::GetFullPath($testRoot)

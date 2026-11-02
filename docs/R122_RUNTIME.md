@@ -12,7 +12,7 @@
 
 “同时设为 PTT 目标”复选框和重复的切换说明已移除。添加频道只写入监听列表；如果配置尚无任何 TX 目标，首个频道按既有默认规则初始化为目标。配置已有 TX 目标时，添加频道保留原目标。后续目标变更只能由频道卡片上的“设为呼叫”操作发起。
 
-诊断的添加频道步骤同样验证监听列表更新及已有 TX 目标保持不变，诊断结果把 TX 标记为 `unchanged`，把 RX 更新记为 `rx_policy.replace`。
+诊断的添加频道步骤验证监听列表更新及既有 TX 目标值保持不变。若 Native 已报告可用的 TX 目标，结果把 TX 记为 `unchanged`；若 Native 暂未启用该目标、主窗口需先用 `tx_policy.replace` 同步同一个原目标，诊断先核对该 TX ACK，再核对 `rx_policy.replace` ACK。结果的 `tx_command` 记录实际路径，`ptt_unchanged_after_add` 只在目标 key 和已保存配置仍是原值时置为 true。
 
 ## RenderOnly 布局诊断
 
@@ -49,5 +49,6 @@ WinPS 5.1 STA 的隔离 WPF/fake 回归用于验证配置转换、界面事件�
 - 源码阶段的 WPF、频道和 DMR ID 回归已按上方清单通过。主窗口布局另通过 2128 项 RenderOnly 断言，并检查主窗口与设置窗口截图。
 - `tools/test-package-release.ps1` 通过 656 项断言；alpha18 profile 保留 41 项映射资产、37 个源码映射、9 个目录和原顺序的 40 项 Native 测试名。
 - `tools/test-publish-release.ps1` 通过 136 项离线断言，`tools/test-download-release.ps1` 通过 2817 项离线断言。两个方向均校验 alpha18 沿用 alpha17 的资产/测试清单，并拒绝缺少 `config.json` 排除规则或将用户配置放进通用包的 manifest。
-- 这些发布与下载检查使用合成 manifest 和文件，不发网络请求，也不下载、安装或启动 Release。当前没有生成 alpha18 候选包，因此 `tools/test-package-startup.ps1` 尚未针对真实候选包运行；该项留给源码冻结后的实际打包阶段。
+- 这些发布与下载检查使用合成 manifest 和文件，不发网络请求，也不下载或安装 Release。为定位原 alpha18 真实 IPC 失败，本轮在 `build/_work` 创建隔离副本，只替换副本中的 `bridge-ui.ps1` 并更新其 manifest 文件记录的长度/hash，然后运行 `tools/test-package-startup.ps1`。alpha18 包级检查通过，实际报告 `channel_flow_test.tx_command=tx_policy.replace`，并核对 Native 回执及已保存配置仍指向原 TX 目标；覆盖真实 WPF `BridgeSupervisor` → Native RoutingDiagnosticAutoTest。没有连接电台、BM、音频设备或 RF，也没有访问用户配置。原 alpha18 包没有修改。
+- 该诊断副本用于定位源码修复，不作为发布包验收。冻结源码后仍须重新 clean build，并在原样 manifest 的新候选包上复跑包级检查。
 - 本轮所有界面、CAT、BM、HRI、音频和射频行为仍没有连接实机验收；CAT 与 HRI 同时运行的效果仍需按独立实机流程确认。
