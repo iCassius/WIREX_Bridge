@@ -1,6 +1,16 @@
 ﻿# WIREX Bridge：FTX-1 DIRECT 与 BrandMeister 语音桥接
 
-## 当前工作：R120 / Alpha 16 本机候选（root 包审计通过）
+## 当前工作：R121 / Alpha 17 源码 freeze 记录
+
+R121 改动基于 `main` 源码提交 `e51fd6db2e8af5eb8c0105bd0956f9b252b73b54`。Root 已批准 source freeze；独立 review 最终未发现可复现 P1/P2。此段记录 freeze 与构建前的验证快照，提交 SHA 与正式构建结果由提交和构建记录确定。
+
+R121 为固定无滚动条 WPF 控制台、分页历史与静态列表、串口和 BM 独立连接控制。WinPS5.1 STA 下 RadioCat 190 项与 Console 130 项均由 Runtime owner 和 root 独立通过；WinPS5.1 发布入口复核已三方通过。RenderOnly 214 项、13 帧真实 Dispatcher parser、Native 定向目标与 pure package/publish/download 检查通过。PowerShell 7 的间歇 fixture 结果保留另查，不作为本版 UI 验收依据。full40 clean build 和实包验证按 source commit 后的正式构建记录执行；当前验证快照及边界见 [R121 发布交接](docs/R121_发布交接.md)、[Native 验证](docs/R121_NATIVE_TESTS.md)、[UI 记录](docs/R121_UI.md) 和 [Runtime 交接](docs/R121_RUNTIME.md)。
+
+alpha.17 profile 在 `tools/package-release.ps1` 的 `Get-ReleaseProfile -Version 'v0.1.0-alpha.17'` 中定义：41 个资产映射、37 个源码映射、9 个运行时目录、40 个 Native 测试名；测试名顺序沿用 alpha16。Root freeze 后按该 profile 生成候选包，再单独审核包和个人配置衔接。
+
+当前本机配置唯一来源为 `build/releases/v0.1.0-alpha.16/config.json`。已记录其长度 3,893 字节；未读取内容、未计算哈希、未复制。任何 alpha.17 个人配置副本都必须从该来源原字节复制并先核对字节相等。R121 这轮未连接真实电台、串口、音频或 BrandMeister 会话，未触发 PTT/RF。
+
+## R120 / Alpha 16 本机候选历史（root 包审计通过）
 
 R120 更新了监听频道卡片、来话身份资料、BM 标题栏和独立 CAT 串口控制。监听频道按 3 列 × 2 行分页；超过 6 个频道仍保留在后台并可翻页查看。BM 静态组添加按设备状态选择 API slot，删除时保留服务器返回的 slot。CAT 与 Wires-X 核心各自运行；CAT 正在执行用户写入或排队动作时，暂时禁止新的 Wires-X 启动。
 

@@ -1120,6 +1120,59 @@ Assert-True ($startupTestText.Contains("'v0.1.0-alpha.16'") -and
     $startupTestText.Contains("'v0.1.0-alpha.15', 'v0.1.0-alpha.16'" ) -and
     $startupTestText.Contains('Test-Alpha15AudioControlCompatibility -PackageRoot $packageCopy')) `
     'package-startup test accepts alpha.16 and reuses the inherited alpha.15 runtime compatibility checks'
+$alpha17Profile = Get-ReleaseProfile -Version 'v0.1.0-alpha.17'
+[void](Set-ReleaseVersion -Version 'v0.1.0-alpha.17')
+$alpha17Files = @(Get-ExpectedReleasePackageFiles)
+$alpha17Tests = @(Get-ExpectedReleaseTests)
+Assert-True ([string]$alpha17Profile.ReleaseScope -like 'R121 DIRECT:*') 'alpha.17 release metadata identifies the R121 fixed-layout and independent-connection scope'
+Assert-True ($alpha17Profile.AssetMap.Count -eq 41 -and $alpha17Profile.SourceFiles.Count -eq 37 -and
+    $alpha17Profile.Directories.Count -eq 9 -and $alpha17Profile.TestNames.Count -eq 40) `
+    'alpha.17 keeps 41 mapped assets, 37 source mappings, 9 runtime directories and 40 Native test names'
+Assert-True ([string]::Join('|', $alpha17Files) -ceq [string]::Join('|', $alpha16Files) -and
+    [string]::Join('|', $alpha17Tests) -ceq [string]::Join('|', $alpha16Tests) -and
+    [string]::Join('|', @($alpha17Profile.AssetMap.Keys)) -ceq [string]::Join('|', @($alpha16Profile.AssetMap.Keys))) `
+    'alpha.17 inherits the exact alpha.16 runtime assets, asset paths and ordered Native tests'
+Assert-True (@($alpha17Profile.SourceFiles | Where-Object {
+    [string]$_.Source -ceq 'tools\start-wirex-bridge-alpha17.cmd' -and [string]$_.Destination -ceq 'start-wirex-bridge.cmd'
+}).Count -eq 1 -and @($alpha17Profile.SourceFiles | Where-Object {
+    [string]$_.Source -ceq 'tools\start-wirex-bridge-alpha17.ps1' -and [string]$_.Destination -ceq 'tools/start-wirex-bridge.ps1'
+}).Count -eq 1 -and [string]$alpha17Profile.PackageReadme -ceq 'docs\releases\v0.1.0-alpha.17-package-README.md') `
+    'alpha.17 maps only its versioned launchers and README to the canonical package paths'
+$alpha17Excluded = @(Get-ReleaseExcludedPrivateFiles -Version 'v0.1.0-alpha.17')
+foreach ($requiredExcludedPath in @('config.json', 'config.*.backup*', 'credentials/', 'tempSecrets/')) {
+    Assert-True ($alpha17Excluded -ccontains $requiredExcludedPath) "alpha.17 generic package excludes $requiredExcludedPath"
+}
+$alpha17LauncherPath = Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha17.ps1'
+$alpha17LauncherBytes = [System.IO.File]::ReadAllBytes($alpha17LauncherPath)
+Assert-True ($alpha17LauncherBytes.Length -ge 3 -and $alpha17LauncherBytes[0] -eq 0xEF -and
+    $alpha17LauncherBytes[1] -eq 0xBB -and $alpha17LauncherBytes[2] -eq 0xBF) 'alpha.17 PowerShell launcher has a UTF-8 BOM for Windows PowerShell 5.1'
+$alpha17LauncherTokens = $null
+$alpha17LauncherErrors = $null
+[System.Management.Automation.Language.Parser]::ParseFile($alpha17LauncherPath, [ref]$alpha17LauncherTokens, [ref]$alpha17LauncherErrors) | Out-Null
+Assert-True ($alpha17LauncherErrors.Count -eq 0) ('alpha.17 launcher parses; parse errors={0}' -f $alpha17LauncherErrors.Count)
+$alpha17LauncherText = [System.IO.File]::ReadAllText($alpha17LauncherPath, [System.Text.Encoding]::UTF8)
+Assert-True ($alpha17LauncherText.Contains('. $uiLauncher -PackageDirectory $packageRoot') -and
+    $alpha17LauncherText.Contains('alpha.17') -and -not $alpha17LauncherText.Contains('alpha.16') -and
+    -not $alpha17LauncherText.Contains('user-config-directory.txt') -and
+    -not $alpha17LauncherText.Contains('Resolve-PackageUserConfigDirectory')) `
+    'alpha.17 normal startup uses packageRoot and identifies the correct release version'
+$alpha17CmdPath = Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha17.cmd'
+$alpha17CmdBytes = [System.IO.File]::ReadAllBytes($alpha17CmdPath)
+Assert-True (@($alpha17CmdBytes | Where-Object { $_ -gt 127 }).Count -eq 0) 'alpha.17 root CMD source contains ASCII only'
+$alpha17PackageReadme = [System.IO.File]::ReadAllText((Join-Path $repositoryRoot $alpha17Profile.PackageReadme), [System.Text.Encoding]::UTF8)
+Assert-True ($alpha17PackageReadme.Contains('WIREX Bridge v0.1.0-alpha.17') -and
+    $alpha17PackageReadme.Contains('1360×900') -and
+    $alpha17PackageReadme.Contains('点击“连接串口”只连接 Wires-X HRI 与 CAT，BM 保持断开。') -and
+    $alpha17PackageReadme.Contains('点击“连接 BM”后 BM 才入网。') -and
+    $alpha17PackageReadme.Contains('点击“断开串口”会先断开 BM，再关闭 HRI 与 CAT。') -and
+    $alpha17PackageReadme.Contains('运行期间可调节音频输入与输出增益。') -and
+    -not $alpha17PackageReadme.Contains('bm.connection.set') -and
+    -not $alpha17PackageReadme.Contains('audio.gains.set') -and
+    -not $alpha17PackageReadme.Contains('实机验收结果')) 'alpha.17 README documents implemented UI behavior without hardware claims'
+Assert-True ($startupTestText.Contains("'v0.1.0-alpha.17'") -and
+    $startupTestText.Contains('Test-Alpha17BmConnectionCompatibility -PackageRoot $packageCopy') -and
+    $startupTestText.Contains('bm.connection.set')) `
+    'package-startup test accepts alpha.17 and checks optional BM capability compatibility'
 $alpha15PackageReadme = [System.IO.File]::ReadAllText((Join-Path $repositoryRoot $alpha15Profile.PackageReadme), [System.Text.Encoding]::UTF8)
 Assert-True ($alpha15PackageReadme.Contains('WIREX Bridge v0.1.0-alpha.15') -and
     $alpha15PackageReadme.Contains('audio.gains.set') -and
@@ -1721,6 +1774,21 @@ try {
     Assert-Throws { Assert-ReleasePackageInventory -PackageRoot $alpha16InventoryRoot -Version 'v0.1.0-alpha.16' } `
         'alpha.16 package inventory rejects a package-root user config file'
     Remove-Item -LiteralPath (Join-Path $alpha16InventoryRoot 'config.json') -Force -ErrorAction Stop
+
+    $alpha17InventoryRoot = Join-Path $testRoot 'package-inventory-alpha17'
+    Copy-Item -LiteralPath $alpha16InventoryRoot -Destination $alpha17InventoryRoot -Recurse
+    $alpha17InventoryManifestPath = Join-Path $alpha17InventoryRoot 'manifest.json'
+    $alpha17InventoryManifest = [System.IO.File]::ReadAllText($alpha17InventoryManifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $alpha17InventoryManifest.version = 'v0.1.0-alpha.17'
+    $alpha17InventoryManifest.tag_candidate = 'v0.1.0-alpha.17'
+    $alpha17InventoryManifest.excluded_private_files = @(Get-ReleaseExcludedPrivateFiles -Version 'v0.1.0-alpha.17')
+    Write-Utf8NoBom -Path $alpha17InventoryManifestPath -Text ((ConvertTo-Json -InputObject $alpha17InventoryManifest -Depth 8) + [Environment]::NewLine)
+    Assert-True ((Assert-ReleasePackageInventory -PackageRoot $alpha17InventoryRoot -Version 'v0.1.0-alpha.17') -eq $null) `
+        'alpha.17 synthetic inventory accepts the exact inherited alpha.16 asset list without adding runtime files'
+    Write-Utf8NoBom -Path (Join-Path $alpha17InventoryRoot 'config.json') -Text '{"synthetic":"user config"}'
+    Assert-Throws { Assert-ReleasePackageInventory -PackageRoot $alpha17InventoryRoot -Version 'v0.1.0-alpha.17' } `
+        'alpha.17 package inventory rejects a package-root user config file'
+    Remove-Item -LiteralPath (Join-Path $alpha17InventoryRoot 'config.json') -Force -ErrorAction Stop
 
     $alpha2PackageRoot = Join-Path $testRoot 'package-alpha2'
     Copy-Item -LiteralPath $packageRoot -Destination $alpha2PackageRoot -Recurse

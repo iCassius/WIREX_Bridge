@@ -171,7 +171,7 @@ bool Session::validate_profile(const Profile& profile) const noexcept
 
 bool Session::start(Profile&& profile, const Endpoint& master, std::uint64_t now_ms)
 {
-    if (state_ != State::idle || master.port == 0U ||
+    if ((state_ != State::idle && state_ != State::stopped) || master.port == 0U ||
         master.address == std::array<std::uint8_t, 4>{{0U, 0U, 0U, 0U}} ||
         !validate_profile(profile)) {
         secure_erase(profile.password);
@@ -179,6 +179,21 @@ bool Session::start(Profile&& profile, const Endpoint& master, std::uint64_t now
         return false;
     }
 
+    if (state_ == State::stopped) {
+        clear_application_queues();
+        for (auto& item : outbound_) secure_erase(item.bytes);
+        outbound_.clear();
+        clear_last_control_packet();
+        challenge_salt_.fill(0U);
+        has_challenge_salt_ = false;
+        phase_deadline_ms_ = 0U;
+        next_retry_ms_ = 0U;
+        retry_at_ms_ = 0U;
+        last_pong_ms_ = 0U;
+        next_ping_ms_ = 0U;
+        consecutive_failures_ = 0U;
+        last_failure_ = Failure::none;
+    }
     clear_rtt();
 
     // 将凭据复制到唯一的运行期缓冲区，随后清除调用方结构中的原始内容。

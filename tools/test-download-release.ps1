@@ -27,7 +27,7 @@ $script:releaseAssetRedirectHosts = @(
 )
 $script:assertionCount = 0
 $downloadProfiles = @{}
-foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12', 'v0.1.0-alpha.13', 'v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16')) {
+foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12', 'v0.1.0-alpha.13', 'v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17')) {
     $downloadProfiles[$tag] = [pscustomobject]@{
         Files = @(Get-ExpectedReleaseFiles -Tag $tag)
         Tests = @(Get-ExpectedReleaseTests -Tag $tag)
@@ -90,7 +90,7 @@ function New-TestManifest {
             'private/user-config/radio-control-preferences.json', 'private/user-config/bm-management-preferences.json',
             'private/user-config/bm-server-preferences.json')
     }
-    if ($Tag -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16')) {
+    if ($Tag -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17')) {
         $excludedPrivateFiles += @(
             'config.json', 'config.*.backup*', 'credentials/', 'tempSecrets/',
             'private/user-config-directory.txt', 'private/user-config/radio-identity-cache.json',
@@ -620,6 +620,32 @@ $invalidAlpha16Config.files += [pscustomobject]@{
 Assert-Throws { Test-ManifestDocument -Manifest $invalidAlpha16Config -RequestedTag 'v0.1.0-alpha.16' } `
     'alpha.16 downloader rejects a user-created package-root config file in the generic package'
 
+$alpha17Manifest = New-TestManifest -Tag 'v0.1.0-alpha.17'
+$alpha17Manifest.release_scope = 'R121 DIRECT: fixed no-scroll console and independent BM/serial controls'
+$alpha17Validated = Test-ManifestDocument -Manifest $alpha17Manifest -RequestedTag 'v0.1.0-alpha.17'
+$alpha16ExpectedFiles = @(Get-ExpectedReleaseFiles -Tag 'v0.1.0-alpha.16')
+Assert-True ($alpha17Validated.Files.Count -eq 41 -and
+    [string]::Join('|', @($alpha17Validated.Files | ForEach-Object { [string]$_.path })) -ceq
+        [string]::Join('|', @($alpha16ExpectedFiles | ForEach-Object { [string]$_.Path }))) `
+    'alpha.17 downloader accepts the exact 41-file alpha.16 inventory without runtime asset additions'
+$expectedAlpha17Tests = @(Get-ExpectedReleaseTests -Tag 'v0.1.0-alpha.16')
+Assert-True (@($alpha17Manifest.build.passed_tests).Count -eq 40 -and
+    [string]::Join('|', @($alpha17Manifest.build.passed_tests)) -ceq [string]::Join('|', $expectedAlpha17Tests)) `
+    'alpha.17 pins the inherited 40 Native tests in their existing order'
+Assert-True (Test-ReleaseTag -Tag 'v0.1.0-alpha.17') 'alpha.17 is an explicitly supported release tag'
+$missingAlpha17ConfigExclusion = New-TestManifest -Tag 'v0.1.0-alpha.17'
+$missingAlpha17ConfigExclusion.excluded_private_files = @($missingAlpha17ConfigExclusion.excluded_private_files | Where-Object {
+    [string]$_ -cne 'config.json'
+})
+Assert-Throws { Test-ManifestDocument -Manifest $missingAlpha17ConfigExclusion -RequestedTag 'v0.1.0-alpha.17' } `
+    'alpha.17 downloader rejects a manifest that omits the package-root config exclusion'
+$invalidAlpha17Config = New-TestManifest -Tag 'v0.1.0-alpha.17'
+$invalidAlpha17Config.files += [pscustomobject]@{
+    path='config.json'; asset_name='config.json'; length_bytes=1; sha256=('0' * 64); source='synthetic forbidden user config'
+}
+Assert-Throws { Test-ManifestDocument -Manifest $invalidAlpha17Config -RequestedTag 'v0.1.0-alpha.17' } `
+    'alpha.17 downloader rejects a user-created package-root config file in the generic package'
+
 $publishedAlpha11 = [pscustomobject]@{ tag_name='v0.1.0-alpha.11'; draft=$false; prerelease=$true }
 Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha11) -RequestedTag 'v0.1.0-alpha.11').tag_name -ceq 'v0.1.0-alpha.11') 'alpha.11 is selected by exact tag'
 $publishedAlpha12 = [pscustomobject]@{ tag_name='v0.1.0-alpha.12'; draft=$false; prerelease=$true }
@@ -632,6 +658,8 @@ $publishedAlpha15 = [pscustomobject]@{ tag_name='v0.1.0-alpha.15'; draft=$false;
 Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha15) -RequestedTag 'v0.1.0-alpha.15').tag_name -ceq 'v0.1.0-alpha.15') 'alpha.15 is selected by exact tag'
 $publishedAlpha16 = [pscustomobject]@{ tag_name='v0.1.0-alpha.16'; draft=$false; prerelease=$true }
 Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha16) -RequestedTag 'v0.1.0-alpha.16').tag_name -ceq 'v0.1.0-alpha.16') 'alpha.16 is selected by exact tag'
+$publishedAlpha17 = [pscustomobject]@{ tag_name='v0.1.0-alpha.17'; draft=$false; prerelease=$true }
+Assert-True ((Select-ReleaseCandidate -Releases @($publishedAlpha17) -RequestedTag 'v0.1.0-alpha.17').tag_name -ceq 'v0.1.0-alpha.17') 'alpha.17 is selected by exact tag'
 
 $goodAssets = New-TestAssetList -Manifest $validManifest
 $release = [pscustomobject]@{ assets=$goodAssets; target_commitish=[string]$validManifest.source.commit }
@@ -774,7 +802,7 @@ try {
 
 . (Join-Path $PSScriptRoot 'package-release.ps1')
 . (Join-Path $PSScriptRoot 'publish-release.ps1')
-foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12', 'v0.1.0-alpha.13', 'v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16')) {
+foreach ($tag in @('v0.1.0-alpha.1', 'v0.1.0-alpha.2', 'v0.1.0-alpha.3', 'v0.1.0-alpha.4', 'v0.1.0-alpha.5', 'v0.1.0-alpha.6', 'v0.1.0-alpha.7', 'v0.1.0-alpha.8', 'v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12', 'v0.1.0-alpha.13', 'v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17')) {
     $packageProfile = Set-ReleaseVersion -Version $tag
     $packagePaths = @($packageProfile.PackageFiles | Where-Object { $_ -cne 'manifest.json' })
     $downloadFiles = @($downloadProfiles[$tag].Files)

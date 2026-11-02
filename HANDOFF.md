@@ -1,6 +1,16 @@
 ﻿# WIREX Bridge 交接入口
 
-## R120 / Alpha 16 当前交接（2026-11-01）
+## R121 / Alpha 17 源码 freeze 与交接（2026-11-02）
+
+源码树位于 `C:\Users\cassi\Documents\Project\FTX1_project\WIREX_Bridge\app`，分支 `main`，R121 改动基于 `e51fd6db2e8af5eb8c0105bd0956f9b252b73b54`。Root 已批准 source freeze，独立 review 最终没有发现可复现 P1/P2；该 SHA 是 freeze 前基点，最终源版本由随后的提交记录确定。
+
+alpha.17 目标包括固定无滚动条控制台、分页历史/静态组列表、串口与 BM 独立连接生命周期。WinPS5.1 STA 下 RadioCat 190 项和 Console 130 项由 Runtime owner 与 root 独立通过；WinPS5.1 发布入口复核三方通过。RenderOnly 214 项、BM 静态组 WPF、Native targets 与真实 Dispatcher 13 帧 PowerShell parser 均通过。PowerShell 7 的间歇 fixture 结果留待另查，不计入本版 UI 验收。结果见 [R121 Native 测试](docs/R121_NATIVE_TESTS.md)、[R121 UI](docs/R121_UI.md)、[R121 Runtime](docs/R121_RUNTIME.md) 和 [R121 发布交接](docs/R121_发布交接.md)。
+
+发布 profile 的权威定义为 `tools/package-release.ps1` 中 `Get-ReleaseProfile -Version 'v0.1.0-alpha.17'`：41 个资产映射、37 个源码映射、9 个运行时目录、40 个 Native 测试名（沿用 alpha16 顺序）。本节记录 source freeze 阶段；full40 clean build 与 alpha.17 包级离线验证按该源提交后的构建记录执行。
+
+个人配置来源固定为当前 alpha16 根目录 `build/releases/v0.1.0-alpha.16/config.json`，仅记录长度 3,893 字节，未读内容或哈希，也未复制。后续从该文件原字节复制到 alpha17，先核对字节相等；不从旧 canonical 或 alpha15 恢复。R121 未进行真实硬件/BM 验收、tag 或 GitHub Release。
+
+## R120 / Alpha 16 历史交接（2026-11-01）
 
 R120 源码已提交并推送，Alpha 16 本机候选包已生成并通过 root 独立审计。提交为 52d2d95d1e163a6086bb5d429baf709b958eeafd；基于该干净提交完成 Native full40，40/40 通过，compile_only=false、MSVC warning/error 均为 0。root 核对 41 项通用资产、37 项源码映射、42 个通用文件、Native 40 项 provenance/order，以及 EXE、日志和 provenance 哈希；manifest 状态为 root_audit_passed。
 

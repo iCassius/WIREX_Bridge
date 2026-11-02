@@ -16,6 +16,8 @@ param(
     [switch]$PrepareOnly,
     [switch]$NoInteractive,
     [switch]$RequirePasswordFile,
+    [switch]$BmStartDisconnected,
+    [switch]$TestOnlyFakeDevices,
     [string]$PreparationOutputPath
 )
 
@@ -684,8 +686,16 @@ function Test-ApprovedBody {
     $fullPath = Resolve-LocalFile -Path $Path -Label '本机 Y 模板'
     $item = Get-Item -LiteralPath $fullPath
     if ($item.Length -ne $script:expectedBodyLength) { throw "Y 模板长度不符：$fullPath（必须为 $($script:expectedBodyLength) 字节）。" }
-    $actualHash = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($actualHash -cne $script:expectedBodySha256) { throw "Y 模板 SHA-256 不匹配：$fullPath；没有启动 native 核心。" }
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    $stream = $null
+    try {
+        $stream = [System.IO.File]::OpenRead($fullPath)
+        $actualHash = [BitConverter]::ToString($sha256.ComputeHash($stream)).Replace('-', '').ToLowerInvariant()
+    } finally {
+        if ($stream) { $stream.Dispose() }
+        $sha256.Dispose()
+    }
+    if ($actualHash -cne $script:expectedBodySha256) { throw "Y 模板完整性校验失败：$fullPath；没有启动 native 核心。" }
     return $fullPath
 }
 
@@ -1003,18 +1013,32 @@ try {
     if ($hasDevelopmentOverride -and [string]::IsNullOrWhiteSpace($StatusDirectory)) {
         throw '显式指定 -BridgePath 或 -BodyFile 时也必须显式指定 -StatusDirectory，避免运行报告落到源码目录。'
     }
-    if ($PrepareOnly -and (-not $NoInteractive -or -not $RequirePasswordFile -or
+    if ($PrepareOnly -and (-not $NoInteractive -or (-not $RequirePasswordFile -and -not $BmStartDisconnected) -or
         [string]::IsNullOrWhiteSpace($PreparationOutputPath) -or [string]::IsNullOrWhiteSpace($StatusDirectory) -or $ManualPtt)) {
-        throw '-PrepareOnly 必须与 -NoInteractive、-RequirePasswordFile、-PreparationOutputPath 和 -StatusDirectory 一起使用，且不能启用键盘诊断输入。'
+        throw '-PrepareOnly 必须与 -NoInteractive、密码文件或 -BmStartDisconnected、-PreparationOutputPath 和 -StatusDirectory 一起使用，且不能启用键盘诊断输入。'
+    }
+    if (($BmStartDisconnected -or $TestOnlyFakeDevices) -and -not $PrepareOnly) {
+        throw '-BmStartDisconnected 和测试设备只能用于 UI v2 的 PrepareOnly 启动准备。'
+    }
+    if ($TestOnlyFakeDevices -and -not $BmStartDisconnected) {
+        throw '-TestOnlyFakeDevices 只允许配合 -BmStartDisconnected 的隔离预检。'
     }
     if ([bool]$WaveIn -xor [bool]$WaveOut) { throw '手工指定音频设备时必须同时传入 -WaveIn 和 -WaveOut。' }
     if ($Port -and $Port.Trim() -notmatch '^COM[1-9][0-9]{0,2}$') { throw '-Port 必须是 COM1 到 COM999。' }
     $selectedPreset = Select-TestPreset -Requested $Preset
+    if ($BmStartDisconnected -and ($selectedPreset -cne 'manual' -or -not $NoInteractive)) {
+        throw '-BmStartDisconnected 只允许 UI v2 手工配置的非交互式预检。'
+    }
     $executable = Resolve-BridgeExecutable
     $defaultPasswordPath = Join-Path $script:packageRoot 'private\bm-device-password.txt'
-    $passwordPath = Resolve-PasswordFileForRun -SelectedPreset $selectedPreset `
-        -ExplicitPath $PasswordFile -WasExplicit:($PSBoundParameters.ContainsKey('PasswordFile')) `
-        -DefaultPath $defaultPasswordPath
+    if ($BmStartDisconnected -and -not $PSBoundParameters.ContainsKey('PasswordFile')) {
+        # BM 暂停预检不继承便携目录里的旧密码文件。
+        $passwordPath = ''
+    } else {
+        $passwordPath = Resolve-PasswordFileForRun -SelectedPreset $selectedPreset `
+            -ExplicitPath $PasswordFile -WasExplicit:($PSBoundParameters.ContainsKey('PasswordFile')) `
+            -DefaultPath $defaultPasswordPath
+    }
     if ($RequirePasswordFile -and [string]::IsNullOrWhiteSpace($passwordPath)) {
         throw 'UI 自动连接需要本机密码文件；请在设置中选择现有密码文件。'
     }
@@ -1040,9 +1064,18 @@ try {
         -RadioPlaybackGainValue $RadioPlaybackGain `
         -MicTransmitGainWasBound $micTransmitGainWasBound `
         -MicTransmitGainValue $MicTransmitGain
-    $devices = Invoke-AudioEnumeration -Executable $executable
-    $serialPorts = @(Get-CurrentSerialPorts)
-    $hriDevices = @(Get-HriSerialDevices)
+    if ($TestOnlyFakeDevices) {
+        $devices = [pscustomobject]@{
+            wave_inputs = @([pscustomobject]@{ id=1; endpoint_id='fake-wavein-endpoint'; name='Fake USB Audio Input'; pcm_48000_mono_s16_supported=$true })
+            wave_outputs = @([pscustomobject]@{ id=2; endpoint_id='fake-waveout-endpoint'; name='Fake USB Audio Output'; pcm_48000_mono_s16_supported=$true })
+        }
+        $serialPorts = @('COM777')
+        $hriDevices = @([pscustomobject]@{ PortName='COM777'; ProductId='FAKE'; IsHri=$true })
+    } else {
+        $devices = Invoke-AudioEnumeration -Executable $executable
+        $serialPorts = @(Get-CurrentSerialPorts)
+        $hriDevices = @(Get-HriSerialDevices)
+    }
     $requestedPort = $Port
     $profileRequiresHri = ($selectedPreset -eq 'manual')
     if ($selectedPreset -eq 'manual' -and -not $Port -and $manualProfile.devices.serial_port -cne 'auto') {
@@ -1182,6 +1215,7 @@ try {
         $arguments += Get-ProfileConnectionArgs -Profile $manualProfile -RoutingStatePath $routingStatePath
         if ($passwordPath) { $arguments += @('--password-file', $passwordPath) }
     }
+    if ($BmStartDisconnected) { $arguments += '--bm-start-disconnected' }
     if ($ManualPtt) { $arguments += '--manual-ptt' }
     if ($PrepareOnly) {
         if ($selectedPreset -ne 'manual') { throw '桌面 UI 只接受完整手工连接配置，不使用固定测试预设。' }

@@ -169,7 +169,8 @@ $functionNames = @(
     'Set-MainText','Set-UiChannelStatus','New-UiChannelActionButton','Update-UiChannelDisplays','Set-UiChannelPage','Start-UiChannelMutation',
     'Get-UiChannelCallerDetails','New-UiDmIdLinkTextBlock','Open-UiDmIdProfile','Get-UiNativeIdentityCallsign',
     'Get-UiChannelTargetFromRouting','Complete-UiChannelMutation','Add-UiChannelFromInputs','Remove-UiChannel','Set-UiChannelMuted',
-    'Save-SettingsFromWindow','ConvertTo-UiOptionalUnsigned','Get-UiComboValue','Request-Reconnect','Start-BridgeRun',
+    'Save-SettingsFromWindow','Get-UiSafeSettingsSaveErrorText','Copy-UiPortableConfigValue','ConvertTo-UiOptionalUnsigned',
+    'Get-UiComboValue','Get-UiComboItemValue','Request-Reconnect','Start-BridgeRun',
     'Get-UiRadioCatPortConflictMessage','Test-UiRadioCatUserActionBusy','Get-UiRadioCatSessionState',
     'Invoke-UiSetCallTarget','Invoke-UiChannelQuickCall','Invoke-UiRoutingDiagnosticChannelQuickCallButton','Open-UiSetupPage','Register-UiSetupLinks',
     'Test-UiControlUnsigned','Test-UiExactControlFields','Test-UiRxPolicy','Copy-UiRxPolicy','Invoke-UiRoutingMutation',
@@ -177,8 +178,9 @@ $functionNames = @(
     'Get-UiHriPortName','Set-UiRadioCatText','Set-UiRadioCatControlEnabled','Find-UiRadioCatControl','Set-UiRadioCatControls',
     'Set-UiRadioCatPowerSliderRange','Get-UiRadioCatObservedValue','Update-UiRadioCatObservationDisplay','Update-UiRadioCatControls',
     'Initialize-UiSettingsWindow','Initialize-SettingsWindow','Set-UiComboValue','Complete-BridgeStopInternal','Complete-BridgeStop',
-    'On-UiTimerTick','Request-UiRoutingStatus','Set-UiControlStatus','Set-UiOfflineDisplay','Set-OfflineDisplay',
-    'Set-ConnectionButtonState','Set-ConnectionConfigLocked','Set-UiIdentityRowVisibility','Update-UiPlaybackGainDisplay',
+    'On-UiTimerTick','Request-UiRoutingStatus','Update-UiBmConnectionPoll','Request-UiControlStatus','Set-UiBmConnectionSnapshot',
+    'Set-UiControlStatus','Set-UiOfflineDisplay','Set-OfflineDisplay',
+    'Set-ConnectionButtonState','Set-ConnectionConfigLocked','Test-UiBmTransportFieldsLocked','Set-UiIdentityRowVisibility','Update-UiPlaybackGainDisplay',
     'Test-UiAudioGainCapability','Update-UiAudioGainControls','Update-UiAudioGainValueLabels',
     'Convert-UiGainSliderToMilli',
     'Complete-UiRadioCatOperationAndPersist','Complete-UiRadioCatOperation','Invoke-UiRadioCatPollTick','Start-UiRadioCatOperation',
@@ -203,6 +205,7 @@ Import-Module -Name $bridgeUserConfigModulePath -Force
 $mainXaml = [System.IO.File]::ReadAllText($mainXamlPath)
 $settingsXaml = [System.IO.File]::ReadAllText($settingsXamlPath)
 $bridgeSource = [System.IO.File]::ReadAllText($uiPath)
+$radioCatSource = [System.IO.File]::ReadAllText($radioCatPath)
 foreach ($forbidden in @('FavoritesPanel','FavoritesList','TransmitEnabledBox','CatStopBitsBox','FavoritesButton')) {
     Assert-UiChannels ($mainXaml -notmatch ('x:Name="' + [regex]::Escape($forbidden) + '"')) ("MainWindow.xaml 仍含已删除控件 {0}。" -f $forbidden)
 }
@@ -218,9 +221,10 @@ Assert-UiChannels ($mainXaml -match 'Rows="2" Columns="3"' -and
 Assert-UiChannels ($mainXaml -match 'ChannelPagePreviousButton' -and $mainXaml -match 'ChannelPageNextButton') '3×2频道面板缺少分页按钮。'
 Assert-UiChannels ($bridgeSource -match '\$pagePreviousButton\.Add_Click\(\{ Set-UiChannelPage -Delta -1 \}\)' -and
     $bridgeSource -match '\$pageNextButton\.Add_Click\(\{ Set-UiChannelPage -Delta 1 \}\)') '分页按钮没有绑定到对应的翻页动作。'
-Assert-UiChannels ($bridgeSource -match '(?s)if \(-not \$script:isolatedUiMode -and -not \$NoAutoConnect\)\s*\{\s*\[void\]\(Connect-UiRadioCatSession -Automatic\)\s*\}') `
-    '隔离/NoAutoConnect启动路径没有跳过自动 CAT 连接。'
-Assert-UiChannels ($bridgeSource -match '(?s)function Start-BridgeRun\s*\{\s*if \(Test-UiRadioCatUserActionBusy\)' -and
+Assert-UiChannels ($bridgeSource -match '(?s)if \(-not \$script:isolatedUiMode\)\s*\{\s*if \(\$script:serialConnectCatAfterCoreReady\)\s*\{\s*\[void\]\(Connect-UiRadioCatSession\)\s*\$script:serialConnectCatAfterCoreReady = \$false\s*\}\s*elseif \(-not \$NoAutoConnect\)\s*\{\s*\[void\]\(Connect-UiRadioCatSession -Automatic\)\s*\}\s*\}' -and
+    $radioCatSource -match '(?s)if \(\$Automatic -and \$script:NoAutoConnect\) \{ return \$false \}') `
+    '串口组合启动没有区分用户显式连接与自动 CAT 连接，或 NoAutoConnect 未阻止自动连接。'
+Assert-UiChannels ($bridgeSource -match '(?s)function Start-BridgeRun\s*\{\s*param\(\[switch\]\$BmStartDisconnected\)\s*\$script:bmStartDisconnectedForRun = \[bool\]\$BmStartDisconnected\s*if \(Test-UiRadioCatUserActionBusy\)' -and
     $bridgeSource -match '(?s)function Complete-BridgePreparation\s*\{.*?if \(Test-UiRadioCatUserActionBusy\)') '直接和准备完成的 HRI 启动路径没有检查 CAT 用户动作。'
 Assert-UiChannels ($bridgeSource -match '(?s)function Start-BridgeRun\s*\{.*?Get-UiRadioCatPortConflictMessage -HriPortName \$savedHriPort' -and
     $bridgeSource -match '(?s)function Complete-BridgePreparation\s*\{.*?Get-UiRadioCatPortConflictMessage -HriPortName \$preparedRadioPort.*?\.Start\(') `
@@ -334,8 +338,18 @@ try {
     Assert-UiChannels ((Get-TestUiControl 'BmApiKeyBox').IsEnabled -and
         -not (Get-TestUiControl 'PasswordBox').IsEnabled -and (Get-TestUiControl 'SaveSettingsButton').IsEnabled -and
         $script:mainWindow.FindName('BmApiKeySetupLink').IsEnabled -and $script:mainWindow.FindName('BmPasswordSetupLink').IsEnabled -and
-        (Get-TestUiControl 'CatPortBox').IsEnabled -and (Get-TestUiControl 'CatBaudRateBox').IsEnabled) `
-        '连接期间 API Key 或 CAT 端口被错误锁定，或密码字段未按连接状态锁定。'
+        -not (Get-TestUiControl 'CatPortBox').IsEnabled -and -not (Get-TestUiControl 'CatBaudRateBox').IsEnabled) `
+        '核心占用期间 API Key 或保存入口被锁定，或串口设备仍可编辑，或BM连接配置状态错误。'
+    $script:bmConnectionNativeCapability=$true
+    $script:bmConnectionSnapshot=[pscustomobject][ordered]@{
+        requested_enabled=$false; revision=[uint64]0; transport_open=$false; resolving=$false; error='none'; bm_state='stopped'
+    }
+    Set-ConnectionConfigLocked
+    Assert-UiChannels ((Get-TestUiControl 'BmApiKeyBox').IsEnabled -and
+        (Get-TestUiControl 'MasterBox').IsEnabled -and (Get-TestUiControl 'PasswordBox').IsEnabled -and
+        -not (Get-TestUiControl 'CatPortBox').IsEnabled -and -not (Get-TestUiControl 'WaveInEndpointBox').IsEnabled) `
+        '串口已连接而BM暂停时，BM传输配置/API Key未解锁，或HRI占用的串口/音频字段被错误解锁。'
+    $script:bmConnectionNativeCapability=$false; $script:bmConnectionSnapshot=$null
     $script:supervisor = $null
     $script:channelEditorSlot = 2
     $script:channels = @()
@@ -379,7 +393,7 @@ try {
         $null -eq $script:pendingQuickCall -and -not $script:supervisor) '卡片按钮没有只选择下次呼叫目标，或误发了核心/呼叫命令。'
     $selectedCard = @($script:mainWindow.FindName('ChannelCardsPanel').Children | Where-Object { [string]$_.Tag.channel_key -ceq 'group:46001:2' }) | Select-Object -First 1
     $selectedTargetButton = @($selectedCard.Child.Children[1].Children | Where-Object { $_ -is [System.Windows.Controls.Button] -and [string]$_.Tag.action -ceq 'tx' }) | Select-Object -First 1
-    Assert-UiChannels ($selectedTargetButton.Content -ceq '✓ 呼叫目标' -and -not $selectedTargetButton.IsEnabled) '选中频道卡没有显示已选呼叫目标状态。'
+    Assert-UiChannels ($selectedTargetButton.Content -ceq '呼叫目标' -and -not $selectedTargetButton.IsEnabled) '选中频道卡没有显示已选呼叫目标状态。'
     $restoreTargetCard = @($script:mainWindow.FindName('ChannelCardsPanel').Children | Where-Object { [string]$_.Tag.channel_key -ceq 'group:91:2' }) | Select-Object -First 1
     $restoreTargetButton = @($restoreTargetCard.Child.Children[1].Children | Where-Object { $_ -is [System.Windows.Controls.Button] -and [string]$_.Tag.action -ceq 'tx' }) | Select-Object -First 1
     $restoreTargetButton.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))
@@ -747,7 +761,9 @@ try {
         -not (Test-UiRadioCatUserActionBusy)) '普通 CAT 查询正在运行时连接或保存按钮被错误锁定。'
     $saveDuringQuery = [bool](Save-SettingsFromWindow)
     Assert-UiChannels ($saveDuringQuery -and [object]::ReferenceEquals($script:radioCatOperationPowerShell,$fakeCatQuery) -and
-        -not $script:radioCatOperationCancelled) '普通 CAT 查询期间保存设置失败，或保存操作取消了 CAT worker。'
+        -not $script:radioCatOperationCancelled) ('普通 CAT 查询期间保存设置失败，或保存操作取消了 CAT worker。 result={0}, busy={1}, workerSame={2}, cancelled={3}, footer={4}' -f `
+            $saveDuringQuery,[bool](Test-UiRadioCatUserActionBusy),[object]::ReferenceEquals($script:radioCatOperationPowerShell,$fakeCatQuery),
+            [bool]$script:radioCatOperationCancelled,[string](Get-TestUiControl 'FooterText').Text)
     Request-Reconnect
     Assert-UiChannels ($script:testBridgeRunRequests -eq 1 -and [object]::ReferenceEquals($script:radioCatOperationPowerShell,$fakeCatQuery) -and
         -not $script:radioCatOperationCancelled) '普通 CAT 查询期间启动 Wires-X 被阻止，或连接流程取消了 CAT worker。'

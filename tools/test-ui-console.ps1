@@ -316,6 +316,7 @@ try {
     $testConfig.connection.master = '127.0.0.1'
     $testConfig.connection.master_port = [uint64]62031
     $testConfig.connection.color_code = [uint64]1
+    $testConfig.connection.password = 'ui-console-test-only'
     $testConfig.devices.hri_port = 'COM5'
     $testConfig.devices.cat_port = 'COM11'
     $testConfig.devices.cat_baud_rate = 38400
@@ -340,7 +341,7 @@ try {
         & $script:originalAddUiEvent -Text $Text
     }
     $requiredControls = @(
-        'RadioCatPanel','CatPortBox','CatBaudRateBox','CatConnectButton','CatDisconnectButton','CatSessionStatusText','CatOperatingPanel',
+        'RadioCatPanel','CatPortBox','CatBaudRateBox','SerialConnectButton','SerialDisconnectButton','CatSessionStatusText','CatOperatingPanel',
         'CatObservedPanel','CatObservedMainModeText',
         'CatObservedFrequencyText','CatObservedPowerText','CatMainModeBox','ApplyCatModeButton','CatMainFrequencyMHzBox',
         'ApplyCatFrequencyButton','CatPowerSlider','CatDesiredPowerText','ApplyCatPowerButton','SerialBox',
@@ -494,21 +495,21 @@ try {
     Assert-UiConsole $connected ("real ConnectButton did not pass through the fake native supervisor seam; profileEditable={0}, startupNeedsSettings={1}, storedProfile={2}, footer={3}, settingsError={4}" -f `
         [bool]$script:profileEditable,[bool]$script:startupNeedsSettings,[bool]$script:storedProfile,[string]$script:mainWindow.FindName('FooterText').Text,$settingsError)
     Assert-UiConsole (-not (Get-UiRadioCatSessionState).requested -and -not $script:radioCatOperationPowerShell -and
-        (Get-UiConsoleControl 'CatPortBox').IsEnabled -and (Get-UiConsoleControl 'CatOperatingPanel').IsEnabled) `
-        '隔离UiTestFixture在核心连接后触发了CAT物理自动连接，或无CAT会话时锁住了CAT端口。'
-    Invoke-UiConsoleClick -Name 'CatConnectButton'
+        -not (Get-UiConsoleControl 'CatPortBox').IsEnabled -and (Get-UiConsoleControl 'CatOperatingPanel').IsEnabled) `
+        '隔离UiTestFixture在核心连接后触发了CAT物理自动连接，或核心占用时仍开放串口选择。'
+    [void](Connect-UiRadioCatSession)
     $firstQueryReady = Invoke-UiConsoleDispatcherUntil -TimeoutMs 4000 -Condition { -not $script:radioCatOperationPowerShell }
     Assert-UiConsole ($firstQueryReady -and (Get-UiRadioCatSessionState).requested -and (Get-UiRadioCatSessionState).connected -and
         -not (Get-UiConsoleControl 'CatPortBox').IsEnabled) 'UI test fixture 中的手动 CAT fake session 没有独立连接并完成首读。'
     Assert-UiConsole ([string]$script:radioCatObservedConnectionKey -match '\|Two$') 'fake CAT operation did not use internal Two stop bits.'
 
-    Invoke-UiConsoleClick -Name 'CatDisconnectButton'
+    [void](Disconnect-UiRadioCatSession -Reason user_disconnect)
     $catDisconnectReady = Invoke-UiConsoleDispatcherUntil -TimeoutMs 4000 -Condition {
         -not $script:radioCatOperationPowerShell -and -not (Get-UiRadioCatSessionState).requested
     }
     Assert-UiConsole ($catDisconnectReady -and $script:supervisor -and -not $script:supervisor.HasExited -and
-        (Get-UiConsoleControl 'CatPortBox').IsEnabled -and (Get-UiConsoleControl 'CatBaudRateBox').IsEnabled) `
-        '手动 CAT 断开没有独立于活 HRI 核心完成，或没有解锁 CAT 自己的端口/波特率。'
+        -not (Get-UiConsoleControl 'CatPortBox').IsEnabled -and -not (Get-UiConsoleControl 'CatBaudRateBox').IsEnabled) `
+        'CAT fake 会话断开应与核心退出分离，且核心占用期间继续锁定串口设备选择。'
     Assert-UiConsole ([string]$script:radioCatObserved.radio_id.value -ceq '0840' -and [int]$script:radioCatObserved.power.value.watts -eq 25) 'first query did not publish ID 0840 and actual 25 W state.'
     $fakeProcessId = [uint32]$script:supervisor.ProcessId
     $fakeReadyStatus = [pscustomobject][ordered]@{
@@ -697,13 +698,13 @@ try {
     Assert-UiConsole ($reattachStarted -and $script:radioCatOperationPowerShell -and [string]$script:radioCatOperationKind -ceq 'query') 're-enumerating COM11 did not restart one CAT query.'
     $busyPanelVisibility = (Get-UiConsoleControl 'CatObservedPanel').Visibility
     $busyOperatingVisibility = (Get-UiConsoleControl 'CatOperatingPanel').Visibility
-    $busyDisconnectEnabled = [bool](Get-UiConsoleControl 'CatDisconnectButton').IsEnabled
+    $busyCatSessionRequested = [bool](Get-UiRadioCatSessionState).requested
     for ($updateAttempt = 0; $updateAttempt -lt 3; $updateAttempt++) { Update-UiRadioCatControls }
     $duplicateQueryRejected = $false
     try { Start-UiRadioCatOperation -Operation 'query' } catch { $duplicateQueryRejected = $_.Exception.Message -match '另一项|尚未结束' }
     $busyNotice = if ($script:mainWindow.FindName('CatOperationStatusText')) { [string]$script:mainWindow.FindName('CatOperationStatusText').Text } else { '' }
     Assert-UiConsole ($duplicateQueryRejected -and [int]$script:radioCatOperationOrdinal -eq $reattachOrdinal -and
-        $script:radioCatOperationPowerShell -and $busyDisconnectEnabled -and
+        $script:radioCatOperationPowerShell -and $busyCatSessionRequested -and (Get-UiRadioCatSessionState).requested -and
         (Get-UiConsoleControl 'CatObservedPanel').Visibility -eq $busyPanelVisibility -and
         (Get-UiConsoleControl 'CatOperatingPanel').Visibility -eq $busyOperatingVisibility -and
         $busyNotice -notmatch '操作中') 'busy CAT refresh changed panel visibility, started a second worker, or displayed a permanent working label.'
@@ -800,7 +801,7 @@ try {
     $script:uiTestHooks.CatOperation = New-UiConsoleCatOperationHook
     Write-UiConsoleTestProgress 'native self-exit and in-flight CAT worker cleanup passed'
 
-    Invoke-UiConsoleClick -Name 'CatDisconnectButton'
+    [void](Disconnect-UiRadioCatSession -Reason user_disconnect)
     $nativeExitCatDisconnectReady = Invoke-UiConsoleDispatcherUntil -TimeoutMs 4000 -Condition {
         -not $script:radioCatOperationPowerShell -and -not (Get-UiRadioCatSessionState).requested
     }
@@ -817,7 +818,7 @@ try {
     Select-UiConsoleCatPortOption -PortName COM12
     Update-UiRadioCatControls
     Assert-UiConsole ((Get-UiRadioCatSelectedPort) -ceq 'COM12') 'newly enumerated COM12 could not be selected after COM11 disappeared.'
-    Invoke-UiConsoleClick -Name 'CatConnectButton'
+    [void](Connect-UiRadioCatSession)
     $com12CatReadReady = Invoke-UiConsoleDispatcherUntil -TimeoutMs 5000 -Condition {
         -not $script:radioCatOperationPowerShell -and $script:radioCatResult -and
             [string]$script:radioCatResult.operation -ceq 'query' -and [string]$script:radioCatResult.status -ceq 'confirmed'
@@ -847,6 +848,8 @@ try {
     Update-UiRadioCatControls
     $script:radioCatPollNextUtc = [DateTime]::UtcNow.AddMinutes(10)
     $raceBaseOrdinal = [int]$script:radioCatOperationOrdinal
+    $raceOperationLogPath = Join-Path $script:testRoot 'cat-operations.log'
+    $raceLogStart = if ([System.IO.File]::Exists($raceOperationLogPath)) { @([System.IO.File]::ReadAllLines($raceOperationLogPath)) } else { @() }
     Invoke-UiConsoleClick -Name 'ApplyCatModeButton'
     Assert-UiConsole ($script:radioCatQueuedAction -and [string]$script:radioCatQueuedAction.operation -ceq 'setMode' -and
         [string]$script:radioCatQueuedAction.mode -ceq 'C4FM-DN' -and -not $raceSupervisor.StopRequested -and
@@ -884,10 +887,22 @@ try {
         -not $script:radioCatOperationPowerShell -and -not $script:stopTask -and
             -not $script:radioCatPendingModeFrequencyRequest -and -not $script:radioModeApplyAfterStop
     }
-    Assert-UiConsole ($raceModeReady -and [int]$script:radioCatOperationOrdinal -eq ($oldQueryOrdinal + 2) -and
+    $raceLogNow = if ([System.IO.File]::Exists($raceOperationLogPath)) { @([System.IO.File]::ReadAllLines($raceOperationLogPath)) } else { @() }
+    $raceOperations = @($raceLogNow | Select-Object -Skip $raceLogStart.Count)
+    $raceOperationStarts = @($raceOperations | Where-Object { $_ -match '^\d+\|(query|setMode)$' })
+    $raceModeWrites = @($raceOperationStarts | Where-Object { $_ -match '\|setMode$' })
+    $raceQueryOperations = @($raceOperationStarts | Where-Object { $_ -match '\|query$' })
+    $raceLastOperationsAreQueryThenMode = ($raceOperationStarts.Count -ge 2 -and
+        $raceOperationStarts[$raceOperationStarts.Count - 2] -match '\|query$' -and
+        $raceOperationStarts[$raceOperationStarts.Count - 1] -match '\|setMode$')
+    Assert-UiConsole ($raceModeReady -and $raceModeWrites.Count -eq 1 -and $raceQueryOperations.Count -ge 2 -and
+        $raceLastOperationsAreQueryThenMode -and
         [string]$script:radioCatObserved.main_mode.value.mode -ceq 'C4FM-DN' -and
         $script:radioCatLastOperationStatus -ceq 'confirmed' -and -not $script:supervisor) `
-        'the fresh CAT query did not authorize exactly one frozen mode set and confirmed readback.'
+        ("the fresh CAT query did not authorize exactly one frozen mode set and confirmed readback. ready={0}, query_count={1}, mode_writes={2}, operations={3}, mode={4}, status={5}, supervisor={6}, stopTask={7}, pending={8}, queued={9}" -f `
+            $raceModeReady,$raceQueryOperations.Count,$raceModeWrites.Count,($raceOperations -join ','),[string]$script:radioCatObserved.main_mode.value.mode,
+            [string]$script:radioCatLastOperationStatus,[bool]$script:supervisor,[bool]$script:stopTask,
+            [bool]$script:radioCatPendingModeFrequencyRequest,[bool]$script:radioModeApplyAfterStop)
     $script:uiTestHooks.CatOperation = New-UiConsoleCatOperationHook
     Write-UiConsoleTestProgress 'normal stop, in-flight CAT worker cleanup, fresh query, and MAIN mode readback passed'
 
@@ -898,7 +913,14 @@ try {
     $script:stopTask = [pscustomobject]@{ IsCompleted=$true }
     Assert-UiConsole ([bool](Complete-BridgeStop)) 'core disconnect completion path did not run.'
     Assert-UiConsole ((Get-UiRadioCatSessionState).requested -and $script:radioCatPollingActive) 'ordinary core stop canceled the independent CAT session.'
-    Assert-UiConsole (-not (Get-UiConsoleControl 'CatPortBox').IsEnabled) 'ordinary core stop incorrectly unlocked a still-connected CAT port.'
+    $catPortAfterCoreStop = Get-UiConsoleControl 'CatPortBox'
+    $refreshDevicesAfterCoreStop = Get-UiConsoleControl 'RefreshDevicesButton'
+    Assert-UiConsole (-not $catPortAfterCoreStop.IsEnabled -and -not $refreshDevicesAfterCoreStop.IsEnabled) `
+        ("ordinary core stop incorrectly unlocked an occupied CAT port or device refresh. cat_enabled={0}, refresh_enabled={1}, requested={2}, connected={3}, polling={4}, state={5}, core={6}, main={7}, settings={8}" -f `
+            [bool]$catPortAfterCoreStop.IsEnabled,[bool]$refreshDevicesAfterCoreStop.IsEnabled,
+            (Get-UiRadioCatSessionState).requested,(Get-UiRadioCatSessionState).connected,(Get-UiRadioCatSessionState).polling,
+            (Get-UiRadioCatSessionState).state,
+            [bool]$script:supervisor,[bool]$script:mainWindow,[bool]$script:settingsWindow)
 
     $fakeDelayedSupervisor = [pscustomobject]@{ HasExited=$false; Operation='connect'; StopDelay=$true; StopRequested=$false; StopResult=$null }
     $fakeDelayedSupervisor | Add-Member -MemberType ScriptMethod -Name StopAsync -Value {

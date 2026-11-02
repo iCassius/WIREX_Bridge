@@ -104,11 +104,18 @@ struct StatusSnapshot {
     std::string mode{"running"};
     std::string status{"running"};
     std::string phase{"starting"};
-    std::string bm_state{"unknown"};
+    std::string bm_state{"stopped"};
     std::string hri_phase{"not_started"};
     std::string radio_state{"unknown"};
     std::uint64_t media_seq{};
     bool diagnostic{false};
+    struct BmConnection {
+        bool requested_enabled{};
+        std::uint64_t revision{};
+        bool transport_open{};
+    } bm_connection{};
+    bool bm_resolving{false};
+    std::string bm_connection_error{"none"};
     bool hri_ready{false};
     bool serial_open{false};
     bool wavein_open{false};
@@ -156,6 +163,22 @@ struct RoutingCallbacks {
     };
     std::function<AudioGainApplyResult(std::uint32_t, std::uint32_t)> set_audio_gains{};
     std::function<std::string()> snapshot_json{};
+    enum class BmConnectionResult : std::uint8_t {
+        accepted,
+        idempotent,
+        stale_revision,
+        revision_conflict,
+        transition_busy,
+        password_required,
+        master_resolution_failed,
+        profile_invalid,
+        transport_open_failed,
+    };
+    struct BmConnectionOutcome {
+        BmConnectionResult result{BmConnectionResult::transition_busy};
+        StatusSnapshot actual{};
+    };
+    std::function<BmConnectionOutcome(bool, std::uint64_t)> set_bm_connection{};
 };
 
 // v2 控制分派；未提供 RoutingCallbacks 时保留协议诊断的只读首阶段能力。
@@ -173,6 +196,7 @@ public:
     [[nodiscard]] bool supports_quick_call() const noexcept { return quick_call_enabled_; }
     [[nodiscard]] bool supports_radio_identity() const noexcept { return radio_identity_enabled_; }
     [[nodiscard]] bool supports_audio_gains() const noexcept { return audio_gains_enabled_; }
+    [[nodiscard]] bool supports_bm_connection() const noexcept { return bm_connection_enabled_; }
     [[nodiscard]] std::uint64_t audio_gains_revision() const noexcept
     {
         return last_audio_gains_mutation_.has_value() ? last_audio_gains_mutation_->actual.revision : 0U;
@@ -215,6 +239,7 @@ private:
     bool quick_call_enabled_{false};
     bool radio_identity_enabled_{false};
     bool audio_gains_enabled_{false};
+    bool bm_connection_enabled_{false};
     RoutingCallbacks routing_{};
     bool ready_emitted_{false};
     bool hello_seen_{false};

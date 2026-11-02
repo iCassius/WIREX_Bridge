@@ -76,7 +76,7 @@ namespace WirexBridge.Ui
             if (String.IsNullOrWhiteSpace(requestId) || requestId.Length > 128) return false;
             bool needsParameters = command == "rx_policy.replace" || command == "tx_policy.replace" ||
                 command == "network_subscription.quick_call_join" || command == "radio_identity.cache_upsert" ||
-                command == "audio.gains.set";
+                command == "audio.gains.set" || command == "bm.connection.set";
             if (command != "hello" && command != "status" && command != "shutdown" &&
                 command != "routing.status" && !needsParameters) return false;
             if (needsParameters)

@@ -25,6 +25,9 @@ foreach ($functionName in @('Test-UiExactControlFields','Test-UiControlUnsigned'
     Assert-UiPreparation ($null -ne $dependencyAst) "缺少启动校验依赖：$functionName"
     Invoke-Expression $dependencyAst.Extent.Text
 }
+$passwordWriterAst = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Write-UiSessionPasswordFile' }, $true)
+Assert-UiPreparation ($null -ne $passwordWriterAst) '没有找到 UI 会话密码文件创建函数。'
+Invoke-Expression $passwordWriterAst.Extent.Text
 $functionAst = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Test-UiPreparationRecord' }, $true)
 Assert-UiPreparation ($null -ne $functionAst) '没有找到 UI 启动参数验证函数。'
 Invoke-Expression $functionAst.Extent.Text
@@ -64,6 +67,53 @@ try {
     Assert-UiPreparation ([string]::Equals($validated.RoutingStatePath, [System.IO.Path]::GetFullPath($routingStatePath), [System.StringComparison]::OrdinalIgnoreCase)) '有效预检记录未返回本次完整路由状态路径。'
     Assert-UiPreparation ($validated.Arguments.Count -eq $record.arguments.Count -and
         [string]::Join([char]0, $validated.Arguments) -ceq [string]::Join([char]0, $record.arguments)) '有效预检记录的完整启动参数没有保留。'
+
+    $pausedArguments = [System.Collections.Generic.List[string]]::new()
+    for ($index = 0; $index -lt $record.arguments.Count; $index++) {
+        if ($record.arguments[$index] -ceq '--password-file') { $index++; continue }
+        $pausedArguments.Add([string]$record.arguments[$index])
+    }
+    $pausedArguments.Add('--bm-start-disconnected')
+    $pausedRecord = $record.PSObject.Copy()
+    $pausedRecord.arguments = [string[]]$pausedArguments.ToArray()
+    $pausedValidated = Test-UiPreparationRecord -Record $pausedRecord -RunDirectory $runDirectory `
+        -RunRoot $runRoot -ExpectedExecutable $expectedExe -BmStartDisconnected
+    Assert-UiPreparation (-not ($pausedValidated.Arguments -ccontains '--password-file') -and
+        ($pausedValidated.Arguments -ccontains '--bm-start-disconnected')) `
+        'BM 暂停预检必须接受无密码文件参数，并保留暂停启动标志。'
+
+    $pausedWithPassword = $pausedRecord.PSObject.Copy()
+    $pausedWithPassword.arguments = [string[]](@($pausedArguments.ToArray() | Where-Object { $_ -cne '--bm-start-disconnected' }) +
+        @('--password-file','local-password-fixture.txt','--bm-start-disconnected'))
+    [void](Test-UiPreparationRecord -Record $pausedWithPassword -RunDirectory $runDirectory `
+        -RunRoot $runRoot -ExpectedExecutable $expectedExe -BmStartDisconnected)
+    Assert-UiPreparation $true 'BM 暂停预检仍应允许显式提供真实密码文件路径。'
+
+    $rejected = $false
+    try { [void](Test-UiPreparationRecord -Record $pausedRecord -RunDirectory $runDirectory -RunRoot $runRoot -ExpectedExecutable $expectedExe) }
+    catch { $rejected = $true }
+    Assert-UiPreparation $rejected '未请求 BM 暂停时，带暂停启动标志的预检参数必须拒绝。'
+
+    $withoutPausedFlag = $pausedRecord.PSObject.Copy()
+    $withoutPausedFlag.arguments = [string[]]@($pausedArguments.ToArray() | Where-Object { $_ -cne '--bm-start-disconnected' })
+    $rejected = $false
+    try { [void](Test-UiPreparationRecord -Record $withoutPausedFlag -RunDirectory $runDirectory `
+        -RunRoot $runRoot -ExpectedExecutable $expectedExe -BmStartDisconnected) }
+    catch { $rejected = $true }
+    Assert-UiPreparation $rejected 'BM 暂停预检缺少启动标志时必须拒绝。'
+
+    $noPasswordDirectory = Join-Path $testRoot 'password-writer-empty'
+    [System.IO.Directory]::CreateDirectory($noPasswordDirectory) | Out-Null
+    $emptyPasswordPath = Write-UiSessionPasswordFile -Directory $noPasswordDirectory -Password ''
+    Assert-UiPreparation ([string]::IsNullOrEmpty($emptyPasswordPath) -and
+        @(Get-ChildItem -LiteralPath $noPasswordDirectory -Force).Count -eq 0) `
+        '空 BM 密码不得生成空的临时密码文件。'
+    $passwordDirectory = Join-Path $testRoot 'password-writer-set'
+    [System.IO.Directory]::CreateDirectory($passwordDirectory) | Out-Null
+    $passwordOutput = Write-UiSessionPasswordFile -Directory $passwordDirectory -Password 'fixture-only'
+    Assert-UiPreparation ([System.IO.File]::Exists($passwordOutput) -and
+        [string]::Equals([System.IO.Path]::GetDirectoryName($passwordOutput),$passwordDirectory,[StringComparison]::OrdinalIgnoreCase)) `
+        '非空 BM 密码应写入本次连接的临时目录。'
 
     $wrongControlVersion = $record.PSObject.Copy()
     $wrongVersionArguments = [System.Collections.Generic.List[string]]::new()

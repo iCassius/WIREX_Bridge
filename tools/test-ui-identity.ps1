@@ -39,7 +39,9 @@ $functionNames = @(
     'Clear-UiIdentityQueryQueue','Set-UiIdentityFailureCooldown','Start-NextUiIdentityQuery',
     'Start-UiIdentityQuery','Update-UiIdentityHistoryEntry','Test-UiIdentityResultMatchesCurrent',
     'Complete-UiIdentityQueryResources','Stop-UiIdentityQuery','Complete-UiIdentityQuery',
-    'Get-UiCallHistoryKey','Add-UiCallHistoryRecord','Request-StopAndExit','On-UiTimerTick',
+    'Get-UiCallHistoryModel','Get-UiCallHistorySelectedKey','Update-UiCallHistoryPageControls','Render-UiCallHistoryPage',
+    'Set-UiCallHistoryPageForKey','Get-UiCallHistoryKey','Add-UiCallHistoryRecord','Request-StopAndExit','On-UiTimerTick',
+    'Test-UiHasCapability','Update-UiBmConnectionPoll','Request-UiControlStatus','Set-UiBmConnectionSnapshot',
     'Get-UiChannelKey','Get-UiChannelTarget','Get-UiChannelByKey','Get-UiChannelCurrentCall',
     'Get-UiChannelCallerLabel','Get-UiChannelCallerDetails','New-UiDmIdLinkTextBlock',
     'New-UiChannelActionButton','Update-UiChannelDisplays'
@@ -238,9 +240,19 @@ function Initialize-TestState {
     $script:identityNativeSent = New-Object 'System.Collections.Generic.List[object]'
     $script:pendingControlRequests = @{}
     $script:callHistoryKeys = @{}
+    $script:callHistoryModel = New-Object 'System.Collections.Generic.List[object]'
+    $script:callHistoryPageIndex = 0
+    $script:selectedCallHistoryKey = ''
     $script:latestStatus = $null
     $script:lastStatusUtc = [DateTime]::MinValue
     $script:supervisor = $null
+    $script:controlCapabilities = ''
+    $script:bmConnectionNativeCapability = $false
+    $script:bmConnectionSnapshot = $null
+    $script:bmConnectionPendingRequest = $null
+    $script:bmConnectionRevision = [uint64]0
+    $script:serialDisconnectPending = $false
+    $script:serialDisconnectDeadlineUtc = [DateTime]::MinValue
     $script:pendingRoutingMutation = $null
     $script:pendingQuickCall = $null
     $script:pendingDynamicCallTarget = $null

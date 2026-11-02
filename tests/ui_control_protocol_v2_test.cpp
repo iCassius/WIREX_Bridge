@@ -2,6 +2,7 @@
 #include "wirex/pcm_gain.hpp"
 
 #include <array>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -68,6 +69,14 @@ std::string audio_gains_request(std::string_view run_id, std::uint64_t revision,
         "{\"revision\":" + std::to_string(revision) +
             ",\"radio_playback_gain_milli\":" + std::to_string(radio_playback_gain_milli) +
             ",\"mic_transmit_gain_milli\":" + std::to_string(mic_transmit_gain_milli) + "}");
+}
+
+std::string bm_connection_request(std::string_view run_id, std::string_view request_id,
+                                  bool enabled, std::uint64_t revision)
+{
+    return request_with_parameters(run_id, request_id, "bm.connection.set",
+        std::string("{\"enabled\":") + (enabled ? "true" : "false") +
+            ",\"revision\":" + std::to_string(revision) + "}");
 }
 
 constexpr std::string_view empty_rx_policy =
@@ -187,7 +196,7 @@ void test_ready_and_handshake()
     snapshot.mode = "diagnostic";
     snapshot.phase = "protocol_diagnostic";
     snapshot.diagnostic = true;
-    snapshot.bm_state = "not_started";
+    snapshot.bm_state = "stopped";
     snapshot.hri_ready = false;
     snapshot.radio_state = "unknown";
     const auto before_hello = dispatcher.handle(request("run-1", "pre", "status"), snapshot);
@@ -211,7 +220,7 @@ void test_ready_and_handshake()
     const auto status = dispatcher.handle(request("run-1", "status-1", "status"), snapshot);
     check(status.json_line.find("\"result\":\"ok\"") != std::string::npos &&
           status.json_line.find("\"mode\":\"diagnostic\"") != std::string::npos &&
-          status.json_line.find("\"bm_state\":\"not_started\"") != std::string::npos &&
+          status.json_line.find("\"bm_state\":\"stopped\"") != std::string::npos &&
           status.json_line.find("\"hri_ready\":false") != std::string::npos &&
           status.json_line.find("\"radio_state\":\"unknown\"") != std::string::npos,
           "diagnostic status explicitly reports no BM, HRI, or radio readiness");
@@ -921,10 +930,275 @@ void test_audio_gain_updates_use_independent_revision_and_cache_budget()
           "audio gain revision fence resets when a new native run starts");
 }
 
+void test_bm_connection_requires_handler_and_serializes_live_transitions()
+{
+    using namespace wirex::ui_control;
+    StatusSnapshot live{};
+    live.bm_state = "stopped";
+    live.bm_connection_error = "none";
+    unsigned callback_count = 0U;
+    bool requested_enabled = false;
+    std::uint64_t requested_revision = 0U;
+    RoutingCallbacks::BmConnectionOutcome next_outcome{};
+    bool throw_callback = false;
+    RoutingCallbacks callbacks{};
+    callbacks.set_bm_connection = [&](bool enabled, std::uint64_t revision) {
+        ++callback_count;
+        requested_enabled = enabled;
+        requested_revision = revision;
+        if (throw_callback) throw std::runtime_error("BM manager callback failure");
+        return next_outcome;
+    };
+
+    Dispatcher dispatcher("run-bm-connection", false, std::move(callbacks));
+    const auto ready = dispatcher.ready_line(9010U);
+    check(dispatcher.supports_bm_connection() &&
+              ready.find("\"bm.connection.set\"") != std::string::npos,
+          "control_ready advertises BM toggles only when the typed manager handler exists");
+    const auto hello = dispatcher.handle(request("run-bm-connection", "hello", "hello"), live);
+    check(hello.json_line.find("\"bm.connection.set\"") != std::string::npos,
+          "hello confirms that this native run supports BM connection control");
+
+    next_outcome.result = RoutingCallbacks::BmConnectionResult::accepted;
+    next_outcome.actual = live;
+    next_outcome.actual.bm_connection = {true, 1U, false};
+    next_outcome.actual.bm_resolving = true;
+    next_outcome.actual.bm_state = "stopped";
+    const auto enable_body = bm_connection_request("run-bm-connection", "bm-on-1", true, 1U);
+    const auto enabled = dispatcher.handle(enable_body, live);
+    check(enabled.json_line.find("\"result\":\"accepted\"") != std::string::npos &&
+              enabled.json_line.find("\"bm_connection\":{\"requested_enabled\":true,\"revision\":1,\"transport_open\":false}") != std::string::npos &&
+              enabled.json_line.find("\"bm_resolving\":true") != std::string::npos &&
+              enabled.json_line.find("\"bm_state\":\"stopped\"") != std::string::npos &&
+              callback_count == 1U && requested_enabled && requested_revision == 1U,
+          "accepted BM-on reports the manager's actual paused-DNS state without claiming an open transport");
+    const auto enable_replay = dispatcher.handle(enable_body, live);
+    check(enable_replay.json_line.find("\"replayed\":true") != std::string::npos && callback_count == 1U,
+          "the same JSON request replay never invokes the BM manager twice");
+    const auto request_id_conflict = dispatcher.handle(
+        bm_connection_request("run-bm-connection", "bm-on-1", false, 2U), live);
+    check(request_id_conflict.json_line.find("\"error\":\"request_id_body_conflict\"") != std::string::npos &&
+              callback_count == 1U,
+          "a request ID cannot be reused for a different BM toggle body");
+
+    next_outcome.result = RoutingCallbacks::BmConnectionResult::idempotent;
+    const auto duplicate_revision = dispatcher.handle(
+        bm_connection_request("run-bm-connection", "bm-on-1-duplicate", true, 1U), live);
+    check(duplicate_revision.json_line.find("\"result\":\"accepted\"") != std::string::npos &&
+              callback_count == 2U && requested_enabled && requested_revision == 1U,
+          "a new request ID can receive an idempotent acknowledgement for the manager's same revision");
+
+    next_outcome.result = RoutingCallbacks::BmConnectionResult::accepted;
+    next_outcome.actual = live;
+    next_outcome.actual.bm_connection = {false, 2U, true};
+    next_outcome.actual.bm_state = "ready";
+    next_outcome.actual.bm_resolving = false;
+    const auto disable_body = bm_connection_request("run-bm-connection", "bm-off-2", false, 2U);
+    const auto disabling = dispatcher.handle(disable_body, live);
+    check(disabling.json_line.find("\"result\":\"accepted\"") != std::string::npos &&
+              disabling.json_line.find("\"bm_connection\":{\"requested_enabled\":false,\"revision\":2,\"transport_open\":true}") != std::string::npos &&
+              disabling.json_line.find("\"bm_state\":\"ready\"") != std::string::npos,
+          "accepted BM-off reports that the UDP transport remains open while media drains");
+
+    live.bm_connection = {false, 2U, true};
+    live.bm_state = "ready";
+    live.bm_resolving = false;
+    live.bm_connection_error = "media_cleanup_timeout";
+    const auto status_during_deadline = dispatcher.handle(
+        request("run-bm-connection", "bm-status-during-deadline", "status"), live);
+    check(status_during_deadline.json_line.find("\"bm_connection_error\":\"media_cleanup_timeout\"") != std::string::npos &&
+              status_during_deadline.json_line.find("\"bm_connection\":{\"requested_enabled\":false,\"revision\":2,\"transport_open\":true}") != std::string::npos &&
+              status_during_deadline.json_line.find("\"bm_state\":\"ready\"") != std::string::npos,
+          "status preserves a media cleanup error while the real session and UDP transport remain open");
+
+    next_outcome.result = RoutingCallbacks::BmConnectionResult::transition_busy;
+    next_outcome.actual = live;
+    next_outcome.actual.bm_connection = {false, 2U, true};
+    next_outcome.actual.bm_state = "ready";
+    const auto enable_while_draining = dispatcher.handle(
+        bm_connection_request("run-bm-connection", "bm-on-during-drain", true, 3U), live);
+    check(enable_while_draining.json_line.find("\"result\":\"rejected\"") != std::string::npos &&
+              enable_while_draining.json_line.find("\"error\":\"bm_transition_busy\"") != std::string::npos &&
+              enable_while_draining.json_line.find("\"transport_open\":true") != std::string::npos,
+          "an enable request cannot race an outstanding BM/media disable transition");
+
+    live.bm_connection = {false, 2U, false};
+    live.bm_state = "stopped";
+    live.bm_connection_error = "media_cleanup_timeout";
+    const auto status_after_deadline = dispatcher.handle(
+        request("run-bm-connection", "bm-status-after-deadline", "status"), live);
+    check(status_after_deadline.json_line.find("\"bm_connection_error\":\"media_cleanup_timeout\"") != std::string::npos &&
+              status_after_deadline.json_line.find("\"bm_connection\":{\"requested_enabled\":false,\"revision\":2,\"transport_open\":false}") != std::string::npos &&
+              status_after_deadline.json_line.find("\"bm_state\":\"stopped\"") != std::string::npos,
+          "status after a media deadline reports the stopped session and its explicit cleanup error");
+
+    next_outcome.result = RoutingCallbacks::BmConnectionResult::accepted;
+    next_outcome.actual = live;
+    next_outcome.actual.bm_connection = {true, 4U, true};
+    next_outcome.actual.bm_state = "waiting_login_ack";
+    throw_callback = true;
+    const auto thrown = dispatcher.handle(
+        bm_connection_request("run-bm-connection", "bm-thrown-4", true, 4U), live);
+    check(thrown.json_line.find("\"result\":\"rejected\"") != std::string::npos &&
+              thrown.json_line.find("\"error\":\"bm_transition_busy\"") != std::string::npos &&
+              thrown.json_line.find("\"bm_connection\":{\"requested_enabled\":false,\"revision\":2,\"transport_open\":false}") != std::string::npos,
+          "a throwing manager handler returns current state and never fabricates a connected state");
+    throw_callback = false;
+
+    const unsigned calls_before_invalid = callback_count;
+    const auto invalid = request_with_parameters("run-bm-connection", "bm-invalid-rev", "bm.connection.set",
+        "{\"enabled\":true,\"revision\":0}");
+    check(dispatcher.handle(invalid, live).json_line.find("\"error\":\"invalid_bm_connection_parameters\"") != std::string::npos &&
+              callback_count == calls_before_invalid,
+          "invalid BM revision is rejected before reaching the manager");
+
+    Dispatcher without_handler("run-no-bm-handler", false);
+    const auto legacy_ready = without_handler.ready_line(9011U);
+    check(!without_handler.supports_bm_connection() &&
+              legacy_ready.find("bm.connection.set") == std::string::npos,
+          "legacy or diagnostic runs without a manager handler do not advertise BM toggle support");
+    (void)without_handler.handle(request("run-no-bm-handler", "hello", "hello"), {});
+    const auto unsupported = without_handler.handle(
+        bm_connection_request("run-no-bm-handler", "bm-no-handler", true, 1U), {});
+    check(unsupported.json_line.find("\"result\":\"unsupported\"") != std::string::npos &&
+              unsupported.json_line.find("\"error\":\"command_not_supported\"") != std::string::npos &&
+              unsupported.json_line.find("\"bm_state\":\"stopped\"") != std::string::npos,
+          "a legacy run without a handler keeps BM stopped and rejects toggles as unsupported");
+}
+
+int emit_r121_bm_protocol_frames(const std::string& output_path)
+{
+    using namespace wirex::ui_control;
+    constexpr std::string_view run_id = "9010-123456";
+    constexpr std::string_view legacy_run_id = "9020-123456";
+
+    StatusSnapshot live{};
+    live.bm_state = "stopped";
+    live.bm_connection_error = "none";
+    RoutingCallbacks::BmConnectionOutcome next_outcome{};
+    RoutingCallbacks callbacks{};
+    callbacks.set_bm_connection = [&](bool, std::uint64_t) { return next_outcome; };
+    Dispatcher dispatcher(std::string(run_id), false, std::move(callbacks));
+
+    std::vector<std::string> frames;
+    const auto ready = dispatcher.ready_line(9010U);
+    if (ready.empty()) return 2;
+    frames.push_back(ready);
+    const auto before_hello = dispatcher.handle(
+        bm_connection_request(run_id, "f15c0001-1210-4a21-9d01-000000000001", true, 1U), live);
+    if (before_hello.json_line.find("\"error\":\"hello_required\"") == std::string::npos) return 2;
+    frames.push_back(before_hello.json_line);
+    const auto hello = dispatcher.handle(
+        request(run_id, "f15c0001-1210-4a21-9d01-000000000002", "hello"), live);
+    if (hello.json_line.empty()) return 2;
+    frames.push_back(hello.json_line);
+    const auto malformed = dispatcher.handle(request_with_parameters(
+        run_id, "f15c0001-1210-4a21-9d01-000000000003", "bm.connection.set",
+        "{\"enabled\":true,\"revision\":0}"), live);
+    if (malformed.json_line.find("\"error\":\"invalid_bm_connection_parameters\"") == std::string::npos) return 2;
+    frames.push_back(malformed.json_line);
+
+    next_outcome.result = RoutingCallbacks::BmConnectionResult::accepted;
+    next_outcome.actual = live;
+    next_outcome.actual.bm_connection = {true, 1U, false};
+    next_outcome.actual.bm_resolving = true;
+    next_outcome.actual.bm_state = "stopped";
+    next_outcome.actual.bm_connection_error = "none";
+    auto result = dispatcher.handle(
+        bm_connection_request(run_id, "f15c0001-1210-4a21-9d01-000000000004", true, 1U), live);
+    if (result.json_line.empty()) return 2;
+    frames.push_back(result.json_line);
+    live = next_outcome.actual;
+
+    next_outcome.result = RoutingCallbacks::BmConnectionResult::accepted;
+    next_outcome.actual = live;
+    next_outcome.actual.bm_connection = {false, 2U, false};
+    next_outcome.actual.bm_resolving = true;
+    next_outcome.actual.bm_state = "stopped";
+    next_outcome.actual.bm_connection_error = "none";
+    result = dispatcher.handle(
+        bm_connection_request(run_id, "f15c0001-1210-4a21-9d01-000000000005", false, 2U), live);
+    if (result.json_line.empty()) return 2;
+    frames.push_back(result.json_line);
+    live = next_outcome.actual;
+
+    next_outcome.result = RoutingCallbacks::BmConnectionResult::transition_busy;
+    next_outcome.actual = live;
+    result = dispatcher.handle(
+        bm_connection_request(run_id, "f15c0001-1210-4a21-9d01-000000000006", true, 3U), live);
+    if (result.json_line.empty()) return 2;
+    frames.push_back(result.json_line);
+
+    // The fake resolver has now settled; no DNS or network code is used here.
+    live.bm_resolving = false;
+    next_outcome.result = RoutingCallbacks::BmConnectionResult::accepted;
+    next_outcome.actual = live;
+    next_outcome.actual.bm_connection = {true, 3U, true};
+    next_outcome.actual.bm_resolving = false;
+    next_outcome.actual.bm_state = "ready";
+    next_outcome.actual.bm_connection_error = "none";
+    result = dispatcher.handle(
+        bm_connection_request(run_id, "f15c0001-1210-4a21-9d01-000000000007", true, 3U), live);
+    if (result.json_line.empty()) return 2;
+    frames.push_back(result.json_line);
+    live = next_outcome.actual;
+
+    next_outcome.result = RoutingCallbacks::BmConnectionResult::accepted;
+    next_outcome.actual = live;
+    next_outcome.actual.bm_connection = {false, 4U, true};
+    next_outcome.actual.bm_resolving = false;
+    next_outcome.actual.bm_state = "ready";
+    next_outcome.actual.bm_connection_error = "media_cleanup_timeout";
+    result = dispatcher.handle(
+        bm_connection_request(run_id, "f15c0001-1210-4a21-9d01-000000000008", false, 4U), live);
+    if (result.json_line.empty()) return 2;
+    frames.push_back(result.json_line);
+
+    live = next_outcome.actual;
+    live.bm_connection.transport_open = false;
+    live.bm_state = "stopped";
+    const auto after_close = dispatcher.handle(
+        request(run_id, "f15c0001-1210-4a21-9d01-000000000009", "status"), live);
+    if (after_close.json_line.empty()) return 2;
+    frames.push_back(after_close.json_line);
+
+    RoutingCallbacks no_bm_callbacks{};
+    Dispatcher without_handler(std::string(legacy_run_id), false, std::move(no_bm_callbacks));
+    const auto legacy_ready = without_handler.ready_line(9020U);
+    if (legacy_ready.empty() || legacy_ready.find("bm.connection.set") != std::string::npos) return 2;
+    frames.push_back(legacy_ready);
+    StatusSnapshot legacy_snapshot{};
+    const auto legacy_hello = without_handler.handle(
+        request(legacy_run_id, "f15c0001-1210-4a21-9d01-00000000000a", "hello"), legacy_snapshot);
+    if (legacy_hello.json_line.empty()) return 2;
+    frames.push_back(legacy_hello.json_line);
+    const auto unsupported = without_handler.handle(
+        bm_connection_request(legacy_run_id, "f15c0001-1210-4a21-9d01-00000000000b", true, 1U), legacy_snapshot);
+    if (unsupported.json_line.find("\"result\":\"unsupported\"") == std::string::npos ||
+        unsupported.json_line.find("\"bm_state\":\"stopped\"") == std::string::npos) return 2;
+    frames.push_back(unsupported.json_line);
+
+    std::ofstream output(output_path, std::ios::binary | std::ios::trunc);
+    if (!output.is_open()) return 2;
+    for (const auto& frame : frames) {
+        output.write(frame.data(), static_cast<std::streamsize>(frame.size()));
+        output.put('\n');
+    }
+    output.flush();
+    return output.good() && frames.size() == 13U ? 0 : 2;
+}
+
 } // namespace
 
-int main()
+int main(int argc, char** argv)
 {
+    if (argc == 3 && std::string_view(argv[1]) == "--emit-r121-bm-frames") {
+        return emit_r121_bm_protocol_frames(argv[2]);
+    }
+    if (argc != 1) {
+        std::cerr << "usage: ui_control_protocol_v2_test [--emit-r121-bm-frames path]\n";
+        return 2;
+    }
     test_v1_compatibility();
     test_json_line_framing();
     test_frame_size_boundaries();
@@ -937,6 +1211,7 @@ int main()
     test_cache_capacity_reserves_shutdown();
     test_radio_identity_upserts_use_independent_revision_and_cache_budget();
     test_audio_gain_updates_use_independent_revision_and_cache_budget();
+    test_bm_connection_requires_handler_and_serializes_live_transitions();
     if (failures != 0) return 1;
     std::cout << "ui_control_protocol_v2_test: all assertions passed\n";
     return 0;

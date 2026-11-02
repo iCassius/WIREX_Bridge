@@ -5,6 +5,7 @@
 
 #include "wirex/bm_session.hpp"
 #include "wirex/bm_udp.hpp"
+#include "wirex/bm_connection_control.hpp"
 #include "wirex/bm_voice_pipeline.hpp"
 #include "wirex/bm_test_profile.hpp"
 #include "wirex/direct_frame.hpp"
@@ -25,6 +26,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -199,6 +201,74 @@ Profile test_profile()
     return value;
 }
 
+class ScriptedMasterResolver final : public wirex::bm_connection::MasterResolver {
+public:
+    ScriptedMasterResolver(Endpoint endpoint, std::size_t resolve_after_polls,
+                           std::size_t cancel_after_polls = 1U,
+                           wirex::bm_connection::ResolveResult cancel_result =
+                               wirex::bm_connection::ResolveResult::cancelled)
+        : endpoint_(endpoint), resolve_after_polls_(resolve_after_polls),
+          cancel_after_polls_(cancel_after_polls), cancel_result_(cancel_result)
+    {
+    }
+
+    [[nodiscard]] wirex::bm_connection::ResolveResult start(
+        std::string_view host, std::uint16_t port, Endpoint& endpoint) noexcept override
+    {
+        if (pending_ || host.empty() || port != endpoint_.port) {
+            return wirex::bm_connection::ResolveResult::failed;
+        }
+        cancelled_ = false;
+        resolve_polls_ = 0U;
+        cancel_polls_ = 0U;
+        endpoint = {};
+        endpoint.port = port;
+        pending_ = resolve_after_polls_ != 0U;
+        if (pending_) return wirex::bm_connection::ResolveResult::pending;
+        endpoint = endpoint_;
+        return wirex::bm_connection::ResolveResult::resolved;
+    }
+
+    [[nodiscard]] wirex::bm_connection::ResolveResult poll(Endpoint& endpoint) noexcept override
+    {
+        if (!pending_) return wirex::bm_connection::ResolveResult::failed;
+        if (cancelled_) {
+            ++cancel_polls_;
+            if (cancel_polls_ < cancel_after_polls_) return wirex::bm_connection::ResolveResult::pending;
+            pending_ = false;
+            endpoint = endpoint_;
+            endpoint.port = 0U;
+            return cancel_result_;
+        }
+        ++resolve_polls_;
+        if (resolve_polls_ < resolve_after_polls_) return wirex::bm_connection::ResolveResult::pending;
+        pending_ = false;
+        endpoint = endpoint_;
+        endpoint.port = 0U;
+        return wirex::bm_connection::ResolveResult::resolved;
+    }
+
+    void cancel() noexcept override
+    {
+        cancelled_ = true;
+        ++cancel_calls_;
+    }
+
+    [[nodiscard]] bool pending() const noexcept override { return pending_; }
+    [[nodiscard]] std::size_t cancel_calls() const noexcept { return cancel_calls_; }
+
+private:
+    Endpoint endpoint_{};
+    std::size_t resolve_after_polls_{};
+    std::size_t cancel_after_polls_{};
+    wirex::bm_connection::ResolveResult cancel_result_{};
+    std::size_t resolve_polls_{};
+    std::size_t cancel_polls_{};
+    std::size_t cancel_calls_{};
+    bool pending_{};
+    bool cancelled_{};
+};
+
 class BmLoopback final {
 public:
     BmLoopback()
@@ -331,6 +401,60 @@ private:
     Session session_;
     Endpoint client_endpoint_{};
 };
+
+Endpoint send_managed_control(wirex::bm_connection::ConnectionControl& control,
+                              FakeMaster& master, std::string_view marker_text,
+                              std::size_t expected_size, std::uint64_t now_ms)
+{
+    const auto pending = control.session().take_outbound();
+    check(pending.size() == 1U && pending.front().bytes.size() == expected_size &&
+              pending.front().bytes.size() >= marker_text.size() &&
+              std::equal(marker_text.begin(), marker_text.end(), pending.front().bytes.begin()),
+          "connection manager queues the expected BM control packet");
+    check(control.transport().send(pending.front().bytes.data(), pending.front().bytes.size()),
+          "connection manager sends a BM control packet through its production UDP transport");
+    control.session().record_outbound_sent(pending.front(), now_ms);
+    std::vector<std::uint8_t> received;
+    Endpoint source{};
+    check(master.receive(received, source), "localhost fake Master receives managed BM control packet");
+    check(received == pending.front().bytes, "localhost fake Master receives the exact manager packet bytes");
+    return source;
+}
+
+InputResult receive_managed_packet(wirex::bm_connection::ConnectionControl& control,
+                                   FakeMaster& master, const std::vector<std::uint8_t>& bytes,
+                                   std::uint64_t now_ms)
+{
+    check(master.send(control.endpoint(), bytes.data(), bytes.size()),
+          "localhost fake Master sends a BM response to the configured endpoint");
+    const auto received = control.transport().receive(100U);
+    check(received.kind == ReceiveKind::datagram && received.source == master.endpoint(),
+          "connection manager receives a datagram only from the configured fake Master");
+    return control.session().on_datagram(received.bytes.data(), received.bytes.size(),
+                                         received.source, now_ms);
+}
+
+void complete_managed_login(wirex::bm_connection::ConnectionControl& control,
+                            FakeMaster& master, std::uint64_t start_ms)
+{
+    const auto client = send_managed_control(control, master, "RPTL", 8U, start_ms);
+    const auto challenge_packet = challenge();
+    check(master.send(client, challenge_packet.data(), challenge_packet.size()),
+          "fake Master sends the managed session challenge");
+    const auto challenge_received = control.transport().receive(100U);
+    check(challenge_received.kind == ReceiveKind::datagram &&
+              control.session().on_datagram(challenge_received.bytes.data(),
+                  challenge_received.bytes.size(), challenge_received.source, start_ms + 1U) == InputResult::accepted,
+          "managed BM session accepts its fake Master challenge");
+    (void)send_managed_control(control, master, "RPTK", 40U, start_ms + 2U);
+    check(receive_managed_packet(control, master, acknowledgement(), start_ms + 3U) == InputResult::accepted,
+          "managed BM session accepts fake Master authentication acknowledgement");
+    (void)send_managed_control(control, master, "RPTC", 302U, start_ms + 4U);
+    check(receive_managed_packet(control, master, acknowledgement(), start_ms + 5U) == InputResult::accepted,
+          "managed BM session accepts fake Master configuration acknowledgement");
+    check(control.session().snapshot().state == State::ready,
+          "connection manager owns a ready BM session after localhost login");
+}
 
 wirex::dmr_call::CallConfig call_config(std::uint32_t source, std::uint8_t stream,
                                         wirex::dmr_call::Slot slot = wirex::dmr_call::Slot::ts1)
@@ -536,6 +660,198 @@ void record_write(wirex::hri_stream_session::Session& hri,
           "fake HRI records a serial write attempt");
     check(hri.write_completed(action.write_id, true, now_ms).error == wirex::hri_stream_session::Error::none,
           "fake HRI records successful write completion");
+}
+
+void test_connection_manager_toggle_resolver_cancel_and_media_deadline()
+{
+    using wirex::bm_connection::ConnectionControl;
+    using wirex::bm_connection::RequestResult;
+    using wirex::hri_stream_session::ActionKind;
+    using wirex::hri_stream_session::Phase;
+    using wirex::hri_stream_session::Reason;
+    using ConnectionError = wirex::bm_connection::Error;
+
+    {
+        FakeMaster master;
+        auto resolver = std::make_unique<ScriptedMasterResolver>(master.endpoint(), 0U);
+        ConnectionControl control(test_profile(), "fake-master.invalid", master.endpoint().port,
+                                  std::move(resolver));
+        auto snapshot = control.snapshot();
+        check(!snapshot.requested_enabled && !snapshot.transport_open &&
+                  snapshot.bm_state == State::stopped,
+              "paused manager begins with no BM request, stopped session, and closed UDP transport");
+        std::vector<std::uint8_t> packet;
+        Endpoint source{};
+        check(!master.receive(packet, source, 15U), "paused BM manager sends no localhost UDP datagrams");
+
+        check(control.set_enabled(false, 1U, 0U) == RequestResult::accepted &&
+                  control.set_enabled(false, 1U, 1U) == RequestResult::idempotent,
+              "initial BM-off request is accepted once and replayed idempotently");
+        check(control.set_enabled(true, 1U, 2U) == RequestResult::revision_conflict &&
+                  control.set_enabled(true, 0U, 2U) == RequestResult::revision_conflict,
+              "a same-revision opposite value and revision zero are rejected as conflicts");
+        check(control.set_enabled(true, 2U, 10U) == RequestResult::accepted &&
+                  control.snapshot().requested_enabled && control.snapshot().transport_open &&
+                  control.snapshot().bm_state == State::waiting_login_ack,
+              "a newer BM-on request resolves localhost and starts the shared real Session and UDP transport");
+        complete_managed_login(control, master, 10U);
+
+        wirex::hri_stream_session::Session hri(hri_candidate(true), hri_candidate(false));
+        std::vector<wirex::hri_stream_session::CandidateFrame> hri_writes;
+        auto hri_update = hri.begin_call(500U);
+        check(hri_update.state.phase == Phase::start_write_pending,
+              "media-deadline fixture starts a synthetic HRI stream without opening a device");
+        record_write(hri, hri_update.actions.front(), 501U, hri_writes);
+        const auto t3_record = hri_candidate(true);
+        hri_update = hri.feed(t3_record.data(), t3_record.size(), 502U);
+        check(hri_update.state.phase == Phase::playing,
+              "synthetic HRI observes T3 before the media drain fixture begins");
+        hri_update = hri.network_ended(510U);
+        check(hri_update.state.phase == Phase::draining,
+              "network end leaves playback pending until the synthetic audio sink drains");
+
+        check(control.set_enabled(false, 3U, 520U) == RequestResult::accepted,
+              "BM-off records its new revision while the fake media cleanup is still pending");
+        snapshot = control.snapshot();
+        check(!snapshot.requested_enabled && snapshot.transport_open && control.disable_pending(),
+              "BM UDP remains open while HRI/audio cleanup is pending");
+        for (std::uint64_t now_ms = 530U; now_ms <= 580U; now_ms += 10U) {
+            control.tick(now_ms);
+            hri_update = hri.tick(now_ms);
+            check(hri_update.state.phase == Phase::draining && control.disable_pending() &&
+                      control.snapshot().transport_open,
+                  "media-pending ticks keep BM transport alive until the bounded cleanup deadline");
+        }
+        control.note_media_cleanup_timeout();
+        check(control.snapshot().error == ConnectionError::media_cleanup_timeout &&
+                  control.snapshot().transport_open,
+              "media cleanup deadline is recorded before the caller closes the BM session");
+        (void)hri.cancel(Reason::transport_failed, 590U);
+        check(control.begin_disable(590U), "caller starts BM protocol shutdown after media cleanup deadline");
+        (void)send_managed_control(control, master, "RPTCL", 9U, 591U);
+        control.finish_disable();
+        snapshot = control.snapshot();
+        check(!snapshot.requested_enabled && !snapshot.transport_open && !control.disable_pending() &&
+                  snapshot.bm_state == State::stopped && snapshot.error == ConnectionError::media_cleanup_timeout,
+              "RPTCL is sent before UDP closes, while timeout evidence remains in the stopped snapshot");
+        check(control.set_enabled(false, 3U, 600U) == RequestResult::idempotent &&
+                  control.set_enabled(true, 3U, 600U) == RequestResult::revision_conflict,
+              "the completed off revision replays idempotently and cannot be reused to turn BM on");
+
+        check(control.set_enabled(true, 4U, 610U) == RequestResult::accepted &&
+                  control.snapshot().transport_open && control.snapshot().error == ConnectionError::none,
+              "a newer on revision starts a fresh session after the completed off transition");
+        complete_managed_login(control, master, 610U);
+        check(control.set_enabled(false, 5U, 620U) == RequestResult::accepted &&
+                  control.begin_disable(620U),
+              "a second off request can stop the re-enabled session");
+        (void)send_managed_control(control, master, "RPTCL", 9U, 621U);
+        control.finish_disable();
+        check(!control.snapshot().transport_open && control.snapshot().revision == 5U,
+              "the second BM off/on/off cycle ends with its latest revision and a closed socket");
+    }
+
+    {
+        FakeMaster master;
+        auto resolver = std::make_unique<ScriptedMasterResolver>(master.endpoint(), 3U);
+        ConnectionControl control(test_profile(), "delayed-success.invalid", master.endpoint().port,
+                                  std::move(resolver));
+        check(control.set_enabled(true, 1U, 0U) == RequestResult::accepted &&
+                  control.snapshot().resolving && !control.snapshot().transport_open,
+              "delayed success starts resolution without binding a UDP transport");
+        control.tick(10U);
+        control.tick(20U);
+        check(control.snapshot().resolving && !control.snapshot().transport_open,
+              "incomplete resolver polls preserve the paused socket state");
+        control.tick(30U);
+        check(control.snapshot().requested_enabled && !control.snapshot().resolving &&
+                  control.snapshot().transport_open && control.endpoint().port == master.endpoint().port,
+              "asynchronous address completion restores the configured master UDP port");
+        (void)send_managed_control(control, master, "RPTL", 8U, 31U);
+    }
+
+    {
+        FakeMaster master;
+        auto resolver = std::make_unique<ScriptedMasterResolver>(
+            master.endpoint(), 10000U, 2U, wirex::bm_connection::ResolveResult::resolved);
+        auto* resolver_state = resolver.get();
+        ConnectionControl control(test_profile(), "delayed-master.invalid", master.endpoint().port,
+                                  std::move(resolver));
+        check(control.set_enabled(true, 1U, 0U) == RequestResult::accepted &&
+                  control.snapshot().requested_enabled && control.snapshot().resolving &&
+                  !control.snapshot().transport_open && control.snapshot().bm_state == State::stopped &&
+                  control.snapshot().error == ConnectionError::none,
+              "delayed master resolution remains asynchronous and does not open UDP early");
+
+        wirex::hri_stream_session::Session hri(hri_candidate(true), hri_candidate(false));
+        auto hri_update = hri.begin_call(0U);
+        check(hri_update.state.phase == Phase::start_write_pending,
+              "delayed-DNS test arms the real HRI session state machine");
+        std::vector<wirex::hri_stream_session::CandidateFrame> hri_writes;
+        record_write(hri, hri_update.actions.front(), 1U, hri_writes);
+        const auto began = std::chrono::steady_clock::now();
+        for (std::uint64_t now_ms = 10U; now_ms <= 3100U; now_ms += 10U) {
+            control.tick(now_ms);
+            hri_update = hri.tick(now_ms);
+            const auto stop_write = std::find_if(hri_update.actions.begin(), hri_update.actions.end(),
+                [](const wirex::hri_stream_session::Action& action) {
+                    return action.kind == ActionKind::write_stop_candidate;
+                });
+            if (stop_write != hri_update.actions.end()) {
+                record_write(hri, *stop_write, now_ms, hri_writes);
+                break;
+            }
+        }
+        const auto elapsed = std::chrono::steady_clock::now() - began;
+        check(hri.snapshot().reason == Reason::start_record_timeout &&
+                  hri.snapshot().phase == Phase::awaiting_stop_record && control.snapshot().resolving &&
+                  !control.snapshot().transport_open,
+              "HRI's own T3 deadline advances while master resolution remains pending");
+        check(elapsed < std::chrono::seconds{1},
+              "repeated resolver polls do not block the shared HRI tick loop");
+        check(resolver_state->pending(), "the synthetic resolver is still pending when HRI times out");
+
+        check(control.set_enabled(false, 2U, 3110U) == RequestResult::accepted &&
+                  resolver_state->cancel_calls() == 1U && !control.snapshot().requested_enabled &&
+                  control.snapshot().resolving && !control.snapshot().transport_open &&
+                  control.snapshot().bm_state == State::stopped && control.snapshot().error == ConnectionError::none,
+              "a newer BM-off request cancels delayed name resolution");
+        control.tick(3120U);
+        check(!control.snapshot().transport_open && control.snapshot().resolving &&
+                  !control.snapshot().requested_enabled && control.snapshot().bm_state == State::stopped,
+              "cancelled lookup cleanup stays pending without opening UDP");
+        control.tick(3130U);
+        check(!control.snapshot().transport_open && !control.snapshot().requested_enabled &&
+                  !control.snapshot().resolving && control.snapshot().bm_state == State::stopped,
+              "a late successful resolver completion after cancellation never reopens UDP");
+        std::vector<std::uint8_t> packet;
+        Endpoint source{};
+        check(!master.receive(packet, source, 15U), "cancelled DNS never sends a packet to the fake Master");
+    }
+
+    {
+        FakeMaster master;
+        auto resolver = std::make_unique<ScriptedMasterResolver>(
+            master.endpoint(), 10000U, 3U, wirex::bm_connection::ResolveResult::resolved);
+        ConnectionControl control(test_profile(), "timeout-master.invalid", master.endpoint().port,
+                                  std::move(resolver));
+        check(control.set_enabled(true, 1U, 0U) == RequestResult::accepted,
+              "DNS-timeout test begins an asynchronous BM-on request");
+        control.tick(3500U);
+        check(!control.snapshot().requested_enabled && control.snapshot().resolving &&
+                  control.snapshot().error == ConnectionError::master_resolution_timeout &&
+                  !control.snapshot().transport_open && control.snapshot().bm_state == State::stopped,
+              "master DNS reaches its explicit timeout without opening UDP");
+        control.tick(4001U);
+        check(control.snapshot().error == ConnectionError::resolver_cancel_timeout &&
+                  control.snapshot().resolving && !control.snapshot().transport_open &&
+                  !control.snapshot().requested_enabled && control.snapshot().bm_state == State::stopped,
+              "a resolver still running past its cancellation grace period reports cleanup timeout");
+        control.tick(4002U);
+        check(control.snapshot().error == ConnectionError::resolver_cancel_timeout &&
+                  !control.snapshot().resolving && !control.snapshot().transport_open,
+              "a late resolution is reaped after timeout but never starts a BM socket");
+    }
 }
 
 struct FakeHriAudioSink {

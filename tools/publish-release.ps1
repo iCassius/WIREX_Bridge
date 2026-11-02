@@ -52,6 +52,7 @@ $script:alpha13TestNames = @($script:alpha12TestNames)
 $script:alpha14TestNames = @($script:alpha13TestNames)
 $script:alpha15TestNames = @($script:alpha14TestNames)
 $script:alpha16TestNames = @($script:alpha15TestNames)
+$script:alpha17TestNames = @($script:alpha16TestNames)
 
 function Set-PublishProfile {
     param([Parameter(Mandatory=$true)][string]$Tag)
@@ -291,7 +292,15 @@ function Set-PublishProfile {
             $script:expectedDirectories = @($alpha15.Directories)
             $script:expectedTestNames = $script:alpha16TestNames
         }
-        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.16 release profiles are supported.' }
+        'v0.1.0-alpha.17' {
+            $alpha16 = Set-PublishProfile -Tag 'v0.1.0-alpha.16'
+            $script:publishTag = $Tag
+            $script:assetPathMap = [ordered]@{}
+            foreach ($path in $alpha16.AssetPathMap.Keys) { $script:assetPathMap[$path] = $alpha16.AssetPathMap[$path] }
+            $script:expectedDirectories = @($alpha16.Directories)
+            $script:expectedTestNames = $script:alpha17TestNames
+        }
+        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.17 release profiles are supported.' }
     }
     return [pscustomobject]@{
         Tag = $script:publishTag
@@ -425,7 +434,7 @@ function Assert-PublishPackage {
             }
         }
     }
-    if ($Tag -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16')) {
+    if ($Tag -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17')) {
         $excludedPrivateFiles = @($manifest.excluded_private_files | ForEach-Object { [string]$_ })
         foreach ($requiredPath in @(
             'config.json',

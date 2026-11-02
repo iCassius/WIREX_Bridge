@@ -101,16 +101,17 @@ function Set-UiRadioCatSessionState {
 
 function Update-UiRadioCatSessionControls {
     $state = Get-UiRadioCatSessionState
-    $connectButton = Find-UiRadioCatControl -Name 'CatConnectButton'
-    $disconnectButton = Find-UiRadioCatControl -Name 'CatDisconnectButton'
-    if ($connectButton) {
-        $enabled = (-not $state.requested -and -not $state.shutdown -and -not $script:radioCatOperationPowerShell -and
-            (Get-UiRadioCatSelectedPort) -and -not (Test-UiRadioCatSelectedPortConflict))
-        if ([bool]$connectButton.IsEnabled -ne [bool]$enabled) { $connectButton.IsEnabled = [bool]$enabled }
-    }
-    if ($disconnectButton) {
-        $enabled = ($state.requested -and -not $state.shutdown)
-        if ([bool]$disconnectButton.IsEnabled -ne [bool]$enabled) { $disconnectButton.IsEnabled = [bool]$enabled }
+    if (Get-Command -Name 'Set-ConnectionButtonState' -ErrorAction SilentlyContinue) {
+        Set-ConnectionButtonState
+    } else {
+        $connectButton = Find-UiRadioCatControl -Name 'SerialConnectButton'
+        $disconnectButton = Find-UiRadioCatControl -Name 'SerialDisconnectButton'
+        if ($connectButton) {
+            $enabled = (-not $state.requested -and -not $state.shutdown -and -not $script:radioCatOperationPowerShell -and
+                (Get-UiRadioCatSelectedPort) -and -not (Test-UiRadioCatSelectedPortConflict))
+            $connectButton.IsEnabled = [bool]$enabled
+        }
+        if ($disconnectButton) { $disconnectButton.IsEnabled = ($state.requested -and -not $state.shutdown) }
     }
     if ($state.state -eq 'polling' -or $state.state -eq 'connected' -or $state.state -eq 'error' -or
         $state.state -eq 'connecting' -or $state.state -eq 'disconnecting' -or $state.state -eq 'shutdown') {
@@ -181,10 +182,10 @@ function Initialize-UiRadioCatController {
     (Get-SettingsControl 'CatBaudRateBox').Add_SelectionChanged({ Update-UiRadioCatControls })
     $stopBitsControl = Find-UiRadioCatControl -Name 'CatStopBitsBox'
     if ($stopBitsControl) { $stopBitsControl.Add_SelectionChanged({ Update-UiRadioCatControls }) }
-    $connectButton = Find-UiRadioCatControl -Name 'CatConnectButton'
-    if ($connectButton) { $connectButton.Add_Click({ Connect-UiRadioCatSession }) }
-    $disconnectButton = Find-UiRadioCatControl -Name 'CatDisconnectButton'
-    if ($disconnectButton) { $disconnectButton.Add_Click({ Disconnect-UiRadioCatSession -Reason 'user_disconnect' }) }
+    $connectButton = Find-UiRadioCatControl -Name 'SerialConnectButton'
+    if ($connectButton) { $connectButton.Add_Click({ [void](Connect-UiSerialCombo) }) }
+    $disconnectButton = Find-UiRadioCatControl -Name 'SerialDisconnectButton'
+    if ($disconnectButton) { $disconnectButton.Add_Click({ [void](Disconnect-UiSerialCombo) }) }
     (Get-SettingsControl 'ApplyCatModeButton').Add_Click({ Invoke-UiRadioCatAction -Operation 'setMode' })
     (Get-SettingsControl 'ApplyCatFrequencyButton').Add_Click({ Invoke-UiRadioCatAction -Operation 'setFrequency' })
     (Get-SettingsControl 'ApplyCatPowerButton').Add_Click({ Invoke-UiRadioCatAction -Operation 'setPower' })
@@ -574,7 +575,7 @@ function Test-UiRadioCatRunIdle {
     if ($status.ptt_gate_ready -isnot [bool] -or $status.ptt_gate_tx_active -isnot [bool] -or
         $status.current_call_valid -isnot [bool] -or [string]$status.ptt_last_state -cne 'released' -or
         [bool]$status.ptt_gate_tx_active -or [bool]$status.current_call_valid -or
-        [string]$status.receive_media_state -cnotin @('idle','filtered') -or -not [bool]$status.ptt_gate_ready) { return $false }
+        [string]$status.receive_media_state -cnotin @('idle','filtered')) { return $false }
     foreach ($name in @('rx_queue_bursts','rx_queue_playback_frames','rx_queue_unconfirmed_playback_frames','rx_buffered_receive_frames')) {
         $value = [uint64]0
         if ($status.PSObject.Properties[$name].Value -is [bool] -or
@@ -768,10 +769,17 @@ function Update-UiRadioCatObservationDisplay {
 
 function Update-UiRadioCatControls {
     if (-not $script:mainWindow -and -not $script:settingsWindow) { return }
-    $panelVisibility = if ($script:radioCatModuleAvailable) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
-    Set-UiRadioCatControlVisibility -Name 'RadioCatPanel' -Visibility $panelVisibility
-    Set-UiRadioCatControlVisibility -Name 'CatOperatingPanel' -Visibility $panelVisibility
-    if (-not $script:radioCatModuleAvailable) { return }
+    Set-UiRadioCatControlVisibility -Name 'RadioCatPanel' -Visibility ([System.Windows.Visibility]::Visible)
+    Set-UiRadioCatControlVisibility -Name 'CatOperatingPanel' -Visibility ([System.Windows.Visibility]::Visible)
+    if (-not $script:radioCatModuleAvailable) {
+        foreach ($name in @('CatPortBox','CatBaudRateBox','CatMainModeBox','ApplyCatModeButton',
+                'CatMainFrequencyMHzBox','ApplyCatFrequencyButton','CatPowerSlider','ApplyCatPowerButton')) {
+            Set-UiRadioCatControlEnabled -Name $name -Enabled $false
+        }
+        Set-UiRadioCatText -Name 'CatSessionStatusText' -Text 'CAT 模块不可用'
+        if (Get-Command -Name 'Set-ConnectionButtonState' -ErrorAction SilentlyContinue) { Set-ConnectionButtonState }
+        return
+    }
     if ($script:radioControlPreferencesError) {
         foreach ($name in @('CatPortBox','CatBaudRateBox','CatMainModeBox','ApplyCatModeButton',
                 'CatMainFrequencyMHzBox','ApplyCatFrequencyButton','CatPowerSlider','ApplyCatPowerButton')) {
@@ -782,8 +790,9 @@ function Update-UiRadioCatControls {
     $writeBusy = ($script:radioCatOperationPowerShell -and [string]$script:radioCatOperationKind -cne 'query')
     $actionPending = [bool]($script:radioCatQueuedAction -or $script:radioModeApplyAfterStop -or $script:radioCatPendingModeFrequencyRequest)
     $editBusy = ($writeBusy -or $actionPending -or $script:radioCatSessionShutdown)
+    $coreActive = [bool]($script:supervisor -and -not $script:supervisor.HasExited)
     foreach ($name in @('CatPortBox','CatBaudRateBox')) {
-        Set-UiRadioCatControlEnabled -Name $name -Enabled (-not $script:radioCatSessionRequested -and
+        Set-UiRadioCatControlEnabled -Name $name -Enabled (-not $coreActive -and -not $script:radioCatSessionRequested -and
             -not $script:radioCatOperationPowerShell -and -not $script:radioCatSessionShutdown)
     }
     foreach ($name in @('CatMainModeBox','CatMainFrequencyMHzBox','CatPowerSlider')) {

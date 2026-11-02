@@ -1,7 +1,9 @@
 ﻿[CmdletBinding()]
 param(
-    [Parameter(Mandatory=$true)][string]$NativeExecutable,
-    [string]$UiPackageDirectory = ''
+    [string]$NativeExecutable = '',
+    [string]$UiPackageDirectory = '',
+    [switch]$ParserOnly,
+    [string]$BmProtocolFramesPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -37,8 +39,7 @@ function Assert-UiControlFrameRejected {
 }
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$NativeExecutable = [System.IO.Path]::GetFullPath($NativeExecutable)
-if (-not [System.IO.File]::Exists($NativeExecutable)) { throw "缺少 Native 控制诊断核心：$NativeExecutable" }
+$NativeExecutable = if ($NativeExecutable) { [System.IO.Path]::GetFullPath($NativeExecutable) } else { '' }
 $uiWindowsDirectory = Join-Path $repoRoot 'ui\windows'
 if (-not [string]::IsNullOrWhiteSpace($UiPackageDirectory)) {
     $UiPackageDirectory = [System.IO.Path]::GetFullPath($UiPackageDirectory)
@@ -55,11 +56,170 @@ $ast = [System.Management.Automation.Language.Parser]::ParseFile($uiScript, [ref
 Assert-UiControl ($parseErrors.Count -eq 0) 'bridge-ui.ps1 PowerShell 5.1 语法解析失败。'
 foreach ($functionName in @('Test-UiExactControlFields','Test-UiControlUnsigned','Test-UiAudioGainsValue',
         'Test-UiAudioGainCapability','Test-UiControlSnapshot',
-        'Test-UiRxPolicy','Test-UiRoutingCapabilityList','Test-UiRoutingSnapshot','ConvertFrom-UiControlFrame')) {
+        'Test-UiRxPolicy','Test-UiRoutingCapabilityList','Test-UiRoutingSnapshot','Test-UiHasCapability',
+        'Test-UiBmConnectionState','Get-UiBmConnectionErrorText','Get-UiBmConnectionRejectText','ConvertFrom-UiControlFrame')) {
     $functionAst = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $functionName }, $true)
     Assert-UiControl ($null -ne $functionAst) "缺少控制消息验证函数：$functionName"
     Invoke-Expression $functionAst.Extent.Text
 }
+$script:controlCapabilities='bm.connection.set'
+$testRunId='12345-1'
+$acceptedBmFrame=[pscustomobject][ordered]@{
+    schema_version=2;type='control_result';run_id=$testRunId;control_seq=[uint64]1
+    request_id='7e40599a-4c69-4cb9-9505-21a28ab58a88';command='bm.connection.set';result='accepted';replayed=$false
+    bm_connection=[pscustomobject][ordered]@{requested_enabled=$true;revision=[uint64]1;transport_open=$false}
+    bm_resolving=$true;bm_connection_error='none';bm_state='stopped'
+}
+$acceptedBm=ConvertFrom-UiControlFrame -Json (ConvertTo-Json -InputObject $acceptedBmFrame -Compress -Depth 6) -LockedRunId $testRunId
+Assert-UiControl ($acceptedBm.result -ceq 'accepted' -and $acceptedBm.bm_resolving -and
+    $acceptedBm.bm_connection.requested_enabled -and $acceptedBm.bm_connection.revision -eq 1) `
+    'accepted BM ACK 必须允许无 error 的异步 DNS 解析快照。'
+$rejectedBmFrame=[pscustomobject][ordered]@{
+    schema_version=2;type='control_result';run_id=$testRunId;control_seq=[uint64]2
+    request_id='7e40599a-4c69-4cb9-9505-21a28ab58a89';command='bm.connection.set';result='rejected';replayed=$false
+    error='bm_revision_stale';bm_connection=[pscustomobject][ordered]@{requested_enabled=$false;revision=[uint64]0;transport_open=$false}
+    bm_resolving=$false;bm_connection_error='none';bm_state='stopped'
+}
+$rejectedBm=ConvertFrom-UiControlFrame -Json (ConvertTo-Json -InputObject $rejectedBmFrame -Compress -Depth 6) -LockedRunId $testRunId -LastControlSequence 1
+Assert-UiControl ($rejectedBm.result -ceq 'rejected' -and $rejectedBm.error -ceq 'bm_revision_stale' -and
+    $rejectedBm.bm_connection.revision -eq 0) 'rejected BM ACK 必须接受 Native 返回的 revision=0 快照。'
+$safeBmRejectCodes=@('bm_revision_conflict','bm_transition_busy','bm_password_required','bm_master_resolution_failed','bm_profile_invalid','bm_transport_open_failed')
+foreach ($rejectCode in $safeBmRejectCodes) {
+    $rejectedBmFrame.control_seq=[uint64]([uint64]$rejectedBmFrame.control_seq + 1)
+    $rejectedBmFrame.error=$rejectCode
+    $parsedReject=ConvertFrom-UiControlFrame -Json (ConvertTo-Json -InputObject $rejectedBmFrame -Compress -Depth 6) `
+        -LockedRunId $testRunId -LastControlSequence ([uint64]($rejectedBmFrame.control_seq - 1))
+    Assert-UiControl ($parsedReject.error -ceq $rejectCode) ('BM control rejection code was not accepted: ' + $rejectCode)
+}
+$invalidBmStateFrame=$acceptedBmFrame.PSObject.Copy()
+$invalidBmStateFrame.control_seq=[uint64]3; $invalidBmStateFrame.bm_state='connecting'
+Assert-UiControlFrameRejected { ConvertFrom-UiControlFrame -Json (ConvertTo-Json -InputObject $invalidBmStateFrame -Compress -Depth 6) -LockedRunId $testRunId -LastControlSequence 2 } `
+    'UI 必须拒绝 Native 状态机之外的 connecting 枚举。'
+$unsafeBmErrorFrame=$acceptedBmFrame.PSObject.Copy()
+$unsafeBmErrorFrame.control_seq=[uint64]3; $unsafeBmErrorFrame.bm_connection_error='host.example:62031'
+Assert-UiControlFrameRejected { ConvertFrom-UiControlFrame -Json (ConvertTo-Json -InputObject $unsafeBmErrorFrame -Compress -Depth 6) -LockedRunId $testRunId -LastControlSequence 2 } `
+    'UI 必须拒绝可能包含服务器或凭据的 BM 错误文本。'
+$acceptedWithErrorFrame=$acceptedBmFrame.PSObject.Copy()
+$acceptedWithErrorFrame.control_seq=[uint64]3; $acceptedWithErrorFrame | Add-Member -NotePropertyName error -NotePropertyValue 'bm_invalid_request'
+Assert-UiControlFrameRejected { ConvertFrom-UiControlFrame -Json (ConvertTo-Json -InputObject $acceptedWithErrorFrame -Compress -Depth 6) -LockedRunId $testRunId -LastControlSequence 2 } `
+    'accepted BM ACK 不得携带 rejection error。'
+$snapshotFrame=[pscustomobject][ordered]@{
+    schema_version=2;type='control_result';run_id=$testRunId;control_seq=[uint64]3
+    request_id='7e40599a-4c69-4cb9-9505-21a28ab58a8a';command='status';result='ok';replayed=$false
+    snapshot=[pscustomobject][ordered]@{
+        mode='manual';status='running';phase='active';media_seq=[uint64]1;diagnostic=$false;bm_state='stopped'
+        hri_phase='ready';hri_ready=$true;serial_open=$true;wavein_open=$false;waveout_open=$false;radio_state='unknown'
+        bm_connection=[pscustomobject][ordered]@{requested_enabled=$false;revision=[uint64]0;transport_open=$false}
+        bm_resolving=$false;bm_connection_error='master_resolution_failed'
+    }
+}
+$parsedSnapshot=ConvertFrom-UiControlFrame -Json (ConvertTo-Json -InputObject $snapshotFrame -Compress -Depth 8) -LockedRunId $testRunId -LastControlSequence 2
+Assert-UiControl ($parsedSnapshot.snapshot.bm_connection_error -ceq 'master_resolution_failed' -and
+    (Test-UiBmConnectionState -Connection $parsedSnapshot.snapshot.bm_connection -BmState $parsedSnapshot.snapshot.bm_state `
+        -Resolving $parsedSnapshot.snapshot.bm_resolving -Error $parsedSnapshot.snapshot.bm_connection_error)) `
+    '周期 status 必须接受连接已失败、UDP关闭且无凭据的安全状态枚举。'
+$transitionCases=@(
+    [pscustomobject]@{name='取消DNS进行中';requested=$false;resolving=$true;transport=$false;state='stopped';error='none'},
+    [pscustomobject]@{name='取消DNS解析超时';requested=$false;resolving=$true;transport=$false;state='stopped';error='master_resolution_timeout'},
+    [pscustomobject]@{name='取消DNS清理超时';requested=$false;resolving=$true;transport=$false;state='stopped';error='resolver_cancel_timeout'},
+    [pscustomobject]@{name='语音清理超时仍连接';requested=$false;resolving=$false;transport=$true;state='ready';error='media_cleanup_timeout'},
+    [pscustomobject]@{name='语音清理后等待RPTCL';requested=$false;resolving=$false;transport=$true;state='stopped';error='media_cleanup_timeout'},
+    [pscustomobject]@{name='旧清理错误但已完全关闭';requested=$false;resolving=$false;transport=$false;state='stopped';error='media_cleanup_timeout'}
+)
+foreach ($transition in $transitionCases) {
+    $snapshotFrame.control_seq=[uint64]([uint64]$snapshotFrame.control_seq + 1)
+    $snapshotFrame.snapshot.bm_connection=[pscustomobject][ordered]@{
+        requested_enabled=[bool]$transition.requested;revision=[uint64]0;transport_open=[bool]$transition.transport
+    }
+    $snapshotFrame.snapshot.bm_resolving=[bool]$transition.resolving
+    $snapshotFrame.snapshot.bm_state=[string]$transition.state
+    $snapshotFrame.snapshot.bm_connection_error=[string]$transition.error
+    $transitionFrame=ConvertFrom-UiControlFrame -Json (ConvertTo-Json -InputObject $snapshotFrame -Compress -Depth 8) `
+        -LockedRunId $testRunId -LastControlSequence ([uint64]($snapshotFrame.control_seq - 1))
+    Assert-UiControl ($transitionFrame.snapshot.bm_connection_error -ceq $transition.error -and
+        (Test-UiBmConnectionState -Connection $transitionFrame.snapshot.bm_connection -BmState $transitionFrame.snapshot.bm_state `
+            -Resolving $transitionFrame.snapshot.bm_resolving -Error $transitionFrame.snapshot.bm_connection_error)) `
+        ('status parser 拒绝合法的BM过渡快照：' + $transition.name)
+}
+foreach ($invalidCase in @(
+    [pscustomobject]@{requested=$true;resolving=$true;transport=$false;state='stopped';error='resolver_cancel_timeout'},
+    [pscustomobject]@{requested=$false;resolving=$true;transport=$false;state='stopped';error='password_required'},
+    [pscustomobject]@{requested=$false;resolving=$true;transport=$false;state='stopped';error='media_cleanup_timeout'},
+    [pscustomobject]@{requested=$false;resolving=$false;transport=$false;state='ready';error='media_cleanup_timeout'},
+    [pscustomobject]@{requested=$true;resolving=$false;transport=$false;state='ready';error='none'}
+)) {
+    $validState=Test-UiBmConnectionState `
+        -Connection ([pscustomobject][ordered]@{requested_enabled=[bool]$invalidCase.requested;revision=[uint64]0;transport_open=[bool]$invalidCase.transport}) `
+        -BmState ([string]$invalidCase.state) -Resolving ([bool]$invalidCase.resolving) -Error ([string]$invalidCase.error)
+    Assert-UiControl (-not $validState) 'UI BM snapshot parser 必须拒绝违反DNS、Session或UDP状态关系的帧。'
+}
+foreach ($safeError in @('password_required','master_resolution_failed','master_resolution_timeout','resolver_cancel_timeout',
+        'profile_invalid','transport_open_failed','media_cleanup_timeout')) {
+    $userText=Get-UiBmConnectionErrorText -ErrorCode $safeError
+    Assert-UiControl (-not [string]::IsNullOrWhiteSpace($userText) -and $userText -cnotmatch 'password|master|profile|transport|revision|核心') `
+        ('BM连接失败没有映射为面向用户的安全中文提示：' + $safeError)
+}
+foreach ($safeReject in @('bm_revision_stale','bm_revision_conflict','bm_transition_busy','bm_password_required',
+        'bm_master_resolution_failed','bm_profile_invalid','bm_transport_open_failed','hello_required',
+        'invalid_bm_connection_parameters')) {
+    $userText=Get-UiBmConnectionRejectText -ErrorCode $safeReject
+    Assert-UiControl (-not [string]::IsNullOrWhiteSpace($userText) -and $userText -cnotmatch 'bm_|revision|核心') `
+        ('BM控制拒绝没有映射为面向用户的安全中文提示：' + $safeReject)
+}
+$bmProtocolFrameCounts=@{control_ready=0;hello=0;accepted=0;rejected=0;unsupported=0;status=0}
+if (-not [string]::IsNullOrWhiteSpace($BmProtocolFramesPath)) {
+    $framesPath=[System.IO.Path]::GetFullPath($BmProtocolFramesPath)
+    if (-not [System.IO.File]::Exists($framesPath)) { throw '指定的 Native BM 协议帧文件不存在。' }
+    $lines=@([System.IO.File]::ReadAllLines($framesPath,[System.Text.Encoding]::UTF8) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($lines.Count -lt 10 -or $lines.Count -gt 64) { throw 'Native BM 协议帧样本数量不在允许范围内。' }
+    $frameRunId=''; $frameSequence=[uint64]0; $firstFrameRunId=''; $secondFrameRunId=''; $frameResults=@{}
+    foreach ($line in $lines) {
+        try { $rawFrame=ConvertFrom-Json -InputObject $line -ErrorAction Stop } catch { throw 'Native BM 协议帧文件包含无效 JSON。' }
+        if ($rawFrame.type -ceq 'control_ready') {
+            # 每个 control_ready 开始一条新 run，旧 run 的序号与能力不能继承。
+            $frameRunId=''; $frameSequence=[uint64]0; $script:controlCapabilities=''
+            $parsedFrame=ConvertFrom-UiControlFrame -Json $line
+            $frameRunId=[string]$parsedFrame.run_id
+            if ($bmProtocolFrameCounts.control_ready -eq 0) { $firstFrameRunId=$frameRunId } else { $secondFrameRunId=$frameRunId }
+            $frameSequence=[uint64]$parsedFrame.control_seq
+            $script:controlCapabilities=[string](@($parsedFrame.supported_commands) -join ',')
+            $bmProtocolFrameCounts.control_ready++
+        } else {
+            if (-not $frameRunId) { throw 'Native BM 协议样本必须先发送 control_ready。' }
+            $parsedFrame=ConvertFrom-UiControlFrame -Json $line -LockedRunId $frameRunId -LastControlSequence $frameSequence
+            $frameSequence=[uint64]$parsedFrame.control_seq
+            if ($parsedFrame.command -ceq 'hello') { $bmProtocolFrameCounts.hello++ }
+            if ($parsedFrame.command -ceq 'bm.connection.set') {
+                $bmProtocolFrameCounts[[string]$parsedFrame.result]++
+                $frameResults[('{0}|{1}' -f $frameRunId,$parsedFrame.control_seq)]=$parsedFrame
+            } elseif ($parsedFrame.command -ceq 'status') { $bmProtocolFrameCounts.status++ }
+        }
+    }
+    Assert-UiControl ($bmProtocolFrameCounts.control_ready -eq 2 -and $bmProtocolFrameCounts.hello -eq 2 -and
+        $bmProtocolFrameCounts.accepted -ge 3 -and $bmProtocolFrameCounts.rejected -ge 3 -and
+        $bmProtocolFrameCounts.unsupported -eq 1 -and $bmProtocolFrameCounts.status -ge 1) `
+        '真实 Native BM Dispatcher 样本未完整覆盖双 run、握手、请求结果和状态帧。'
+    Assert-UiControl ($frameResults[('{0}|2' -f $firstFrameRunId)].error -ceq 'hello_required' -and
+        $frameResults[('{0}|4' -f $firstFrameRunId)].error -ceq 'invalid_bm_connection_parameters' -and
+        $frameResults[('{0}|7' -f $firstFrameRunId)].error -ceq 'bm_transition_busy' -and
+        $frameResults[('{0}|3' -f $secondFrameRunId)].error -ceq 'command_not_supported' -and
+        $frameResults[('{0}|3' -f $secondFrameRunId)].result -ceq 'unsupported') `
+        '真实 Native BM 帧的 pre-hello、参数错误、busy 和旧核心 unsupported 拒绝没有由 PowerShell parser 识别。'
+}
+$diagnosticCommands=[string[]]@('hello','status','shutdown','bm.connection.set')
+$diagnosticReady=[pscustomobject][ordered]@{
+    schema_version=2;type='control_ready';run_id=('{0}-1' -f [System.Diagnostics.Process]::GetCurrentProcess().Id)
+    control_seq=[uint64]1;process_id=[uint32][System.Diagnostics.Process]::GetCurrentProcess().Id
+    control_version=2;supported_commands=$diagnosticCommands;diagnostic=$true
+}
+Assert-UiControlFrameRejected { ConvertFrom-UiControlFrame -Json (ConvertTo-Json -InputObject $diagnosticReady -Compress -Depth 6) -ExpectedProcessId ([System.Diagnostics.Process]::GetCurrentProcess().Id) } `
+    '诊断核心不得声明BM独立连接命令。'
+if ($ParserOnly) {
+    Write-Output ('通过：BM 控制帧 parser 覆盖异步状态、revision=0 拒绝、安全错误码与 capability 隔离。真实 Dispatcher 帧：{0} 行。' -f `
+        $(if ($BmProtocolFramesPath) { $lines.Count } else { 0 }))
+    return
+}
+if (-not $NativeExecutable -or -not [System.IO.File]::Exists($NativeExecutable)) { throw "缺少 Native 控制诊断核心：$NativeExecutable" }
 $legacyRoutingCommands = [string[]]@('hello','status','shutdown','routing.status','rx_policy.replace','tx_policy.replace')
 $quickCallRoutingCommands = $legacyRoutingCommands + 'network_subscription.quick_call_join'
 $identityBasicCommands = [string[]]@('hello','status','shutdown','radio_identity.cache_upsert')

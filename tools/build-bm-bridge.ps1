@@ -160,6 +160,7 @@ try {
         'src\bm_voice_pipeline.cpp',
         'src\bm_test_profile.cpp',
         'src\bm_connection_config.cpp',
+        'src\bm_connection_control.cpp',
         'src\bm_session.cpp',
         'src\bm_udp.cpp',
         'src\direct_frame.cpp',

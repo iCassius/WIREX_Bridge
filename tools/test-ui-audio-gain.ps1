@@ -102,7 +102,7 @@ Assert-UiAudioGain ($parseErrors.Count -eq 0) 'bridge-ui.ps1 必须可解析。'
 $definitions = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] },$true))
 $functionNames = @(
     'Import-WpfWindow','Get-UiControl','Set-UiControlStatus','Request-UiControlStatus',
-    'Test-UiExactControlFields','Test-UiControlUnsigned','Test-UiAudioGainsValue','Test-UiAudioGainCapability',
+    'Test-UiExactControlFields','Test-UiControlUnsigned','Test-UiHasCapability','Test-UiAudioGainsValue','Test-UiAudioGainCapability',
     'Test-UiControlSnapshot','Test-UiRoutingCapabilityList','Test-UiRxPolicy','Test-UiRoutingSnapshot','ConvertFrom-UiControlFrame',
     'Format-UiGainMilli','Convert-UiGainSliderToMilli','Update-UiPlaybackGainDisplay','Update-UiAudioGainValueLabels',
     'Set-UiAudioGainStatus','Set-UiAudioGainSliders','Update-UiAudioGainControls','Reset-UiAudioGainRun',
@@ -298,8 +298,10 @@ try {
     $timedOut.started_utc = [DateTime]::UtcNow.AddSeconds(-9)
     $beforeTimeout = Read-TestUiGainConfig
     Assert-UiAudioGain (Expire-UiAudioGainRequest) '超过等待时间的请求应进入 status 校准。'
-    Assert-UiAudioGain ($null -eq $script:audioGainPendingRequest -and $script:audioGainAwaitingStatus -and
-        (Get-TestUiGainCommandCount -Command 'status') -eq 2) 'timeout 后必须清除待确认状态并读取当前 Native 值。'
+    $timeoutStatusRequestCount = @($script:supervisor.Commands | Where-Object { $_.command -ceq 'status' }).Count
+    $timeoutStateReady = ($null -eq $script:audioGainPendingRequest) -and [bool]$script:audioGainAwaitingStatus -and
+        [int]$timeoutStatusRequestCount -eq 2
+    Assert-UiAudioGain $timeoutStateReady 'timeout 后必须清除待确认状态并读取当前 Native 值。'
     [void]$script:pendingControlRequests.Remove([string]$script:pendingStatusRequestId)
     $script:pendingStatusRequestId = ''
     [void](Complete-UiAudioGainStatus -Snapshot (New-TestAudioGainSnapshot -Gains (New-TestAudioGains -Revision 2 -Playback 3750 -Transmit 2500)))

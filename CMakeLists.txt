@@ -489,6 +489,14 @@ if(WIN32)
         target_compile_options(wirex_bm_udp PRIVATE /W4 /permissive- /utf-8)
     endif()
 
+    add_library(wirex_bm_connection_control src/bm_connection_control.cpp)
+    target_include_directories(wirex_bm_connection_control PUBLIC include)
+    target_compile_features(wirex_bm_connection_control PUBLIC cxx_std_17)
+    target_link_libraries(wirex_bm_connection_control PUBLIC wirex_bm_session wirex_bm_udp ws2_32)
+    if(MSVC)
+        target_compile_options(wirex_bm_connection_control PRIVATE /W4 /permissive- /utf-8)
+    endif()
+
     add_library(wirex_bm_voice_pipeline src/bm_voice_pipeline.cpp)
     target_include_directories(wirex_bm_voice_pipeline PUBLIC include)
     target_compile_features(wirex_bm_voice_pipeline PUBLIC cxx_std_17)
@@ -569,7 +577,7 @@ if(WIN32)
     target_link_libraries(hri_stream_session_test PRIVATE wirex_hri_stream_session)
     add_executable(bm_bridge_loopback_test tests/bm_bridge_loopback_test.cpp)
     target_link_libraries(bm_bridge_loopback_test PRIVATE
-        wirex_bm_session wirex_bm_udp wirex_bm_voice_pipeline wirex_bm_test_profile
+        wirex_bm_session wirex_bm_udp wirex_bm_connection_control wirex_bm_voice_pipeline wirex_bm_test_profile
         wirex_hri_stream_session wirex_hri_lcd_identity_candidate ws2_32)
 
     add_executable(wirex_bridge src/probe_main.cpp)
@@ -582,6 +590,7 @@ if(WIN32)
         wirex_direct_stream wirex_direct_frame wirex_hri_session wirex_hri_downlink_session
         wirex_hri_radio_protocol wirex_ui_control_protocol wirex_hri_t_payload wirex_hri_call_header wirex_hri_t_record wirex_hri_lcd_identity_candidate wirex_radio_identity_cache wirex_hri_ptt_gate wirex_wave_file wirex_pcm_gain
         wirex_console_lifecycle wirex_session_report wirex_bm_session wirex_bm_udp
+        wirex_bm_connection_control
         wirex_bm_voice_pipeline wirex_bm_test_profile wirex_bm_connection_config
         wirex_hri_stream_session winmm bcrypt ws2_32 user32)
 

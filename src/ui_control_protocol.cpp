@@ -12,7 +12,8 @@ namespace {
 std::string supported_commands_json(bool routing_enabled,
                                     bool quick_call_enabled,
                                     bool radio_identity_enabled,
-                                    bool audio_gains_enabled)
+                                    bool audio_gains_enabled,
+                                    bool bm_connection_enabled)
 {
     std::string commands{"[\"hello\",\"status\",\"shutdown\""};
     if (routing_enabled) {
@@ -21,6 +22,7 @@ std::string supported_commands_json(bool routing_enabled,
     }
     if (radio_identity_enabled) commands.append(",\"radio_identity.cache_upsert\"");
     if (audio_gains_enabled) commands.append(",\"audio.gains.set\"");
+    if (bm_connection_enabled) commands.append(",\"bm.connection.set\"");
     commands.push_back(']');
     return commands;
 }
@@ -102,7 +104,7 @@ bool parse_request(std::string_view input, Request& request, strict_json::Value&
     const bool mutating = request.command == "rx_policy.replace" || request.command == "tx_policy.replace" ||
         request.command == "network_subscription.quick_call_join" ||
         request.command == "radio_identity.cache_upsert" ||
-        request.command == "audio.gains.set";
+        request.command == "audio.gains.set" || request.command == "bm.connection.set";
     const auto expected_size = mutating ? 5U : 4U;
     if (envelope.object_value.size() != expected_size || (mutating &&
         (request.parameters == nullptr || request.parameters->type != strict_json::Value::Type::object)) ||
@@ -143,6 +145,60 @@ std::string audio_gains_json(const StatusSnapshot::AudioGains& gains)
         ",\"mic_transmit_gain_milli\":" + std::to_string(gains.mic_transmit_gain_milli) + "}";
 }
 
+std::string bm_connection_json(const StatusSnapshot& snapshot)
+{
+    return "{\"requested_enabled\":" + std::string(snapshot.bm_connection.requested_enabled ? "true" : "false") +
+        ",\"revision\":" + std::to_string(snapshot.bm_connection.revision) +
+        ",\"transport_open\":" + std::string(snapshot.bm_connection.transport_open ? "true" : "false") + "}";
+}
+
+const char* safe_bm_connection_error(std::string_view error) noexcept
+{
+    constexpr std::array<std::string_view, 8U> allowed{{
+        "none", "password_required", "master_resolution_failed", "master_resolution_timeout",
+        "resolver_cancel_timeout", "profile_invalid", "transport_open_failed", "media_cleanup_timeout"}};
+    for (const auto candidate : allowed) {
+        if (error == candidate) return candidate.data();
+    }
+    return "none";
+}
+
+const char* safe_bm_state(std::string_view state) noexcept
+{
+    constexpr std::array<std::string_view, 8U> allowed{{
+        "idle", "waiting_login_ack", "waiting_auth_ack", "waiting_config_ack",
+        "waiting_options_ack", "ready", "backoff", "stopped"}};
+    for (const auto candidate : allowed) {
+        if (state == candidate) return candidate.data();
+    }
+    return "stopped";
+}
+
+std::string bm_connection_fields_json(const StatusSnapshot& snapshot)
+{
+    return "\"bm_connection\":" + bm_connection_json(snapshot) +
+        ",\"bm_resolving\":" + std::string(snapshot.bm_resolving ? "true" : "false") +
+        ",\"bm_connection_error\":" + json_escape(safe_bm_connection_error(snapshot.bm_connection_error)) +
+        ",\"bm_state\":" + json_escape(safe_bm_state(snapshot.bm_state));
+}
+
+const char* bm_connection_request_error(RoutingCallbacks::BmConnectionResult result) noexcept
+{
+    using Result = RoutingCallbacks::BmConnectionResult;
+    switch (result) {
+    case Result::accepted:
+    case Result::idempotent: return "";
+    case Result::stale_revision: return "bm_revision_stale";
+    case Result::revision_conflict: return "bm_revision_conflict";
+    case Result::transition_busy: return "bm_transition_busy";
+    case Result::password_required: return "bm_password_required";
+    case Result::master_resolution_failed: return "bm_master_resolution_failed";
+    case Result::profile_invalid: return "bm_profile_invalid";
+    case Result::transport_open_failed: return "bm_transport_open_failed";
+    }
+    return "bm_invalid_request";
+}
+
 std::string snapshot_json(const StatusSnapshot& snapshot, bool include_audio_gains)
 {
     std::string output = "{\"mode\":" + json_escape(snapshot.mode) +
@@ -150,7 +206,10 @@ std::string snapshot_json(const StatusSnapshot& snapshot, bool include_audio_gai
         ",\"phase\":" + json_escape(snapshot.phase) +
         ",\"media_seq\":" + std::to_string(snapshot.media_seq) +
         ",\"diagnostic\":" + (snapshot.diagnostic ? "true" : "false") +
-        ",\"bm_state\":" + json_escape(snapshot.bm_state) +
+        ",\"bm_state\":" + json_escape(safe_bm_state(snapshot.bm_state)) +
+        ",\"bm_connection\":" + bm_connection_json(snapshot) +
+        ",\"bm_resolving\":" + (snapshot.bm_resolving ? "true" : "false") +
+        ",\"bm_connection_error\":" + json_escape(safe_bm_connection_error(snapshot.bm_connection_error)) +
         ",\"hri_phase\":" + json_escape(snapshot.hri_phase) +
         ",\"hri_ready\":" + (snapshot.hri_ready ? "true" : "false") +
         ",\"serial_open\":" + (snapshot.serial_open ? "true" : "false") +
@@ -221,6 +280,7 @@ Dispatcher::Dispatcher(std::string run_id, bool diagnostic, RoutingCallbacks rou
       quick_call_enabled_(routing_enabled_ && static_cast<bool>(routing.quick_call_join)),
       radio_identity_enabled_(static_cast<bool>(routing.update_radio_identity)),
       audio_gains_enabled_(static_cast<bool>(routing.set_audio_gains)),
+      bm_connection_enabled_(static_cast<bool>(routing.set_bm_connection)),
       routing_(std::move(routing))
 {
 }
@@ -231,7 +291,7 @@ std::string Dispatcher::ready_line(std::uint32_t process_id)
     ready_emitted_ = true;
     control_seq_ = 1U;
     const auto commands = supported_commands_json(
-        routing_enabled_, quick_call_enabled_, radio_identity_enabled_, audio_gains_enabled_);
+        routing_enabled_, quick_call_enabled_, radio_identity_enabled_, audio_gains_enabled_, bm_connection_enabled_);
     return "{\"schema_version\":2,\"type\":\"control_ready\",\"run_id\":" +
         json_escape(run_id_) + ",\"control_seq\":1,\"process_id\":" +
         std::to_string(process_id) + ",\"control_version\":2,\"supported_commands\":" +
@@ -547,7 +607,7 @@ DispatchResult Dispatcher::handle(std::string_view json_line, const StatusSnapsh
         } else if (request.command == "hello") {
             cached.result = "ok";
             const auto commands = supported_commands_json(
-                routing_enabled_, quick_call_enabled_, radio_identity_enabled_, audio_gains_enabled_);
+                routing_enabled_, quick_call_enabled_, radio_identity_enabled_, audio_gains_enabled_, bm_connection_enabled_);
             cached.extra_json = "\"supported_commands\":" +
                 std::string(commands);
             mark_hello = true;
@@ -668,6 +728,43 @@ DispatchResult Dispatcher::handle(std::string_view json_line, const StatusSnapsh
                         case QuickCallStatus::sent: error = "quick_call_send_incomplete"; break;
                         }
                         cached.extra_json = "\"error\":" + json_escape(error);
+                    }
+                }
+            }
+        } else if (request.command == "bm.connection.set") {
+            if (!hello_seen_) {
+                cached.result = "rejected";
+                cached.extra_json = "\"error\":\"hello_required\"," + bm_connection_fields_json(snapshot);
+            } else if (!bm_connection_enabled_) {
+                cached.result = "unsupported";
+                cached.extra_json = "\"error\":\"command_not_supported\"," + bm_connection_fields_json(snapshot);
+            } else {
+                const auto* params = request.parameters;
+                const auto* enabled = params != nullptr ? params->find("enabled") : nullptr;
+                const auto* revision = params != nullptr ? params->find("revision") : nullptr;
+                const bool valid = params != nullptr && params->type == strict_json::Value::Type::object &&
+                    params->object_value.size() == 2U && enabled != nullptr &&
+                    enabled->type == strict_json::Value::Type::boolean && revision != nullptr &&
+                    revision->type == strict_json::Value::Type::unsigned_integer && revision->integer_value >= 1U;
+                if (!valid) {
+                    cached.result = "rejected";
+                    cached.extra_json = "\"error\":\"invalid_bm_connection_parameters\"," +
+                        bm_connection_fields_json(snapshot);
+                } else {
+                    RoutingCallbacks::BmConnectionOutcome outcome{};
+                    try {
+                        outcome = routing_.set_bm_connection(enabled->boolean_value, revision->integer_value);
+                    } catch (...) {
+                        outcome.result = RoutingCallbacks::BmConnectionResult::transition_busy;
+                        outcome.actual = snapshot;
+                    }
+                    const bool accepted = outcome.result == RoutingCallbacks::BmConnectionResult::accepted ||
+                        outcome.result == RoutingCallbacks::BmConnectionResult::idempotent;
+                    cached.result = accepted ? "accepted" : "rejected";
+                    cached.extra_json = bm_connection_fields_json(outcome.actual);
+                    if (!accepted) {
+                        cached.extra_json.append(",\"error\":");
+                        cached.extra_json.append(json_escape(bm_connection_request_error(outcome.result)));
                     }
                 }
             }

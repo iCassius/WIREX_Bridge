@@ -418,6 +418,88 @@ try {
     Assert-True ($changed -and $promptedProfile.devices.serial_port -ceq 'COM8' -and
         $promptedProfile.devices.wave_in_endpoint_id -ceq 'stable-in' -and $promptedProfile.devices.wave_out_endpoint_id -ceq 'stable-out') `
         'auto selector 遇到手工选择后应记住明确设备'
+
+    $repoRoot = [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent ([System.IO.Path]::GetFullPath($LauncherPath))) '..'))
+    $approvedFixtureBody = Join-Path $repoRoot 'private\fixtures\device-y.bin'
+    if (-not [System.IO.File]::Exists($approvedFixtureBody)) { throw '缺少隔离预检使用的批准 Y 模板 fixture。' }
+    $fakePrepareRoot = Join-Path $temporaryRoot 'actual-prepare-fake'
+    $fakePackageRoot = Join-Path $fakePrepareRoot 'package'
+    $fakeRunRoot = Join-Path $fakePrepareRoot 'runs'
+    New-Item -ItemType Directory -Path (Join-Path $fakePackageRoot 'private') -Force | Out-Null
+    New-Item -ItemType Directory -Path $fakeRunRoot -Force | Out-Null
+    Copy-Item -LiteralPath ([System.IO.Path]::GetFullPath($LauncherPath)) `
+        -Destination (Join-Path $fakePackageRoot 'start-bm-radio-bridge.ps1')
+    Copy-Item -LiteralPath (Join-Path (Split-Path -Parent ([System.IO.Path]::GetFullPath($LauncherPath))) 'bridge-user-config.psm1') `
+        -Destination (Join-Path $fakePackageRoot 'bridge-user-config.psm1')
+    [System.IO.File]::WriteAllText((Join-Path $fakePackageRoot 'private\bm-device-password.txt'),'legacy-fixture-only',(New-Object System.Text.UTF8Encoding($false)))
+    $fakeExecutable = Join-Path $fakePrepareRoot 'wirex_bridge.exe'
+    [System.IO.File]::WriteAllBytes($fakeExecutable,[byte[]]@(0x4D,0x5A))
+    $fakeProfilePath = Join-Path $fakePrepareRoot 'connection-profile.json'
+    Write-ConnectionProfile -Path $fakeProfilePath -Profile $legacyPrivateProfile
+    $fakeAudioPath = Join-Path $fakePrepareRoot 'audio-settings.json'
+    $fakeNoPasswordPath = Join-Path $fakeRunRoot 'no-password'
+    $fakeNoPasswordPreparation = Join-Path $fakeNoPasswordPath 'preparation.json'
+    New-Item -ItemType Directory -Path $fakeNoPasswordPath | Out-Null
+    $fakePasswordPath = Join-Path $fakePrepareRoot 'explicit-password.fixture'
+    [System.IO.File]::WriteAllText($fakePasswordPath,'explicit-fixture-only',(New-Object System.Text.UTF8Encoding($false)))
+    $fakeWithPasswordPath = Join-Path $fakeRunRoot 'with-password'
+    $fakeWithPasswordPreparation = Join-Path $fakeWithPasswordPath 'preparation.json'
+    New-Item -ItemType Directory -Path $fakeWithPasswordPath | Out-Null
+    $fakeHarnessPath = Join-Path $fakePrepareRoot 'invoke-prepare-only.ps1'
+    $fakeHarness = @'
+param([string]$LauncherPath,[string]$BridgePath,[string]$BodyFile,[string]$ConnectionProfilePath,[string]$AudioSettingsPath,[string]$StatusDirectory,[string]$PreparationOutputPath,[string]$PasswordFile)
+$ErrorActionPreference='Stop'
+try {
+    $parameters=@{
+        BridgePath=$BridgePath; BodyFile=$BodyFile; Preset='manual'; ConnectionProfilePath=$ConnectionProfilePath
+        AudioSettingsPath=$AudioSettingsPath; StatusDirectory=$StatusDirectory; PreparationOutputPath=$PreparationOutputPath
+        PrepareOnly=$true; NoInteractive=$true; BmStartDisconnected=$true; TestOnlyFakeDevices=$true
+    }
+    if ($PasswordFile) { $parameters.PasswordFile=$PasswordFile; $parameters.RequirePasswordFile=$true }
+    & $LauncherPath @parameters *> $null
+    exit 0
+} catch {
+    [Console]::Error.WriteLine('Fake PrepareOnly failed: '+$_.Exception.GetType().FullName+' '+$_.Exception.Message)
+    exit 3
+}
+'@
+    [System.IO.File]::WriteAllText($fakeHarnessPath,$fakeHarness,(New-Object System.Text.UTF8Encoding($true)))
+    $windowsPowerShell = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not [System.IO.File]::Exists($windowsPowerShell)) { throw 'Fake PrepareOnly 测试需要 Windows PowerShell 5.1。' }
+    foreach ($case in @(
+        [pscustomobject]@{ Run=$fakeNoPasswordPath; Preparation=$fakeNoPasswordPreparation; Password='' },
+        [pscustomobject]@{ Run=$fakeWithPasswordPath; Preparation=$fakeWithPasswordPreparation; Password=$fakePasswordPath }
+    )) {
+        $childArguments = @('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',$fakeHarnessPath,
+            '-LauncherPath',(Join-Path $fakePackageRoot 'start-bm-radio-bridge.ps1'),'-BridgePath',$fakeExecutable,
+            '-BodyFile',$approvedFixtureBody,'-ConnectionProfilePath',$fakeProfilePath,'-AudioSettingsPath',$fakeAudioPath,
+            '-StatusDirectory',$case.Run,'-PreparationOutputPath',$case.Preparation)
+        if ($case.Password) { $childArguments += @('-PasswordFile',$case.Password) }
+        $quoted = foreach ($value in $childArguments) { '"' + ([string]$value).Replace('"','\"') + '"' }
+        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $startInfo.FileName=$windowsPowerShell; $startInfo.Arguments=$quoted -join ' '
+        $startInfo.UseShellExecute=$false; $startInfo.CreateNoWindow=$true
+        $startInfo.RedirectStandardOutput=$true; $startInfo.RedirectStandardError=$true
+        $child=New-Object System.Diagnostics.Process; $child.StartInfo=$startInfo
+        try {
+            if (-not $child.Start()) { throw '未能启动隔离的假设备预检。' }
+            $stdout=$child.StandardOutput.ReadToEndAsync(); $stderr=$child.StandardError.ReadToEndAsync()
+            if (-not $child.WaitForExit(30000)) { try { $child.Kill() } catch {}; throw '假设备预检超过 30 秒。' }
+            if (-not $stdout.Wait(2000) -or -not $stderr.Wait(2000)) { throw '假设备预检输出管道未关闭。' }
+            if ($child.ExitCode -ne 0) { throw ('假设备预检退出代码为 {0}：{1}' -f $child.ExitCode,$stderr.Result.Trim()) }
+        } finally { $child.Dispose() }
+        if (-not [System.IO.File]::Exists($case.Preparation)) { throw '实际 runner 没有生成假设备预检记录。' }
+    }
+    $pausedNoPassword = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($fakeNoPasswordPreparation,[System.Text.Encoding]::UTF8))
+    $pausedWithPassword = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($fakeWithPasswordPreparation,[System.Text.Encoding]::UTF8))
+    Assert-True (@($pausedNoPassword.arguments | Where-Object { $_ -ceq '--bm-start-disconnected' }).Count -eq 1 -and
+        @($pausedNoPassword.arguments | Where-Object { $_ -ceq '--password-file' }).Count -eq 0 -and
+        -not (@($pausedNoPassword.arguments) -contains (Join-Path $fakePackageRoot 'private\bm-device-password.txt'))) `
+        '实际 runner 的空密码 BM 暂停预检必须加暂停标志、跳过 legacy 默认密码文件且不传密码路径。'
+    Assert-True (@($pausedWithPassword.arguments | Where-Object { $_ -ceq '--bm-start-disconnected' }).Count -eq 1 -and
+        @($pausedWithPassword.arguments | Where-Object { $_ -ceq '--password-file' }).Count -eq 1 -and
+        @($pausedWithPassword.arguments | Where-Object { $_ -ceq $fakePasswordPath }).Count -eq 1) `
+        '实际 runner 有显式密码时应保留受控临时文件参数并维持 BM 暂停标志。'
     Write-Output '启动器 AST、音量设置和连接配置离线检查通过。'
 } finally {
     [System.Threading.Thread]::CurrentThread.CurrentCulture = $originalCulture

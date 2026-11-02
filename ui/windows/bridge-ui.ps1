@@ -288,6 +288,19 @@ $script:controlRunId = ''
 $script:controlLastSequence = [uint64]0
 $script:controlConfirmed = $false
 $script:controlCapabilities = ''
+$script:bmConnectionNativeCapability = $false
+$script:bmConnectionSnapshot = $null
+$script:bmConnectionRevision = [uint64]0
+$script:bmConnectionPendingRequest = $null
+$script:bmConnectAfterCoreReady = $false
+$script:bmStatusNextRequestUtc = [DateTime]::MinValue
+$script:lastBmSnapshotUtc = [DateTime]::MinValue
+$script:bmStatusRecoveryStartedUtc = [DateTime]::MinValue
+$script:bmStatusRecoveryCount = 0
+$script:serialDisconnectPending = $false
+$script:serialDisconnectCoreStopIssued = $false
+$script:serialDisconnectCatStopRequested = $false
+$script:serialDisconnectDeadlineUtc = [DateTime]::MinValue
 $script:quickCallCapabilities = $false
 $script:pendingQuickCall = $null
 $script:pendingDynamicLocalListen = $null
@@ -384,6 +397,15 @@ $script:pendingChannelStopMutation = $null
 $script:channelMutationSafetyStopPending = $false
 $script:channelEditorSlot = [uint64]2
 $script:callHistoryKeys = @{}
+$script:callHistoryModel = New-Object 'System.Collections.Generic.List[object]'
+$script:callHistoryPageIndex = 0
+$script:selectedCallHistoryKey = ''
+$script:historyPageRendering = $false
+$script:bmLossValid = $false
+$script:bmStartDisconnectedForRun = $false
+$script:serialConnectCatAfterCoreReady = $false
+$script:reconnectAfterStopBmStartDisconnected = $false
+$script:activeBmTransportConfig = $null
 $script:passwordPath = ''
 $script:allowWindowClose = $false
 $script:closingAfterStop = $false
@@ -407,27 +429,7 @@ function Import-WpfWindow {
 
 function Fit-WpfWindowToWorkArea {
     param([Parameter(Mandatory=$true)][System.Windows.Window]$Window)
-    $Window.MinWidth = [Math]::Min($Window.MinWidth, $script:maxWindowWidth)
-    $Window.MinHeight = [Math]::Min($Window.MinHeight, $script:maxWindowHeight)
-    $Window.MaxWidth = $script:maxWindowWidth
-    $Window.MaxHeight = $script:maxWindowHeight
-    $Window.Width = [Math]::Min($Window.Width, $script:maxWindowWidth)
-    $Window.Height = [Math]::Min($Window.Height, $script:maxWindowHeight)
-    $eventList = $Window.FindName('EventList')
-    if ($null -ne $eventList) {
-        $eventList.Height = if ($script:maxWindowHeight -le 720) { 36 } else { 68 }
-    }
-    if ($null -ne $Window.FindName('ConsoleTop') -and $script:maxWindowHeight -le 720) {
-        $rootGrid = $Window.Content -as [System.Windows.Controls.Grid]
-        $rootGrid.Margin = [System.Windows.Thickness]::new(9.0)
-        $rootGrid.RowDefinitions[1].Height = [System.Windows.GridLength]::new(60.0, [System.Windows.GridUnitType]::Star)
-        $rootGrid.RowDefinitions[2].Height = [System.Windows.GridLength]::new(40.0, [System.Windows.GridUnitType]::Star)
-        $Window.FindName('ChannelCardsScroll').Margin = [System.Windows.Thickness]::new(0.0,0.0,0.0,4.0)
-        $Window.FindName('ConnectionConfigPanel').Margin = [System.Windows.Thickness]::new(0.0,0.0,4.0,0.0)
-        $Window.FindName('DashboardPanel').Margin = [System.Windows.Thickness]::new(4.0,0.0,0.0,0.0)
-        $Window.FindName('ConnectionScrollViewer').VerticalScrollBarVisibility = [System.Windows.Controls.ScrollBarVisibility]::Auto
-        $Window.FindName('DashboardScrollViewer').VerticalScrollBarVisibility = [System.Windows.Controls.ScrollBarVisibility]::Auto
-    }
+    # 主窗口尺寸与最小尺寸由 XAML 固定，避免窄屏分支改变仪表盘比例或引入滚动条。
 }
 
 function ConvertTo-UiBoundsRecord {
@@ -472,6 +474,37 @@ function Get-WpfElementLayoutEvidence {
             [Math]::Abs($actualBounds.Y - $visibleBounds.Y) -le 1.0 -and
             [Math]::Abs($actualBounds.Right - $visibleBounds.Right) -le 1.0 -and
             [Math]::Abs($actualBounds.Bottom - $visibleBounds.Bottom) -le 1.0)
+    }
+}
+
+function Get-WpfWindowScrollEvidence {
+    param([Parameter(Mandatory=$true)][System.Windows.Window]$Window)
+    $scrollableViewerCount = 0
+    $visibleScrollbarCount = 0
+    $pending = New-Object 'System.Collections.Generic.Stack[System.Windows.DependencyObject]'
+    $pending.Push($Window)
+    while ($pending.Count -gt 0) {
+        $current = $pending.Pop()
+        if ($current -is [System.Windows.Controls.ScrollViewer] -and $current.IsVisible) {
+            $vertical = [System.Windows.Controls.ScrollViewer]::GetVerticalScrollBarVisibility($current)
+            $horizontal = [System.Windows.Controls.ScrollViewer]::GetHorizontalScrollBarVisibility($current)
+            if (($vertical -notin @([System.Windows.Controls.ScrollBarVisibility]::Disabled,[System.Windows.Controls.ScrollBarVisibility]::Hidden) -and $current.ScrollableHeight -gt 0.5) -or
+                ($horizontal -notin @([System.Windows.Controls.ScrollBarVisibility]::Disabled,[System.Windows.Controls.ScrollBarVisibility]::Hidden) -and $current.ScrollableWidth -gt 0.5)) {
+                $scrollableViewerCount++
+            }
+        }
+        if ($current -is [System.Windows.Controls.Primitives.ScrollBar] -and $current.IsVisible -and
+            ($current.ActualWidth -gt 0.5 -or $current.ActualHeight -gt 0.5)) { $visibleScrollbarCount++ }
+        if ($current -is [System.Windows.Media.Visual] -or $current -is [System.Windows.Media.Media3D.Visual3D]) {
+            $childCount = [System.Windows.Media.VisualTreeHelper]::GetChildrenCount($current)
+            for ($index=0; $index -lt $childCount; $index++) {
+                $pending.Push([System.Windows.Media.VisualTreeHelper]::GetChild($current,$index))
+            }
+        }
+    }
+    return [pscustomobject][ordered]@{
+        area_scrollviewer_count=$scrollableViewerCount
+        non_popup_scrollbar_count=$visibleScrollbarCount
     }
 }
 
@@ -531,11 +564,14 @@ function Get-WpfWindowLayoutInfo {
         }
     }
     $eventList = $Window.FindName('EventList')
+    $scrollEvidence = Get-WpfWindowScrollEvidence -Window $Window
     return [pscustomobject][ordered]@{
         width = [double]$Window.ActualWidth
         height = [double]$Window.ActualHeight
         controls_visible = [pscustomobject]$visibility
         controls_bounds = [pscustomobject]$bounds
+        area_scrollviewer_count = [int]$scrollEvidence.area_scrollviewer_count
+        non_popup_scrollbar_count = [int]$scrollEvidence.non_popup_scrollbar_count
         event_list_height = if ($null -ne $eventList) { [double]$eventList.ActualHeight } else { $null }
     }
 }
@@ -711,10 +747,6 @@ function Set-MainText {
     $control = if ($script:mainWindow) { $script:mainWindow.FindName($Name) } else { $null }
     if (-not $control) { return }
     $value = ([string]$Text).Trim()
-    if ($Name -ceq 'FooterText') {
-        if ($value -match '已保存') { $value = '已保存' }
-        elseif ($value -notmatch '失败|超时|未能|无效|拒绝|中断|错误|请先|请打开|不能|无法|未退出|需要修正') { $value = '' }
-    }
     if ($Name -ceq 'AudioValue' -and $value -ceq '未知') { $value = '' }
     if ($Name -ceq 'FooterText' -and $value.Length -gt 96) {
         $value = $value.Substring(0,93) + '…'
@@ -800,7 +832,7 @@ function Set-OfflineDisplay {
     Set-MainText -Name 'TrafficValue' -Text ''
     Set-MainText -Name 'TrafficDetail' -Text ''
     Set-MainText -Name 'RadioStateValue' -Text ''
-    Set-MainText -Name 'FooterText' -Text ''
+    Set-MainText -Name 'FooterText' -Text $Reason
     Set-MainText -Name 'CallTargetStatusValue' -Text ''
     Set-MainText -Name 'ActiveLeaseValue' -Text ''
     Set-MainText -Name 'RunValue' -Text '未启动'
@@ -952,6 +984,82 @@ function Update-UiPlaybackGainDisplay {
             $runtimeControl.Text = $runtimeText
             $runtimeControl.Visibility = if ($runtimeText) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
             $runtimeControl.Foreground = [Windows.Media.Brushes]::LightGreen
+        }
+    }
+}
+
+function Get-UiCallHistoryModel {
+    if ($null -eq $script:callHistoryModel) {
+        $script:callHistoryModel = New-Object 'System.Collections.Generic.List[object]'
+    }
+    return ,$script:callHistoryModel
+}
+
+function Get-UiCallHistorySelectedKey {
+    if (-not $script:mainWindow) { return [string]$script:selectedCallHistoryKey }
+    $history = $script:mainWindow.FindName('CallHistoryList')
+    if ($history -and $history.SelectedItem -and $history.SelectedItem.PSObject.Properties['key']) {
+        $script:selectedCallHistoryKey = [string]$history.SelectedItem.key
+    }
+    return [string]$script:selectedCallHistoryKey
+}
+
+function Update-UiCallHistoryPageControls {
+    if (-not $script:mainWindow) { return }
+    $model = Get-UiCallHistoryModel
+    $pageSize = 3
+    $pageCount = [Math]::Max(1,[int][Math]::Ceiling($model.Count / [double]$pageSize))
+    $script:callHistoryPageIndex = [Math]::Max(0,[Math]::Min([int]$script:callHistoryPageIndex,$pageCount - 1))
+    $previous = $script:mainWindow.FindName('CallHistoryPagePreviousButton')
+    $next = $script:mainWindow.FindName('CallHistoryPageNextButton')
+    $label = $script:mainWindow.FindName('CallHistoryPageText')
+    if ($previous) { $previous.IsEnabled = ($pageCount -gt 1 -and $script:callHistoryPageIndex -gt 0) }
+    if ($next) { $next.IsEnabled = ($pageCount -gt 1 -and $script:callHistoryPageIndex -lt $pageCount - 1) }
+    if ($label) { $label.Text = ('{0} / {1}' -f ($script:callHistoryPageIndex + 1),$pageCount) }
+}
+
+function Render-UiCallHistoryPage {
+    if (-not $script:mainWindow) { return }
+    $history = $script:mainWindow.FindName('CallHistoryList')
+    if (-not $history) { return }
+    $model = Get-UiCallHistoryModel
+    $pageSize = 3
+    Update-UiCallHistoryPageControls
+    $start = [int]$script:callHistoryPageIndex * $pageSize
+    $end = [Math]::Min($model.Count,$start + $pageSize)
+    $script:historyPageRendering = $true
+    try {
+        $history.Items.Clear()
+        for ($index=$start; $index -lt $end; $index++) { [void]$history.Items.Add($model[$index]) }
+        if ($script:selectedCallHistoryKey) {
+            for ($index=0; $index -lt $history.Items.Count; $index++) {
+                if ([string]$history.Items[$index].key -ceq [string]$script:selectedCallHistoryKey) {
+                    $history.SelectedIndex = $index
+                    break
+                }
+            }
+        }
+    } finally { $script:historyPageRendering = $false }
+    Update-UiCallHistoryPageControls
+    Update-UiCallHistoryActionState
+}
+
+function Set-UiCallHistoryPage {
+    param([Parameter(Mandatory=$true)][int]$Delta)
+    if (-not $script:mainWindow) { return }
+    [void](Get-UiCallHistorySelectedKey)
+    $script:callHistoryPageIndex += $Delta
+    Render-UiCallHistoryPage
+}
+
+function Set-UiCallHistoryPageForKey {
+    param([AllowEmptyString()][string]$Key)
+    if ([string]::IsNullOrWhiteSpace($Key)) { $script:callHistoryPageIndex = 0; return }
+    $model = Get-UiCallHistoryModel
+    for ($index=0; $index -lt $model.Count; $index++) {
+        if ([string]$model[$index].key -ceq $Key) {
+            $script:callHistoryPageIndex = [int][Math]::Floor($index / 3.0)
+            return
         }
     }
 }
@@ -1482,16 +1590,16 @@ function Start-UiIdentityQuery {
 function Update-UiIdentityHistoryEntry {
     param([Parameter(Mandatory=$true)][string]$HistoryKey,[Parameter(Mandatory=$true)][object]$Identity)
     if (-not $script:mainWindow -or [string]::IsNullOrWhiteSpace($HistoryKey)) { return $false }
-    $history = $script:mainWindow.FindName('CallHistoryList')
-    if (-not $history) { return $false }
-    for ($index=0; $index -lt $history.Items.Count; $index++) {
-        $entry = $history.Items[$index]
+    $model = Get-UiCallHistoryModel
+    for ($index=0; $index -lt $model.Count; $index++) {
+        $entry = $model[$index]
         if ([string]$entry.key -cne $HistoryKey) { continue }
         $entry.source_label = Format-UiRadioIdentity -RadioId ([uint64]$entry.source_id)
         $entry.identity_details = Format-UiRadioIdentityDetails -RadioId ([uint64]$entry.source_id) -Identity $Identity
         $kindText = if ([string]$entry.kind -ceq 'private') { '私呼 至本机 DMR ID ' + $entry.destination_id } else { '组呼 TG ' + $entry.destination_id }
         $entry.text = ('{0} · {1} · 来源 {2}' -f $entry.timestamp.ToString('HH:mm:ss'),$kindText,$entry.source_label)
-        $history.Items[$index] = $entry
+        $model[$index] = $entry
+        Render-UiCallHistoryPage
         Set-UiIdentityRowVisibility -Row 'history'
         return $true
     }
@@ -1647,8 +1755,7 @@ function Complete-UiIdentityQuery {
                 Set-UiIdentityRowVisibility -Row 'current'
                 Set-MainText -Name 'CurrentCallValue' -Text (Format-UiRadioIdentity -RadioId ([uint64]$query.radio_id))
             }
-            $historyList = $script:mainWindow.FindName('CallHistoryList')
-            $hasHistory = ($historyList -and $historyList.Items.Count -gt 0)
+            $hasHistory = ((Get-UiCallHistoryModel).Count -gt 0)
             if (-not $hasHistory -and $script:latestStatus -and $script:latestStatus.PSObject.Properties['last_rx_header_valid'] -and
                 [bool]$script:latestStatus.last_rx_header_valid -and
                 [uint64]$script:latestStatus.last_rx_source_id -eq [uint64]$query.radio_id) {
@@ -1771,20 +1878,26 @@ function Add-UiCallHistoryRecord {
         identity_details=(Format-UiRadioIdentityDetails -RadioId $sourceId)
         text=('{0} · {1} {2} · 来源 {3}' -f $timestamp.ToString('HH:mm:ss'),$kindText,$targetText,$sourceLabel)
     }
+    $model = Get-UiCallHistoryModel
+    $selectedKey = Get-UiCallHistorySelectedKey
     $script:callHistoryKeys[$key] = $true
     Clear-UiIdentityError
-    $history = $script:mainWindow.FindName('CallHistoryList')
-    $history.Items.Insert(0,$entry)
+    $model.Insert(0,$entry)
     Set-UiIdentityRowVisibility -Row 'current'
     Set-UiIdentityRowVisibility -Row 'history'
-    while ($history.Items.Count -gt 50) {
-        $oldest = $history.Items[$history.Items.Count - 1]
+    while ($model.Count -gt 50) {
+        $oldest = $model[$model.Count - 1]
         if ($oldest -and $oldest.PSObject.Properties['key']) { [void]$script:callHistoryKeys.Remove([string]$oldest.key) }
-        $history.Items.RemoveAt($history.Items.Count - 1)
+        $model.RemoveAt($model.Count - 1)
     }
-    if ($history.Items.Count -gt 0 -and $null -eq $history.SelectedItem) { $history.SelectedIndex = 0 }
-    Set-UiIdentityRowVisibility -Row 'history_actions' -Visibility $(if ($history.Items.Count -gt 0) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed })
-    Update-UiCallHistoryActionState
+    if ($selectedKey -and -not $script:callHistoryKeys.ContainsKey($selectedKey)) { $selectedKey = '' }
+    if (-not $selectedKey) { $script:selectedCallHistoryKey = $key; $script:callHistoryPageIndex = 0 }
+    else {
+        $script:selectedCallHistoryKey = $selectedKey
+        Set-UiCallHistoryPageForKey -Key $selectedKey
+    }
+    Render-UiCallHistoryPage
+    Set-UiIdentityRowVisibility -Row 'history_actions' -Visibility $(if ($model.Count -gt 0) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed })
     try {
         [void](Start-UiIdentityQuery -RadioId $sourceId -ContextKind current -RunId $runId `
             -Generation $generation -HistoryKey $key)
@@ -1975,9 +2088,9 @@ function Update-UiChannelDisplays {
         $card.Tag = [pscustomobject]@{ channel_key=$key; call_active=[bool]$call; blank=$false }
         $cardBody = New-Object System.Windows.Controls.Grid
         $leftColumn = New-Object System.Windows.Controls.ColumnDefinition
-        $leftColumn.Width = [Windows.GridLength]::new(1.25,[Windows.GridUnitType]::Star)
+        $leftColumn.Width = [Windows.GridLength]::new(1.5,[Windows.GridUnitType]::Star)
         $buttonColumn = New-Object System.Windows.Controls.ColumnDefinition
-        $buttonColumn.Width = [Windows.GridLength]::new(0.9,[Windows.GridUnitType]::Star)
+        $buttonColumn.Width = [Windows.GridLength]::new(0.7,[Windows.GridUnitType]::Star)
         [void]$cardBody.ColumnDefinitions.Add($leftColumn)
         [void]$cardBody.ColumnDefinitions.Add($buttonColumn)
         $leftPanel = New-Object System.Windows.Controls.StackPanel
@@ -2024,21 +2137,21 @@ function Update-UiChannelDisplays {
         $actionGrid = New-Object System.Windows.Controls.Primitives.UniformGrid
         $actionGrid.Columns = 2
         $actionGrid.Rows = 2
-        $actionGrid.Height = 104
+        $actionGrid.Height = 83
         $actionGrid.VerticalAlignment = [Windows.VerticalAlignment]::Center
         [Windows.Controls.Grid]::SetColumn($actionGrid,1)
-        $txButton = New-UiChannelActionButton -Text $(if ($isTx) { '✓ 呼叫目标' } else { '设为呼叫' }) -Channel $channel -Action tx
+        $txButton = New-UiChannelActionButton -Text $(if ($isTx) { '呼叫目标' } else { '设为呼叫' }) -Channel $channel -Action tx
         $txButton.IsEnabled = ($canTxMutation -and -not $isTx)
         $txButton.ToolTip = if ($isTx) { '已选为下次 PTT 呼叫目标' } else { '选择此频道作为下次 PTT 目标' }
-        $txButton.Height = 49
+        $txButton.Height = 39
         [void]$actionGrid.Children.Add($txButton)
         $removeButton = New-UiChannelActionButton -Text '取消监听' -Channel $channel -Action remove
         $removeButton.IsEnabled = $canReceiveMutation
-        $removeButton.Height = 49
+        $removeButton.Height = 39
         [void]$actionGrid.Children.Add($removeButton)
         $muteButton = New-UiChannelActionButton -Text $(if ($isMuted) { '恢复收听' } else { '临时屏蔽' }) -Channel $channel -Action mute
         $muteButton.IsEnabled = $canReceiveMutation
-        $muteButton.Height = 49
+        $muteButton.Height = 39
         [void]$actionGrid.Children.Add($muteButton)
         if ([string]$channel.kind -ceq 'group' -and [uint64]$channel.id -ne 4000) {
             $quickCallReady = ($script:latestStatus -and [string]$script:latestStatus.bm_state -ceq 'ready') -or
@@ -2048,7 +2161,7 @@ function Update-UiChannelDisplays {
             $fourthButton.IsEnabled = ($script:quickCallCapabilities -and $script:controlConfirmed -and $quickCallReady -and
                 -not $script:channelMutationSafetyStopPending -and -not $script:pendingRoutingMutation -and
                 -not $script:pendingChannelMutation -and -not $script:routingMutationFence)
-            $fourthButton.Height = 49
+            $fourthButton.Height = 39
             [void]$actionGrid.Children.Add($fourthButton)
         } else {
             $emptyAction = New-Object System.Windows.Controls.Border
@@ -2063,8 +2176,9 @@ function Update-UiChannelDisplays {
     $visibleCardCount = [Math]::Min($pageSize,[Math]::Max(0,$channelCount - ($script:channelPageIndex * $pageSize)))
     for ($blankIndex = $visibleCardCount; $blankIndex -lt $pageSize; $blankIndex++) {
         $emptySlot = New-Object System.Windows.Controls.Border
-        $emptySlot.Background = [Windows.Media.Brushes]::Transparent
-        $emptySlot.BorderThickness = [Windows.Thickness]::new(0.0)
+        $emptySlot.Background = [Windows.Media.BrushConverter]::new().ConvertFromString('#151C20')
+        $emptySlot.BorderBrush = [Windows.Media.BrushConverter]::new().ConvertFromString('#303B40')
+        $emptySlot.BorderThickness = [Windows.Thickness]::new(1.0)
         $emptySlot.Margin = [Windows.Thickness]::new(2.0)
         $emptySlot.IsHitTestVisible = $false
         $emptySlot.Tag = [pscustomobject]@{ blank=$true }
@@ -2617,6 +2731,14 @@ function Test-UiStatusRecord {
         $property = $Record.PSObject.Properties[$name]
         if ($null -eq $property -or $property.Value -isnot [bool]) { return $false }
     }
+    $bmConnectionFields = @('bm_connection','bm_resolving','bm_connection_error')
+    $bmConnectionPresent = 0
+    foreach ($name in $bmConnectionFields) { if ($null -ne $Record.PSObject.Properties[$name]) { $bmConnectionPresent++ } }
+    if ($bmConnectionPresent -ne 0 -and $bmConnectionPresent -ne $bmConnectionFields.Count) { return $false }
+    if ($bmConnectionPresent -eq $bmConnectionFields.Count -and
+        ($Record.bm_resolving -isnot [bool] -or $Record.bm_connection_error -isnot [string] -or
+            -not (Test-UiBmConnectionState -Connection $Record.bm_connection -BmState ([string]$Record.bm_state) `
+                -Resolving ([bool]$Record.bm_resolving) -Error ([string]$Record.bm_connection_error)))) { return $false }
     $currentCallNames = @(
         'current_call_valid', 'current_call_phase', 'current_call_source_id', 'current_call_destination_id',
         'current_call_slot', 'current_call_kind', 'current_call_color_code',
@@ -2858,20 +2980,52 @@ function Test-UiRoutingSnapshot {
 function Test-UiRoutingCapabilityList {
     param([object]$Commands)
     if ($Commands -isnot [System.Array] -or @($Commands | Where-Object { $_ -isnot [string] }).Count -gt 0) { return $false }
-    $joined = @($Commands) -join ','
-    $knownSets = @(
-        'hello,status,shutdown',
-        'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace',
-        'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join',
-        'hello,status,shutdown,radio_identity.cache_upsert',
-        'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,radio_identity.cache_upsert',
-        'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join,radio_identity.cache_upsert'
-    )
-    if ($knownSets -ccontains $joined) { return $true }
-    foreach ($known in $knownSets) {
-        if ($joined -ceq ($known + ',audio.gains.set')) { return $true }
+    $items = @($Commands)
+    if ($items.Count -lt 3 -or $items[0] -cne 'hello' -or $items[1] -cne 'status' -or $items[2] -cne 'shutdown') { return $false }
+    $allowed = @('hello','status','shutdown','routing.status','rx_policy.replace','tx_policy.replace',
+        'network_subscription.quick_call_join','radio_identity.cache_upsert','audio.gains.set','bm.connection.set')
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    foreach ($command in $items) {
+        if ($allowed -cnotcontains [string]$command -or -not $seen.Add([string]$command)) { return $false }
     }
-    return $false
+    $routingCount = @('routing.status','rx_policy.replace','tx_policy.replace' | Where-Object { $seen.Contains($_) }).Count
+    if ($routingCount -ne 0 -and $routingCount -ne 3) { return $false }
+    if ($seen.Contains('network_subscription.quick_call_join') -and $routingCount -ne 3) { return $false }
+    return $true
+}
+
+function Test-UiHasCapability {
+    param([AllowEmptyString()][string]$Capabilities,[Parameter(Mandatory=$true)][string]$Command)
+    return (@($Capabilities -split ',' | Where-Object { $_ -ceq $Command }).Count -eq 1)
+}
+
+function Test-UiBmConnectionState {
+    param([Parameter(Mandatory=$true)][object]$Connection,[Parameter(Mandatory=$true)][string]$BmState,
+        [Parameter(Mandatory=$true)][bool]$Resolving,[Parameter(Mandatory=$true)][string]$Error,
+        [switch]$RequirePositiveRevision)
+    if (-not (Test-UiExactControlFields -Record $Connection -Required @('requested_enabled','revision','transport_open')) -or
+        $Connection.requested_enabled -isnot [bool] -or $Connection.transport_open -isnot [bool] -or
+        -not (Test-UiControlUnsigned -Value $Connection.revision -Minimum $(if ($RequirePositiveRevision) { 1 } else { 0 })) -or
+        $BmState -cnotin @('idle','waiting_login_ack','waiting_auth_ack','waiting_config_ack','waiting_options_ack','ready','backoff','stopped') -or
+        $Error -cnotin @('none','password_required','master_resolution_failed','master_resolution_timeout',
+            'resolver_cancel_timeout','profile_invalid','transport_open_failed','media_cleanup_timeout')) { return $false }
+    if ($Resolving) {
+        if ([bool]$Connection.transport_open -or $BmState -cne 'stopped') { return $false }
+        if ([bool]$Connection.requested_enabled) {
+            if ($Error -cne 'none') { return $false }
+        } elseif ($Error -cnotin @('none','master_resolution_timeout','resolver_cancel_timeout')) {
+            return $false
+        }
+    }
+    if ($Error -cin @('password_required','master_resolution_failed','profile_invalid','transport_open_failed') -and
+        ([bool]$Connection.requested_enabled -or [bool]$Connection.transport_open -or $Resolving -or $BmState -cne 'stopped')) { return $false }
+    if ($Error -cin @('master_resolution_timeout','resolver_cancel_timeout') -and -not $Resolving -and
+        ([bool]$Connection.requested_enabled -or [bool]$Connection.transport_open -or $BmState -cne 'stopped')) { return $false }
+    if ($Error -ceq 'media_cleanup_timeout' -and ([bool]$Connection.requested_enabled -or $Resolving -or
+            (-not [bool]$Connection.transport_open -and $BmState -cne 'stopped'))) { return $false }
+    if ($Error -ceq 'none' -and $BmState -cin @('waiting_login_ack','waiting_auth_ack','waiting_config_ack','waiting_options_ack','ready','backoff') -and
+        -not [bool]$Connection.transport_open) { return $false }
+    return $true
 }
 
 function Test-UiControlSnapshot {
@@ -2879,6 +3033,8 @@ function Test-UiControlSnapshot {
     $names = @('mode','status','phase','media_seq','diagnostic','bm_state','hri_phase','hri_ready',
         'serial_open','wavein_open','waveout_open','radio_state')
     $gainAdvertised = Test-UiAudioGainCapability -Capabilities ([string]$script:controlCapabilities)
+    $bmConnectionAdvertised = Test-UiHasCapability -Capabilities ([string]$script:controlCapabilities) -Command 'bm.connection.set'
+    if ($bmConnectionAdvertised) { $names += @('bm_connection','bm_resolving','bm_connection_error') }
     if ($gainAdvertised) {
         if (-not (Test-UiExactControlFields -Record $Snapshot -Required ($names + @('audio_gains'))) -or
             -not (Test-UiAudioGainsValue -Gains $Snapshot.audio_gains)) { return $false }
@@ -2890,9 +3046,15 @@ function Test-UiControlSnapshot {
     foreach ($name in @('diagnostic','hri_ready','serial_open','wavein_open','waveout_open')) {
         if ($Snapshot.PSObject.Properties[$name].Value -isnot [bool]) { return $false }
     }
+    if ($bmConnectionAdvertised) {
+        if ($Snapshot.bm_resolving -isnot [bool] -or $Snapshot.bm_connection_error -isnot [string]) { return $false }
+        $validBmConnection = Test-UiBmConnectionState -Connection $Snapshot.bm_connection -BmState ([string]$Snapshot.bm_state) `
+            -Resolving ([bool]$Snapshot.bm_resolving) -Error ([string]$Snapshot.bm_connection_error)
+        if (-not $validBmConnection) { return $false }
+    }
     if ($Snapshot.diagnostic -and ($Snapshot.mode -cne 'diagnostic' -or $Snapshot.status -cne 'running' -or
             $Snapshot.phase -cne 'protocol_diagnostic' -or [uint64]$Snapshot.media_seq -ne 0 -or
-            $Snapshot.bm_state -cne 'not_started' -or $Snapshot.hri_phase -cne 'not_started' -or
+            $Snapshot.bm_state -cne 'stopped' -or $Snapshot.hri_phase -cne 'not_started' -or
             $Snapshot.hri_ready -or $Snapshot.serial_open -or $Snapshot.wavein_open -or
             $Snapshot.waveout_open -or $Snapshot.radio_state -cne 'unknown')) { return $false }
     return $true
@@ -2925,6 +3087,9 @@ function ConvertFrom-UiControlFrame {
             -not (Test-UiControlUnsigned -Value $record.control_version -Minimum 2 -Maximum 2) -or
             $record.diagnostic -isnot [bool] -or -not ($record.supported_commands -is [System.Array]) -or
             -not (Test-UiRoutingCapabilityList -Commands $record.supported_commands)) { throw 'control_ready 字段或支持命令列表无效。' }
+        if ($record.diagnostic -and @($record.supported_commands | Where-Object { $_ -ceq 'bm.connection.set' }).Count -gt 0) {
+            throw '隔离控制运行不得声明 BM 连接命令。'
+        }
         if ([string]$record.run_id -cnotmatch '^[0-9]{1,10}-[0-9]{1,20}$' -or
             ($ExpectedProcessId -gt 0 -and [uint32]$record.process_id -ne [uint32]$ExpectedProcessId) -or
             [uint64]$record.control_seq -le $LastControlSequence -or ($LockedRunId -and $record.run_id -cne $LockedRunId)) {
@@ -2940,7 +3105,7 @@ function ConvertFrom-UiControlFrame {
     if ($record.type -cne 'control_result') { throw '控制协议 v2 只接受 control_ready 或 control_result。' }
     $common = @('schema_version','type','run_id','control_seq','request_id','command','result','replayed')
     $validCommands = @('hello','status','shutdown','routing.status','rx_policy.replace','tx_policy.replace',
-        'network_subscription.quick_call_join','radio_identity.cache_upsert','audio.gains.set')
+        'network_subscription.quick_call_join','radio_identity.cache_upsert','audio.gains.set','bm.connection.set')
     if ($record.command -isnot [string] -or $validCommands -cnotcontains $record.command) { throw 'control_result.command 无效。' }
     $specific = switch -CaseSensitive ([string]$record.command) {
         'hello' { @('supported_commands') }
@@ -2952,10 +3117,17 @@ function ConvertFrom-UiControlFrame {
         'network_subscription.quick_call_join' { @('activation_status','destination_id','slot','frames_sent') }
         'radio_identity.cache_upsert' { @() }
         'audio.gains.set' { @('audio_gains') }
+        'bm.connection.set' { @('bm_connection','bm_resolving','bm_connection_error','bm_state') }
     }
-    if ($record.result -isnot [string] -or @('ok','unsupported','rejected') -cnotcontains $record.result) { throw 'control_result.result 无效。' }
-    $requiredResultFields = if ($record.result -ceq 'ok') { $common + $specific } else { $common + @('error') }
-    $optionalResultFields = if ($record.result -ceq 'ok') { @('error') } else { @() }
+    if ($record.result -isnot [string] -or @('ok','accepted','unsupported','rejected') -cnotcontains $record.result -or
+        ($record.result -ceq 'accepted' -and $record.command -cne 'bm.connection.set') -or
+        ($record.command -ceq 'bm.connection.set' -and $record.result -cnotin @('accepted','rejected','unsupported'))) { throw 'control_result.result 无效。' }
+    $bmRejected = ($record.command -ceq 'bm.connection.set' -and $record.result -ceq 'rejected')
+    $bmUnsupported = ($record.command -ceq 'bm.connection.set' -and $record.result -ceq 'unsupported')
+    $bmResultSnapshot = ($record.command -ceq 'bm.connection.set' -and $record.result -cin @('accepted','rejected','unsupported'))
+    $hasResultSnapshot = ($record.result -ceq 'ok' -or $record.result -ceq 'accepted' -or $bmResultSnapshot)
+    $requiredResultFields = if ($hasResultSnapshot) { $common + $specific + $(if ($bmRejected -or $bmUnsupported) { @('error') } else { @() }) } else { $common + @('error') }
+    $optionalResultFields = if ($hasResultSnapshot -and -not $bmRejected -and -not $bmUnsupported) { @('error') } else { @() }
     if (-not (Test-UiExactControlFields -Record $record -Required $requiredResultFields -Optional $optionalResultFields) -or
         $record.run_id -isnot [string] -or $record.request_id -isnot [string] -or
         $record.replayed -isnot [bool] -or -not (Test-UiControlUnsigned -Value $record.control_seq -Minimum 1) -or
@@ -2980,8 +3152,11 @@ function ConvertFrom-UiControlFrame {
         throw 'control_result.request_id 无效。'
     }
     if ($null -ne $record.PSObject.Properties['error'] -and $record.error -isnot [string]) { throw 'control_result.error 必须是字符串。' }
-    if ($record.result -cne 'ok' -and [string]::IsNullOrWhiteSpace([string]$record.error)) { throw '拒绝或不支持的响应必须说明 error。' }
-    if ($record.result -ceq 'ok') {
+    if ($record.command -ceq 'bm.connection.set') {
+        if ($record.result -ceq 'accepted' -and $null -ne $record.PSObject.Properties['error']) { throw 'BM accepted 响应不得包含 error。' }
+        if ($record.result -ceq 'rejected' -and [string]::IsNullOrWhiteSpace([string]$record.error)) { throw 'BM rejected 响应必须说明 error。' }
+    } elseif ($record.result -cne 'ok' -and [string]::IsNullOrWhiteSpace([string]$record.error)) { throw '拒绝或不支持的响应必须说明 error。' }
+    if ($hasResultSnapshot) {
         switch -CaseSensitive ([string]$record.command) {
             'hello' {
                 if (-not (Test-UiRoutingCapabilityList -Commands $record.supported_commands)) { throw '初始确认返回的命令列表无效。' }
@@ -3004,6 +3179,22 @@ function ConvertFrom-UiControlFrame {
                 if (-not (Test-UiAudioGainsValue -Gains $record.audio_gains) -or
                     [uint64]$record.audio_gains.revision -ne [uint64]$gainRevision) {
                     throw '音量增益应用结果字段无效。'
+                }
+            }
+            'bm.connection.set' {
+                if ($record.bm_resolving -isnot [bool] -or $record.bm_connection_error -isnot [string] -or
+                    -not (Test-UiBmConnectionState -Connection $record.bm_connection -BmState ([string]$record.bm_state) `
+                        -Resolving ([bool]$record.bm_resolving) -Error ([string]$record.bm_connection_error) `
+                        -RequirePositiveRevision:($record.result -ceq 'accepted')) -or
+                    ($record.result -ceq 'accepted' -and $record.error)) { throw 'BM连接响应状态字段无效。' }
+                if ($record.result -ceq 'rejected' -and [string]$record.error -cnotin @(
+                        'bm_revision_stale','bm_revision_conflict','bm_transition_busy',
+                        'bm_password_required','bm_master_resolution_failed','bm_profile_invalid','bm_transport_open_failed',
+                        'hello_required','invalid_bm_connection_parameters')) {
+                    throw 'BM连接拒绝原因无效。'
+                }
+                if ($record.result -ceq 'unsupported' -and [string]$record.error -cne 'command_not_supported') {
+                    throw 'BM连接不支持响应原因无效。'
                 }
             }
         }
@@ -3036,6 +3227,14 @@ function Reset-UiControlState {
     $script:controlLastSequence = [uint64]0
     $script:controlConfirmed = $false
     $script:controlCapabilities = ''
+    $script:bmConnectionNativeCapability = $false
+    $script:bmConnectionSnapshot = $null
+    $script:bmConnectionRevision = [uint64]0
+    $script:bmConnectionPendingRequest = $null
+    $script:bmStatusNextRequestUtc = [DateTime]::MinValue
+    $script:lastBmSnapshotUtc = [DateTime]::MinValue
+    $script:bmStatusRecoveryStartedUtc = [DateTime]::MinValue
+    $script:bmStatusRecoveryCount = 0
     $script:identityNativeCapability = $false
     $script:identityNativeRunId = ''
     $script:identityNativeRevision = [uint64]0
@@ -3086,6 +3285,231 @@ function Set-UiControlStatus {
     (Get-UiControl 'ControlStatusButton').IsEnabled = ([bool]$Confirmed -and -not [string]::IsNullOrWhiteSpace($script:controlRunId))
 }
 
+function Get-UiBmConnectionErrorText {
+    param([AllowEmptyString()][string]$ErrorCode)
+    switch -CaseSensitive ($ErrorCode) {
+        'password_required' { return 'BM 连接失败：请先填写 BM 密码并保存配置。' }
+        'master_resolution_failed' { return 'BM 主站地址解析失败，请检查地址或网络。' }
+        'master_resolution_timeout' { return 'BM 主站解析超时，请检查地址或网络。' }
+        'resolver_cancel_timeout' { return 'BM 主站解析取消超时。' }
+        'profile_invalid' { return 'BM 连接参数无效；请检查主机、UDP 端口、呼号和 ID。' }
+        'transport_open_failed' { return 'BM UDP 传输未能打开；请检查端口和本机网络。' }
+        'media_cleanup_timeout' { return 'BM 断开超时，正在清理语音。' }
+        default { return '' }
+    }
+}
+
+function Get-UiBmConnectionRejectText {
+    param([Parameter(Mandatory=$true)][string]$ErrorCode)
+    switch -CaseSensitive ($ErrorCode) {
+        'bm_revision_stale' { return 'BM 状态已更新，请重试。' }
+        'bm_revision_conflict' { return 'BM 状态已更新，请重试。' }
+        'bm_transition_busy' { return 'BM 正在切换或收发，请稍后重试。' }
+        'bm_password_required' { return 'BM 密码未填写；请填写并保存后重新连接。' }
+        'bm_master_resolution_failed' { return 'BM 主站地址解析失败；请检查服务器地址和网络后重试。' }
+        'bm_profile_invalid' { return 'BM 连接参数无效；请检查呼号、ID、主站和端口。' }
+        'bm_transport_open_failed' { return 'BM UDP 连接未能打开；请检查端口和本机网络。' }
+        default { return 'BM 连接失败，请检查配置后重试。' }
+    }
+}
+
+function Set-UiBmConnectionSnapshot {
+    param([Parameter(Mandatory=$true)][object]$Connection,[Parameter(Mandatory=$true)][string]$BmState,
+        [Parameter(Mandatory=$true)][bool]$Resolving,[Parameter(Mandatory=$true)][string]$ErrorCode,
+        [string]$Source='status')
+    if (-not (Test-UiBmConnectionState -Connection $Connection -BmState $BmState -Resolving $Resolving -Error $ErrorCode)) { return $false }
+    $revision = [uint64]$Connection.revision
+    if ($revision -lt [uint64]$script:bmConnectionRevision) { return $false }
+    $prior = $script:bmConnectionSnapshot
+    $script:bmConnectionSnapshot = [pscustomobject][ordered]@{
+        requested_enabled=[bool]$Connection.requested_enabled; revision=$revision
+        transport_open=[bool]$Connection.transport_open; resolving=$Resolving; error=$ErrorCode; bm_state=$BmState
+    }
+    $script:bmConnectionRevision = $revision
+    $now = [DateTime]::UtcNow
+    $script:lastBmSnapshotUtc = $now
+    if ($Source -ceq 'status_jsonl') {
+        # 只有持续状态流的新鲜快照才能重新开启恢复查询预算。
+        # ACK 和一次性 status 回包不能反复重置预算，否则长期缺少 JSONL 时会耗尽请求缓存。
+        $script:bmStatusRecoveryCount = 0
+        $script:bmStatusRecoveryStartedUtc = [DateTime]::MinValue
+    }
+    if ($script:bmConnectionPendingRequest -and $Source -cin @('status_jsonl','control_status') -and
+        [bool]$script:bmConnectionPendingRequest.enabled -eq [bool]$Connection.requested_enabled -and
+        [uint64]$script:bmConnectionPendingRequest.revision -eq $revision) {
+        # 实际状态已反映本次目标时，可继续等待状态完成，不依赖可能丢失的 ACK。
+        $script:bmConnectionPendingRequest.ack_received = $true
+    }
+    $completeDisconnected = (-not [bool]$Connection.requested_enabled -and -not $Resolving -and
+        -not [bool]$Connection.transport_open -and $BmState -ceq 'stopped')
+    $text = if ($Resolving) { '正在解析 BM 主站' }
+        elseif ($completeDisconnected) { '已断开' }
+        elseif (-not [bool]$Connection.requested_enabled) { '正在断开' }
+        elseif ($ErrorCode -cne 'none') { '连接失败' }
+        elseif ($BmState -ceq 'ready') { '已连接' }
+        else { '正在连接' }
+    if ($BmState -ceq 'backoff' -and [bool]$Connection.requested_enabled -and -not $Resolving) { $text='正在重试' }
+    Set-MainText -Name 'BmValue' -Text $text
+    $errorText = Get-UiBmConnectionErrorText -ErrorCode $ErrorCode
+    if ($errorText) { $detail=$errorText }
+    elseif ($completeDisconnected) { $detail='BM 已断开。' }
+    elseif ($Resolving) { $detail='正在查找 BM 主站。' }
+    elseif ($ErrorCode -ceq 'media_cleanup_timeout') { $detail=$errorText }
+    elseif (-not [bool]$Connection.requested_enabled) { $detail=if ($BmState -ceq 'ready' -or [bool]$Connection.transport_open) { '正在断开 BM 并清理语音。' } else { '正在断开 BM。' } }
+    elseif ($BmState -ceq 'ready') { $detail='BM 已连接。' }
+    elseif ([bool]$Connection.requested_enabled) { $detail='正在连接 BM。' }
+    else { $detail='正在断开 BM。' }
+    Set-MainText -Name 'BmDetail' -Text $detail
+    if ($prior -and ($prior.bm_state -cne $BmState -or [bool]$prior.resolving -ne $Resolving -or
+            [bool]$prior.requested_enabled -ne [bool]$Connection.requested_enabled -or
+            [bool]$prior.transport_open -ne [bool]$Connection.transport_open)) {
+        if ($Resolving) { Add-UiEvent 'BM 主站名称解析中' }
+        elseif ($completeDisconnected) { Add-UiEvent 'BM 网络会话已停止并关闭 UDP' }
+        elseif ($BmState -ceq 'ready') { Add-UiEvent 'BM 已收到登录确认' }
+        elseif (-not [bool]$Connection.requested_enabled) { Add-UiEvent 'BM 正在断开并清理网络媒体' }
+    }
+    if ($ErrorCode -cne 'none' -and (-not $prior -or [string]$prior.error -cne $ErrorCode)) {
+        $errorEventText = Get-UiBmConnectionErrorText -ErrorCode $ErrorCode
+        Add-UiEvent $(if ($errorEventText) { $errorEventText } else { 'BM 连接失败，请检查连接设置。' })
+    }
+    if ($script:bmConnectionPendingRequest -and [bool]$script:bmConnectionPendingRequest.enabled -eq [bool]$Connection.requested_enabled -and
+        [uint64]$script:bmConnectionPendingRequest.revision -eq $revision) {
+        $requestCompleted = $false
+        if ([bool]$script:bmConnectionPendingRequest.enabled) {
+            $requestCompleted = ([bool]$Connection.requested_enabled -and -not $Resolving -and $BmState -ceq 'ready') -or
+                (-not [bool]$Connection.requested_enabled -and $ErrorCode -cin @('password_required','master_resolution_failed',
+                    'master_resolution_timeout','resolver_cancel_timeout','profile_invalid','transport_open_failed'))
+        } else {
+            $requestCompleted = $completeDisconnected
+        }
+        if ($requestCompleted) {
+            $script:bmConnectionPendingRequest = $null
+            $script:bmStatusNextRequestUtc = [DateTime]::MinValue
+            $script:bmStatusRecoveryStartedUtc = [DateTime]::MinValue
+            $script:bmStatusRecoveryCount = 0
+        }
+    }
+    if ($script:bmConnectAfterCoreReady -and $script:bmConnectionNativeCapability -and
+        $script:latestStatus -and [bool]$script:latestStatus.hri_ready -and [bool]$script:latestStatus.hri_y_zero_ready -and
+        -not [bool]$Connection.requested_enabled -and $completeDisconnected) {
+        $script:bmConnectAfterCoreReady = $false
+        [void](Set-UiBmConnectionEnabled -Enabled $true)
+    }
+    if ($script:serialDisconnectPending -and $script:bmConnectionNativeCapability -and
+        [bool]$Connection.requested_enabled -and
+        (-not $script:bmConnectionPendingRequest -or
+            ([bool]$script:bmConnectionPendingRequest.ack_received -and [bool]$script:bmConnectionPendingRequest.enabled))) {
+        [void](Set-UiBmConnectionEnabled -Enabled $false)
+    }
+    if ($script:serialDisconnectPending -and $completeDisconnected) {
+        Complete-UiSerialDisconnectAfterBm
+    }
+    Set-ConnectionButtonState
+    return $true
+}
+
+function Set-UiBmConnectionEnabled {
+    param([Parameter(Mandatory=$true)][bool]$Enabled)
+    if (-not $script:supervisor -or $script:supervisor.HasExited -or -not $script:controlConfirmed -or
+        -not $script:bmConnectionNativeCapability -or $script:controlDiagnostic) {
+        Set-MainText -Name 'FooterText' -Text '当前无法单独连接 BM，请先断开串口后重连。'
+        return $false
+    }
+    if ($script:bmConnectionPendingRequest -and -not [bool]$script:bmConnectionPendingRequest.ack_received) {
+        Set-MainText -Name 'FooterText' -Text '正在确认上一项 BM 连接请求。'
+        return $false
+    }
+    if (-not $script:bmConnectionSnapshot) {
+        Request-UiControlStatus
+        Set-MainText -Name 'FooterText' -Text '正在读取 BM 当前连接状态。'
+        return $false
+    }
+    if ([bool]$script:bmConnectionSnapshot.requested_enabled -eq $Enabled) {
+        if ($Enabled -and [string]$script:bmConnectionSnapshot.bm_state -ceq 'ready' -and -not [bool]$script:bmConnectionSnapshot.resolving) { return $true }
+        if (-not $Enabled -and [string]$script:bmConnectionSnapshot.bm_state -ceq 'stopped' -and
+            -not [bool]$script:bmConnectionSnapshot.resolving -and -not [bool]$script:bmConnectionSnapshot.transport_open) { return $true }
+    }
+    $hriReady = ($script:latestStatus -and $script:lastStatusUtc -ne [DateTime]::MinValue -and
+        ([DateTime]::UtcNow - $script:lastStatusUtc).TotalSeconds -le 3 -and
+        [bool]$script:latestStatus.hri_ready -and [bool]$script:latestStatus.hri_y_zero_ready)
+    if ($Enabled -and -not $hriReady) {
+        $script:bmConnectAfterCoreReady = $true
+        Request-UiControlStatus
+        Set-MainText -Name 'FooterText' -Text 'BM 连接请求已排队，等待 HRI 就绪。'
+        return $true
+    }
+    if ([uint64]$script:bmConnectionRevision -eq [uint64]::MaxValue) {
+        Set-MainText -Name 'FooterText' -Text 'BM 连接状态异常，请重新连接串口。'
+        return $false
+    }
+    $revision = [uint64]($script:bmConnectionRevision + [uint64]1)
+    $requestId = [guid]::NewGuid().ToString('D')
+    $payload = [ordered]@{ enabled=$Enabled; revision=$revision }
+    $json = ConvertTo-Json -InputObject $payload -Compress
+    $pending = [pscustomobject][ordered]@{
+        request_id=$requestId; enabled=$Enabled; revision=$revision
+        started_utc=[DateTime]::UtcNow; ack_received=$false
+    }
+    $script:bmConnectionPendingRequest = $pending
+    $script:pendingControlRequests[$requestId] = 'bm.connection.set'
+    $script:bmStatusNextRequestUtc = [DateTime]::UtcNow.AddSeconds(1)
+    $script:bmStatusRecoveryStartedUtc = [DateTime]::UtcNow
+    $script:bmStatusRecoveryCount = 0
+    if (-not $script:supervisor.SendControlCommand($requestId,'bm.connection.set',$json)) {
+        [void]$script:pendingControlRequests.Remove($requestId)
+        $script:bmConnectionPendingRequest = $null
+        Set-MainText -Name 'FooterText' -Text '核心没有接收 BM 连接请求；当前连接状态保持不变。'
+        Set-ConnectionButtonState
+        return $false
+    }
+    Set-MainText -Name 'FooterText' -Text $(if ($Enabled) { '正在连接 BM；等待核心状态确认。' } else { '正在断开 BM；HRI 与 CAT 保持运行。' })
+    Set-ConnectionButtonState
+    return $true
+}
+
+function Update-UiBmConnectionPoll {
+    if (-not $script:bmConnectionNativeCapability -or (-not $script:bmConnectionPendingRequest -and -not $script:serialDisconnectPending) -or
+        -not $script:controlConfirmed -or -not $script:supervisor -or $script:supervisor.HasExited) { return }
+    $now = [DateTime]::UtcNow
+    $snapshot = $script:bmConnectionSnapshot
+    $completeDisconnected = ($snapshot -and -not [bool]$snapshot.requested_enabled -and -not [bool]$snapshot.resolving -and
+        -not [bool]$snapshot.transport_open -and [string]$snapshot.bm_state -ceq 'stopped')
+    if ($script:serialDisconnectPending -and $script:serialDisconnectDeadlineUtc -ne [DateTime]::MinValue -and
+        $now -ge $script:serialDisconnectDeadlineUtc -and -not $completeDisconnected) {
+        $script:serialDisconnectPending = $false
+        $script:serialDisconnectCoreStopIssued = $false
+        $script:serialDisconnectCatStopRequested = $false
+        $script:serialDisconnectDeadlineUtc = [DateTime]::MinValue
+        $script:bmConnectAfterCoreReady = $false
+        $message = if ($snapshot -and [bool]$snapshot.resolving) { 'BM 主站仍在解析，串口保持连接。' }
+            elseif ($snapshot -and ([bool]$snapshot.transport_open -or [string]$snapshot.bm_state -cne 'stopped')) { 'BM 网络仍在清理，串口保持连接。' }
+            elseif (-not $snapshot) { 'BM 状态未确认，串口保持连接。' }
+            else { 'BM 会话仍未停止，串口保持连接。' }
+        Set-MainText -Name 'FooterText' -Text $message
+        Add-UiEvent '串口断开等待超时；HRI 和 CAT 仍保持连接'
+        Set-ConnectionButtonState
+        return
+    }
+    if ($script:lastBmSnapshotUtc -ne [DateTime]::MinValue -and
+        ($now - $script:lastBmSnapshotUtc).TotalSeconds -le 3) { return }
+    if ($script:bmStatusNextRequestUtc -gt $now -or $script:pendingStatusRequestId) { return }
+    if ($script:bmStatusRecoveryStartedUtc -eq [DateTime]::MinValue) { $script:bmStatusRecoveryStartedUtc=$now }
+    if ($script:bmStatusRecoveryCount -ge 3 -or ($now - $script:bmStatusRecoveryStartedUtc).TotalSeconds -ge 12) {
+        if ($script:bmConnectionPendingRequest -and -not [bool]$script:bmConnectionPendingRequest.ack_received) {
+            Add-UiEvent 'BM 连接状态尚未更新；请检查当前连接状态后重试。'
+        } elseif ($script:serialDisconnectPending) {
+            Add-UiEvent 'BM 状态尚未更新；串口保持连接等待关闭确认。'
+        }
+        $script:bmStatusNextRequestUtc = [DateTime]::MaxValue
+        return
+    }
+    Request-UiControlStatus
+    if ($script:pendingStatusRequestId) {
+        $script:bmStatusRecoveryCount++
+        $script:bmStatusNextRequestUtc=$now.AddSeconds(2)
+    }
+}
+
 function Request-UiControlStatus {
     if (-not $script:supervisor -or $script:supervisor.HasExited -or -not $script:controlConfirmed) { return }
     if ($script:pendingStatusRequestId) { return }
@@ -3096,6 +3520,7 @@ function Request-UiControlStatus {
         [void]$script:pendingControlRequests.Remove($requestId)
         $script:pendingStatusRequestId = ''
         Set-UiControlStatus -Text '核心状态查询失败；请检查连接状态。' -Confirmed $false
+        return
     }
 }
 
@@ -3151,6 +3576,7 @@ function Process-UiControlEvents {
             $script:controlDiagnostic = [bool]$record.diagnostic
             $script:controlCapabilities = @($record.supported_commands) -join ','
             $gainCapability = Test-UiAudioGainCapability -Capabilities $script:controlCapabilities
+            $script:bmConnectionNativeCapability = Test-UiHasCapability -Capabilities $script:controlCapabilities -Command 'bm.connection.set'
             if (Get-Command -Name Reset-UiAudioGainRun -ErrorAction SilentlyContinue) {
                 Reset-UiAudioGainRun -RunId $script:controlRunId -Capability:$gainCapability -RestoreSavedValues
             } else {
@@ -3162,16 +3588,15 @@ function Process-UiControlEvents {
                 $script:audioGainRuntimeReady = $false
                 $script:audioGainPendingRequest = $null
             }
-            $capabilityBase = [string]$script:controlCapabilities
-            if ($gainCapability) { $capabilityBase = $capabilityBase.Substring(0,$capabilityBase.Length - ',audio.gains.set'.Length) }
-            $script:routingCapabilities = ($capabilityBase -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace' -or
-                $capabilityBase -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join' -or
-                $capabilityBase -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,radio_identity.cache_upsert' -or
-                $capabilityBase -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join,radio_identity.cache_upsert')
-            $script:quickCallCapabilities = ($capabilityBase -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join' -or
-                $capabilityBase -ceq 'hello,status,shutdown,routing.status,rx_policy.replace,tx_policy.replace,network_subscription.quick_call_join,radio_identity.cache_upsert')
-            $script:identityNativeCapability = $capabilityBase -ceq 'hello,status,shutdown,radio_identity.cache_upsert' -or
-                $capabilityBase.EndsWith(',radio_identity.cache_upsert',[StringComparison]::Ordinal)
+            $script:routingCapabilities = ((Test-UiHasCapability -Capabilities $script:controlCapabilities -Command 'routing.status') -and
+                (Test-UiHasCapability -Capabilities $script:controlCapabilities -Command 'rx_policy.replace') -and
+                (Test-UiHasCapability -Capabilities $script:controlCapabilities -Command 'tx_policy.replace'))
+            $script:quickCallCapabilities = (Test-UiHasCapability -Capabilities $script:controlCapabilities -Command 'network_subscription.quick_call_join')
+            $script:identityNativeCapability = (Test-UiHasCapability -Capabilities $script:controlCapabilities -Command 'radio_identity.cache_upsert')
+            $script:bmConnectionSnapshot = $null
+            $script:bmConnectionRevision = [uint64]0
+            $script:bmConnectionPendingRequest = $null
+            $script:bmStatusNextRequestUtc = [DateTime]::MinValue
             $requestId = [guid]::NewGuid().ToString('D')
             $script:pendingControlRequests[$requestId] = 'hello'
             Set-UiControlStatus -Text '核心已启动，正在确认本机控制通道' -Confirmed $false
@@ -3223,6 +3648,35 @@ function Process-UiControlEvents {
             if (-not (Complete-UiNativeIdentityUpdate -Record $record)) {
                 Set-UiControlStatus -Text '核心返回了不匹配的身份缓存确认' -Confirmed $false
             }
+            continue
+        }
+        if ($record.command -ceq 'bm.connection.set') {
+            $bmPending = $script:bmConnectionPendingRequest
+            if (-not $bmPending -or [string]$bmPending.request_id -cne [string]$record.request_id) {
+                Set-UiControlStatus -Text '核心返回了不匹配的 BM 连接确认' -Confirmed $false
+                Request-UiControlStatus
+                continue
+            }
+            if ($record.result -ceq 'accepted') {
+                if ([uint64]$record.bm_connection.revision -ne [uint64]$bmPending.revision -or
+                    [bool]$record.bm_connection.requested_enabled -ne [bool]$bmPending.enabled) {
+                    $script:bmConnectionPendingRequest = $null
+                    Set-UiControlStatus -Text 'BM 连接确认与请求版本不一致；正在读取核心实际状态。' -Confirmed $false
+                    Request-UiControlStatus
+                    continue
+                }
+                $bmPending.ack_received = $true
+                [void](Set-UiBmConnectionSnapshot -Connection $record.bm_connection -BmState ([string]$record.bm_state) `
+                    -Resolving ([bool]$record.bm_resolving) -ErrorCode ([string]$record.bm_connection_error) -Source ack)
+                Set-UiControlStatus -Text $(if ([bool]$bmPending.enabled) { '正在连接 BM。' } else { '正在断开 BM。' }) -Confirmed $true
+            } else {
+                [void](Set-UiBmConnectionSnapshot -Connection $record.bm_connection -BmState ([string]$record.bm_state) `
+                    -Resolving ([bool]$record.bm_resolving) -ErrorCode ([string]$record.bm_connection_error) -Source rejected)
+                $script:bmConnectionPendingRequest = $null
+                Set-MainText -Name 'FooterText' -Text (Get-UiBmConnectionRejectText -ErrorCode ([string]$record.error))
+                Set-UiControlStatus -Text 'BM 连接切换遭核心拒绝；当前实际状态已刷新。' -Confirmed $true
+            }
+            Set-ConnectionButtonState
             continue
         }
         if ($record.result -cne 'ok') {
@@ -3329,7 +3783,11 @@ function Process-UiControlEvents {
                 Add-UiEvent '本机控制已确认'
                 if ($script:routingCapabilities) { Request-UiRoutingStatus }
                 if ($script:identityNativeCapability) { [void](Initialize-UiNativeIdentitySync) }
-                if ($script:audioGainNativeCapability) { Request-UiControlStatus }
+                if ($script:audioGainNativeCapability -or $script:bmConnectionNativeCapability) { Request-UiControlStatus }
+                if ($script:bmConnectAfterCoreReady -and $script:bmConnectionNativeCapability) {
+                    Set-MainText -Name 'FooterText' -Text 'BM 连接请求将在 HRI 就绪后发送。'
+                }
+                Set-ConnectionButtonState
             }
             'network_subscription.quick_call_join' {
                 $pendingQuickCall = $script:pendingQuickCall
@@ -3370,6 +3828,11 @@ function Process-UiControlEvents {
             'status' {
                 $snapshot = $record.snapshot
                 if ($script:audioGainNativeCapability) { [void](Complete-UiAudioGainStatus -Snapshot $snapshot) }
+                if ($script:bmConnectionNativeCapability) {
+                    [void](Set-UiBmConnectionSnapshot -Connection $snapshot.bm_connection -BmState ([string]$snapshot.bm_state) `
+                        -Resolving ([bool]$snapshot.bm_resolving) -ErrorCode ([string]$snapshot.bm_connection_error) -Source control_status)
+                    $script:bmStatusNextRequestUtc = [DateTime]::UtcNow.AddSeconds(1)
+                }
                 if ([bool]$snapshot.diagnostic) {
                     $statusText = '仅本机诊断：未连接 BM、HRI 或音频设备'
                 } else {
@@ -3525,7 +3988,8 @@ function Test-UiPreparationRecord {
         [Parameter(Mandatory=$true)][object]$Record,
         [Parameter(Mandatory=$true)][string]$RunDirectory,
         [Parameter(Mandatory=$true)][string]$RunRoot,
-        [Parameter(Mandatory=$true)][string]$ExpectedExecutable
+        [Parameter(Mandatory=$true)][string]$ExpectedExecutable,
+        [switch]$BmStartDisconnected
     )
     if ($Record -isnot [System.Management.Automation.PSCustomObject] -or
         $Record.schema_version -is [bool] -or
@@ -3583,7 +4047,7 @@ function Test-UiPreparationRecord {
         '--profile-master', '--profile-master-port', '--profile-destination-id',
         '--profile-slot', '--profile-color-code', '--profile-call-kind'
     )
-    $switchOptions = @('--run', '--ui-pipe', '--listen-only')
+    $switchOptions = @('--run', '--ui-pipe', '--listen-only', '--bm-start-disconnected')
     $parsedArguments = @{}
     for ($index = 0; $index -lt $arguments.Count; $index++) {
         $name = [string]$arguments[$index]
@@ -3604,11 +4068,17 @@ function Test-UiPreparationRecord {
     foreach ($requiredOption in @(
         '--run', '--ui-pipe', '--port', '--body-file', '--input', '--output', '--status-file',
         '--expected-wavein-endpoint', '--expected-waveout-endpoint', '--radio-playback-gain', '--mic-transmit-gain',
-        '--password-file', '--ui-control-version', '--profile-callsign', '--profile-gateway-id', '--profile-source-id',
+        '--ui-control-version', '--profile-callsign', '--profile-gateway-id', '--profile-source-id',
         '--profile-master', '--profile-master-port', '--profile-destination-id', '--profile-slot',
         '--profile-color-code', '--profile-call-kind', '--routing-state-file'
     )) {
         if (-not $parsedArguments.ContainsKey($requiredOption)) { throw '设备预检返回的启动参数不完整。' }
+    }
+    if (-not $BmStartDisconnected -and -not $parsedArguments.ContainsKey('--password-file')) {
+        throw '设备预检缺少 BM 密码文件参数。'
+    }
+    if ([bool]$parsedArguments.ContainsKey('--bm-start-disconnected') -ne [bool]$BmStartDisconnected) {
+        throw '设备预检的 BM 启动模式与本次连接请求不一致。'
     }
     if ($parsedArguments['--profile-call-kind'] -cnotin @('G', 'P')) {
         throw '设备预检返回的发射呼叫类型无效。'
@@ -3747,6 +4217,7 @@ function Start-UiDeviceDiscovery {
         if ($script:mainWindow) {
             (Get-SettingsControl 'DeviceDiscoveryText').Text = '本地协议测试：设备列表为空（模拟），未查询真实设备。'
             (Get-SettingsControl 'RefreshDevicesButton').IsEnabled = $false
+            Set-MainText -Name 'FooterText' -Text '本地协议诊断：未查询真实串口或音频设备。'
         }
         return
     }
@@ -3761,6 +4232,7 @@ function Start-UiDeviceDiscovery {
             $script:deviceDiscoveryRestartPending = $true
             (Get-SettingsControl 'DeviceDiscoveryText').Text = '正在结束上次查询，随后重新读取设备列表。'
             (Get-SettingsControl 'RefreshDevicesButton').IsEnabled = $false
+            Set-MainText -Name 'FooterText' -Text '正在停止上次设备查询，随后刷新串口和音频列表。'
         }
         return
     }
@@ -3776,6 +4248,7 @@ function Start-UiDeviceDiscovery {
     if ($script:mainWindow) {
         (Get-SettingsControl 'DeviceDiscoveryText').Text = '正在读取串口与音频设备列表。'
         (Get-SettingsControl 'RefreshDevicesButton').IsEnabled = $false
+        Set-MainText -Name 'FooterText' -Text '正在读取串口与音频设备列表。'
         Set-SettingsDeviceControls
     }
     if ($UiTestFixture -and -not $UseProductionOrchestration) {
@@ -4024,6 +4497,10 @@ function Publish-UiDeviceDiscoveryResults {
     $control = Get-SettingsControl 'DeviceDiscoveryText'
     $control.Text = $parts -join ' · '
     $control.Visibility = [System.Windows.Visibility]::Visible
+    $discoveryFailure = @()
+    if ($script:deviceSerialState -notin @('ready','empty')) { $discoveryFailure += '串口设备查询失败' }
+    if ($script:deviceAudioState -notin @('ready','empty')) { $discoveryFailure += '音频设备查询失败' }
+    Set-MainText -Name 'FooterText' -Text $(if ($discoveryFailure.Count -gt 0) { $discoveryFailure -join '；' } else { '' })
     (Get-SettingsControl 'RefreshDevicesButton').IsEnabled = $true
     Set-ConnectionConfigLocked
     return $true
@@ -4233,7 +4710,7 @@ function Set-UiAudioGainStatus {
 
 function Test-UiAudioGainCapability {
     param([AllowEmptyString()][string]$Capabilities)
-    return ([string]$Capabilities).EndsWith(',audio.gains.set',[StringComparison]::Ordinal)
+    return (Test-UiHasCapability -Capabilities $Capabilities -Command 'audio.gains.set')
 }
 
 function Set-UiAudioGainSliders {
@@ -4710,6 +5187,8 @@ function Write-UiRoutingDiagnosticProgress {
 }
 
 function Start-BridgeRun {
+    param([switch]$BmStartDisconnected)
+    $script:bmStartDisconnectedForRun = [bool]$BmStartDisconnected
     if (Test-UiRadioCatUserActionBusy) {
         Set-MainText -Name 'FooterText' -Text 'CAT 设置未完成，请稍后再启动 Wires-X。'
         Set-ConnectionButtonState
@@ -4760,6 +5239,7 @@ function Start-BridgeRun {
             }
             $factoryContext = [pscustomobject]@{
                 profile=$script:effectiveProfile; target=$script:targetLabel; operation='connect'
+                bm_start_disconnected=[bool]$script:bmStartDisconnectedForRun
             }
             $fakeSupervisor = & $script:uiTestHooks.NativeSupervisorFactory $factoryContext
             if ($null -eq $fakeSupervisor -or -not $fakeSupervisor.PSObject.Properties['HasExited']) {
@@ -4799,7 +5279,12 @@ function Start-BridgeRun {
             Set-ConnectionButtonState
             return
         }
-        if ([string]::IsNullOrWhiteSpace([string]$script:portableConfig.connection.password)) { $script:startupNeedsSettings = $true; Set-MainText -Name 'FooterText' -Text '请在 BM 密码框中输入密码后保存。'; return }
+        if (-not $script:bmStartDisconnectedForRun -and
+            [string]::IsNullOrWhiteSpace([string]$script:portableConfig.connection.password)) {
+            $script:startupNeedsSettings = $true
+            Set-MainText -Name 'FooterText' -Text '请在 BM 密码框中输入密码后保存。'
+            return
+        }
         $script:savedPlaybackGainMilli = Convert-UiGainSliderToMilli -Value ([double]$script:portableConfig.audio.radio_playback_gain)
         Update-UiPlaybackGainDisplay -Record $null
         $retention = Invoke-UiRunLogRetention -RunRoot (Join-Path $script:configDirectory 'ui-runs') `
@@ -4813,25 +5298,29 @@ function Start-BridgeRun {
         [System.IO.Directory]::CreateDirectory($script:sessionTempDirectory) | Out-Null
         $temporaryProfilePath = Join-Path $script:sessionTempDirectory 'connection-profile.json'
         $temporaryAudioPath = Join-Path $script:sessionTempDirectory 'audio-settings.json'
-        $script:sessionPasswordPath = Join-Path $script:sessionTempDirectory 'bm-device-password.txt'
+        $script:sessionPasswordPath = ''
         Write-BridgeUserConnectionProfile -Path $temporaryProfilePath -Profile $script:effectiveProfile
         Write-BridgeAudioSettings -Path $temporaryAudioPath `
             -RadioPlaybackGainMilli (Convert-UiGainSliderToMilli -Value ([double]$script:portableConfig.audio.radio_playback_gain)) `
             -MicTransmitGainMilli (Convert-UiGainSliderToMilli -Value ([double]$script:portableConfig.audio.mic_transmit_gain))
-        [System.IO.File]::WriteAllText($script:sessionPasswordPath,[string]$script:portableConfig.connection.password + "`n",(New-Object System.Text.UTF8Encoding($false)))
+        $passwordValue = [string]$script:portableConfig.connection.password
+        $script:sessionPasswordPath = Write-UiSessionPasswordFile -Directory $script:sessionTempDirectory -Password $passwordValue
         $preparationPath = Join-Path $script:preparedRunDirectory 'preparation.json'
         $script:statusPath = ''
         $arguments = @{
             Preset = 'manual'
             ConnectionProfilePath = $temporaryProfilePath
             AudioSettingsPath = $temporaryAudioPath
-            PasswordFile = $script:sessionPasswordPath
             StatusDirectory = $script:preparedRunDirectory
             PreparationOutputPath = $preparationPath
             PrepareOnly = $true
             NoInteractive = $true
-            RequirePasswordFile = $true
         }
+        if ($script:sessionPasswordPath) {
+            $arguments.PasswordFile = $script:sessionPasswordPath
+            $arguments.RequirePasswordFile = $true
+        }
+        if ($script:bmStartDisconnectedForRun) { $arguments.BmStartDisconnected = $true }
         $script:preparePowerShell = [System.Management.Automation.PowerShell]::Create()
         $prepareBody = {
             param([string]$LauncherPath, [hashtable]$LauncherParameters)
@@ -4856,6 +5345,16 @@ function Start-BridgeRun {
     }
 }
 
+function Write-UiSessionPasswordFile {
+    param([Parameter(Mandatory=$true)][string]$Directory,[AllowEmptyString()][string]$Password)
+    if ([string]::IsNullOrWhiteSpace($Password)) { return '' }
+    $directoryPath = [System.IO.Path]::GetFullPath($Directory)
+    if (-not [System.IO.Directory]::Exists($directoryPath)) { throw '本次连接的临时目录不存在。' }
+    $path = Join-Path $directoryPath 'bm-device-password.txt'
+    [System.IO.File]::WriteAllText($path,$Password + "`n",(New-Object System.Text.UTF8Encoding($false)))
+    return $path
+}
+
 function Complete-BridgePreparation {
     if ($script:closingAfterStop -or $script:reconnectAfterStop) { return }
     if (-not $script:preparePowerShell -or -not $script:prepareAsync -or -not $script:prepareAsync.IsCompleted) { return }
@@ -4878,7 +5377,8 @@ function Complete-BridgePreparation {
         $validatedPreparation = Test-UiPreparationRecord -Record $preparation `
             -RunDirectory $script:preparedRunDirectory `
             -RunRoot (Join-Path $script:configDirectory 'ui-runs') `
-            -ExpectedExecutable $script:nativeExecutable
+            -ExpectedExecutable $script:nativeExecutable `
+            -BmStartDisconnected:$script:bmStartDisconnectedForRun
         $radioPortArgumentIndex = [Array]::IndexOf([string[]]$validatedPreparation.Arguments,'--port')
         $preparedRadioPort = ''
         if ($radioPortArgumentIndex -ge 0 -and $radioPortArgumentIndex + 1 -lt $validatedPreparation.Arguments.Count) {
@@ -4896,11 +5396,20 @@ function Complete-BridgePreparation {
         }
         $script:statusPath = $validatedPreparation.StatusPath
         $script:supervisor = New-Object WirexBridge.Ui.BridgeSupervisor
-        $script:supervisor.Start($validatedPreparation.Executable, $validatedPreparation.Arguments, $script:releaseDirectory, 2)
+        $nativeArguments = [System.Collections.Generic.List[string]]::new()
+        foreach ($argument in [string[]]$validatedPreparation.Arguments) { $nativeArguments.Add([string]$argument) }
+        $script:supervisor.Start($validatedPreparation.Executable, [string[]]$nativeArguments.ToArray(), $script:releaseDirectory, 2)
         $script:activeHriPortName = if ($preparedRadioPort -match '^COM[1-9][0-9]{0,2}$') { $preparedRadioPort.ToUpperInvariant() } else { '' }
-        if (-not $script:isolatedUiMode -and -not $NoAutoConnect) {
-            [void](Connect-UiRadioCatSession -Automatic)
+        if (-not $script:isolatedUiMode) {
+            if ($script:serialConnectCatAfterCoreReady) {
+                [void](Connect-UiRadioCatSession)
+                $script:serialConnectCatAfterCoreReady = $false
+            } elseif (-not $NoAutoConnect) {
+                [void](Connect-UiRadioCatSession -Automatic)
+            }
         }
+        $script:activeBmTransportConfig = Get-UiBmTransportConfigValue -Config $script:portableConfig
+        $script:bmStartDisconnectedForRun = $false
         Set-UiControlStatus -Text '控制协议：等待 v2 control_ready' -Confirmed $false
         $script:activeTargetTag = $script:preparedTargetTag
         $script:activeTargetLabel = $script:preparedTargetLabel
@@ -4939,6 +5448,8 @@ function Update-UiReceiveMetricsDisplay {
     if (-not $script:mainWindow) { return }
     $rttPanel = $script:mainWindow.FindName('BmRttMetric')
     $rttValue = $script:mainWindow.FindName('BmRttValue')
+    $bmLossPanel = $script:mainWindow.FindName('BmLossMetric')
+    $bmLossValue = $script:mainWindow.FindName('BmLossValue')
     $lossPanel = $script:mainWindow.FindName('RxNetworkMetric')
     $callLossValue = $script:mainWindow.FindName('RxCallLossValue')
     $sessionLossValue = $script:mainWindow.FindName('RxSessionLossValue')
@@ -4948,12 +5459,16 @@ function Update-UiReceiveMetricsDisplay {
     foreach ($control in @($rttValue,$callLossValue,$sessionLossValue)) {
         if ($control) { $control.Text = ''; $control.Visibility = [System.Windows.Visibility]::Collapsed }
     }
+    $script:bmLossValid = $false
+    if ($bmLossValue) { $bmLossValue.Text = ''; $bmLossValue.Visibility = [System.Windows.Visibility]::Collapsed }
+    if ($bmLossPanel) { $bmLossPanel.Visibility = [System.Windows.Visibility]::Collapsed }
     if (-not $Record) { return }
 
+    $bmReady = ([string]$Record.bm_state -ceq 'ready')
     $rttValidProperty = $Record.PSObject.Properties['bm_rtt_valid']
     $rttLastProperty = $Record.PSObject.Properties['bm_rtt_last_ms']
     $rttCountProperty = $Record.PSObject.Properties['bm_rtt_sample_count']
-    if ($rttValidProperty -and [bool]$rttValidProperty.Value -and $rttLastProperty -and $rttCountProperty -and
+    if ($bmReady -and $rttValidProperty -and [bool]$rttValidProperty.Value -and $rttLastProperty -and $rttCountProperty -and
         $null -ne $rttLastProperty.Value -and $null -ne $rttCountProperty.Value) {
         $lastMs = [double]0
         $sampleCount = [uint64]0
@@ -4989,7 +5504,7 @@ function Update-UiReceiveMetricsDisplay {
             $lossProperty = $Record.PSObject.Properties['rx_session_dmrd_loss_pct']
         }
     }
-    if ($expectedProperty -and $receivedProperty -and $lossProperty -and $null -ne $expectedProperty.Value -and
+    if ($bmReady -and $expectedProperty -and $receivedProperty -and $lossProperty -and $null -ne $expectedProperty.Value -and
         $null -ne $receivedProperty.Value -and $null -ne $lossProperty.Value) {
         $expected = [uint64]0
         $received = [uint64]0
@@ -5003,9 +5518,11 @@ function Update-UiReceiveMetricsDisplay {
         if ($expectedValid -and $receivedValid -and $lossValid -and $expected -gt 0 -and $received -le $expected -and $lossPercent -ge 0 -and $lossPercent -le 100) {
             $value = ('{0:0.#}%' -f $lossPercent)
             $lossTarget = if ($usingCall) { $callLossValue } else { $sessionLossValue }
-            $lossTarget.Text = $value
-            $lossTarget.Visibility = [System.Windows.Visibility]::Visible
-            $lossPanel.Visibility = [System.Windows.Visibility]::Visible
+            if ($lossTarget) { $lossTarget.Text = $value; $lossTarget.Visibility = [System.Windows.Visibility]::Visible }
+            if ($lossPanel) { $lossPanel.Visibility = [System.Windows.Visibility]::Visible }
+            if ($bmLossValue) { $bmLossValue.Text = $value; $bmLossValue.Visibility = [System.Windows.Visibility]::Visible }
+            if ($bmLossPanel) { $bmLossPanel.Visibility = [System.Windows.Visibility]::Visible }
+            $script:bmLossValid = $true
         }
     }
 }
@@ -5026,50 +5543,53 @@ function Apply-StatusRecord {
     $script:latestStatus = $Record
     Set-MainText -Name 'CoreValue' -Text '运行中'
     $bm = [string]$Record.bm_state
-    if ($script:lastUiBmState -cne $bm) {
-        switch -CaseSensitive ($bm) {
-            'ready' { Add-UiEvent 'BM 已连接' }
-            'recovering' { Add-UiEvent 'BM 正在恢复连接' }
-            'backoff' { Add-UiEvent 'BM 正在重试连接' }
-            'stopped' { Add-UiEvent 'BM 已停止' }
-            'connecting' { Add-UiEvent 'BM 正在连接' }
-        }
+    if ($Record.PSObject.Properties['bm_connection']) {
+        [void](Set-UiBmConnectionSnapshot -Connection $Record.bm_connection -BmState $bm `
+            -Resolving ([bool]$Record.bm_resolving) -ErrorCode ([string]$Record.bm_connection_error) -Source status_jsonl)
         $script:lastUiBmState = $bm
-    }
-    switch ($bm) {
-        'ready' { Set-MainText -Name 'BmValue' -Text '已连接' }
-        'stopped' { Set-MainText -Name 'BmValue' -Text '已停止' }
-        'recovering' { Set-MainText -Name 'BmValue' -Text '恢复中' }
-        'backoff' { Set-MainText -Name 'BmValue' -Text '重试中' }
-        'connecting' { Set-MainText -Name 'BmValue' -Text '连接中' }
-        default { Set-MainText -Name 'BmValue' -Text '' }
-    }
-    $failure = [string]$Record.bm_failure
-    if ($failure -cne 'none') {
-        $bmDetail = switch -CaseSensitive ($failure) {
-            'login_timeout' { 'BM 登录等待超时' }
-            'auth_timeout' { 'BM 认证等待超时' }
-            'config_timeout' { 'BM 配置响应超时' }
-            'options_timeout' { 'BM 参数响应超时' }
-            'pong_timeout' { 'BM 心跳响应超时' }
-            'master_rejected' { 'BM 拒绝连接' }
-            'master_closed' { 'BM 关闭连接' }
-            'malformed_response' { 'BM 响应格式无效' }
-            'unexpected_response' { '收到无法识别的 BM 响应' }
-            'wrong_peer_id' { 'BM 对端 ID 不匹配' }
-            'authentication_error' { 'BM 认证失败' }
-            'inbound_queue_full' { 'BM 接收队列已满' }
-            'outbound_queue_full' { 'BM 发送队列已满' }
-            'transport_lost' { 'BM 网络连接中断' }
-            'invalid_profile' { 'BM 连接参数无效' }
-            default { 'BM 返回未知错误' }
-        }
-    } elseif ($bm -ceq 'ready') {
-        $bmDetail = '已收到 BM 登录确认。'
     } else {
-        $bmDetail = '等待 BM 登录确认。'
+        if ($script:lastUiBmState -cne $bm) {
+            switch -CaseSensitive ($bm) {
+                'ready' { Add-UiEvent 'BM 已连接' }
+                'recovering' { Add-UiEvent 'BM 正在恢复连接' }
+                'backoff' { Add-UiEvent 'BM 正在重试连接' }
+                'stopped' { Add-UiEvent 'BM 已停止' }
+                'connecting' { Add-UiEvent 'BM 正在连接' }
+            }
+            $script:lastUiBmState = $bm
+        }
+        switch ($bm) {
+            'ready' { Set-MainText -Name 'BmValue' -Text '已连接' }
+            'stopped' { Set-MainText -Name 'BmValue' -Text '已停止' }
+            'recovering' { Set-MainText -Name 'BmValue' -Text '恢复中' }
+            'backoff' { Set-MainText -Name 'BmValue' -Text '重试中' }
+            'connecting' { Set-MainText -Name 'BmValue' -Text '连接中' }
+            default { Set-MainText -Name 'BmValue' -Text '' }
+        }
+        $failure = [string]$Record.bm_failure
+        if ($failure -cne 'none') {
+            $bmDetail = switch -CaseSensitive ($failure) {
+                'login_timeout' { 'BM 登录等待超时' }
+                'auth_timeout' { 'BM 认证等待超时' }
+                'config_timeout' { 'BM 配置响应超时' }
+                'options_timeout' { 'BM 参数响应超时' }
+                'pong_timeout' { 'BM 心跳响应超时' }
+                'master_rejected' { 'BM 拒绝连接' }
+                'master_closed' { 'BM 关闭连接' }
+                'malformed_response' { 'BM 响应格式无效' }
+                'unexpected_response' { '收到无法识别的 BM 响应' }
+                'wrong_peer_id' { 'BM 对端 ID 不匹配' }
+                'authentication_error' { 'BM 认证失败' }
+                'inbound_queue_full' { 'BM 接收队列已满' }
+                'outbound_queue_full' { 'BM 发送队列已满' }
+                'transport_lost' { 'BM 网络连接中断' }
+                'invalid_profile' { 'BM 连接参数无效' }
+                default { 'BM 返回未知错误' }
+            }
+        } elseif ($bm -ceq 'ready') { $bmDetail = '已收到 BM 登录确认。' }
+        else { $bmDetail = '等待 BM 登录确认。' }
+        Set-MainText -Name 'BmDetail' -Text $bmDetail
     }
-    Set-MainText -Name 'BmDetail' -Text $bmDetail
 
     $serialOpen = [bool]$Record.hri_serial_open
     $hriReady = [bool]$Record.hri_ready
@@ -5329,7 +5849,16 @@ function Complete-PreparedPipelineWithoutLaunch {
         $script:mainWindow.Close()
     } elseif ($script:reconnectAfterStop) {
         $script:reconnectAfterStop = $false
-        Start-BridgeRun
+        $startDisconnected = [bool]$script:reconnectAfterStopBmStartDisconnected
+        $script:reconnectAfterStopBmStartDisconnected = $false
+        if ($startDisconnected) { Start-BridgeRun -BmStartDisconnected } else { Start-BridgeRun }
+    } elseif ($script:serialDisconnectPending) {
+        $script:serialDisconnectPending = $false
+        $script:serialDisconnectCoreStopIssued = $false
+        $script:serialDisconnectCatStopRequested = $false
+        $script:activeBmTransportConfig = $null
+        Set-OfflineDisplay -Reason '核心准备已取消；串口保持断开。'
+        Set-ConnectionButtonState
     }
 }
 
@@ -5389,7 +5918,24 @@ function Complete-PreparationStop {
     if ($wasReconnect) {
         $script:reconnectAfterStop = $false
         $script:closingAfterStop = $false
-        Start-BridgeRun
+        $startDisconnected = [bool]$script:reconnectAfterStopBmStartDisconnected
+        $script:reconnectAfterStopBmStartDisconnected = $false
+        if ($startDisconnected) { Start-BridgeRun -BmStartDisconnected } else { Start-BridgeRun }
+        return
+    }
+    if ($script:serialDisconnectPending) {
+        $script:serialDisconnectPending = $false
+        $script:serialDisconnectCoreStopIssued = $false
+        $script:serialDisconnectCatStopRequested = $false
+        $script:activeBmTransportConfig = $null
+        $script:activeProfile = $null
+        $script:activeHriPortName = ''
+        $script:lastUiBmState = ''
+        $script:lastUiHriState = ''
+        Set-OfflineDisplay -Reason 'Wires-X/HRI 与 CAT 串口均已断开。'
+        Set-ConnectionButtonState
+        Update-UiRadioCatControls
+        return
     }
 }
 
@@ -5402,6 +5948,12 @@ function Complete-BridgeStopInternal {
         $script:stopTask = $null
         $script:reconnectAfterStop = $false
         $script:closingAfterStop = $false
+        if ($script:serialDisconnectPending) {
+            $script:serialDisconnectPending = $false
+            $script:serialDisconnectCoreStopIssued = $false
+            $script:serialDisconnectCatStopRequested = $false
+            Set-MainText -Name 'FooterText' -Text 'HRI 核心没有退出；CAT 已断开，串口核心仍保持运行。'
+        }
         $script:radioModeApplyAfterStop = $null
         $script:radioModePreviousHriPortName = ''
         (Get-UiControl 'StopButton').IsEnabled = $true
@@ -5478,7 +6030,25 @@ function Complete-BridgeStopInternal {
         $script:lastUiBmState = ''
         $script:lastUiHriState = ''
         Set-OfflineDisplay -Reason '当前连接已停止，正在连接所选目标。'
-        Start-BridgeRun
+        $startDisconnected = [bool]$script:reconnectAfterStopBmStartDisconnected
+        $script:reconnectAfterStopBmStartDisconnected = $false
+        if ($startDisconnected) { Start-BridgeRun -BmStartDisconnected } else { Start-BridgeRun }
+        return $true
+    }
+    if ($script:serialDisconnectPending) {
+        $script:serialDisconnectPending = $false
+        $script:serialDisconnectCoreStopIssued = $false
+        $script:serialDisconnectCatStopRequested = $false
+        $script:activeBmTransportConfig = $null
+        $script:activeHriPortName = ''
+        $script:activeTargetLabel = ''
+        $script:activeTargetTag = ''
+        $script:activeProfile = $null
+        $script:lastUiBmState = ''
+        $script:lastUiHriState = ''
+        Set-OfflineDisplay -Reason 'Wires-X/HRI 与 CAT 串口均已断开。'
+        Set-ConnectionButtonState
+        Update-UiRadioCatControls
         return $true
     }
     $script:activeHriPortName = ''
@@ -5560,6 +6130,13 @@ function On-UiTimerTick {
         }
         Set-OfflineDisplay -Reason ('核心进程已退出，退出码 {0}。CAT会话已收尾。' -f $exitCode)
         Set-MainText -Name 'CoreValue' -Text '已停止'; Set-MainText -Name 'CoreDetail' -Text ('核心进程已退出，退出码 {0}' -f $exitCode)
+        if ($script:serialDisconnectPending) {
+            $script:serialDisconnectPending=$false
+            $script:serialDisconnectCoreStopIssued=$false
+            $script:serialDisconnectCatStopRequested=$false
+            $script:activeBmTransportConfig=$null
+        }
+        $script:bmConnectAfterCoreReady=$false
         Set-MainText -Name 'RunValue' -Text '已停止'; Set-MainText -Name 'FreshnessValue' -Text '本次运行已结束'
         if ($channelMutationSafetyStopped) {
             Set-UiChannelStatus -Text '频道更新没有完整确认；连接已停止，原频道和 PTT 配置保留。可手动重新连接。' -Failed $true
@@ -5653,6 +6230,14 @@ function On-UiTimerTick {
         } else {
             Process-UiControlEvents
             if ($script:channelMutationSafetyStopPending) { return }
+            Update-UiBmConnectionPoll
+            if ($script:serialDisconnectPending -and -not $script:serialDisconnectCoreStopIssued -and
+                (-not $script:bmConnectionNativeCapability -or
+                    ($script:bmConnectionSnapshot -and -not [bool]$script:bmConnectionSnapshot.requested_enabled -and
+                        -not [bool]$script:bmConnectionSnapshot.resolving -and -not [bool]$script:bmConnectionSnapshot.transport_open -and
+                        [string]$script:bmConnectionSnapshot.bm_state -ceq 'stopped'))) {
+                [void](Complete-UiSerialDisconnectAfterBm)
+            }
             [void](Expire-UiNativeIdentityUpdate)
             [void](Expire-UiAudioGainRequest)
             if ($script:pendingQuickCall -and -not [bool]$script:pendingQuickCall.timed_out -and
@@ -5762,6 +6347,55 @@ function Get-UiVisualTextValues {
         }
     }
     return @($values | Select-Object -Unique)
+}
+
+function Get-UiCallHistoryVisualPageProbe {
+    param([Parameter(Mandatory=$true)][System.Windows.Window]$Window)
+    $list=$Window.FindName('CallHistoryList')
+    if (-not $list) { return [pscustomobject][ordered]@{ list_bounds=$null; rows=@() } }
+    [void]$list.UpdateLayout()
+    $listEvidence=Get-WpfElementLayoutEvidence -Window $Window -Element $list
+    $rows=New-Object 'System.Collections.Generic.List[object]'
+    for ($index=0; $index -lt $list.Items.Count; $index++) {
+        $container=$list.ItemContainerGenerator.ContainerFromIndex($index)
+        if ($container -isnot [System.Windows.FrameworkElement]) { continue }
+        $containerEvidence=Get-WpfElementLayoutEvidence -Window $Window -Element $container
+        $textElement=$null
+        $pending=New-Object 'System.Collections.Generic.Stack[System.Windows.DependencyObject]'
+        $pending.Push($container)
+        while ($pending.Count -gt 0 -and -not $textElement) {
+            $current=$pending.Pop()
+            if ($current -is [System.Windows.Controls.TextBlock] -and -not [string]::IsNullOrWhiteSpace([string]$current.Text)) {
+                $textElement=$current
+                break
+            }
+            if ($current -is [System.Windows.Media.Visual] -or $current -is [System.Windows.Media.Media3D.Visual3D]) {
+                $childCount=[System.Windows.Media.VisualTreeHelper]::GetChildrenCount($current)
+                for ($childIndex=0; $childIndex -lt $childCount; $childIndex++) {
+                    $child=[System.Windows.Media.VisualTreeHelper]::GetChild($current,$childIndex)
+                    if ($child -is [System.Windows.DependencyObject]) { $pending.Push($child) }
+                }
+            }
+        }
+        $textEvidence=$null
+        $insideList=$false
+        if ($textElement) {
+            $textEvidence=Get-WpfElementLayoutEvidence -Window $Window -Element $textElement
+            $textRect=$textEvidence.actual; $listRect=$listEvidence.actual
+            $insideList=($textRect.x -ge ($listRect.x - 1) -and $textRect.y -ge ($listRect.y - 1) -and
+                $textRect.right -le ($listRect.right + 1) -and $textRect.bottom -le ($listRect.bottom + 1))
+        }
+        $rows.Add([pscustomobject][ordered]@{
+            index=$index; key=[string]$list.Items[$index].key; text=if($textElement){[string]$textElement.Text}else{''}
+            container_actual=$containerEvidence.actual; container_visible=$containerEvidence.visible
+            container_fully_visible=[bool]$containerEvidence.fully_visible
+            text_actual=if($textEvidence){$textEvidence.actual}else{$null}
+            text_visible=if($textEvidence){$textEvidence.visible}else{$null}
+            text_fully_visible=if($textEvidence){[bool]$textEvidence.fully_visible}else{$false}
+            text_inside_list_bounds=$insideList
+        })
+    }
+    return [pscustomobject][ordered]@{ list_bounds=$listEvidence.actual; rows=@($rows.ToArray()) }
 }
 
 function Get-UiVisualButtonTexts {
@@ -5899,28 +6533,27 @@ function Import-UiPortableConfig {
     }
 }
 
+function Get-UiComboItemValue {
+    param([AllowNull()][object]$Item)
+    if ($null -eq $Item) { return '' }
+    $tag = $null
+    if ($Item -is [System.Windows.Controls.ComboBoxItem]) { $tag = $Item.Tag }
+    elseif ($Item.PSObject.Properties['Value']) { return [string]$Item.Value }
+    elseif ($Item.PSObject.Properties['Tag']) { $tag = $Item.Tag }
+    else { return [string]$Item }
+    if ($null -ne $tag -and $tag.PSObject.Properties['Value']) { return [string]$tag.Value }
+    return [string]$tag
+}
+
 function Get-UiComboValue {
     param([Parameter(Mandatory=$true)][System.Windows.Controls.ComboBox]$Combo)
-    $item=$Combo.SelectedItem
-    if ($null -eq $item) { return '' }
-    if ($item -is [System.Windows.Controls.ComboBoxItem]) { return [string]$item.Tag }
-    if ($item.PSObject.Properties['Value']) { return [string]$item.Value }
-    if ($item.PSObject.Properties['Tag']) {
-        if ($item.Tag -and $item.Tag.PSObject.Properties['Value']) { return [string]$item.Tag.Value }
-        return [string]$item.Tag
-    }
-    return [string]$item
+    return Get-UiComboItemValue -Item $Combo.SelectedItem
 }
 
 function Set-UiComboValue {
     param([Parameter(Mandatory=$true)][System.Windows.Controls.ComboBox]$Combo,[string]$Value)
     foreach ($item in @($Combo.Items)) {
-        $candidate=''
-        if ($item -is [System.Windows.Controls.ComboBoxItem]) { $candidate=[string]$item.Tag }
-        elseif ($item.PSObject.Properties['Value']) { $candidate=[string]$item.Value }
-        elseif ($item.PSObject.Properties['Tag']) {
-            if ($item.Tag -and $item.Tag.PSObject.Properties['Value']) { $candidate=[string]$item.Tag.Value } else { $candidate=[string]$item.Tag }
-        }
+        $candidate = Get-UiComboItemValue -Item $item
         if ($candidate -ceq $Value) { $Combo.SelectedItem=$item; return $true }
     }
     return $false
@@ -5949,6 +6582,54 @@ function Apply-UiPortableConfigToControls {
     Update-UiChannelDisplays
 }
 
+function Copy-UiPortableConfigValue {
+    param([AllowNull()][object]$Value)
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [array]) {
+        $items = New-Object 'System.Collections.Generic.List[object]'
+        foreach ($item in $Value) { $items.Add((Copy-UiPortableConfigValue -Value $item)) }
+        return ,([object[]]$items.ToArray())
+    }
+    if ($Value -is [System.Collections.IDictionary]) {
+        $copy = [ordered]@{}
+        foreach ($key in $Value.Keys) { $copy[[string]$key] = Copy-UiPortableConfigValue -Value $Value[$key] }
+        return $copy
+    }
+    if ($Value -is [System.Management.Automation.PSCustomObject]) {
+        $copy = [ordered]@{}
+        foreach ($property in $Value.PSObject.Properties) { $copy[$property.Name] = Copy-UiPortableConfigValue -Value $property.Value }
+        return [pscustomobject]$copy
+    }
+    return $Value
+}
+
+function Get-UiSafeSettingsSaveErrorText {
+    param([Parameter(Mandatory=$true)][System.Exception]$Exception)
+    $message = [string]$Exception.Message
+    if ($message -ceq '请等待当前设备操作结束后再保存。') { return $message }
+    if ($message -ceq '统一配置尚未加载。') { return '配置尚未加载；请关闭并重新打开设置窗口后重试。' }
+    if ($message -match '^(Gateway ID|本机 DMR ID|UDP 端口|色码) (必须是有效的无符号整数|超出允许范围)\。$') { return $message }
+    if ($message -match '^devices\.(hri_port|serial_port|cat_port) 必须是 auto 或 COM1 到 COM999。$') {
+        $field = switch -Regex ($message) {
+            '^devices\.(hri_port|serial_port) ' { 'Wires-X HRI 串口' }
+            '^devices\.cat_port ' { 'CAT 串口' }
+        }
+        return ($field + '选择无效；请刷新设备列表并重新选择。')
+    }
+    if ($message -match '^devices\.(wave_in_endpoint_id|wave_out_endpoint_id) 字段格式无效。$') {
+        $field = if ($message -match 'wave_in_endpoint_id') { '音频输入' } else { '音频输出' }
+        return ($field + '端点选择无效；请刷新设备列表并重新选择。')
+    }
+    if ($message -ceq 'connection 字段格式无效。') { return '呼号、BM 服务器或认证字段格式无效；请检查对应输入框。' }
+    if ($message -ceq 'CAT 串口设置无效；停止位固定为 Two。') { return 'CAT 波特率设置无效；请选择列表中的波特率。' }
+    if ($message -match '^(config\.json|便携配置|频道|tx_channel_id|audio\.|routing\.|ui\.)') {
+        return '配置内容无效；当前文件未被覆盖，请检查连接、设备和频道设置。'
+    }
+    if ($Exception -is [System.UnauthorizedAccessException]) { return '无法写入配置；请检查用户配置目录的访问权限。' }
+    if ($Exception -is [System.IO.IOException]) { return '无法写入配置文件；请检查目录权限和磁盘空间。' }
+    return ('设置未保存（{0}）；现有配置已保留，请检查输入字段或配置目录。' -f $Exception.GetType().Name)
+}
+
 function Get-UiRadioCatPortConflictMessage {
     param([AllowEmptyString()][string]$HriPortName)
     $port = ([string]$HriPortName).Trim().ToUpperInvariant()
@@ -5971,33 +6652,291 @@ function Test-UiRadioCatUserActionBusy {
     }
 }
 
-function Set-ConnectionConfigLocked {
-    $locked=[bool]($script:preparationStarted -or $script:stopTask -or $script:prepareStopAsync -or $script:nativeExitCleanupPending -or
-        $script:channelMutationSafetyStopPending -or ($script:supervisor -and -not $script:supervisor.HasExited))
-    foreach ($name in @('CallsignBox','GatewayBox','SourceBox','MasterPresetBox','MasterBox','MasterPortBox','ColorCodeBox','SerialBox',
-            'WaveInEndpointBox','WaveOutEndpointBox','RefreshDevicesButton','PasswordBox')) {
-        $control=if ($script:mainWindow) { $script:mainWindow.FindName($name) } else { $null }; if ($control) { $control.IsEnabled=-not $locked }
+function Test-UiBmTransportFieldsLocked {
+    $coreActive = [bool]($script:supervisor -and -not $script:supervisor.HasExited)
+    if (-not $coreActive) { return $false }
+    if (-not $script:bmConnectionNativeCapability -or -not $script:bmConnectionSnapshot) { return $true }
+    $state = $script:bmConnectionSnapshot
+    return ([bool]$state.requested_enabled -or [bool]$state.resolving -or [bool]$state.transport_open -or
+        [string]$state.bm_state -cne 'stopped')
+}
+
+function Get-UiBmTransportConfigValue {
+    param([Parameter(Mandatory=$true)][object]$Config)
+    return [pscustomobject][ordered]@{
+        callsign=[string]$Config.connection.callsign
+        gateway_id=[string]$Config.connection.gateway_id
+        source_id=[string]$Config.connection.source_id
+        master=([string]$Config.connection.master).Trim()
+        master_port=[string]$Config.connection.master_port
+        color_code=[string]$Config.connection.color_code
     }
+}
+
+function Test-UiBmTransportConfigMatchesCore {
+    if (-not $script:activeBmTransportConfig -or -not $script:portableConfig) { return $false }
+    $current = Get-UiBmTransportConfigValue -Config $script:portableConfig
+    foreach ($name in @('callsign','gateway_id','source_id','master','master_port','color_code')) {
+        if ([string]$current.$name -cne [string]$script:activeBmTransportConfig.$name) { return $false }
+    }
+    if (-not $script:sessionPasswordPath -or -not [System.IO.File]::Exists($script:sessionPasswordPath)) { return $false }
+    try {
+        $sessionPassword = [System.IO.File]::ReadAllText($script:sessionPasswordPath,[System.Text.Encoding]::UTF8).TrimEnd([char[]]@([char]13,[char]10))
+        return [string]::Equals($sessionPassword,[string]$script:portableConfig.connection.password,[StringComparison]::Ordinal)
+    } catch { return $false }
+}
+
+function Connect-UiSerialCombo {
+    if ($script:preparationStarted -or $script:stopTask -or $script:serialDisconnectPending -or
+        (Test-UiRadioCatUserActionBusy)) { return $false }
+    if ($script:supervisor -and -not $script:supervisor.HasExited) {
+        if ($script:radioCatSessionRequested) { return $true }
+        $connected = [bool](Connect-UiRadioCatSession)
+        Set-ConnectionButtonState
+        return $connected
+    }
+    if (-not (Save-SettingsFromWindow)) { return $false }
+    if (-not $script:storedProfile) {
+        Set-MainText -Name 'FooterText' -Text '配置尚未通过校验；请检查呼号、Gateway ID、本机 ID 和频道。'
+        return $false
+    }
+    $script:bmConnectAfterCoreReady = $false
+    $script:serialConnectCatAfterCoreReady = $true
+    Start-BridgeRun -BmStartDisconnected
+    return $true
+}
+
+function Connect-UiBmFromButton {
+    if ([string]::IsNullOrWhiteSpace([string](Get-UiControl 'PasswordBox').Password)) {
+        Set-MainText -Name 'FooterText' -Text '请先填写并保存 BM 密码，再连接 BM。'
+        Add-UiEvent 'BM 密码未填写，未发起连接。'
+        Set-ConnectionButtonState
+        return $false
+    }
+    if ($script:preparationStarted -or $script:stopTask -or $script:serialDisconnectPending -or
+        (Test-UiRadioCatUserActionBusy)) { return $false }
+    if (-not (Save-SettingsFromWindow)) { return $false }
+    if (-not $script:storedProfile) {
+        Set-MainText -Name 'FooterText' -Text '配置尚未通过校验；请检查 BM 参数、呼号、Gateway ID 和本机 ID。'
+        return $false
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$script:portableConfig.connection.password)) {
+        Set-MainText -Name 'FooterText' -Text '请先填写并保存 BM 密码，再连接 BM。'
+        Set-ConnectionButtonState
+        return $false
+    }
+    if ($script:supervisor -and -not $script:supervisor.HasExited) {
+        if (-not $script:bmConnectionNativeCapability -or -not $script:controlConfirmed) {
+            Set-MainText -Name 'FooterText' -Text '当前核心不支持 BM 独立连接；请更新核心后重试。'
+            return $false
+        }
+        if ($script:bmConnectionSnapshot -and -not [bool]$script:bmConnectionSnapshot.requested_enabled -and
+            -not [bool]$script:bmConnectionSnapshot.resolving -and -not [bool]$script:bmConnectionSnapshot.transport_open -and
+            [string]$script:bmConnectionSnapshot.bm_state -ceq 'stopped' -and
+            -not (Test-UiBmTransportConfigMatchesCore)) {
+            $script:bmConnectAfterCoreReady = $true
+            $script:reconnectAfterStop = $true
+            $script:reconnectAfterStopBmStartDisconnected = $true
+            Set-MainText -Name 'FooterText' -Text '正在应用新的 BM 连接配置；CAT 保持连接。'
+            $script:stopTask = $script:supervisor.StopAsync(5000)
+            Set-ConnectionButtonState
+            return $true
+        }
+        if (-not $script:bmConnectionSnapshot) {
+            Request-UiControlStatus
+            Set-MainText -Name 'FooterText' -Text '正在读取当前 BM 配置状态。'
+            return $true
+        }
+        return [bool](Set-UiBmConnectionEnabled -Enabled $true)
+    }
+    $script:bmConnectAfterCoreReady = $true
+    $script:serialConnectCatAfterCoreReady = $true
+    Start-BridgeRun -BmStartDisconnected
+    return $true
+}
+
+function Complete-UiSerialDisconnectAfterBm {
+    if (-not $script:serialDisconnectPending -or $script:serialDisconnectCoreStopIssued) { return $false }
+    if (-not $script:serialDisconnectCatStopRequested -and
+        (Get-Command -Name Disconnect-UiRadioCatSession -ErrorAction SilentlyContinue)) {
+        $script:serialDisconnectCatStopRequested = $true
+        [void](Disconnect-UiRadioCatSession -Reason user_disconnect)
+    }
+    if ($script:radioCatOperationPowerShell -or $script:radioCatSessionRequested) { return $false }
+    if ($script:preparationStarted) {
+        $script:serialDisconnectDeadlineUtc = [DateTime]::MinValue
+        if (-not $script:prepareStopAsync) { Begin-PreparationStop }
+        return $true
+    }
+    if ($script:supervisor -and -not $script:supervisor.HasExited) {
+        $script:serialDisconnectDeadlineUtc = [DateTime]::MinValue
+        $script:serialDisconnectCoreStopIssued = $true
+        Set-MainText -Name 'FooterText' -Text 'BM 已断开；正在停止 HRI 核心，CAT 串口已收尾。'
+        $script:stopTask = $script:supervisor.StopAsync(5000)
+        Set-ConnectionButtonState
+        return $true
+    }
+    $script:serialDisconnectPending = $false
+    $script:serialDisconnectCoreStopIssued = $false
+    $script:serialDisconnectCatStopRequested = $false
+    $script:serialDisconnectDeadlineUtc = [DateTime]::MinValue
+    $script:activeBmTransportConfig = $null
+    Set-OfflineDisplay -Reason '串口和核心已断开。'
+    Set-ConnectionButtonState
+    return $true
+}
+
+function Disconnect-UiSerialCombo {
+    if ($script:serialDisconnectPending -or $script:closingAfterStop -or $script:stopTask) { return $false }
+    $script:serialDisconnectCatStopRequested = $false
+    $script:bmConnectAfterCoreReady = $false
+    if ($script:preparationStarted) {
+        $script:serialDisconnectPending = $true
+        $script:serialDisconnectDeadlineUtc = [DateTime]::MinValue
+        Set-MainText -Name 'FooterText' -Text '正在取消核心准备并收好串口。'
+        Begin-PreparationStop
+        Set-ConnectionButtonState
+        return $true
+    }
+    if (-not ($script:supervisor -and -not $script:supervisor.HasExited)) {
+        if (-not $script:radioCatSessionRequested -and -not $script:radioCatOperationPowerShell) { return $true }
+        $script:serialDisconnectPending = $true
+        $script:serialDisconnectDeadlineUtc = [DateTime]::MinValue
+        return [bool](Complete-UiSerialDisconnectAfterBm)
+    }
+    $script:serialDisconnectPending = $true
+    $script:serialDisconnectCoreStopIssued = $false
+    $script:serialDisconnectCatStopRequested = $false
+    $script:serialDisconnectDeadlineUtc = [DateTime]::UtcNow.AddSeconds(15)
+    if ($script:bmConnectionNativeCapability -and $script:controlConfirmed) {
+        if (-not $script:bmConnectionSnapshot) {
+            Request-UiControlStatus
+            Set-MainText -Name 'FooterText' -Text '正在读取 BM 状态，确认网络关闭后再停止 HRI。'
+            Set-ConnectionButtonState
+            return $true
+        }
+        $state = $script:bmConnectionSnapshot
+        if ([bool]$state.requested_enabled -or [bool]$state.resolving -or [bool]$state.transport_open -or
+            [string]$state.bm_state -cne 'stopped') {
+            [void](Set-UiBmConnectionEnabled -Enabled $false)
+            Set-ConnectionButtonState
+            return $true
+        }
+    }
+    [void](Complete-UiSerialDisconnectAfterBm)
+    return $true
+}
+
+function Set-ConnectionConfigLocked {
+    $operationLocked=[bool]($script:preparationStarted -or $script:stopTask -or $script:prepareStopAsync -or $script:nativeExitCleanupPending -or
+        $script:channelMutationSafetyStopPending)
+    $coreActive = [bool]($script:supervisor -and -not $script:supervisor.HasExited)
+    $deviceLocked = ($operationLocked -or $coreActive)
+    $catSessionLocked = ([bool]$script:radioCatSessionRequested -or [bool]$script:radioCatOperationPowerShell -or
+        [bool]$script:radioCatSessionShutdown)
+    $catPortLocked = ($deviceLocked -or $catSessionLocked)
+    $deviceRefreshLocked = ($deviceLocked -or $catSessionLocked)
+    $bmLocked = ($operationLocked -or (Test-UiBmTransportFieldsLocked))
+    foreach ($name in @('SerialBox','WaveInEndpointBox','WaveOutEndpointBox')) {
+        $control=if ($script:mainWindow) { $script:mainWindow.FindName($name) } else { $null }
+        if ($control) { $control.IsEnabled=-not $deviceLocked }
+    }
+    $refreshControl=if ($script:mainWindow) { $script:mainWindow.FindName('RefreshDevicesButton') } else { $null }
+    if ($refreshControl) { $refreshControl.IsEnabled=-not $deviceRefreshLocked }
+    foreach ($name in @('CatPortBox','CatBaudRateBox')) {
+        $control=if ($script:mainWindow) { $script:mainWindow.FindName($name) } else { $null }
+        if ($control) { $control.IsEnabled=-not $catPortLocked }
+    }
+    foreach ($name in @('CallsignBox','GatewayBox','SourceBox','MasterPresetBox','MasterBox','MasterPortBox','ColorCodeBox','PasswordBox')) {
+        $control=if ($script:mainWindow) { $script:mainWindow.FindName($name) } else { $null }
+        if ($control) { $control.IsEnabled=-not $bmLocked }
+    }
+    $apiKeyControl = if ($script:mainWindow) { $script:mainWindow.FindName('BmApiKeyBox') } else { $null }
+    if ($apiKeyControl) { $apiKeyControl.IsEnabled=-not $operationLocked }
     $saveBlocked = [bool]($script:preparationStarted -or $script:stopTask -or $script:prepareStopAsync -or
         $script:nativeExitCleanupPending -or $script:channelMutationSafetyStopPending -or (Test-UiRadioCatUserActionBusy))
     $saveButton = if ($script:mainWindow) { $script:mainWindow.FindName('SaveSettingsButton') } else { $null }
     if ($saveButton) { $saveButton.IsEnabled = -not $saveBlocked }
+    $lockSummary = if ($operationLocked) { '设备操作中，配置暂时锁定' }
+        elseif ($coreActive -and (Test-UiBmTransportFieldsLocked)) { 'BM连接中，传输配置已锁定' }
+        elseif ($coreActive) { 'HRI/音频设备已占用；BM配置可单独保存' }
+        else { '' }
+    $lockText = if ($script:mainWindow) { $script:mainWindow.FindName('ConnectionLockValue') } else { $null }
+    if ($lockText) { $lockText.Text=$lockSummary }
     if (Get-Command Set-BmManagementUiControlState -ErrorAction SilentlyContinue) { Set-BmManagementUiControlState }
     Update-UiAudioGainControls
 }
 
 function Set-ConnectionButtonState {
-    $button=if ($script:mainWindow) { $script:mainWindow.FindName('ConnectButton') } else { $null }; if (-not $button) { return }
+    if (-not $script:mainWindow) { return }
     Set-ConnectionConfigLocked
-    if ($script:channelMutationSafetyStopPending) {
-        $button.IsEnabled=$false
-        $button.Content=if ($script:stopTask) { '正在停止' } else { '停止未完成' }
-        return
+    $operationBusy=[bool]($script:preparationStarted -or $script:stopTask -or $script:prepareStopAsync -or
+        $script:nativeExitCleanupPending -or $script:channelMutationSafetyStopPending -or $script:serialDisconnectPending)
+    $coreActive=[bool]($script:supervisor -and -not $script:supervisor.HasExited)
+    $catRequested=[bool]$script:radioCatSessionRequested
+    $connectBm=$script:mainWindow.FindName('ConnectButton')
+    $disconnectBm=$script:mainWindow.FindName('DisconnectBmButton')
+    $serialConnect=$script:mainWindow.FindName('SerialConnectButton')
+    $serialDisconnect=$script:mainWindow.FindName('SerialDisconnectButton')
+    if (-not $serialConnect) { $serialConnect=$script:mainWindow.FindName('CatConnectButton') }
+    if (-not $serialDisconnect) { $serialDisconnect=$script:mainWindow.FindName('CatDisconnectButton') }
+    $bmState=$script:bmConnectionSnapshot
+    $bmRequested=($bmState -and [bool]$bmState.requested_enabled)
+    $bmTransportOpen=($bmState -and [bool]$bmState.transport_open)
+    $bmResolving=($bmState -and [bool]$bmState.resolving)
+    $bmDisconnected=($bmState -and -not [bool]$bmState.requested_enabled -and -not [bool]$bmState.resolving -and
+        -not [bool]$bmState.transport_open -and [string]$bmState.bm_state -ceq 'stopped')
+    $bmCapabilityReady=($coreActive -and $script:controlConfirmed -and $script:bmConnectionNativeCapability -and -not $script:controlDiagnostic)
+    $catPortReady=$true
+    if (Get-Command -Name Get-UiRadioCatSelectedPort -ErrorAction SilentlyContinue) {
+        $catPortReady=[bool](Get-UiRadioCatSelectedPort)
     }
-    if ($script:preparationStarted -or $script:stopTask -or $script:prepareStopAsync -or $script:nativeExitCleanupPending) { $button.IsEnabled=$false; $button.Content='正在处理'; return }
-    if (Test-UiRadioCatUserActionBusy) { $button.IsEnabled=$false; $button.Content='电台设置中'; return }
-    if ($script:supervisor -and -not $script:supervisor.HasExited) { $button.IsEnabled=$true; $button.Content='重新连接'; return }
-    $button.Content='连接'; $button.IsEnabled=$true
+    $catPortConflict=$false
+    if (Get-Command -Name Test-UiRadioCatSelectedPortConflict -ErrorAction SilentlyContinue) {
+        $catPortConflict=[bool](Test-UiRadioCatSelectedPortConflict)
+    }
+    if ($serialConnect) {
+        $serialConnect.Content='连接串口'
+        $serialConnect.IsEnabled=(-not $operationBusy -and -not $catRequested -and $catPortReady -and -not $catPortConflict -and
+            -not (Test-UiRadioCatUserActionBusy))
+    }
+    if ($serialDisconnect) {
+        $serialDisconnect.Content=if ($script:serialDisconnectPending) { '正在断开串口' } else { '断开串口' }
+        $serialDisconnect.IsEnabled=(-not $operationBusy -and ($coreActive -or $script:preparationStarted -or $catRequested))
+    }
+    if ($connectBm) {
+        if (-not $coreActive) {
+            $connectBm.Content='连接BM'
+            $connectBm.IsEnabled=(-not $operationBusy -and -not (Test-UiRadioCatUserActionBusy))
+        } elseif (-not $script:bmConnectionNativeCapability -or $script:controlDiagnostic) {
+            $connectBm.Content='独立连接不可用'
+            $connectBm.IsEnabled=$false
+        } elseif ($script:bmConnectionPendingRequest -and -not [bool]$script:bmConnectionPendingRequest.ack_received) {
+            $connectBm.Content=if ([bool]$script:bmConnectionPendingRequest.enabled) { '正在连接BM' } else { '正在断开BM' }
+            $connectBm.IsEnabled=$false
+        } elseif ($bmRequested -and [string]$bmState.bm_state -ceq 'ready' -and -not $bmResolving) {
+            $connectBm.Content='BM已连接'
+            $connectBm.IsEnabled=$false
+        } elseif ($bmRequested -or $bmResolving) {
+            $connectBm.Content='正在连接BM'
+            $connectBm.IsEnabled=$false
+        } elseif (-not $bmDisconnected) {
+            $connectBm.Content='正在断开BM'
+            $connectBm.IsEnabled=$false
+        } else {
+            $connectBm.Content='连接BM'
+            $connectBm.IsEnabled=(-not $operationBusy -and -not (Test-UiRadioCatUserActionBusy))
+        }
+    }
+    if ($disconnectBm) {
+        $disconnectBm.Content=if ($script:bmConnectionPendingRequest -and -not [bool]$script:bmConnectionPendingRequest.enabled) { '正在断开BM' } else { '断开BM' }
+        $canReverseRequest=($script:bmConnectionPendingRequest -and [bool]$script:bmConnectionPendingRequest.ack_received -and [bool]$script:bmConnectionPendingRequest.enabled)
+        $disconnectBm.IsEnabled=(-not $operationBusy -and $bmCapabilityReady -and
+            ($bmRequested -or $bmResolving -or $bmTransportOpen -or $canReverseRequest) -and
+            -not ($script:bmConnectionPendingRequest -and -not [bool]$script:bmConnectionPendingRequest.enabled))
+    }
+    $stopButton=$script:mainWindow.FindName('StopButton')
+    if ($stopButton) { $stopButton.IsEnabled=(-not $script:closingAfterStop -and -not $script:allowWindowClose) }
 }
 
 function Initialize-SettingsWindow {
@@ -6022,7 +6961,8 @@ function Save-SettingsFromWindow {
     try {
         if (-not $script:portableConfig) { throw '统一配置尚未加载。' }
         if ((Test-UiRadioCatUserActionBusy) -or $script:stopTask -or $script:nativeExitCleanupPending -or $script:channelMutationSafetyStopPending) { throw '请等待当前设备操作结束后再保存。' }
-        $c=$script:portableConfig.connection; $d=$script:portableConfig.devices; $a=$script:portableConfig.audio
+        $candidate = Copy-UiPortableConfigValue -Value $script:portableConfig
+        $c=$candidate.connection; $d=$candidate.devices; $a=$candidate.audio
         $c.callsign=([string](Get-UiControl 'CallsignBox').Text).Trim()
         $c.gateway_id=ConvertTo-UiOptionalUnsigned -Text ([string](Get-UiControl 'GatewayBox').Text) -Maximum 4294967295 -Label 'Gateway ID'
         $c.source_id=ConvertTo-UiOptionalUnsigned -Text ([string](Get-UiControl 'SourceBox').Text) -Maximum 16777215 -Label '本机 DMR ID'
@@ -6031,11 +6971,15 @@ function Save-SettingsFromWindow {
         $c.color_code=ConvertTo-UiOptionalUnsigned -Text ([string](Get-UiControl 'ColorCodeBox').Text) -Maximum 15 -Label '色码'
         $c.password=[string](Get-UiControl 'PasswordBox').Password; $c.api_key=[string](Get-UiControl 'BmApiKeyBox').Password
         $server=Get-UiControl 'MasterPresetBox'; $serverValue=Get-UiComboValue -Combo $server
-        if ($serverValue) { $script:bmServerSelectionPreferenceId=$serverValue }
+        $candidateBmServerSelectionPreferenceId = [string]$script:bmServerSelectionPreferenceId
+        if ($serverValue) { $candidateBmServerSelectionPreferenceId=$serverValue }
+        $candidate.ui.bm_server_selection_id = $candidateBmServerSelectionPreferenceId
         $serial=Get-UiComboValue -Combo (Get-UiControl 'SerialBox'); if ($serial) { $d.hri_port=$serial }
         $waveIn=Get-UiComboValue -Combo (Get-UiControl 'WaveInEndpointBox'); if ($waveIn) { $d.wave_in_endpoint_id=$waveIn }
         $waveOut=Get-UiComboValue -Combo (Get-UiControl 'WaveOutEndpointBox'); if ($waveOut) { $d.wave_out_endpoint_id=$waveOut }
-        $cat=Get-UiControl 'CatPortBox'; if ($cat.Text) { $d.cat_port=([string]$cat.Text).Trim() }
+        $cat=Get-UiControl 'CatPortBox'
+        $catPortValue = if ($cat.SelectedItem) { Get-UiComboValue -Combo $cat } else { ([string]$cat.Text).Trim() }
+        if ($catPortValue) { $d.cat_port=$catPortValue }
         $baud=Get-UiComboValue -Combo (Get-UiControl 'CatBaudRateBox'); if ($baud) { $d.cat_baud_rate=[int]$baud }; $d.cat_stop_bits='Two'
         $runtimeConnected = ($script:supervisor -and -not $script:supervisor.HasExited)
         if (-not $runtimeConnected) {
@@ -6043,17 +6987,25 @@ function Save-SettingsFromWindow {
             $mic=Get-UiControl 'TransmitGainSlider'; if ($mic) { $a.mic_transmit_gain=[Math]::Round([decimal]$mic.Value,3) }
         }
         if ($script:radioControlPreferences -and $script:radioControlPreferences.desired_power_watts) { $d.desired_power_watts=[int]$script:radioControlPreferences.desired_power_watts }
-        $script:portableConfig=Save-WirexPortableConfig -Path $script:portableConfigPath -Config $script:portableConfig
+        $d.cat_stop_bits='Two'
+        $savedConfig = Save-WirexPortableConfig -Path $script:portableConfigPath -Config $candidate
+        $script:portableConfig=$savedConfig
+        $script:bmServerSelectionPreferenceId=$candidateBmServerSelectionPreferenceId
         $script:storedProfile=$null
         if ($c.callsign -and [uint64]$c.gateway_id -gt 0 -and [uint64]$c.source_id -gt 0 -and @($script:channels).Count -gt 0) {
-            try { $script:storedProfile=ConvertFrom-UiPortableConfigToProfile -Config $script:portableConfig } catch { $script:storedProfile=$null }
+            try { $script:storedProfile=ConvertFrom-UiPortableConfigToProfile -Config $savedConfig } catch { $script:storedProfile=$null }
         }
         Update-UiPlaybackGainDisplay -Record $null; Update-UiChannelDisplays; Set-ConnectionButtonState
         Set-MainText -Name 'FooterText' -Text '设置已保存。'
+        $errorControl=$script:mainWindow.FindName('SettingsErrorText')
+        if ($errorControl) { $errorControl.Text=''; $errorControl.Visibility=[Windows.Visibility]::Collapsed }
         if ($ConnectAfterSave) { Start-BridgeRun }; return $true
     } catch {
-        $errorControl=$script:mainWindow.FindName('SettingsErrorText'); if ($errorControl) { $errorControl.Text='配置保存失败；请检查连接字段和设备选择。'; $errorControl.Visibility=[Windows.Visibility]::Visible }
-        Set-MainText -Name 'FooterText' -Text '配置保存失败；请检查连接字段和设备选择。'; return $false
+        $safeError = Get-UiSafeSettingsSaveErrorText -Exception $_.Exception
+        $errorControl=$script:mainWindow.FindName('SettingsErrorText'); if ($errorControl) { $errorControl.Text=$safeError; $errorControl.Visibility=[Windows.Visibility]::Visible }
+        Set-MainText -Name 'FooterText' -Text $safeError
+        if (Get-Command -Name 'Add-UiEvent' -ErrorAction SilentlyContinue) { Add-UiEvent ('配置保存失败：' + $_.Exception.GetType().Name) }
+        return $false
     }
 }
 
@@ -6240,10 +7192,9 @@ if ($script:portableConfigError) { Set-MainText -Name 'FooterText' -Text $script
 Add-UiComboOpenHandlers -Window $script:mainWindow
 Register-UiSetupLinks
 (Get-UiControl 'ConnectButton').Add_Click({
-    if ($script:supervisor -and -not $script:supervisor.HasExited) { Request-Reconnect; return }
-    if ($script:profileEditable -or -not $script:storedProfile) { [void](Save-SettingsFromWindow -ConnectAfterSave); return }
-    Request-Reconnect
+    [void](Connect-UiBmFromButton)
 })
+(Get-UiControl 'DisconnectBmButton').Add_Click({ [void](Set-UiBmConnectionEnabled -Enabled $false) })
 (Get-UiControl 'SaveSettingsButton').Add_Click({ [void](Save-SettingsFromWindow) })
 (Get-UiControl 'StopButton').Add_Click({ Request-StopAndExit })
 (Get-UiControl 'AddChannelButton').Add_Click({ Add-UiChannelFromInputs })
@@ -6268,7 +7219,17 @@ if ($pageNextButton) { $pageNextButton.Add_Click({ Set-UiChannelPage -Delta 1 })
     $id=([string](Get-UiControl 'ChannelIdBox').Text).Trim(); $kind=Get-UiControl 'ChannelKindBox'
     if ($id -in @('460997','9990')) { $kind.SelectedIndex=1 } elseif ($id -in @('91','46001')) { $kind.SelectedIndex=2 }
 })
-(Get-UiControl 'CallHistoryList').Add_SelectionChanged({ Update-UiCallHistoryActionState })
+(Get-UiControl 'CallHistoryList').Add_SelectionChanged({
+    if (-not $script:historyPageRendering) {
+        $selected = (Get-UiControl 'CallHistoryList').SelectedItem
+        $script:selectedCallHistoryKey = if ($selected -and $selected.PSObject.Properties['key']) { [string]$selected.key } else { '' }
+    }
+    Update-UiCallHistoryActionState
+})
+$historyPreviousButton=$script:mainWindow.FindName('CallHistoryPagePreviousButton')
+if ($historyPreviousButton) { $historyPreviousButton.Add_Click({ Set-UiCallHistoryPage -Delta -1 }) }
+$historyNextButton=$script:mainWindow.FindName('CallHistoryPageNextButton')
+if ($historyNextButton) { $historyNextButton.Add_Click({ Set-UiCallHistoryPage -Delta 1 }) }
 $historyTarget=$script:mainWindow.FindName('SetHistoryCallTargetButton')
 if ($historyTarget) { $historyTarget.Add_Click({
     $entry=(Get-UiControl 'CallHistoryList').SelectedItem; if (-not $entry) { return }
@@ -6354,9 +7315,7 @@ $script:mainWindow.Add_Loaded({
         Set-OfflineDisplay -Reason '隔离 UI 测试没有启动设备或网络。'; Set-ConnectionButtonState; return
     }
     if ($RenderOnly -or $OfflinePreview -or $NoAutoConnect) {
-        (Get-UiControl 'OfflineBanner').Visibility=[Windows.Visibility]::Visible
-        (Get-UiControl 'OfflineBannerText').Text='离线预览；此窗口没有连接设备或网络。'
-        Set-OfflineDisplay -Reason '当前没有连接核心。'; Set-MainText -Name 'FooterText' -Text '离线预览，没有连接设备或网络。'
+        Set-OfflineDisplay -Reason '离线预览：没有连接设备或网络。'
         Set-ConnectionButtonState; return
     }
     try {
@@ -6398,16 +7357,76 @@ if ($RenderOnly) {
     $script:mainWindow.FindName('CatObservedPowerText').Text='25 W'
     $script:mainWindow.FindName('CatObservedPanel').Visibility=[Windows.Visibility]::Visible
     $script:callIdentityCache['460997']=[pscustomobject]@{source_id=[uint32]460997;id=[uint32]460997;callsign='TEST';name='Sample Operator';status='found';display_name='TEST'}
-    $history=[pscustomobject][ordered]@{run_id='render-fixture';current_call_valid=$true;current_call_generation=[uint64]1;current_call_source_id=[uint64]460997;current_call_destination_id=[uint64]3149876;current_call_slot=[uint64]2;current_call_kind='P';timestamp_utc_ms=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()}
+    $script:callHistoryModel.Clear(); $script:callHistoryKeys=@{}; $script:selectedCallHistoryKey=''; $script:callHistoryPageIndex=0
+    for ($historyIndex=1; $historyIndex -le 5; $historyIndex++) {
+        $historyKey='render-fixture|' + $historyIndex
+        $historyEntry=[pscustomobject][ordered]@{
+            key=$historyKey;run_id='render-fixture';generation=[uint64]$historyIndex;source_id=[uint64]460997
+            destination_id=[uint64](3149876+$historyIndex);slot=[uint64]2;kind='private';timestamp=[DateTime]::Now.AddMinutes(-$historyIndex)
+            source_label='TEST · Sample Operator';identity_details='';text=('来话 {0} · 私呼 · 来源 TEST' -f $historyIndex)
+        }
+        $script:callHistoryModel.Add($historyEntry); $script:callHistoryKeys[$historyKey]=$true
+    }
+    Render-UiCallHistoryPage
     $catPanel=$script:mainWindow.FindName('RadioCatPanel');if($catPanel){$catPanel.Visibility=[Windows.Visibility]::Visible}
     $script:mainWindow.Show(); Invoke-UiDispatcherPriority -Priority ([System.Windows.Threading.DispatcherPriority]::Render)
     Set-MainText -Name 'BmValue' -Text '已连接'
     $script:mainWindow.FindName('BmRttValue').Text='42 ms · 3 次'
     $script:mainWindow.FindName('BmRttValue').Visibility=[Windows.Visibility]::Visible
     $script:mainWindow.FindName('BmRttMetric').Visibility=[Windows.Visibility]::Visible
-    [void](Get-UiControl 'CallHistoryList').Items.Add([pscustomobject]@{text='10:00:00 · 单呼 · 本机 DMR ID 3149876 · 来源 TEST · Sample Operator'})
-    $script:latestStatus=[pscustomobject][ordered]@{run_id='render-fixture';current_call_valid=$true;current_call_generation=[uint64]1;current_call_source_id=[uint64]460997;current_call_destination_id=[uint64]3149876;current_call_slot=[uint64]2;current_call_kind='P'}
+    $script:latestStatus=[pscustomobject][ordered]@{
+        run_id='render-fixture';bm_state='ready';bm_rtt_valid=$true;bm_rtt_last_ms=[double]42;bm_rtt_sample_count=[uint64]3
+        rx_session_dmrd_valid=$true;rx_session_dmrd_expected=[uint64]100;rx_session_dmrd_received=[uint64]97;rx_session_dmrd_loss_pct=[double]3
+        current_call_valid=$true;current_call_generation=[uint64]1;current_call_source_id=[uint64]460997
+        current_call_destination_id=[uint64]3149876;current_call_slot=[uint64]2;current_call_kind='P'
+    }
     $script:lastStatusUtc=[DateTime]::UtcNow
+    Update-UiReceiveMetricsDisplay -Record $script:latestStatus
+    if ($script:bmManagementUiInitialized) {
+        $script:activeProfile=[pscustomobject][ordered]@{ connection=[pscustomobject][ordered]@{ gateway_id=[uint64]12345 } }
+        $script:bmManagementUiWindow=$script:mainWindow
+        $script:bmManagementUiPageSize=3
+        $script:bmManagementUiPageIndex=0
+        $script:bmManagementStatus='loaded'
+        $script:bmManagementObservedDeviceId='12345'
+        $script:bmManagementObservedApiKey=''
+        $script:bmManagementGroups=@(
+            [pscustomobject][ordered]@{ type='static'; device_id='12345'; talkgroup=[uint64]91; slot=1; text='TG 91' },
+            [pscustomobject][ordered]@{ type='static'; device_id='12345'; talkgroup=[uint64]92; slot=1; text='TG 92' },
+            [pscustomobject][ordered]@{ type='static'; device_id='12345'; talkgroup=[uint64]93; slot=2; text='TG 93' },
+            [pscustomobject][ordered]@{ type='static'; device_id='12345'; talkgroup=[uint64]94; slot=2; text='TG 94' }
+        )
+        Update-BmManagementUiVisiblePage
+        $bmStaticFirstPageCount=@($script:bmManagementUiControls['BmStaticGroupsList'].Items).Count
+        $bmStaticFirstPageText=[string]$script:bmManagementUiControls['BmStaticGroupPageText'].Text
+        [void](Set-BmManagementUiPage -PageIndex 1)
+        $bmStaticSecondPageCount=@($script:bmManagementUiControls['BmStaticGroupsList'].Items).Count
+        $bmStaticSecondPageText=[string]$script:bmManagementUiControls['BmStaticGroupPageText'].Text
+        [void](Set-BmManagementUiPage -PageIndex 0)
+        $bmStaticPanel=$script:mainWindow.FindName('BmStaticGroupPanel')
+        if ($bmStaticPanel) { $bmStaticPanel.Visibility=[Windows.Visibility]::Visible }
+        foreach ($name in @('BmStaticGroupsList','BmStaticGroupPagePreviousButton','BmStaticGroupPageText','BmStaticGroupPageNextButton')) {
+            $control=$script:mainWindow.FindName($name)
+            if ($control) { $control.Visibility=[Windows.Visibility]::Visible }
+        }
+        $bmSource=$script:mainWindow.FindName('BmStaticGroupSourceValue')
+        if ($bmSource) { $bmSource.Text='设备 12345'; $bmSource.Visibility=[Windows.Visibility]::Visible }
+        foreach ($name in @('RefreshBmStaticGroupsButton','RemoveBmStaticGroupButton','BmStaticGroupIdBox','AddBmStaticGroupButton')) {
+            $control=$script:mainWindow.FindName($name)
+            if ($control) { $control.Visibility=[Windows.Visibility]::Visible; $control.IsEnabled=$false }
+        }
+    } else {
+        $bmStaticFirstPageCount=0; $bmStaticFirstPageText=''; $bmStaticSecondPageCount=0; $bmStaticSecondPageText=''
+    }
+    $bmStaticGroupTexts=@()
+    $historyFirstPageKeys=@((Get-UiControl 'CallHistoryList').Items | ForEach-Object { [string]$_.key })
+    Set-UiCallHistoryPage -Delta 1
+    $historySecondPageKeys=@((Get-UiControl 'CallHistoryList').Items | ForEach-Object { [string]$_.key })
+    $historyPageProbe=[pscustomobject][ordered]@{first_page_count=$historyFirstPageKeys.Count;second_page_count=$historySecondPageKeys.Count;second_page_text=$script:mainWindow.FindName('CallHistoryPageText').Text}
+    Set-UiCallHistoryPage -Delta -1
+    $historyPageVisualProbe=Get-UiCallHistoryVisualPageProbe -Window $script:mainWindow
+    $historyPageProbe | Add-Member -NotePropertyName visual -NotePropertyValue $historyPageVisualProbe -Force
+    $bmStaticGroupTexts=@(Get-UiVisualTextValues -Root ($script:mainWindow.FindName('BmStaticGroupsList')))
     Update-UiChannelDisplays
     $catPort=$script:mainWindow.FindName('CatPortBox');$oldCatPort=if($catPort){[string]$catPort.Text}else{''}
     $catPortProbe=$null
@@ -6424,14 +7443,14 @@ if ($RenderOnly) {
     Save-RenderedWindow -Window $settings -Path (Join-Path $renderDirectory 'settings-window.png')
     $channelCardsEvidence=@($script:mainWindow.FindName('ChannelCardsPanel').Children | ForEach-Object {
         if ($_.Tag.blank) {
-            [pscustomobject]@{blank=$true;channel_key='';height=[double]$_.ActualHeight;call_active=$false;call_area_height=0;action_count=0;buttons=@();text=@()}
+            [pscustomobject]@{blank=$true;channel_key='';height=[double]$_.ActualHeight;card_body_width=0;call_area_width=0;action_area_width=0;action_area_height=0;call_active=$false;call_area_height=0;action_count=0;buttons=@();text=@()}
         } else {
             $callArea=@($_.Child.Children[0].Children | Where-Object { $_ -is [System.Windows.Controls.Border] -and [string]$_.Tag -ceq 'ChannelCallArea' }) | Select-Object -First 1
             $actions=$_.Child.Children[1]
-            [pscustomobject]@{blank=$false;channel_key=[string]$_.Tag.channel_key;height=[double]$_.ActualHeight;min_height=[double]$_.MinHeight;call_active=[bool]$_.Tag.call_active;call_area_height=[double]$callArea.ActualHeight;action_count=[int]$actions.Children.Count;buttons=@(Get-UiVisualButtonTexts -Root $_);text=@(Get-UiVisualTextValues -Root $_)}
+            [pscustomobject]@{blank=$false;channel_key=[string]$_.Tag.channel_key;height=[double]$_.ActualHeight;min_height=[double]$_.MinHeight;card_body_width=[double]$_.Child.ActualWidth;call_area_width=[double]$callArea.ActualWidth;action_area_width=[double]$actions.ActualWidth;action_area_height=[double]$actions.ActualHeight;call_active=[bool]$_.Tag.call_active;call_area_height=[double]$callArea.ActualHeight;action_count=[int]$actions.Children.Count;buttons=@(Get-UiVisualButtonTexts -Root $_);text=@(Get-UiVisualTextValues -Root $_)}
         }
     })
-    $controlNames=@('MainTitleText','ConsoleTop','DashboardPanel','ConnectionConfigPanel','DailyControlsPanel','ConnectButton','SaveSettingsButton','ChannelConsolePanel','ChannelCardsScroll','ChannelCardsPanel','ChannelPageNav','ChannelPagePreviousButton','ChannelPageText','ChannelPageNextButton','ChannelIdBox','ChannelKindBox','MakeChannelTxTargetCheckBox','AddChannelButton','BmStatusCard','BmValue','BmRttMetric','BmRttValue','BmApiKeyBox','PasswordBox','RefreshDevicesButton','RadioDetailsExpander','CallHistoryList','CatOperatingPanel','RadioCatPanel','CatObservedPanel','CatObservedMainModeText','CatObservedFrequencyText','CatObservedPowerText','CatConnectButton','CatDisconnectButton','CatSessionStatusText','CatPortBox','CatBaudRateBox','PlaybackGainSlider','TransmitGainSlider')
+    $controlNames=@('MainTitleText','ConsoleTop','DashboardPanel','ConnectionConfigPanel','DailyControlsPanel','ConnectionRowSerial','ConnectionRowAudio','ConnectionRowBm','ConnectionRowActions','ConnectButton','DisconnectBmButton','SerialConnectButton','SerialDisconnectButton','StopButton','SaveSettingsButton','FooterText','OfflineBanner','OfflineBannerText','SettingsErrorText','ProfileMigrationText','DeviceDiscoveryText','ChannelConsolePanel','ChannelCardsScroll','ChannelCardsPanel','ChannelPageNav','ChannelPagePreviousButton','ChannelPageText','ChannelPageNextButton','ChannelIdBox','ChannelKindBox','MakeChannelTxTargetCheckBox','AddChannelButton','BmStatusCard','BmValue','BmRttMetric','BmRttValue','BmLossMetric','BmLossValue','BmApiKeyBox','PasswordBox','RefreshDevicesButton','BmStaticGroupPanel','BmStaticGroupsList','BmStaticGroupPagePreviousButton','BmStaticGroupPageText','BmStaticGroupPageNextButton','RadioDetailsExpander','CallHistoryList','CallHistoryPagePreviousButton','CallHistoryPageText','CallHistoryPageNextButton','CatOperatingPanel','RadioCatPanel','CatObservedPanel','CatObservedMainModeText','CatObservedFrequencyText','CatObservedPowerText','CatSessionStatusText','CatPortBox','CatBaudRateBox','PlaybackGainSlider','TransmitGainSlider')
     $layout=[pscustomobject][ordered]@{
         render_only=$true; work_area_width=$script:workAreaWidth; work_area_height=$script:workAreaHeight
         max_window_width=$script:maxWindowWidth; max_window_height=$script:maxWindowHeight
@@ -6442,7 +7461,13 @@ if ($RenderOnly) {
         channel_cards=@($script:channels | ForEach-Object { [pscustomobject]@{key=(Get-UiChannelKey -Channel $_);title=('{0} {1}' -f $_.kind,$_.id)} })
         channel_card_layout=$channelCardsEvidence;channel_list_present=($null -ne $script:mainWindow.FindName('ChannelListPanel'))
         page_navigation=[pscustomobject][ordered]@{visible=$script:mainWindow.FindName('ChannelPageNav').IsVisible;text=$script:mainWindow.FindName('ChannelPageText').Text;slot_count=$script:mainWindow.FindName('ChannelCardsPanel').Children.Count}
-        history_count=@((Get-UiControl 'CallHistoryList').Items).Count
+        history_count=$script:callHistoryModel.Count;history_visible_count=@((Get-UiControl 'CallHistoryList').Items).Count
+        history_page_text=$script:mainWindow.FindName('CallHistoryPageText').Text;history_page_probe=$historyPageProbe
+        bm_static_group_count=@($script:bmManagementGroups).Count;bm_static_group_visible_count=@($script:mainWindow.FindName('BmStaticGroupsList').Items).Count
+        bm_static_group_page_text=$script:mainWindow.FindName('BmStaticGroupPageText').Text
+        bm_static_group_page_probe=[pscustomobject][ordered]@{first_page_count=$bmStaticFirstPageCount;first_page_text=$bmStaticFirstPageText;second_page_count=$bmStaticSecondPageCount;second_page_text=$bmStaticSecondPageText}
+        bm_static_group_text=$bmStaticGroupTexts
+        bm_loss_valid=[bool]$script:bmLossValid
         caller_card_text=@(Get-UiVisualTextValues -Root (Get-UiControl 'ChannelCardsPanel'))
         favorites_present=$false; transmit_enabled_control_present=$false; stop_bits_control_present=($null -ne $script:mainWindow.FindName('CatStopBitsBox'))
         ui_test_config_path=$script:portableConfigPath

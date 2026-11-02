@@ -29,6 +29,7 @@ Assert-RadioUi ($catParseErrors.Count -eq 0) 'RadioCatUi.ps1 无法解析。'
 $definitions = $ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] },$true)
 $catDefinitions = $catAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] },$true)
 Invoke-Expression ((@($definitions) + @($catDefinitions) | ForEach-Object { $_.Extent.Text }) -join "`r`n")
+$script:productionStartBridgeRun = (Get-Command -Name Start-BridgeRun -CommandType Function).ScriptBlock
 Import-Module -Name (Join-Path $repoRoot 'tools\bridge-user-config.psm1') -Force
 Import-Module -Name $portableConfigModulePath -Force
 $script:productionRejectedReadbackValidator = (Get-Command Test-UiRadioCatRejectedPowerReadback).ScriptBlock
@@ -242,7 +243,11 @@ function Update-DynamicGroupControls { }
 function Update-UiReceiveMetricsDisplay { param([object]$Record) }
 function Set-UiIdentityRowVisibility { param([string]$Row,[System.Windows.Visibility]$Visibility) }
 function Update-UiIdentityActionState { }
-function Start-BridgeRun { $script:testStartBridgeRunCalls++ }
+function Start-BridgeRun {
+    param([switch]$BmStartDisconnected)
+    $script:testStartBridgeRunCalls++
+    $script:testLastBmStartDisconnected=[bool]$BmStartDisconnected
+}
 function Set-UiControl { param([string]$Name,[object]$Value) }
 
 function New-TestRadioSupervisor {
@@ -258,6 +263,24 @@ function New-TestRadioSupervisor {
         rx_queue_unconfirmed_playback_frames=[uint64]0; rx_buffered_receive_frames=[uint64]0
     }
     $script:lastStatusUtc = [DateTime]::UtcNow
+    return $supervisor
+}
+function New-TestBmSupervisor {
+    $source=New-Object 'System.Threading.Tasks.TaskCompletionSource[int]'
+    $supervisor=[pscustomobject]@{
+        HasExited=$false; StopSource=$source; StopCallCount=0
+        SentCommands=(New-Object 'System.Collections.Generic.List[object]')
+    }
+    Add-Member -InputObject $supervisor -MemberType ScriptMethod -Name SendControlCommand -Value {
+        param([string]$RequestId,[string]$Command,[string]$Parameters='')
+        [void]$this.SentCommands.Add([pscustomobject]@{request_id=$RequestId;command=$Command;parameters=$Parameters})
+        return $true
+    } | Out-Null
+    Add-Member -InputObject $supervisor -MemberType ScriptMethod -Name StopAsync -Value {
+        param([int]$TimeoutMs)
+        $this.StopCallCount++
+        return $this.StopSource.Task
+    } | Out-Null
     return $supervisor
 }
 function New-TestMainWindow {
@@ -452,12 +475,9 @@ try {
     $script:radioCatSessionRequested = $false
     $script:radioCatPollingActive = $false
     $script:radioCatManualDisconnect = $false
-    $connectButton = Get-SettingsControl 'CatConnectButton'
-    Assert-RadioUi ($connectButton.IsEnabled) '未连接且端口已枚举时，CAT连接按钮应启用。'
-    $connectArgs = New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent,$connectButton)
-    $connectButton.RaiseEvent($connectArgs)
+    $catConnectStarted = Connect-UiRadioCatSession
     Assert-RadioUi ($script:radioCatSessionRequested -and $script:radioCatPollingActive -and
-        $script:radioCatOperationPowerShell -and $script:radioCatOperationKind -ceq 'query') 'CAT连接按钮没有仅启动CAT会话和首读。'
+        $script:radioCatOperationPowerShell -and $script:radioCatOperationKind -ceq 'query' -and $catConnectStarted) 'CAT会话控制没有启动CAT会话和首读。'
     [void](Complete-TestCatRunspace -TimeoutMs 3000)
     Assert-RadioUi ((Get-UiRadioCatSessionState).requested -and (Get-UiRadioCatSessionState).connected -and
         (Get-UiRadioCatSessionState).polling -and -not $script:supervisor) 'CAT首读成功后没有保持独立会话，或启动了HRI核心。'
@@ -604,9 +624,7 @@ try {
     Invoke-UiRadioCatAction -Operation setPower
     Assert-RadioUi ($script:radioCatQueuedAction -and [string]$script:radioCatQueuedAction.operation -ceq 'setPower' -and
         [int]$script:radioCatQueuedAction.power_watts -eq 6) 'CAT disconnect test did not freeze the explicit power action behind its in-flight query.'
-    $disconnectButton = Get-SettingsControl 'CatDisconnectButton'
-    $disconnectArgs = New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent,$disconnectButton)
-    $disconnectButton.RaiseEvent($disconnectArgs)
+    [void](Disconnect-UiRadioCatSession -Reason user_disconnect)
     Assert-RadioUi (-not $script:radioCatSessionRequested -and -not $script:radioCatPollingActive -and
         $script:radioCatManualDisconnect -and $script:radioCatOperationCancelled -and $script:radioCatOperationStopAsync -and
         $null -eq $script:radioCatQueuedAction -and
@@ -622,9 +640,7 @@ try {
         [string]$script:radioCatSessionState -ceq 'disconnected' -and $script:radioCatResult -eq $null) `
         'CAT断开后仍有worker、旧授权结果或轮询请求。'
     Assert-RadioUi (-not (Test-UiRadioCatPortConflictWithHri -HriPortName 'COM11')) 'CAT port remained reserved after disconnect worker cleanup completed.'
-    $connectButton = Get-SettingsControl 'CatConnectButton'
-    $connectArgs = New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent,$connectButton)
-    $connectButton.RaiseEvent($connectArgs)
+    [void](Connect-UiRadioCatSession)
     Assert-RadioUi ($script:radioCatSessionRequested -and -not $script:radioCatManualDisconnect -and
         $script:radioCatOperationPowerShell -and [int]$script:radioCatOperationSessionGeneration -gt $generationBeforeDisconnect) `
         '用户明确再次连接没有解除本次应用手动断开锁存或开始新代CAT查询。'
@@ -642,10 +658,81 @@ try {
     $script:profileEditable = $false
     $script:profileWriteAllowed = $false
     $script:storedProfile = [pscustomobject]@{ connection=[pscustomobject]@{ callsign=''; gateway_id=''; source_id=''; master=''; master_port=''; color_code=1 }; tx_target=[pscustomobject]@{ destination_id=91; kind='group'; slot=2 }; rx_policy=$null; transmit_enabled=$true }
+    $script:portableConfig.ui['r121_unknown_probe'] = [ordered]@{ keep='synthetic-unknown-field' }
+    $scalarTagCombo = New-Object System.Windows.Controls.ComboBox
+    $scalarTagItem = New-Object System.Windows.Controls.ComboBoxItem
+    $scalarTagItem.Tag = 'synthetic-scalar-tag'
+    [void]$scalarTagCombo.Items.Add($scalarTagItem)
+    $scalarTagCombo.SelectedItem = $scalarTagItem
+    $rawObjectCombo = New-Object System.Windows.Controls.ComboBox
+    [void]$rawObjectCombo.Items.Add([pscustomobject]@{ Value='synthetic-raw-object-value' })
+    $rawObjectCombo.SelectedIndex = 0
+    Assert-RadioUi ((Get-UiComboValue -Combo $scalarTagCombo) -ceq 'synthetic-scalar-tag' -and
+        (Get-UiComboValue -Combo $rawObjectCombo) -ceq 'synthetic-raw-object-value') `
+        'ComboBox 字符串 Tag 或直接对象 Value 未读取为稳定值。'
+    $syntheticHriPorts = @([pscustomobject]@{ PortName='COM5'; FriendlyName='Synthetic HRI'; IsHri=$true })
+    $syntheticSerialOptions = Get-UiSerialOptions -AllPorts $syntheticHriPorts -HriPorts $syntheticHriPorts -SavedPort 'auto'
+    $serialCombo = Get-UiControl 'SerialBox'
+    Set-UiDeviceComboOptions -Combo $serialCombo -Options $syntheticSerialOptions.Items -SelectedValue 'auto'
+    Assert-RadioUi ((Set-UiComboValue -Combo $serialCombo -Value 'auto') -and (Get-UiComboValue -Combo $serialCombo) -ceq 'auto') `
+        '设备选项对象 Tag 未能将 auto 值回写到串口 ComboBox。'
+    Assert-RadioUi ((Set-UiComboValue -Combo $serialCombo -Value 'COM5') -and (Get-UiComboValue -Combo $serialCombo) -ceq 'COM5') `
+        '设备选项对象 Tag 未能将 COM5 值回写到串口 ComboBox。'
+    $syntheticInputOptions = @((New-UiDeviceOption -Label 'Synthetic input' -Value 'synthetic-input-1' -IsAvailable $true -Kind 'input'))
+    $syntheticOutputOptions = @((New-UiDeviceOption -Label 'Synthetic output' -Value 'synthetic-output-1' -IsAvailable $true -Kind 'output'))
+    Set-UiDeviceComboOptions -Combo (Get-UiControl 'WaveInEndpointBox') -Options $syntheticInputOptions -SelectedValue 'synthetic-input-1'
+    Set-UiDeviceComboOptions -Combo (Get-UiControl 'WaveOutEndpointBox') -Options $syntheticOutputOptions -SelectedValue 'synthetic-output-1'
+    Assert-RadioUi ((Get-UiComboValue -Combo (Get-UiControl 'WaveInEndpointBox')) -ceq 'synthetic-input-1' -and
+        (Get-UiComboValue -Combo (Get-UiControl 'WaveOutEndpointBox')) -ceq 'synthetic-output-1') `
+        '音频设备选项对象 Tag 未能读取稳定值。'
+    $hriSaveValue = Get-UiComboValue -Combo (Get-UiControl 'SerialBox')
+    $reproducedSaveSucceeded = [bool](Save-SettingsFromWindow)
+    $savedDeviceValues = Get-WirexPortableConfig -Path $script:portableConfigPath
+    Assert-RadioUi ($reproducedSaveSucceeded -and $hriSaveValue -ceq 'COM5' -and
+        $savedDeviceValues.devices.hri_port -ceq 'COM5' -and
+        $savedDeviceValues.devices.wave_in_endpoint_id -ceq 'synthetic-input-1' -and
+        $savedDeviceValues.devices.wave_out_endpoint_id -ceq 'synthetic-output-1' -and
+        $savedDeviceValues.ui.r121_unknown_probe.keep -ceq 'synthetic-unknown-field') `
+        ('R121 fake 配置没有保存稳定设备值或未知字段：success={0}, hri={1}, in={2}, out={3}, unknown={4}' -f `
+            $reproducedSaveSucceeded,$savedDeviceValues.devices.hri_port,$savedDeviceValues.devices.wave_in_endpoint_id,
+            $savedDeviceValues.devices.wave_out_endpoint_id,$savedDeviceValues.ui.r121_unknown_probe.keep)
+    $script:portableConfig=Get-WirexPortableConfig -Path $script:portableConfigPath
+    [void](Import-UiPortableConfig)
+    Apply-UiPortableConfigToControls
+    Assert-RadioUi ((Get-UiComboValue -Combo (Get-UiControl 'SerialBox')) -ceq 'COM5' -and
+        (Get-UiComboValue -Combo (Get-UiControl 'WaveInEndpointBox')) -ceq 'synthetic-input-1' -and
+        (Get-UiComboValue -Combo (Get-UiControl 'WaveOutEndpointBox')) -ceq 'synthetic-output-1' -and
+        $script:storedProfile.devices.serial_port -ceq 'COM5') `
+        '自动启动重新加载已保存配置时，没有沿用与手动保存相同的COM和音频稳定值。'
     $initialSaveSucceeded = [bool](Save-SettingsFromWindow)
     $savedPreference = Get-WirexPortableConfig -Path $script:portableConfigPath
     Assert-RadioUi ($initialSaveSucceeded -and [int]$savedPreference.devices.desired_power_watts -eq 6) `
         ('保存设置没有成功，或没有保留先前明确应用并确认的 6 W 目标。 saved={0}, power={1}, path={2}' -f $initialSaveSucceeded,$savedPreference.devices.desired_power_watts,$script:portableConfigPath)
+    $masterBox = Get-UiControl 'MasterBox'
+    $apiBox = Get-UiControl 'BmApiKeyBox'
+    $savedMaster = [string]$savedPreference.connection.master
+    $savedApiKey = [string]$savedPreference.connection.api_key
+    $storedProfileBeforeRejectedSave = $script:storedProfile
+    $serverSelectionBeforeRejectedSave = [string]$script:bmServerSelectionPreferenceId
+    $masterBox.Text = 'invalid host name'
+    $apiSentinel = 'R121_FAKE_API_SECRET_MUST_NOT_APPEAR'
+    $apiBox.Password = $apiSentinel
+    $invalidSaveSucceeded = [bool](Save-SettingsFromWindow)
+    $saveErrorText = [string](Get-UiControl 'SettingsErrorText').Text
+    $savedAfterRejectedSave = Get-WirexPortableConfig -Path $script:portableConfigPath
+    Assert-RadioUi (-not $invalidSaveSucceeded -and $saveErrorText -match 'BM 服务器或认证字段格式无效' -and
+        $saveErrorText -cnotlike ('*' + $apiSentinel + '*') -and
+        $savedAfterRejectedSave.connection.master -ceq $savedMaster -and
+        $savedAfterRejectedSave.connection.api_key -ceq $savedApiKey -and
+        $script:portableConfig.connection.master -ceq $savedMaster -and
+        $script:portableConfig.connection.api_key -ceq $savedApiKey -and
+        [object]::ReferenceEquals($script:storedProfile,$storedProfileBeforeRejectedSave) -and
+        [string]$script:bmServerSelectionPreferenceId -ceq $serverSelectionBeforeRejectedSave) `
+        '无效的 BM 主机没有显示具体但不含密钥的安全错误，或失败保存改动了磁盘/内存设置。'
+    $masterBox.Text = $savedMaster
+    $apiBox.Password = $savedApiKey
+    Assert-RadioUi ([bool](Save-SettingsFromWindow)) '修正 BM 主机后设置未能保存，或错误提示没有清除。'
+    Assert-RadioUi ((Get-UiControl 'SettingsErrorText').Visibility -eq [System.Windows.Visibility]::Collapsed) '保存恢复成功后仍显示旧错误。'
     Assert-RadioUi ([object]::ReferenceEquals($script:mainWindow,$script:testRootMainWindow) -and -not $script:testRootMainWindow.Closed) `
         '保存统一配置不应关闭主窗口或改变其所有权。'
 
@@ -1135,11 +1222,25 @@ try {
     $testSupervisor = New-TestRadioSupervisor
     $script:supervisor = $testSupervisor
     $script:latestStatus = [pscustomobject]@{
-        ptt_gate_ready=$true; ptt_gate_tx_active=$false; ptt_last_state='released'; current_call_valid=$false
+        ptt_gate_ready=$false; ptt_gate_tx_active=$false; ptt_last_state='released'; current_call_valid=$false
         receive_media_state='idle'; rx_queue_bursts=[uint64]0; rx_queue_playback_frames=[uint64]0
         rx_queue_unconfirmed_playback_frames=[uint64]0; rx_buffered_receive_frames=[uint64]0
+        hri_serial_open=$true; hri_ready=$true
+        bm_state='stopped'; bm_connection=[pscustomobject]@{requested_enabled=$false;revision=[uint64]0;transport_open=$false}
     }
     $script:lastStatusUtc = [DateTime]::UtcNow
+    $pausedCoreIdleStatus=$script:latestStatus
+    Assert-RadioUi ((Test-UiRadioCatRunIdle -RequireFreshStatus) -and
+        (Get-SettingsControl 'ApplyCatPowerButton').IsEnabled -and
+        (Get-UiRadioCatObservedValue -Observed $script:radioCatObserved -Name 'tx_state').value -eq 0) `
+        'HRI ready 且 BM 暂停时，released/空闲状态与新鲜 CAT TX=0 应允许电台功率操作。'
+    $script:latestStatus=$pausedCoreIdleStatus.PSObject.Copy(); $script:latestStatus.ptt_last_state='pressed'
+    Assert-RadioUi (-not (Test-UiRadioCatRunIdle -RequireFreshStatus)) 'BM paused 状态不能绕过明确的 PTT pressed 状态。'
+    $script:latestStatus=$pausedCoreIdleStatus.PSObject.Copy(); $script:latestStatus.ptt_gate_tx_active=$true
+    Assert-RadioUi (-not (Test-UiRadioCatRunIdle -RequireFreshStatus)) 'BM paused 状态不能绕过 Native 报告的活动发射状态。'
+    $script:latestStatus=$pausedCoreIdleStatus.PSObject.Copy(); $script:latestStatus.rx_queue_playback_frames=[uint64]1
+    Assert-RadioUi (-not (Test-UiRadioCatRunIdle -RequireFreshStatus)) 'BM paused 状态不能绕过未清空的接收媒体队列。'
+    $script:latestStatus=$pausedCoreIdleStatus
     $slider = Get-SettingsControl 'CatPowerSlider'
     $slider.Value = 6
     Assert-RadioUi ([int]$script:radioCatEditDraft.power -eq 6 -and
@@ -1206,7 +1307,430 @@ try {
     Assert-RadioUi ($null -eq $script:radioCatOperationPowerShell -and (Get-UiRadioCatSessionState).shutdown -and
         -not (Connect-UiRadioCatSession)) 'app shutdown left a CAT worker or allowed a new session.'
 
-    Write-Output ('通过：四轮真实WPF CAT轮询保持观测、编辑器、range、草稿和action按钮不变；query期间显式功率动作冻结后只执行一次；CAT可独立连接/断开、手动断开阻止HRI重连自动重开，app退出清理worker；R118功率范围、拒绝读回、取消和fresh-query授权均由fake CAT worker执行。断言数：{0}' -f $script:radioUiAssertionCount)
+    # RenderOnly call-history coverage uses the production model and WPF pager with synthetic status only.
+    $script:radioCatSessionShutdown=$false
+    $script:callHistoryModel=New-Object 'System.Collections.Generic.List[object]'
+    $script:callHistoryKeys=@{}
+    $script:selectedCallHistoryKey=''
+    $script:callHistoryPageIndex=0
+    if ($null -eq $script:callIdentityCache) { $script:callIdentityCache=@{} }
+    $script:radioIdentityModuleLoaded=$true
+    function Resolve-RadioIdentity {
+        param([uint32]$RadioId,[string]$CachePath)
+        return $script:callIdentityCache[[string]$RadioId]
+    }
+    $script:identityNativeCallRefreshKeys=@{}
+    $historyWindow=$script:testRootMainWindow
+    $script:mainWindow=$historyWindow
+    for ($historyGeneration=1; $historyGeneration -le 5; $historyGeneration++) {
+        $script:identityNativeCallRefreshKeys[('history-test|{0}|460997' -f $historyGeneration)]=$true
+        $historyRecord=[pscustomobject][ordered]@{
+            run_id='history-test';current_call_valid=$true;current_call_generation=[uint64]$historyGeneration
+            current_call_source_id=[uint64]460997;current_call_destination_id=[uint64](3149876+$historyGeneration)
+            current_call_slot=[uint64]2;current_call_kind='P';timestamp_utc_ms=[int64]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+        }
+        Add-UiCallHistoryRecord -Record $historyRecord
+    }
+    $historyList=$historyWindow.FindName('CallHistoryList')
+    Assert-RadioUi ($script:callHistoryModel.Count -eq 5 -and $historyList.Items.Count -eq 2 -and
+        $script:callHistoryPageIndex -eq 1 -and $historyWindow.FindName('CallHistoryPageText').Text -ceq '2 / 2') `
+        '超过三条来话后，完整模型、保留选中记录的第二页和页码未正确建立。'
+    [void](Set-UiCallHistoryPage -Delta -1)
+    $historyList.SelectedIndex=0
+    $selectedHistoryKey=Get-UiCallHistorySelectedKey
+    $selectedHistoryTarget=New-UiCallTargetFromHistoryEntry -Entry $historyList.SelectedItem
+    Assert-RadioUi ($selectedHistoryKey -ceq 'history-test|5' -and $selectedHistoryTarget.destination_id -eq 460997 -and
+        $selectedHistoryTarget.kind -ceq 'private' -and $selectedHistoryTarget.slot -eq 2) `
+        '当前页选中的记录没有按其呼叫 key 生成 PTT 目标。'
+    $offPageKey='history-test|1'
+    $script:callIdentityCache['460997']=[pscustomobject]@{source_id=[uint32]460997;id=[uint32]460997;callsign='N1PAGE';name='Synthetic Page';status='found';display_name='N1PAGE'}
+    Assert-RadioUi (Update-UiIdentityHistoryEntry -HistoryKey $offPageKey -Identity $script:callIdentityCache['460997']) `
+        '身份查询没有按历史 record key 找到完整模型中的离页记录。'
+    $offPageRecord=@($script:callHistoryModel | Where-Object { $_.key -ceq $offPageKey })[0]
+    Assert-RadioUi ($offPageRecord.source_label -match 'N1PAGE' -and $historyList.Items.Count -eq 3 -and
+        (Get-UiCallHistorySelectedKey) -ceq $selectedHistoryKey) ('离页身份回写丢失呼号、改变当前页或改写选中 key。 label={0}, count={1}, selected={2}/{3}' -f `
+            $offPageRecord.source_label,$historyList.Items.Count,(Get-UiCallHistorySelectedKey),$selectedHistoryKey)
+    $historyIncoming=[pscustomobject][ordered]@{
+        run_id='history-test';current_call_valid=$true;current_call_generation=[uint64]6
+        current_call_source_id=[uint64]460997;current_call_destination_id=[uint64]3149882
+        current_call_slot=[uint64]2;current_call_kind='P';timestamp_utc_ms=[int64]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+    }
+    $script:identityNativeCallRefreshKeys['history-test|6|460997']=$true
+    Add-UiCallHistoryRecord -Record $historyIncoming
+    Assert-RadioUi ($script:callHistoryModel.Count -eq 6 -and
+        (Get-UiCallHistorySelectedKey) -ceq $selectedHistoryKey -and
+        [string]$historyList.SelectedItem.key -ceq $selectedHistoryKey) `
+        '新来话插入后，列表没有保留用户选中的历史记录 key。'
+    Add-UiCallHistoryRecord -Record $historyIncoming
+    Assert-RadioUi ($script:callHistoryModel.Count -eq 6) '相同 run/generation 的来话重复进入完整模型。'
+    for ($historyGeneration=7; $historyGeneration -le 55; $historyGeneration++) {
+        $script:identityNativeCallRefreshKeys[('history-test|{0}|460997' -f $historyGeneration)]=$true
+        $boundedHistoryRecord=[pscustomobject][ordered]@{
+            run_id='history-test';current_call_valid=$true;current_call_generation=[uint64]$historyGeneration
+            current_call_source_id=[uint64]460997;current_call_destination_id=[uint64](3149882+$historyGeneration)
+            current_call_slot=[uint64]2;current_call_kind='P';timestamp_utc_ms=[int64]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+        }
+        Add-UiCallHistoryRecord -Record $boundedHistoryRecord
+    }
+    Assert-RadioUi ($script:callHistoryModel.Count -eq 50 -and $script:callHistoryModel[0].key -ceq 'history-test|55' -and
+        $script:callHistoryModel[49].key -ceq 'history-test|6' -and $historyList.Items.Count -eq 3) `
+        '完整历史模型没有按呼叫 key 去重并保留最近五十条记录。'
+
+    # 真实 Start-BridgeRun 参数准备走临时 fake launcher，不经过 UiTestFixture 的 supervisor factory。
+    $pausedConfig=Get-WirexPortableConfig -Path $script:portableConfigPath
+    $pausedConfig.connection.password=''
+    $script:portableConfig=Save-WirexPortableConfig -Path $script:portableConfigPath -Config $pausedConfig
+    [void](Import-UiPortableConfig)
+    $passwordBoxForRealPrepare=$script:testRootMainWindow.FindName('PasswordBox')
+    $passwordBoxForRealPrepare.Password=''
+    $fakePrepareDirectory=Join-Path $script:testRoot 'actual-ui-prepare'
+    [System.IO.Directory]::CreateDirectory($fakePrepareDirectory) | Out-Null
+    $fakeUiLauncherPath=Join-Path $fakePrepareDirectory 'fake-ui-preparer.ps1'
+    $fakeUiNativePath=Join-Path $fakePrepareDirectory 'wirex_bridge.exe'
+    $uiPrepareCapturePath=Join-Path $fakePrepareDirectory 'captured-parameters.json'
+    [System.IO.File]::WriteAllBytes($fakeUiNativePath,[byte[]]@(0x4D,0x5A))
+    $fakeUiLauncher=@'
+param([string]$Preset,[string]$ConnectionProfilePath,[string]$AudioSettingsPath,[string]$StatusDirectory,[string]$PreparationOutputPath,[switch]$PrepareOnly,[switch]$NoInteractive,[switch]$BmStartDisconnected,[switch]$RequirePasswordFile,[string]$PasswordFile)
+$ErrorActionPreference='Stop'
+$capture=[ordered]@{
+    bound_names=[string[]]@($PSBoundParameters.Keys)
+    paused=[bool]$BmStartDisconnected
+    password_file_bound=[bool]$PSBoundParameters.ContainsKey('PasswordFile')
+    require_password_file_bound=[bool]$PSBoundParameters.ContainsKey('RequirePasswordFile')
+}
+[System.IO.File]::WriteAllText((Join-Path $StatusDirectory 'captured-parameters.json'),(ConvertTo-Json -InputObject $capture -Depth 3 -Compress),(New-Object System.Text.UTF8Encoding($false)))
+$status=Join-Path $StatusDirectory 'fake-status.jsonl'
+$routing=Join-Path $StatusDirectory 'routing-state.json'
+[System.IO.File]::WriteAllText($routing,'{}',(New-Object System.Text.UTF8Encoding($false)))
+$record=[ordered]@{schema_version=1;executable='fake-native.exe';arguments=[string[]]@('--run','--ui-pipe','--ui-control-version','2','--bm-start-disconnected');status_path=$status;routing_state_path=$routing}
+[System.IO.File]::WriteAllText($PreparationOutputPath,(ConvertTo-Json -InputObject $record -Depth 4 -Compress),(New-Object System.Text.UTF8Encoding($false)))
+'@
+    [System.IO.File]::WriteAllText($fakeUiLauncherPath,$fakeUiLauncher,(New-Object System.Text.UTF8Encoding($true)))
+    $script:UiTestFixture=$false
+    $script:configDirectory=$script:testRoot
+    $script:releaseDirectory=$fakePrepareDirectory
+    $script:releaseLauncher=$fakeUiLauncherPath
+    $script:nativeExecutable=$fakeUiNativePath
+    $script:mainWindow=$script:testRootMainWindow
+    $script:supervisor=$null; $script:stopTask=$null; $script:preparePowerShell=$null; $script:prepareAsync=$null
+    $script:preparationStarted=$false; $script:sessionTempDirectory=''; $script:sessionPasswordPath=''
+    $script:serialDisconnectPending=$false; $script:nativeExitCleanupPending=$false
+    $script:bmConnectAfterCoreReady=$false; $script:serialConnectCatAfterCoreReady=$false
+    & $script:productionStartBridgeRun -BmStartDisconnected
+    $prepareWatch=[System.Diagnostics.Stopwatch]::StartNew()
+    while ($script:prepareAsync -and -not $script:prepareAsync.IsCompleted -and $prepareWatch.ElapsedMilliseconds -lt 5000) {
+        Start-Sleep -Milliseconds 10
+    }
+    $prepareWatch.Stop()
+    $uiPrepareCapturePath=Join-Path $script:preparedRunDirectory 'captured-parameters.json'
+    Assert-RadioUi ($script:prepareAsync -and $script:prepareAsync.IsCompleted -and $script:preparationStarted -and
+        $script:sessionTempDirectory -and [System.IO.Directory]::Exists($script:sessionTempDirectory)) `
+        '真实 Start-BridgeRun 没有完成隔离的 BM 暂停预检参数准备。'
+    [void]$script:preparePowerShell.EndInvoke($script:prepareAsync)
+    Assert-RadioUi (-not $script:preparePowerShell.HadErrors -and [System.IO.File]::Exists($uiPrepareCapturePath) -and
+        [System.IO.File]::Exists((Join-Path $script:preparedRunDirectory 'preparation.json'))) `
+        'fake preparer 没有捕获真实 Start-BridgeRun 参数或生成合成记录。'
+    $uiPrepareCapture=ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($uiPrepareCapturePath,[System.Text.Encoding]::UTF8))
+    Assert-RadioUi ($uiPrepareCapture.paused -and -not $uiPrepareCapture.password_file_bound -and
+        -not $uiPrepareCapture.require_password_file_bound -and
+        @($uiPrepareCapture.bound_names | Where-Object { $_ -ceq 'BmStartDisconnected' }).Count -eq 1 -and
+        -not [System.IO.File]::Exists((Join-Path $script:sessionTempDirectory 'bm-device-password.txt'))) `
+        '空密码的真实 UI 准备链仍传入密码文件要求，或创建了空密码文件。'
+    [void](Clear-UiSessionTemp)
+    $script:preparePowerShell.Dispose(); $script:preparePowerShell=$null; $script:prepareAsync=$null
+    $script:preparationStarted=$false; $script:sessionTempDirectory=''; $script:sessionPasswordPath=''
+
+    # The visible serial button uses the paused-core lifecycle and a fake launcher stub.
+    if ($script:radioCatOperationPowerShell) { [void](Complete-TestCatRunspace -TimeoutMs 5000) }
+    $script:mainWindow=$script:testRootMainWindow
+    $script:supervisor=$null; $script:stopTask=$null; $script:preparationStarted=$false
+    $script:serialDisconnectPending=$false; $script:radioCatSessionShutdown=$false
+    $script:radioCatManualDisconnect=$false; $script:radioCatSessionRequested=$false
+    $script:serialConnectCatAfterCoreReady=$false; $script:bmConnectAfterCoreReady=$false
+    $script:radioCatQueuedAction=$false; $script:radioCatPendingModeFrequencyRequest=$null; $script:radioModeApplyAfterStop=$null
+    Assert-RadioUi (-not (Get-UiRadioCatSessionState).user_action_busy) `
+        '伪设备 CAT worker 未在串口/BM 按钮生命周期测试前收尾。'
+    $script:testStartBridgeRunCalls=0; $script:testLastBmStartDisconnected=$false
+    $passwordBoxForLifecycle=Get-UiControl 'PasswordBox'
+    $passwordBoxForLifecycle.Password=''
+    $serialConnectButton=$script:mainWindow.FindName('SerialConnectButton')
+    $serialConnectButton.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent,$serialConnectButton)))
+    Assert-RadioUi ($script:testStartBridgeRunCalls -eq 1 -and $script:testLastBmStartDisconnected -and
+        $script:serialConnectCatAfterCoreReady -and -not $script:supervisor -and -not $script:radioCatOperationPowerShell) `
+        '串口连接按钮没有用BM暂停参数启动核心并将CAT连接排到HRI就绪后。'
+    $script:serialConnectCatAfterCoreReady=$false; $script:bmConnectAfterCoreReady=$false
+    $script:testStartBridgeRunCalls=0; $script:testLastBmStartDisconnected=$false
+    $blankPasswordBmResult=Connect-UiBmFromButton
+    Assert-RadioUi (-not $blankPasswordBmResult -and $script:testStartBridgeRunCalls -eq 0 -and
+        -not $script:bmConnectAfterCoreReady -and -not $script:serialConnectCatAfterCoreReady -and
+        $script:testUiEvents.Count -gt 0 -and $script:testUiEvents[$script:testUiEvents.Count-1] -ceq 'BM 密码未填写，未发起连接。') `
+        ('BM 密码为空时连接按钮没有显示字段错误并阻止启动或发送连接请求。 result={0}, calls={1}, bmAfter={2}, catAfter={3}, passwordEmpty={4}, footer=[{5}]' -f `
+            $blankPasswordBmResult,$script:testStartBridgeRunCalls,$script:bmConnectAfterCoreReady,$script:serialConnectCatAfterCoreReady,
+            [string]::IsNullOrWhiteSpace([string]$script:portableConfig.connection.password),[string](Get-UiControl 'FooterText').Text),
+            (' action={0}, prep={1}, stopTask={2}, disconnect={3}' -f (Get-UiRadioCatSessionState).user_action_busy,$script:preparationStarted,[bool]$script:stopTask,$script:serialDisconnectPending)
+    $passwordBoxForLifecycle.Password='ui-test-fixture-only'
+    Assert-RadioUi (Connect-UiBmFromButton) '没有核心时，BM连接按钮没有复用串口准备流程。'
+    Assert-RadioUi ($script:testStartBridgeRunCalls -eq 1 -and $script:testLastBmStartDisconnected -and
+        $script:bmConnectAfterCoreReady -and $script:serialConnectCatAfterCoreReady -and -not $script:supervisor) `
+        '无核心时的BM连接没有先准备HRI+CAT并将BM连接排到就绪后。'
+    $script:bmConnectAfterCoreReady=$false; $script:serialConnectCatAfterCoreReady=$false
+
+    # Fake v2 supervisor covers BM-only toggles, pending UDP teardown, and the serial-disconnect cancellation boundary.
+    $bmSupervisor=New-TestBmSupervisor
+    $script:supervisor=$bmSupervisor; $script:stopTask=$null; $script:closingAfterStop=$false
+    $script:serialDisconnectPending=$false
+    $script:controlConfirmed=$true; $script:controlDiagnostic=$false; $script:bmConnectionNativeCapability=$true
+    $script:pendingControlRequests=@{}
+    $script:bmConnectionRevision=[uint64]0; $script:bmConnectionPendingRequest=$null
+    $script:bmConnectionSnapshot=[pscustomobject][ordered]@{
+        requested_enabled=$false;revision=[uint64]0;transport_open=$false;resolving=$false;error='none';bm_state='stopped'
+    }
+    $script:latestStatus=[pscustomobject]@{ hri_ready=$true; hri_y_zero_ready=$true }
+    $script:lastStatusUtc=[DateTime]::UtcNow
+    Assert-RadioUi (Set-UiBmConnectionEnabled -Enabled $true) '已有HRI核心时BM独立连接请求没有送到fake supervisor。'
+    $bmConnectCommand=$bmSupervisor.SentCommands[0]
+    $bmConnectPayload=ConvertFrom-Json -InputObject ([string]$bmConnectCommand.parameters)
+    $bmConnectProperties=@($bmConnectPayload.PSObject.Properties | ForEach-Object { [string]$_.Name })
+    Assert-RadioUi ($bmConnectCommand.command -ceq 'bm.connection.set' -and $bmConnectPayload.enabled -and
+        $bmConnectPayload.revision -eq 1 -and $bmConnectProperties.Count -eq 2 -and
+        $bmConnectProperties -ccontains 'enabled' -and $bmConnectProperties -ccontains 'revision') `
+        'BM独立连接命令没有只发送递增revision和enabled，不得携带密码、主站或配置。'
+    $script:bmConnectionPendingRequest.ack_received=$true
+    $script:bmConnectionRevision=[uint64]1
+    [void](Set-UiBmConnectionSnapshot -Connection ([pscustomobject][ordered]@{requested_enabled=$true;revision=[uint64]1;transport_open=$false}) `
+        -BmState 'stopped' -Resolving $true -ErrorCode 'none' -Source ack)
+    Assert-RadioUi (Set-UiBmConnectionEnabled -Enabled $false) 'BM解析期间用户关闭BM未能提交独立断开请求。'
+    $bmDisconnectCommand=$bmSupervisor.SentCommands[1]
+    $bmDisconnectPayload=ConvertFrom-Json -InputObject ([string]$bmDisconnectCommand.parameters)
+    Assert-RadioUi ($bmDisconnectCommand.command -ceq 'bm.connection.set' -and -not $bmDisconnectPayload.enabled -and
+        $bmDisconnectPayload.revision -eq 2 -and $bmSupervisor.StopCallCount -eq 0) `
+        'BM断开按钮没有独立提交新revision，或误停了HRI核心。'
+    $script:bmConnectionPendingRequest.ack_received=$true
+    $script:bmConnectionRevision=[uint64]2
+    [void](Set-UiBmConnectionSnapshot -Connection ([pscustomobject][ordered]@{requested_enabled=$false;revision=[uint64]2;transport_open=$true}) `
+        -BmState 'ready' -Resolving $false -ErrorCode 'none' -Source status)
+    Assert-RadioUi ($script:bmConnectionSnapshot.requested_enabled -eq $false -and
+        $script:bmConnectionSnapshot.transport_open -and $script:bmConnectionSnapshot.bm_state -ceq 'ready' -and
+        $bmSupervisor.StopCallCount -eq 0) 'BM断开ACK被误当作UDP已关闭，或触发了核心停止。'
+    [void](Set-UiBmConnectionSnapshot -Connection ([pscustomobject][ordered]@{requested_enabled=$false;revision=[uint64]2;transport_open=$false}) `
+        -BmState 'stopped' -Resolving $false -ErrorCode 'none' -Source status)
+    Assert-RadioUi ($script:bmConnectionSnapshot.bm_state -ceq 'stopped' -and -not $script:bmConnectionSnapshot.transport_open -and
+        -not $script:bmConnectionPendingRequest -and $bmSupervisor.StopCallCount -eq 0) '完整BM断开快照没有确认BM关闭并保留HRI核心。'
+
+    $backoffSupervisor=New-TestBmSupervisor
+    $script:supervisor=$backoffSupervisor; $script:controlConfirmed=$true; $script:controlDiagnostic=$false
+    $script:bmConnectionNativeCapability=$true; $script:pendingControlRequests=@{}; $script:pendingStatusRequestId=''
+    $script:bmConnectionRevision=[uint64]4
+    $script:bmConnectionPendingRequest=[pscustomobject]@{enabled=$true;revision=[uint64]4;ack_received=$true}
+    $script:bmConnectionSnapshot=[pscustomobject][ordered]@{
+        requested_enabled=$true;revision=[uint64]4;transport_open=$true;resolving=$false;error='none';bm_state='backoff'
+    }
+    $script:latestStatus=[pscustomobject]@{hri_ready=$true;hri_y_zero_ready=$true}
+    $script:lastStatusUtc=[DateTime]::UtcNow; $script:bmStatusNextRequestUtc=[DateTime]::MinValue
+    for ($backoffTick=0; $backoffTick -lt 510; $backoffTick++) {
+        [void](Set-UiBmConnectionSnapshot -Connection ([pscustomobject][ordered]@{
+            requested_enabled=$true;revision=[uint64]4;transport_open=$true
+        }) -BmState 'backoff' -Resolving $false -ErrorCode 'none' -Source status_jsonl)
+        Update-UiBmConnectionPoll
+    }
+    Assert-RadioUi ($backoffSupervisor.SentCommands.Count -eq 0 -and $backoffSupervisor.StopCallCount -eq 0 -and
+        $script:bmConnectionPendingRequest -and [bool]$script:bmConnectionPendingRequest.ack_received) `
+        'BM backoff期间新鲜JSONL持续报告状态时，超过510次timer tick仍不应发送额外status或停止HRI。'
+    Assert-RadioUi (Set-UiBmConnectionEnabled -Enabled $false) 'BM backoff期间仍不能提交独立断开操作。'
+    $backoffDisconnect=ConvertFrom-Json -InputObject ([string]$backoffSupervisor.SentCommands[0].parameters)
+    Assert-RadioUi ($backoffSupervisor.SentCommands.Count -eq 1 -and -not $backoffDisconnect.enabled -and
+        $backoffDisconnect.revision -eq 5 -and $backoffSupervisor.StopCallCount -eq 0) `
+        '长期BM backoff后仍应能独立断开BM，且不能停止HRI核心。'
+
+    $recoverySupervisor=New-TestBmSupervisor
+    $script:supervisor=$recoverySupervisor; $script:controlConfirmed=$true; $script:controlDiagnostic=$false
+    $script:bmConnectionNativeCapability=$true; $script:pendingControlRequests=@{}; $script:pendingStatusRequestId=''
+    $script:bmConnectionRevision=[uint64]10
+    $script:bmConnectionPendingRequest=[pscustomobject]@{enabled=$true;revision=[uint64]10;ack_received=$true}
+    $script:bmConnectionSnapshot=[pscustomobject][ordered]@{
+        requested_enabled=$true;revision=[uint64]10;transport_open=$true;resolving=$false;error='none';bm_state='backoff'
+    }
+    $script:bmStatusRecoveryCount=0; $script:bmStatusRecoveryStartedUtc=[DateTime]::MinValue
+    $script:bmStatusNextRequestUtc=[DateTime]::MinValue; $script:lastBmSnapshotUtc=[DateTime]::MinValue
+    for ($missingJsonlTick=0; $missingJsonlTick -lt 520; $missingJsonlTick++) {
+        $script:lastBmSnapshotUtc=[DateTime]::MinValue
+        $script:bmStatusNextRequestUtc=[DateTime]::MinValue
+        $script:pendingStatusRequestId=''
+        $beforeRecoverySend=$recoverySupervisor.SentCommands.Count
+        Update-UiBmConnectionPoll
+        if ($recoverySupervisor.SentCommands.Count -gt $beforeRecoverySend) {
+            $script:pendingStatusRequestId=''
+            [void](Set-UiBmConnectionSnapshot -Connection ([pscustomobject][ordered]@{
+                requested_enabled=$true;revision=[uint64]10;transport_open=$true
+            }) -BmState 'backoff' -Resolving $false -ErrorCode 'none' -Source control_status)
+        }
+    }
+    Assert-RadioUi ($recoverySupervisor.SentCommands.Count -eq 3 -and $script:bmStatusRecoveryCount -eq 3 -and
+        $script:bmConnectionPendingRequest -and $recoverySupervisor.StopCallCount -eq 0) `
+        ('JSONL缺失时，成功的control_status回包不得反复重置总恢复额度；520个tick只允许3次status请求。 sent={0}, recovery={1}, pending={2}, stop={3}' -f `
+            $recoverySupervisor.SentCommands.Count,$script:bmStatusRecoveryCount,[bool]$script:bmConnectionPendingRequest,$recoverySupervisor.StopCallCount)
+    Assert-RadioUi (Set-UiBmConnectionEnabled -Enabled $false) '恢复额度耗尽后，用户仍不能反向断开BM。'
+    $recoveryDisconnect=ConvertFrom-Json -InputObject ([string]$recoverySupervisor.SentCommands[$recoverySupervisor.SentCommands.Count-1].parameters)
+    Assert-RadioUi ($recoverySupervisor.SentCommands.Count -eq 4 -and -not $recoveryDisconnect.enabled -and
+        $recoveryDisconnect.revision -eq 11 -and $script:bmStatusRecoveryCount -eq 0 -and
+        $recoverySupervisor.StopCallCount -eq 0) `
+        '新的BM断开请求没有建立新的有界恢复周期，或误停了HRI核心。'
+
+    $script:supervisor=$bmSupervisor; $script:pendingControlRequests=@{}
+    $script:bmConnectionPendingRequest=$null; $script:lastBmSnapshotUtc=[DateTime]::UtcNow
+    $script:bmConnectionRevision=[uint64]3
+    $script:bmConnectionSnapshot=[pscustomobject][ordered]@{
+        requested_enabled=$true;revision=[uint64]3;transport_open=$true;resolving=$false;error='none';bm_state='ready'
+    }
+    $script:radioCatSessionShutdown=$false; $script:radioCatSessionRequested=$true
+    $script:radioCatSessionConnected=$true; $script:radioCatPollingActive=$true; $script:radioCatSessionState='connected'
+    $script:radioCatManualDisconnect=$false; $script:radioCatSessionGeneration=[int]$script:radioCatSessionGeneration + 1
+    $script:radioCatPendingModeFrequencyRequest=[pscustomobject]@{operation='setMode';mode='C4FM-DN'}
+    $script:radioModeApplyAfterStop=[pscustomobject]@{operation='setMode';mode='C4FM-DN'}
+    $script:radioCatQueuedAction=[pscustomobject]@{operation='setPower';power_watts=6}
+    $setModeLogBeforeSerialDisconnect=([regex]::Matches((Get-TestRadioCatLog),'BEGIN\|setMode')).Count
+    $env:WIREX_R116_UI_CAT_DELAY='query'; $env:WIREX_R116_UI_CAT_DELAY_MS='700'
+    Assert-RadioUi ([bool](Invoke-UiRadioCatPollTick -Force) -and $script:radioCatOperationPowerShell) `
+        '组合串口断开测试没有先启动fake CAT query。'
+    $serialDisconnectGeneration=[int]$script:radioCatSessionGeneration
+    $serialDisconnectButton=$script:mainWindow.FindName('SerialDisconnectButton')
+    $serialDisconnectButton.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent,$serialDisconnectButton)))
+    $serialBmDisableCommand=$bmSupervisor.SentCommands[$bmSupervisor.SentCommands.Count - 1]
+    $serialBmDisable=ConvertFrom-Json -InputObject ([string]$serialBmDisableCommand.parameters)
+    Assert-RadioUi ($script:serialDisconnectPending -and -not $script:radioCatManualDisconnect -and
+        $script:radioCatSessionRequested -and $script:radioCatOperationPowerShell -and
+        -not $serialBmDisable.enabled -and $bmSupervisor.StopCallCount -eq 0) `
+        ('串口断开没有先请求BM关闭并等待真实关闭，同时暂存CAT清理和核心停止。 pending={0}, catRequested={1}, worker={2}, manual={3}, stop={4}, sent={5}, last={6}' -f `
+            [bool]$script:serialDisconnectPending,[bool]$script:radioCatSessionRequested,[bool]$script:radioCatOperationPowerShell,
+            [bool]$script:radioCatManualDisconnect,$bmSupervisor.StopCallCount,$bmSupervisor.SentCommands.Count,
+            $(if($bmSupervisor.SentCommands.Count){$bmSupervisor.SentCommands[$bmSupervisor.SentCommands.Count-1].parameters}else{'<none>'}))
+    $script:bmConnectionPendingRequest.ack_received=$true
+    $script:bmConnectionRevision=[uint64]4
+    [void](Set-UiBmConnectionSnapshot -Connection ([pscustomobject][ordered]@{requested_enabled=$false;revision=[uint64]4;transport_open=$true}) `
+        -BmState 'ready' -Resolving $false -ErrorCode 'none' -Source status)
+    Assert-RadioUi ($script:radioCatSessionRequested -and $bmSupervisor.StopCallCount -eq 0) `
+        'Native accepted disconnect ACK 尚未关闭UDP时，CAT与HRI被提前断开。'
+    [void](Set-UiBmConnectionSnapshot -Connection ([pscustomobject][ordered]@{requested_enabled=$false;revision=[uint64]4;transport_open=$false}) `
+        -BmState 'stopped' -Resolving $false -ErrorCode 'none' -Source status)
+    Assert-RadioUi (-not $script:radioCatSessionRequested -and $script:radioCatOperationPowerShell -and
+        $null -eq $script:radioCatPendingModeFrequencyRequest -and $null -eq $script:radioModeApplyAfterStop -and
+        $null -eq $script:radioCatQueuedAction -and $bmSupervisor.StopCallCount -eq 0 -and
+        [int]$script:radioCatSessionGeneration -gt $serialDisconnectGeneration) `
+        'BM确认关闭后串口收尾没有撤销MAIN等待事务/功率动作，或在CAT worker清理前停止了HRI。'
+    [void](Complete-TestCatRunspace -TimeoutMs 3000)
+    Remove-Item Env:\WIREX_R116_UI_CAT_DELAY -ErrorAction SilentlyContinue
+    Remove-Item Env:\WIREX_R116_UI_CAT_DELAY_MS -ErrorAction SilentlyContinue
+    [void](Complete-UiSerialDisconnectAfterBm)
+    Assert-RadioUi ($bmSupervisor.StopCallCount -eq 1 -and
+        ([regex]::Matches((Get-TestRadioCatLog),'BEGIN\|setMode')).Count -eq $setModeLogBeforeSerialDisconnect -and
+        -not $script:radioCatSessionRequested -and -not $script:radioCatOperationPowerShell) `
+        'CAT worker清理后串口断开没有只停止HRI一次，或迟到事务恢复了MAIN写入。'
+    [void]$bmSupervisor.StopSource.TrySetResult(0)
+    $bmSupervisor.HasExited=$true
+    $script:stopTask=$null; $script:supervisor=$null; $script:serialDisconnectPending=$false
+    $script:serialDisconnectCoreStopIssued=$false; $script:serialDisconnectCatStopRequested=$false
+
+    # An uncached status can report a completed disconnect together with a stale failure code.
+    $closedErrorSupervisor=New-TestBmSupervisor
+    $script:supervisor=$closedErrorSupervisor; $script:stopTask=$null; $script:closingAfterStop=$false
+    $script:controlConfirmed=$true; $script:bmConnectionNativeCapability=$true
+    $script:pendingControlRequests=@{}; $script:pendingStatusRequestId=''
+    $script:bmConnectionRevision=[uint64]0; $script:bmConnectionPendingRequest=$null
+    $script:bmConnectionSnapshot=$null
+    $script:serialDisconnectPending=$false; $script:serialDisconnectCoreStopIssued=$false
+    $script:serialDisconnectCatStopRequested=$false
+    $script:radioCatSessionShutdown=$false; $script:radioCatManualDisconnect=$false
+    $script:radioCatSessionRequested=$false; $script:radioCatSessionConnected=$false
+    $script:radioCatPollingActive=$false; $script:radioCatOperationPowerShell=$null
+    $script:radioCatSessionState='disconnected'
+    $serialDisconnectButton=$script:mainWindow.FindName('SerialDisconnectButton')
+    $serialDisconnectButton.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent,$serialDisconnectButton)))
+    Assert-RadioUi ($script:serialDisconnectPending -and -not $script:bmConnectionSnapshot -and
+        $closedErrorSupervisor.SentCommands.Count -eq 1 -and
+        $closedErrorSupervisor.SentCommands[0].command -ceq 'status' -and
+        $closedErrorSupervisor.StopCallCount -eq 0) `
+        '没有BM缓存状态时，串口断开没有等待Native状态快照。'
+    [void](Set-UiBmConnectionSnapshot -Connection ([pscustomobject][ordered]@{
+        requested_enabled=$false;revision=[uint64]0;transport_open=$false
+    }) -BmState 'stopped' -Resolving $false -ErrorCode 'password_required' -Source status)
+    Assert-RadioUi ($script:bmConnectionSnapshot.error -ceq 'password_required' -and
+        $script:serialDisconnectPending -and $script:serialDisconnectCatStopRequested -and
+        $script:serialDisconnectCoreStopIssued -and $closedErrorSupervisor.StopCallCount -eq 1 -and
+        -not $script:radioCatSessionRequested) `
+        'BM已关闭快照携带旧密码错误时，UI仍阻止CAT和HRI核心收尾。'
+    [void]$closedErrorSupervisor.StopSource.TrySetResult(0)
+    $closedErrorSupervisor.HasExited=$true
+    $script:stopTask=$null; $script:supervisor=$null; $script:serialDisconnectPending=$false
+    $script:serialDisconnectCoreStopIssued=$false; $script:serialDisconnectCatStopRequested=$false
+
+    $mediaSupervisor=New-TestBmSupervisor
+    $script:supervisor=$mediaSupervisor; $script:stopTask=$null; $script:closingAfterStop=$false
+    $script:serialDisconnectPending=$true; $script:serialDisconnectCoreStopIssued=$false
+    $script:serialDisconnectCatStopRequested=$false; $script:serialDisconnectDeadlineUtc=[DateTime]::UtcNow.AddSeconds(15)
+    $script:bmConnectionRevision=[uint64]5
+    $script:bmConnectionPendingRequest=[pscustomobject]@{enabled=$false;revision=[uint64]5;ack_received=$true}
+    $script:bmConnectionSnapshot=[pscustomobject][ordered]@{
+        requested_enabled=$false;revision=[uint64]5;transport_open=$true;resolving=$false;error='none';bm_state='ready'
+    }
+    [void](Set-UiBmConnectionSnapshot -Connection ([pscustomobject][ordered]@{
+        requested_enabled=$false;revision=[uint64]5;transport_open=$true
+    }) -BmState 'ready' -Resolving $false -ErrorCode 'media_cleanup_timeout' -Source status)
+    Assert-RadioUi ($script:serialDisconnectPending -and $script:bmConnectionPendingRequest -and
+        -not $script:serialDisconnectCoreStopIssued -and $mediaSupervisor.StopCallCount -eq 0) `
+        'BM媒体清理超时且UDP仍打开时，串口断开意图未等待Native后续关包。'
+    [void](Set-UiBmConnectionSnapshot -Connection ([pscustomobject][ordered]@{
+        requested_enabled=$false;revision=[uint64]5;transport_open=$false
+    }) -BmState 'stopped' -Resolving $false -ErrorCode 'media_cleanup_timeout' -Source status)
+    Assert-RadioUi ($script:serialDisconnectPending -and $script:serialDisconnectCoreStopIssued -and
+        -not $script:bmConnectionPendingRequest -and $mediaSupervisor.StopCallCount -eq 1) `
+        'BM媒体错误保留到UDP关闭后，串口断开仍未继续停止HRI。'
+    [void]$mediaSupervisor.StopSource.TrySetResult(0); $mediaSupervisor.HasExited=$true
+    $script:stopTask=$null; $script:supervisor=$null; $script:serialDisconnectPending=$false
+    $script:serialDisconnectCoreStopIssued=$false; $script:serialDisconnectCatStopRequested=$false
+    $script:serialDisconnectDeadlineUtc=[DateTime]::MinValue
+
+    $resolverSupervisor=New-TestBmSupervisor
+    $script:supervisor=$resolverSupervisor; $script:stopTask=$null; $script:closingAfterStop=$false
+    $script:serialDisconnectPending=$true; $script:serialDisconnectCoreStopIssued=$false
+    $script:serialDisconnectCatStopRequested=$false; $script:serialDisconnectDeadlineUtc=[DateTime]::UtcNow.AddSeconds(15)
+    $script:bmConnectionRevision=[uint64]6
+    $script:bmConnectionPendingRequest=[pscustomobject]@{enabled=$false;revision=[uint64]6;ack_received=$true}
+    [void](Set-UiBmConnectionSnapshot -Connection ([pscustomobject][ordered]@{
+        requested_enabled=$false;revision=[uint64]6;transport_open=$false
+    }) -BmState 'stopped' -Resolving $true -ErrorCode 'resolver_cancel_timeout' -Source status)
+    Assert-RadioUi ($script:serialDisconnectPending -and $script:bmConnectionPendingRequest -and
+        -not $script:serialDisconnectCoreStopIssued -and $resolverSupervisor.StopCallCount -eq 0) `
+        'DNS取消清理超时但仍 resolving 时，串口断开意图未等待Native关闭解析器。'
+    [void](Set-UiBmConnectionSnapshot -Connection ([pscustomobject][ordered]@{
+        requested_enabled=$false;revision=[uint64]6;transport_open=$false
+    }) -BmState 'stopped' -Resolving $false -ErrorCode 'resolver_cancel_timeout' -Source status)
+    Assert-RadioUi ($script:serialDisconnectPending -and $script:serialDisconnectCoreStopIssued -and
+        -not $script:bmConnectionPendingRequest -and $resolverSupervisor.StopCallCount -eq 1) `
+        'DNS取消错误保留到解析结束后，串口断开仍未继续停止HRI。'
+    [void]$resolverSupervisor.StopSource.TrySetResult(0); $resolverSupervisor.HasExited=$true
+    $script:stopTask=$null; $script:supervisor=$null; $script:serialDisconnectPending=$false
+    $script:serialDisconnectCoreStopIssued=$false; $script:serialDisconnectCatStopRequested=$false
+    $script:serialDisconnectDeadlineUtc=[DateTime]::MinValue
+
+    $deadlineSupervisor=New-TestBmSupervisor
+    $script:supervisor=$deadlineSupervisor; $script:serialDisconnectPending=$true
+    $script:serialDisconnectCoreStopIssued=$false; $script:serialDisconnectCatStopRequested=$false
+    $script:serialDisconnectDeadlineUtc=[DateTime]::UtcNow.AddMilliseconds(-1)
+    $script:bmConnectionSnapshot=[pscustomobject][ordered]@{
+        requested_enabled=$false;revision=[uint64]7;transport_open=$false;resolving=$true;error='resolver_cancel_timeout';bm_state='stopped'
+    }
+    $script:bmConnectionPendingRequest=$null; $script:bmConnectionRevision=[uint64]7
+    $script:bmConnectionNativeCapability=$true; $script:controlConfirmed=$true
+    $script:pendingStatusRequestId=''; $script:bmStatusNextRequestUtc=[DateTime]::MinValue
+    Update-UiBmConnectionPoll
+    Assert-RadioUi (-not $script:serialDisconnectPending -and $deadlineSupervisor.StopCallCount -eq 0 -and
+        $script:testUiEvents.Count -gt 0 -and $script:testUiEvents[$script:testUiEvents.Count-1] -ceq '串口断开等待超时；HRI 和 CAT 仍保持连接') `
+        ('断串口等待超过期限时没有失败退出并如实显示当前解析/连接状态。 pending={0}, stop={1}, deadline={2}, footer=[{3}]' -f `
+            [bool]$script:serialDisconnectPending,$deadlineSupervisor.StopCallCount,$script:serialDisconnectDeadlineUtc,
+            [string]$script:mainWindow.FindName('FooterText').Text)
+    $deadlineSupervisor.HasExited=$true; $script:supervisor=$null; $script:stopTask=$null
+
+    Write-Output ('通过：四轮fake CAT轮询/写入及复核、COM和音频选值保存、无副作用安全失败、串口/BM暂停连接路线、旧错误与异步收尾快照下双口关闭及等待超时、50条呼号模型去重/分页/离页身份回写、CAT取消和退出清理均已验证。断言数：{0}' -f $script:radioUiAssertionCount)
 } finally {
     Remove-Item Env:\WIREX_R116_UI_CAT_DELAY -ErrorAction SilentlyContinue
     Remove-Item Env:\WIREX_R116_UI_CAT_DELAY_MS -ErrorAction SilentlyContinue

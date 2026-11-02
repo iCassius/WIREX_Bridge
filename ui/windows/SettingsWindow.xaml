@@ -1,6 +1,6 @@
 ﻿<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="频道说明" Width="420" Height="185" MinWidth="390" MinHeight="170"
+        Title="频道说明" Width="420" Height="185" MinWidth="420" MinHeight="185" ResizeMode="CanMinimize"
         WindowStartupLocation="CenterOwner" Background="#111619" Foreground="#EDF3F4"
         FontFamily="Segoe UI, Microsoft YaHei UI">
   <Window.Resources>

@@ -29,6 +29,9 @@ function New-BmManagementUiTestWindow {
         BmStaticGroupPanel = (New-Object System.Windows.Controls.Border)
         BmStaticGroupSourceValue = (New-Object System.Windows.Controls.TextBlock)
         BmStaticGroupsList = (New-Object System.Windows.Controls.ListBox)
+        BmStaticGroupPagePreviousButton = (New-Object System.Windows.Controls.Button)
+        BmStaticGroupPageText = (New-Object System.Windows.Controls.TextBlock)
+        BmStaticGroupPageNextButton = (New-Object System.Windows.Controls.Button)
         BmStaticGroupIdBox = (New-Object System.Windows.Controls.TextBox)
         AddBmStaticGroupButton = (New-Object System.Windows.Controls.Button)
         RemoveBmStaticGroupButton = (New-Object System.Windows.Controls.Button)
@@ -72,6 +75,13 @@ function Wait-BmManagementUiFakeRequest {
         Start-Sleep -Milliseconds 10
     }
     if (-not $state.blocking_started) { throw 'The fake transport did not enter its blocked request.' }
+}
+
+function Invoke-BmManagementUiButtonClick {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    $button = $window.FindName($Name)
+    $routedArgs = [System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent,$button)
+    $button.RaiseEvent($routedArgs)
 }
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Net.Http -ErrorAction Stop
@@ -153,6 +163,9 @@ try {
     Assert-BmManagementUi ($window.FindName('BmStaticGroupPanel').Visibility -eq [System.Windows.Visibility]::Visible) 'a successful GET should expose the BM static panel'
     Assert-BmManagementUi ($window.FindName('BmStaticGroupsList').Visibility -eq [System.Windows.Visibility]::Visible) 'an empty successful GET should show an empty list'
     Assert-BmManagementUi ($window.FindName('BmStaticGroupsList').Items.Count -eq 0) 'an empty GET should remain a real empty list'
+    Assert-BmManagementUi ($window.FindName('BmStaticGroupPageText').Text -ceq '1 / 1' -and
+        -not $window.FindName('BmStaticGroupPagePreviousButton').IsEnabled -and
+        -not $window.FindName('BmStaticGroupPageNextButton').IsEnabled) 'an empty list should show one disabled page'
     Assert-BmManagementUi ($window.FindName('AddBmStaticGroupButton').Visibility -eq [System.Windows.Visibility]::Visible -and $window.FindName('AddBmStaticGroupButton').IsEnabled) 'a valid simplex status should enable Add'
     Assert-BmManagementUi ($script:bmManagementStatus -ceq 'loaded' -and $script:bmManagementGroups.Count -eq 0 -and $script:bmManagementAddContext.add_slot -eq 0) 'empty list and status 4 should load with API slot 0'
     $configJson = ConvertTo-Json -InputObject $script:portableConfig -Compress
@@ -253,6 +266,37 @@ try {
     Wait-BmManagementUiIdle
     Assert-BmManagementUi ($state.requests.Count -eq 2 -and $state.requests[0].uri -ceq 'https://api.brandmeister.network/v2/device/461135502/talkgroup' -and $state.requests[1].uri -ceq 'https://api.brandmeister.network/v2/device/461135502') 'device ID change should refresh list and metadata once for the new device'
     Assert-BmManagementUi ($script:bmManagementAddContext.add_slot -eq 0 -and $script:bmManagementObservedDeviceId -ceq '461135502') 'new device status should replace the prior Add context'
+
+    $pageRequestCount = $state.requests.Count
+    $pageGroups = @(
+        foreach ($id in 30001..30007) {
+            [pscustomobject][ordered]@{ device_id='461135502'; talkgroup=[uint64]$id; slot=2; type='static'; text=('TG {0}' -f $id) }
+        }
+    )
+    Set-BmManagementUiGroupRows -Groups $pageGroups
+    Assert-BmManagementUi ($window.FindName('BmStaticGroupsList').Items.Count -eq 3 -and
+        $window.FindName('BmStaticGroupsList').Items[0].text -ceq 'TG 30001' -and
+        $window.FindName('BmStaticGroupPageText').Text -ceq '1 / 3' -and
+        -not $window.FindName('BmStaticGroupPagePreviousButton').IsEnabled -and
+        $window.FindName('BmStaticGroupPageNextButton').IsEnabled) 'the first static-group page should show three rows and enable only Next'
+    Invoke-BmManagementUiButtonClick -Name 'BmStaticGroupPageNextButton'
+    Assert-BmManagementUi ($window.FindName('BmStaticGroupsList').Items.Count -eq 3 -and
+        $window.FindName('BmStaticGroupsList').Items[0].text -ceq 'TG 30004' -and
+        $window.FindName('BmStaticGroupPageText').Text -ceq '2 / 3') 'Next should expose the second page without changing row contents'
+    $window.FindName('BmStaticGroupsList').SelectedIndex = 0
+    Assert-BmManagementUi ($window.FindName('BmStaticGroupsList').SelectedItem.talkgroup -eq 30004 -and
+        [int]$window.FindName('BmStaticGroupsList').SelectedItem.slot -eq 2 -and
+        $window.FindName('RemoveBmStaticGroupButton').IsEnabled) 'a paged row should retain its talkgroup and slot for removal'
+    Invoke-BmManagementUiButtonClick -Name 'BmStaticGroupPageNextButton'
+    Assert-BmManagementUi ($window.FindName('BmStaticGroupsList').Items.Count -eq 1 -and
+        $window.FindName('BmStaticGroupsList').Items[0].text -ceq 'TG 30007' -and
+        $window.FindName('BmStaticGroupPageText').Text -ceq '3 / 3' -and
+        -not $window.FindName('BmStaticGroupPageNextButton').IsEnabled) 'the last static-group page should show the remaining row only'
+    Invoke-BmManagementUiButtonClick -Name 'BmStaticGroupPagePreviousButton'
+    Assert-BmManagementUi ($window.FindName('BmStaticGroupsList').Items.Count -eq 3 -and
+        $window.FindName('BmStaticGroupsList').Items[0].text -ceq 'TG 30004' -and
+        $window.FindName('BmStaticGroupPageText').Text -ceq '2 / 3' -and
+        $state.requests.Count -eq $pageRequestCount) 'page navigation should be local and make no API request'
 
     $state.block_next = $true
     Assert-BmManagementUi (Request-BmManagementUiRefresh) 'refresh should start before disposal test'

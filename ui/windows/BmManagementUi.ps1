@@ -28,6 +28,40 @@ function Test-BmManagementUiApiKey {
     return -not [string]::IsNullOrWhiteSpace($ApiKey)
 }
 
+function Get-BmManagementUiPageCount {
+    $groupCount = @($script:bmManagementGroups).Count
+    $pageSize = [Math]::Max(1,[int]$script:bmManagementUiPageSize)
+    return [Math]::Max(1,[int][Math]::Ceiling($groupCount / [double]$pageSize))
+}
+
+function Update-BmManagementUiVisiblePage {
+    if (-not $script:bmManagementUiWindow) { return }
+    $pageCount = Get-BmManagementUiPageCount
+    $pageIndex = [Math]::Max(0,[Math]::Min([int]$script:bmManagementUiPageIndex,$pageCount - 1))
+    $script:bmManagementUiPageIndex = $pageIndex
+    $firstRow = $pageIndex * [int]$script:bmManagementUiPageSize
+    $visibleRows = @($script:bmManagementGroups | Select-Object -Skip $firstRow -First ([int]$script:bmManagementUiPageSize))
+    $list = Get-BmManagementUiControl -Name 'BmStaticGroupsList'
+    $list.ItemsSource = $null
+    $list.ItemsSource = [object[]]$visibleRows
+    (Get-BmManagementUiControl -Name 'BmStaticGroupPageText').Text = ('{0} / {1}' -f ($pageIndex + 1),$pageCount)
+    (Get-BmManagementUiControl -Name 'BmStaticGroupPagePreviousButton').IsEnabled = ($pageIndex -gt 0)
+    (Get-BmManagementUiControl -Name 'BmStaticGroupPageNextButton').IsEnabled = ($pageIndex -lt ($pageCount - 1))
+}
+
+function Set-BmManagementUiPage {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][int]$PageIndex)
+    if (-not $script:bmManagementUiWindow) { return $false }
+    $pageCount = Get-BmManagementUiPageCount
+    $targetIndex = [Math]::Max(0,[Math]::Min($PageIndex,$pageCount - 1))
+    if ($targetIndex -eq [int]$script:bmManagementUiPageIndex) { return $false }
+    $script:bmManagementUiPageIndex = $targetIndex
+    Update-BmManagementUiVisiblePage
+    Set-BmManagementUiControlState
+    return $true
+}
+
 function Save-BmManagementUiApiKey {
     param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$ApiKey)
     try {
@@ -79,6 +113,16 @@ function Set-BmManagementUiControlState {
         -not $script:bmManagementDisposeRequested)
     $list = Get-BmManagementUiControl -Name 'BmStaticGroupsList'
     $list.Visibility = if ($loaded) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+    $pageVisibility = if ($loaded) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+    foreach ($name in @('BmStaticGroupPagePreviousButton','BmStaticGroupPageText','BmStaticGroupPageNextButton')) {
+        (Get-BmManagementUiControl -Name $name).Visibility = $pageVisibility
+    }
+    $pageCount = Get-BmManagementUiPageCount
+    $pageIndex = [Math]::Max(0,[Math]::Min([int]$script:bmManagementUiPageIndex,$pageCount - 1))
+    $script:bmManagementUiPageIndex = $pageIndex
+    (Get-BmManagementUiControl -Name 'BmStaticGroupPageText').Text = ('{0} / {1}' -f ($pageIndex + 1),$pageCount)
+    (Get-BmManagementUiControl -Name 'BmStaticGroupPagePreviousButton').IsEnabled = ($loaded -and $pageIndex -gt 0)
+    (Get-BmManagementUiControl -Name 'BmStaticGroupPageNextButton').IsEnabled = ($loaded -and $pageIndex -lt ($pageCount - 1))
     $remove = Get-BmManagementUiControl -Name 'RemoveBmStaticGroupButton'
     $remove.Visibility = if ($loaded) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
     $selected = $list.SelectedItem
@@ -123,9 +167,8 @@ function Set-BmManagementUiGroupRows {
         }
     )
     $script:bmManagementGroups = @($rows)
-    $list = Get-BmManagementUiControl -Name 'BmStaticGroupsList'
-    $list.ItemsSource = $null
-    $list.ItemsSource = [object[]]$rows
+    $script:bmManagementUiPageIndex = 0
+    Update-BmManagementUiVisiblePage
     Set-BmManagementUiControlState
 }
 
@@ -556,8 +599,10 @@ function Initialize-BmManagementUi {
     $script:bmManagementUiRefreshPending = $false
     $script:bmManagementAddContext = $null
     $script:bmManagementUiControls = @{}
+    $script:bmManagementUiPageSize = 3
+    $script:bmManagementUiPageIndex = 0
     foreach ($name in @('BmApiKeyBox','BmStaticGroupPanel','BmStaticGroupSourceValue',
-            'BmStaticGroupsList','BmStaticGroupIdBox',
+            'BmStaticGroupsList','BmStaticGroupPagePreviousButton','BmStaticGroupPageText','BmStaticGroupPageNextButton','BmStaticGroupIdBox',
             'AddBmStaticGroupButton','RemoveBmStaticGroupButton','RefreshBmStaticGroupsButton','BmStaticGroupStatus')) {
         $script:bmManagementUiControls[$name] = $Window.FindName($name)
         if ($null -eq $script:bmManagementUiControls[$name]) { throw "BM 静态组界面缺少控件 $name。" }
@@ -571,6 +616,8 @@ function Initialize-BmManagementUi {
         if (Test-BmManagementUiApiKey -ApiKey $currentApiKey) { [void](Request-BmManagementUiRefresh) }
     })
     $script:bmManagementUiControls['RefreshBmStaticGroupsButton'].Add_Click({ [void](Request-BmManagementUiRefresh) })
+    $script:bmManagementUiControls['BmStaticGroupPagePreviousButton'].Add_Click({ [void](Set-BmManagementUiPage -PageIndex ($script:bmManagementUiPageIndex - 1)) })
+    $script:bmManagementUiControls['BmStaticGroupPageNextButton'].Add_Click({ [void](Set-BmManagementUiPage -PageIndex ($script:bmManagementUiPageIndex + 1)) })
     $script:bmManagementUiControls['AddBmStaticGroupButton'].Add_Click({ [void](Start-BmManagementUiRequest -Operation Add) })
     $script:bmManagementUiControls['RemoveBmStaticGroupButton'].Add_Click({ [void](Start-BmManagementUiRequest -Operation Remove) })
     $script:bmManagementUiControls['BmStaticGroupsList'].Add_SelectionChanged({ Set-BmManagementUiControlState })
