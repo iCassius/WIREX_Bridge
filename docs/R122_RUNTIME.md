@@ -44,11 +44,10 @@ WinPS 5.1 STA 的隔离 WPF/fake 回归用于验证配置转换、界面事件�
 # PASS: 2128 layout assertions; main/settings windows rendered and visually inspected
 ```
 
-## alpha18 发布准备离线检查
+## alpha18 构建与包级离线检查
 
-- 源码阶段的 WPF、频道和 DMR ID 回归已按上方清单通过。主窗口布局另通过 2128 项 RenderOnly 断言，并检查主窗口与设置窗口截图。
-- `tools/test-package-release.ps1` 通过 656 项断言；alpha18 profile 保留 41 项映射资产、37 个源码映射、9 个目录和原顺序的 40 项 Native 测试名。
-- `tools/test-publish-release.ps1` 通过 136 项离线断言，`tools/test-download-release.ps1` 通过 2817 项离线断言。两个方向均校验 alpha18 沿用 alpha17 的资产/测试清单，并拒绝缺少 `config.json` 排除规则或将用户配置放进通用包的 manifest。
-- 这些发布与下载检查使用合成 manifest 和文件，不发网络请求，也不下载或安装 Release。为定位原 alpha18 真实 IPC 失败，本轮在 `build/_work` 创建隔离副本，只替换副本中的 `bridge-ui.ps1` 并更新其 manifest 文件记录的长度/hash，然后运行 `tools/test-package-startup.ps1`。alpha18 包级检查通过，实际报告 `channel_flow_test.tx_command=tx_policy.replace`，并核对 Native 回执及已保存配置仍指向原 TX 目标；覆盖真实 WPF `BridgeSupervisor` → Native RoutingDiagnosticAutoTest。没有连接电台、BM、音频设备或 RF，也没有访问用户配置。原 alpha18 包没有修改。
-- 该诊断副本用于定位源码修复，不作为发布包验收。冻结源码后仍须重新 clean build，并在原样 manifest 的新候选包上复跑包级检查。
-- 本轮所有界面、CAT、BM、HRI、音频和射频行为仍没有连接实机验收；CAT 与 HRI 同时运行的效果仍需按独立实机流程确认。
+- WinPS 5.1 STA 源码回归通过：DMR ID 29、频道 115、console 121、CAT module 56、CAT/WPF 168、RenderOnly 2128；主窗口和设置窗口截图已检查。PowerShell 7 的 profile/publish/download 合成检查通过 656/136/2817 项，没有网络请求。
+- clean 源码提交 `ae886f582e2c9dee7839de5ef7a78208a92a2f75` 的 Native full40 按 profile 顺序 40/40 通过，`compile_only=false`，warning/error 为 0；最终目录为 `build/_work/wirex-bridge-ae886f5-20261102-105245`。首轮链接 LNK1105 及重试记录见 [R122 发布交接](R122_发布交接.md)。
+- Alpha18 generic 包经 root 审计通过：41 项资产、37 个源码映射、9 个目录、manifest `root_audit_passed`。之后从 alpha17 复制本机 config：3,896 字节、与归档源逐字节相同，源码 PortableConfig 只读验证通过；不记录配置值或哈希，config 不在 manifest 资产中。
+- 配置覆盖前，WinPS 5.1 STA 的包 startup、test-control 和包内真实 WPF control-v2 均通过。RoutingDiagnosticAutoTest 保留既有 TX；Native 未启用该目标时先确认同目标 `tx_policy.replace`，再确认 `rx_policy.replace`。本轮 alpha18 parser 解析 R121 保存的 13 帧 Native Dispatcher 数据，13 行通过；包测试执行器包含 test-only XPath 修复 `dec6f7e`。
+- 最初 alpha18 隔离诊断副本和失败候选已可恢复归档到 `private/build-retired/R122/failed-candidates/alpha18-0153fcbc-routing-fix/`。本轮没有连接真实 CAT COM、FTX-1、HRI、BM 或音频设备，没有触发 PTT/RF，也没有创建 ZIP、Git tag 或 GitHub Release；CAT 写入与 HRI 同时运行仍待实机确认。

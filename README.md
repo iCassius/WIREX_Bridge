@@ -1,22 +1,24 @@
 ﻿# WIREX Bridge：FTX-1 DIRECT 与 BrandMeister 语音桥接
 
-## 当前工作：R122 源码阶段（alpha18 profile 准备）
+## 当前交付：R122 / Alpha 18 本机候选（root 审计通过）
 
-R122 调整固定 1360×900 WPF 控制台：下方连接配置和日常控制严格等宽，串口控件同高并对齐底边；CAT 模式、频率、功率由一个“应用”入口按字段确认；音频设备选择移到日常控制区音量上方；身份区显示 DMR ID 与两位设备编号；加入频道只进入监听列表。历史、3×2 频道卡与日常控制外卡片继续保留。实现细节见 [R122 UI](docs/R122_UI.md)、[R122 Runtime](docs/R122_RUNTIME.md) 和 [R122 CAT](docs/R122_CAT.md)。
+R122 源码提交为 `ae886f582e2c9dee7839de5ef7a78208a92a2f75`，已推送到 `origin/main`。本版调整固定 1360×900 WPF 控制台、CAT 单一“应用”批次、DMR ID/两位设备编号、音频设备布局和加入频道只收听流程。首个 R122 UI 源提交为 `0153fcbc6c94128f5861a56ace31f399c4596d85`；`dec6f7e` 仅修正包启动测试 XPath，不更改运行文件；`ae886f5` 修复 Native 尚未启用既有 PTT 目标时的诊断握手，并区分 alpha18 与 alpha14–17 的旧诊断断言。实现细节见 [R122 UI](docs/R122_UI.md)、[R122 Runtime](docs/R122_RUNTIME.md) 和 [R122 CAT](docs/R122_CAT.md)。
 
-WinPS 5.1 STA 离线检查通过：CAT 模块 56 项、CAT/WPF 168 项、DMR ID 转换 29 项、频道交互 115 项、控制台 121 项、RenderOnly 2128 项；主窗口和设置窗口截图已检查。PowerShell 7 profile/publish/download 合成检查分别通过 656、136、2817 项；alpha18 profile 沿用 alpha17 的 41 个资产映射、37 个源码映射、9 个目录和 40 个 Native 测试名。后 3 项使用离线合成文件，不生成发布包或请求网络。
+基于 clean `ae886f5` 完成 Native full40，40/40 按 alpha18 顺序通过，`compile_only=false`、编译 warning/error 为 0。构建目录为 `build/_work/wirex-bridge-ae886f5-20261102-105245`，EXE 长 999,936 字节，SHA-256 `aa43b27c950dc694a7e15a00ba1c3291fbd99e68b677baaad2d727eee7f4348d`。第一次构建在 `hri_p_status_test` 链接时报 LNK1105；失败目录和日志已可恢复归档，新的 build 目录全量重跑通过。完整记录见 [R122 发布交接](docs/R122_发布交接.md)。
 
-R122 源码目前已通过上述定向回归；集成 Native full40、alpha18 generic package 和包内启动/control 检查留在源码冻结后的构建阶段。没有连接真实 CAT COM、FTX-1、HRI、BM 或音频设备，也没有触发 PTT/RF；CAT 与 HRI 同时运行的实际效果仍待实机验证。alpha18 实际包结果将在包阶段另行记录。
+Alpha18 generic package 经 root 审计通过：41 项资产、37 个源码映射、9 个运行目录、42 个通用文件，manifest `package_status=root_audit_passed`，SHA-256 `18a6e9a30f00166b3669a5082eebee4e8b737c249137121d4df235ea4c642fd3`。本机配置随后从前一 alpha17 目录原字节复制，长 3,896 字节；源和副本逐字节相同，源码 `PortableConfig` 只读校验均通过，没有记录配置值或配置哈希。本机目录共 43 个文件，`config.json` 不在 manifest 资产中。根目录 `start-my-bridge.cmd` 已备份到 `private/config-backups/R122/start-my-bridge.cmd`，并以 ASCII 相对路径改为调用 alpha18 唯一 CMD；只做静态检查，没有启动应用。
 
-## R121 / Alpha 17 本机绿色目录（前一交付）
+包级 WinPS 5.1 STA 检查通过：`test-package-startup.ps1`、`test-control.ps1`、包内真实 WPF `test-ui-control-v2.ps1` 均通过。包启动诊断保留原 PTT 目标；本次 Native 尚未启用原目标时，诊断记录先确认同一目标的 `tx_policy.replace`，再确认 `rx_policy.replace`。包内 parser 另解析了 R121 保存的 13 帧 Native Dispatcher 数据。PowerShell 7 profile/publish/download 离线合成检查分别通过 656、136、2817 项。未连接真实 CAT COM、FTX-1、HRI、BM 或音频设备，未触发 PTT/RF；CAT 与 HRI 同时运行仍待实机验证。没有创建 ZIP、Git tag 或 GitHub Release。
 
-Alpha 17 包基于源码提交 `245ed0348f66cbd6d181655185d5db849fe1c724`。该干净提交已推送到 `origin/main`。Native 完整构建通过 40/40 项，`compile_only=false`，MSVC warning/error 均为 0；Alpha 17 本机目录已通过 root 独立包审计，manifest 状态为 `root_audit_passed`。
+## R121 / Alpha 17 前一版配置来源（已归档）
+
+Alpha 17 包基于源码提交 `245ed0348f66cbd6d181655185d5db849fe1c724`，当时通过 root 独立包审计。R122 收尾时，alpha17 整个 47 文件目录、245ed03 构建和构建日志已移入 `private/build-retired/R122/previous-release/`；alpha17 配置保留在归档目录，并作为 alpha18 本机配置的字节来源。该目录的逐文件清单不含配置哈希，见同目录 `archive-inventory.json`。
 
 R121 包含固定尺寸无滚动条 WPF 控制台、分页历史与静态组列表，以及串口和 BM 独立连接控制。WinPS 5.1 STA 的 RadioCat 190 项和 Console 130 项、RenderOnly 214 项、BM 静态组 WPF 72 项均通过。WinPS 5.1 的包启动、Native control 和包 UI control-v2 检查通过；UI parser 实际解析 Native Dispatcher 生成的 13 帧合成 JSONL。PowerShell 7 的间歇 fixture 结果保留另查，不作为本版 UI 验收依据。测试范围和日志见 [R121 发布交接](docs/R121_发布交接.md)、[Alpha 17 本机目录记录](docs/releases/v0.1.0-alpha.17.md)、[Native 测试](docs/R121_NATIVE_TESTS.md)、[UI 记录](docs/R121_UI.md) 和 [Runtime 交接](docs/R121_RUNTIME.md)。
 
 发布 profile 在 `tools/package-release.ps1` 的 `Get-ReleaseProfile -Version 'v0.1.0-alpha.17'` 中定义：41 个资产映射、37 个源码映射、9 个运行时目录和 40 个 Native 测试名，测试顺序沿用 alpha16。包有 41 项清单资产；加上 manifest 为 42 个通用文件。本机目录另有一份配置文件，因此共 43 个文件。manifest SHA-256 为 `94b5b34ab5281a290ba92fc15acb114b4cca9d9afcaca07350865bbd091b0487`。
 
-本机配置从 alpha16 根目录原字节复制到 alpha17，来源和副本各 3,893 字节且逐字节相等；没有记录配置内容或计算其哈希。根目录启动器已静态改为调用 alpha17，并将原文件备份到 `private/config-backups/R121/start-my-bridge.pre-alpha17-245ed03.cmd`；没有正常启动应用。R121 未连接真实电台、串口、音频或 BrandMeister 会话，也未触发 PTT/RF；没有创建 ZIP、tag 或 GitHub Release。
+Alpha17 原配置与 alpha18 当前配置仍逐字节相同；R121 原启动器备份保留于 `private/config-backups/R121/start-my-bridge.pre-alpha17-245ed03.cmd`。现在根启动器调用 alpha18；本轮未正常启动应用。R121 与 R122 均未连接真实电台、串口、音频或 BrandMeister 会话，也未触发 PTT/RF。
 
 ## R120 / Alpha 16 本机候选历史（root 包审计通过）
 

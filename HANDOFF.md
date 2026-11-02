@@ -1,14 +1,16 @@
 ﻿# WIREX Bridge 交接入口
 
-## R122 源码阶段交接（2026-11-02）
+## R122 / Alpha 18 root 审计通过的本机目录（2026-11-02）
 
-R122 更新固定 1360×900 WPF 主窗口、50:50 下方分区、单一 CAT“应用”入口、DMR ID/设备编号字段、音频设备位置和频道加入监听流程。连接区域无内嵌装饰边框；串口与频道录入控件已对齐；保留 3×2 频道卡和三行历史。alpha18 profile、版号启动器与 package README 已准备，实际候选包留待集成构建阶段生成。
+产品源码提交 `ae886f582e2c9dee7839de5ef7a78208a92a2f75` 已推送到 `origin/main`。`dec6f7e` 只修正包启动测试 XPath；`ae886f5` 修复既有 PTT 目标诊断并区分新版和旧版测试合同，包测试执行器来自包含该 test-only 修复的 ae886f5 源树。
 
-WinPS 5.1 STA 离线检查：CAT 模块 56 项、CAT/WPF 168 项、DMR ID 转换 29 项、频道交互 115 项、控制台 121 项、RenderOnly 2128 项通过。另有 PowerShell 7 离线 profile/publish/download fake 检查通过 656/136/2817 项；alpha18 延用 41 项资产映射、37 个源码映射、9 个目录和 40 项 Native 测试顺序，通用 manifest 继续排除 `config.json`、备份、credentials 和 tempSecrets。
+clean Native full40 在最终目录 `build/_work/wirex-bridge-ae886f5-20261102-105245` 通过 40/40，`compile_only=false`、warning/error 均为 0；EXE 为 999,936 字节，SHA-256 `aa43b27c950dc694a7e15a00ba1c3291fbd99e68b677baaad2d727eee7f4348d`。首轮在 `hri_p_status_test` 链接时报 LNK1105；失败目录/日志保存在 `private/build-retired/R122/failed-candidates/alpha18-ae886f5-attempt1-lnk1105/`，同一 clean commit 新目录重跑通过。
 
-尚未连接真实 CAT COM、FTX-1、HRI、BM 或音频设备，没有触发 PTT/RF。尤其 CAT 配置写入与 HRI 同时运行仍待实机确认。Native full40、alpha18 generic package，以及配置覆盖前的 WinPS 包启动、test-control 和 UI control-v2 检查留待集成阶段。功能、测量与测试边界见 [R122 UI](docs/R122_UI.md)、[R122 Runtime](docs/R122_RUNTIME.md)、[R122 CAT](docs/R122_CAT.md)。
+Alpha18 generic 包由 profile 重新生成，root 审计确认 41 项资产、37 个源码映射、9 个目录、42 个通用文件；manifest 为 `root_audit_passed`，SHA-256 `18a6e9a30f00166b3669a5082eebee4e8b737c249137121d4df235ea4c642fd3`。本机配置从 alpha17 原文件复制后逐字节相同，长 3,896 字节，PortableConfig 只读验证通过；未记录配置值或哈希。当前目录 43 个文件，配置不在 manifest 内。根启动器备份于 `private/config-backups/R122/start-my-bridge.cmd`，ASCII 静态指向 alpha18 唯一 CMD，没有正常启动应用。
 
-## R121 / Alpha 17 最终交接（2026-11-02）
+配置覆盖前的 WinPS 5.1 STA 包 startup、control、WPF control-v2 均通过；包 startup 报告 `tx_command=tx_policy.replace` 后确认 `rx_policy.replace`。本轮包 parser 处理 R121 保存的 Native Dispatcher 13 帧并通过；源码 CAT、频道、DMR ID、console、RenderOnly 回归及 PowerShell 7 的 656/136/2817 项离线 profile/publish/download 检查通过。0153 候选与临时诊断副本位于 `private/build-retired/R122/failed-candidates/alpha18-0153fcbc-routing-fix/`；Alpha17 47 文件目录、245ed03 构建及日志归档于 `private/build-retired/R122/previous-release/`，清单不含 config hash。当前 `build/releases/` 只保留 alpha18，`build/_work/` 只保留最终 ae886f5 build 与对应日志。无实机 CAT/HRI/BM/音频/PTT/RF 测试；没有创建 ZIP、tag 或 GitHub Release。详见 [R122 发布交接](docs/R122_发布交接.md) 和 [Alpha 18 本机候选记录](docs/releases/v0.1.0-alpha.18.md)。
+
+## R121 / Alpha 17 最终交接（2026-11-02，现已归档）
 
 源码树位于 `C:\Users\cassi\Documents\Project\FTX1_project\WIREX_Bridge\app`，分支 `main`。Alpha 17 的源码提交为 `245ed0348f66cbd6d181655185d5db849fe1c724`，已推送到 `origin/main`。本次更新只补充交接文档，产品源码仍以该提交为准。
 
@@ -16,9 +18,9 @@ WinPS 5.1 STA 离线检查：CAT 模块 56 项、CAT/WPF 168 项、DMR ID 转换
 
 Alpha 17 profile 定义于 `tools/package-release.ps1` 的 `Get-ReleaseProfile -Version 'v0.1.0-alpha.17'`：41 个资产映射、37 个源码映射、9 个运行时目录、40 个 Native 测试名。包有 41 项清单资产和 manifest，共 42 个通用文件；复制本机配置后目录共 43 个文件。Root 审计确认包状态为 `root_audit_passed`。完整构建、manifest、EXE 和测试日志见 [Alpha 17 本机目录记录](docs/releases/v0.1.0-alpha.17.md)。
 
-Alpha 17 的 `config.json` 从 alpha16 根目录原字节复制，来源与副本各 3,893 字节且逐字节相等。没有读取配置内容或计算配置哈希。根目录 `start-my-bridge.cmd` 的原始 103 字节文件已备份至 `private/config-backups/R121/start-my-bridge.pre-alpha17-245ed03.cmd`，启动器现静态指向 alpha17；没有正常启动应用。
+Alpha 17 的 `config.json` 当时从 alpha16 根目录原字节复制，来源与副本各 3,893 字节且逐字节相等。没有读取配置内容或计算配置哈希。R121 时根目录启动器的原始 103 字节文件备份至 `private/config-backups/R121/start-my-bridge.pre-alpha17-245ed03.cmd`；R122 后的新备份在 `private/config-backups/R122/start-my-bridge.cmd`，当前启动器静态指向 alpha18，未正常启动应用。
 
-Root 核对并完成三根目录归档，共 210 个文件、38,286,095 字节；11 条获准验证日志位于 `private/build-history/R121/verification-logs/`。失败的 6b alpha17 候选、其旧构建和测试 wrapper 另行保存在 `private/build-retired/R121/failed-candidates/` 与 `private/build-history/R121/failed-attempt/`，详细清单和校验记录见 [R121 发布交接](docs/R121_发布交接.md)。当前 `build/releases/` 仅有 alpha17，`build/_work/` 仅保留 245ed03 最终构建目录和 clean-build 日志。
+Root 核对并完成 R121 三根目录归档，共 210 个文件、38,286,095 字节；11 条获准验证日志位于 `private/build-history/R121/verification-logs/`。R122 收尾时，alpha17 整个 47 文件本机目录、245ed03 最终构建和对应构建日志又可恢复归档到 `private/build-retired/R122/previous-release/`；清单列出路径与长度，不包含配置哈希。当前 `build/releases/` 只保留 alpha18，`build/_work/` 只保留 ae886f5 最终构建目录和对应日志。
 
 本轮没有连接真实电台、BM、串口或音频设备，没有触发 PTT/RF，也没有创建 ZIP、tag 或 GitHub Release。实机验证仍待后续单独进行。
 
