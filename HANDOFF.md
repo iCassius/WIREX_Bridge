@@ -1,14 +1,18 @@
 ﻿# WIREX Bridge 交接入口
 
-## R121 / Alpha 17 源码 freeze 与交接（2026-11-02）
+## R121 / Alpha 17 最终交接（2026-11-02）
 
-源码树位于 `C:\Users\cassi\Documents\Project\FTX1_project\WIREX_Bridge\app`，分支 `main`，R121 改动基于 `e51fd6db2e8af5eb8c0105bd0956f9b252b73b54`。Root 已批准 source freeze，独立 review 最终没有发现可复现 P1/P2；该 SHA 是 freeze 前基点，最终源版本由随后的提交记录确定。
+源码树位于 `C:\Users\cassi\Documents\Project\FTX1_project\WIREX_Bridge\app`，分支 `main`。Alpha 17 的源码提交为 `245ed0348f66cbd6d181655185d5db849fe1c724`，已推送到 `origin/main`。本次更新只补充交接文档，产品源码仍以该提交为准。
 
-alpha.17 目标包括固定无滚动条控制台、分页历史/静态组列表、串口与 BM 独立连接生命周期。WinPS5.1 STA 下 RadioCat 190 项和 Console 130 项由 Runtime owner 与 root 独立通过；WinPS5.1 发布入口复核三方通过。RenderOnly 214 项、BM 静态组 WPF、Native targets 与真实 Dispatcher 13 帧 PowerShell parser 均通过。PowerShell 7 的间歇 fixture 结果留待另查，不计入本版 UI 验收。结果见 [R121 Native 测试](docs/R121_NATIVE_TESTS.md)、[R121 UI](docs/R121_UI.md)、[R121 Runtime](docs/R121_RUNTIME.md) 和 [R121 发布交接](docs/R121_发布交接.md)。
+基于干净源码完成 Native full40 构建：40/40 项通过，`compile_only=false`，`source_tree_clean=true`，MSVC warning/error 均为 0。WinPS 5.1 STA 下 RadioCat 190 项、Console 130 项、RenderOnly 214 项、BM 静态组 WPF 72 项通过；WinPS 5.1 包启动、Native control 与包 UI control-v2 联测通过。最后一项用 Native Dispatcher 实际输出的 13 帧合成 JSONL 运行真实 PowerShell parser。PowerShell 7 的间歇 fixture 结果保留另查，不作为本版 UI 验收依据。
 
-发布 profile 的权威定义为 `tools/package-release.ps1` 中 `Get-ReleaseProfile -Version 'v0.1.0-alpha.17'`：41 个资产映射、37 个源码映射、9 个运行时目录、40 个 Native 测试名（沿用 alpha16 顺序）。本节记录 source freeze 阶段；full40 clean build 与 alpha.17 包级离线验证按该源提交后的构建记录执行。
+Alpha 17 profile 定义于 `tools/package-release.ps1` 的 `Get-ReleaseProfile -Version 'v0.1.0-alpha.17'`：41 个资产映射、37 个源码映射、9 个运行时目录、40 个 Native 测试名。包有 41 项清单资产和 manifest，共 42 个通用文件；复制本机配置后目录共 43 个文件。Root 审计确认包状态为 `root_audit_passed`。完整构建、manifest、EXE 和测试日志见 [Alpha 17 本机目录记录](docs/releases/v0.1.0-alpha.17.md)。
 
-个人配置来源固定为当前 alpha16 根目录 `build/releases/v0.1.0-alpha.16/config.json`，仅记录长度 3,893 字节，未读内容或哈希，也未复制。后续从该文件原字节复制到 alpha17，先核对字节相等；不从旧 canonical 或 alpha15 恢复。R121 未进行真实硬件/BM 验收、tag 或 GitHub Release。
+Alpha 17 的 `config.json` 从 alpha16 根目录原字节复制，来源与副本各 3,893 字节且逐字节相等。没有读取配置内容或计算配置哈希。根目录 `start-my-bridge.cmd` 的原始 103 字节文件已备份至 `private/config-backups/R121/start-my-bridge.pre-alpha17-245ed03.cmd`，启动器现静态指向 alpha17；没有正常启动应用。
+
+Root 核对并完成三根目录归档，共 210 个文件、38,286,095 字节；11 条获准验证日志位于 `private/build-history/R121/verification-logs/`。失败的 6b alpha17 候选、其旧构建和测试 wrapper 另行保存在 `private/build-retired/R121/failed-candidates/` 与 `private/build-history/R121/failed-attempt/`，详细清单和校验记录见 [R121 发布交接](docs/R121_发布交接.md)。当前 `build/releases/` 仅有 alpha17，`build/_work/` 仅保留 245ed03 最终构建目录和 clean-build 日志。
+
+本轮没有连接真实电台、BM、串口或音频设备，没有触发 PTT/RF，也没有创建 ZIP、tag 或 GitHub Release。实机验证仍待后续单独进行。
 
 ## R120 / Alpha 16 历史交接（2026-11-01）
 

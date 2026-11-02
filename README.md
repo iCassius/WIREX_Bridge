@@ -1,14 +1,14 @@
 ﻿# WIREX Bridge：FTX-1 DIRECT 与 BrandMeister 语音桥接
 
-## 当前工作：R121 / Alpha 17 源码 freeze 记录
+## 当前工作：R121 / Alpha 17 本机绿色目录
 
-R121 改动基于 `main` 源码提交 `e51fd6db2e8af5eb8c0105bd0956f9b252b73b54`。Root 已批准 source freeze；独立 review 最终未发现可复现 P1/P2。此段记录 freeze 与构建前的验证快照，提交 SHA 与正式构建结果由提交和构建记录确定。
+Alpha 17 包基于源码提交 `245ed0348f66cbd6d181655185d5db849fe1c724`。该干净提交已推送到 `origin/main`。Native 完整构建通过 40/40 项，`compile_only=false`，MSVC warning/error 均为 0；Alpha 17 本机目录已通过 root 独立包审计，manifest 状态为 `root_audit_passed`。
 
-R121 为固定无滚动条 WPF 控制台、分页历史与静态列表、串口和 BM 独立连接控制。WinPS5.1 STA 下 RadioCat 190 项与 Console 130 项均由 Runtime owner 和 root 独立通过；WinPS5.1 发布入口复核已三方通过。RenderOnly 214 项、13 帧真实 Dispatcher parser、Native 定向目标与 pure package/publish/download 检查通过。PowerShell 7 的间歇 fixture 结果保留另查，不作为本版 UI 验收依据。full40 clean build 和实包验证按 source commit 后的正式构建记录执行；当前验证快照及边界见 [R121 发布交接](docs/R121_发布交接.md)、[Native 验证](docs/R121_NATIVE_TESTS.md)、[UI 记录](docs/R121_UI.md) 和 [Runtime 交接](docs/R121_RUNTIME.md)。
+R121 包含固定尺寸无滚动条 WPF 控制台、分页历史与静态组列表，以及串口和 BM 独立连接控制。WinPS 5.1 STA 的 RadioCat 190 项和 Console 130 项、RenderOnly 214 项、BM 静态组 WPF 72 项均通过。WinPS 5.1 的包启动、Native control 和包 UI control-v2 检查通过；UI parser 实际解析 Native Dispatcher 生成的 13 帧合成 JSONL。PowerShell 7 的间歇 fixture 结果保留另查，不作为本版 UI 验收依据。测试范围和日志见 [R121 发布交接](docs/R121_发布交接.md)、[Alpha 17 本机目录记录](docs/releases/v0.1.0-alpha.17.md)、[Native 测试](docs/R121_NATIVE_TESTS.md)、[UI 记录](docs/R121_UI.md) 和 [Runtime 交接](docs/R121_RUNTIME.md)。
 
-alpha.17 profile 在 `tools/package-release.ps1` 的 `Get-ReleaseProfile -Version 'v0.1.0-alpha.17'` 中定义：41 个资产映射、37 个源码映射、9 个运行时目录、40 个 Native 测试名；测试名顺序沿用 alpha16。Root freeze 后按该 profile 生成候选包，再单独审核包和个人配置衔接。
+发布 profile 在 `tools/package-release.ps1` 的 `Get-ReleaseProfile -Version 'v0.1.0-alpha.17'` 中定义：41 个资产映射、37 个源码映射、9 个运行时目录和 40 个 Native 测试名，测试顺序沿用 alpha16。包有 41 项清单资产；加上 manifest 为 42 个通用文件。本机目录另有一份配置文件，因此共 43 个文件。manifest SHA-256 为 `94b5b34ab5281a290ba92fc15acb114b4cca9d9afcaca07350865bbd091b0487`。
 
-当前本机配置唯一来源为 `build/releases/v0.1.0-alpha.16/config.json`。已记录其长度 3,893 字节；未读取内容、未计算哈希、未复制。任何 alpha.17 个人配置副本都必须从该来源原字节复制并先核对字节相等。R121 这轮未连接真实电台、串口、音频或 BrandMeister 会话，未触发 PTT/RF。
+本机配置从 alpha16 根目录原字节复制到 alpha17，来源和副本各 3,893 字节且逐字节相等；没有记录配置内容或计算其哈希。根目录启动器已静态改为调用 alpha17，并将原文件备份到 `private/config-backups/R121/start-my-bridge.pre-alpha17-245ed03.cmd`；没有正常启动应用。R121 未连接真实电台、串口、音频或 BrandMeister 会话，也未触发 PTT/RF；没有创建 ZIP、tag 或 GitHub Release。
 
 ## R120 / Alpha 16 本机候选历史（root 包审计通过）
 

@@ -33,11 +33,11 @@
 - paused 进程退出时，用户若从未发起 BM 连接，不会被记录成 BM 登录故障。取消中的 DNS 会保持 `bm_resolving=true` 直到 resolver 上下文回收；断连媒体超时会先如实报告 `media_cleanup_timeout` 和当前 Session/UDP 状态，再执行有界关闭。
 - R121 基础实现的 `probe_main.cpp`、`bm_connection_control.cpp`、`ui_control_protocol.cpp` 均由 MSVC 2019 以 `/W4 /permissive- /utf-8 /std:c++17` 单独编译通过；Native manager 与协议离线测试均通过。
 - 本轮兼容修复的 UI v2 协议测试重新编译运行通过，覆盖无 handler 的普通 status 原样输出 `not_started` 且不含 BM 扩展字段、BM 专属 unsupported ACK 规范输出 `stopped` 与关闭状态，以及有 BM handler 的实际 `stopped` / `waiting_auth_ack` 状态。Root 独立运行 Windows PowerShell 5.1 `tools/test-control.ps1`，Native 匿名管道诊断 exit 0；未打开串口、音频或网络。
-- Root 也独立运行了 source `tools/test-ui-control-v2.ps1` 的 WPF `BridgeSupervisor`→Native 匿名管道联测，使用临时诊断可执行文件且 exit 0。先前 alpha17 候选包中的 parser 仍未包含这些兼容修复，不作为本轮验收结果；临时诊断 exe 仅替换两个改动对象并复用已有编译对象，不能代替本轮 clean build 或重新包装。
+- Root 独立运行 source `tools/test-ui-control-v2.ps1` 的 WPF `BridgeSupervisor`→Native 匿名管道联测，exit 0。之后从最终源码提交 `245ed0348f66cbd6d181655185d5db849fe1c724` 完成干净 full40 构建，并重建 alpha17 包；WinPS 5.1 包 Native control 与 UI control-v2 parser 检查通过。最终包审计与日志路径见 [Alpha 17 本机目录记录](releases/v0.1.0-alpha.17.md)。
 - Native 测试 owner 报告 `bm_bridge_loopback_test` 与 `ui_control_protocol_v2_test` 当前源码构建后均 exit 0。交接入口：[BM loopback / manager lifecycle tests](../tests/bm_bridge_loopback_test.cpp)、[UI v2 protocol tests](../tests/ui_control_protocol_v2_test.cpp)、[CMake test/source registration](../CMakeLists.txt)、[MSVC build registration](../tools/build-bm-bridge.ps1)。
-- R121 基础候选此前 clean build 与40项测试通过；本轮兼容修复还未做 clean build 或完整40项测试。没有运行真实 HRI/CAT 串口、音频设备、BM 外网或 RF 验收。
+- 最终提交 `245ed0348f66cbd6d181655185d5db849fe1c724` 的 clean build 通过全部40项 Native 测试，`compile_only=false`、`source_tree_clean=true`，MSVC warning/error 均为0。完整日志位于 `build/_work/r121-245ed0348f66cbd6d181655185d5db849fe1c724-clean-build-20261102-122418.log`。没有运行真实 HRI/CAT 串口、音频设备、BM 外网或 RF 验收。
 - `git diff --check` 通过；本次Native源文件、头文件与文档均为 UTF-8 无 BOM。Save 失败的合成复现已完成，没有读取真实配置或凭据。
 
 ## 后续集成边界
 
-root 负责审阅跨 Native/UI 的最终 diff、运行完整40项集成测试并判断是否需要后续修正。本轮证据只覆盖源文件编译、两个 Native 离线测试目标和合成 Save 复现；不覆盖真实电台、串口、音频设备、BM 外网或 RF 行为。
+Root 已完成跨 Native/UI 审阅和最终 full40 集成构建；Alpha 17 包也已通过独立审核。上述离线证据没有覆盖真实电台、串口、音频设备、BM 外网或 RF 行为，实机验收仍待后续进行。

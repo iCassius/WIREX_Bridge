@@ -18,6 +18,12 @@
 - CMake 与 `tools/build-bm-bridge.ps1` 各自仍登记 40 个 Native 测试；逐项按原顺序和 HEAD 比较，名字与顺序均未改变。
 - `tools/build-bm-bridge.ps1` UTF-8 BOM 检查通过，PowerShell AST parser 错误数为 0；本轮文件 `git diff --check` 通过。
 
+## 最终集成构建与包验证
+
+- 最终源码提交 `245ed0348f66cbd6d181655185d5db849fe1c724` 上的干净构建通过 40/40 Native 测试，provenance 标记 `source_tree_clean=true`、`compile_only=false`，MSVC warning/error 均为 0。构建目录为 `build/_work/wirex-bridge-245ed03-20261102-042419`；完整日志为 `build/_work/r121-245ed0348f66cbd6d181655185d5db849fe1c724-clean-build-20261102-122418.log`。
+- Root 独立审核 alpha17 包后，manifest 状态为 `root_audit_passed`。WinPS 5.1 的 package-startup、包 `test-control` 和包 UI control-v2 检查均 exit 0；最后一项把 Native Dispatcher 生成的13帧 JSONL交给实际 PowerShell parser。相关记录位于 `private/build-history/R121/verification-logs/`，13帧样本也保存在该目录。
+- 包含 41 项 manifest 资产和 manifest 在内的通用包共42个文件；本机配置副本不属于 manifest。包、provenance、可执行文件和测试记录的 SHA-256 见 [Alpha 17 本机目录记录](releases/v0.1.0-alpha.17.md)。
+
 ## 验证边界
 
-loopback 用例只在 localhost 上运行 FakeMaster 与测试 resolver，并使用合成 HRI/audio sink。它没有连接真实 BrandMeister、串口、电台或音频设备，也没有验证 PTT、空口射频或设备侧行为。本轮未运行完整 40 项测试集、完整应用构建或打包。
+loopback 用例只在 localhost 上运行 FakeMaster 与测试 resolver，并使用合成 HRI/audio sink；完整 Native 构建使用离线测试。所有这些检查都没有连接真实 BrandMeister、串口、电台或音频设备，也没有验证 PTT、空口射频或设备侧行为。Alpha 17 为本机绿色目录，没有创建 ZIP、tag 或 GitHub Release。

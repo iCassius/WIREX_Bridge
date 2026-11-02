@@ -28,10 +28,10 @@
 ## 宿主复核状态
 
 - Runtime owner 与 root 在 Windows PowerShell 5.1 -STA 下分别独立运行 RadioCat 190 项、Console 130 项，均 exit 0；WinPS 5.1 发布入口检查已有三方通过结果。
-- Root 又独立运行 Windows PowerShell 5.1 的 `tools/test-control.ps1` 和 source `tools/test-ui-control-v2.ps1` WPF `BridgeSupervisor`→Native 匿名管道联测，均 exit 0；使用临时诊断核心，没有打开真实串口、音频或 BM 网络。旧 alpha17 候选包仍含修复前的 parser，不能用作本轮结果。
+- Root 独立运行 Windows PowerShell 5.1 的 `tools/test-control.ps1` 和 source `tools/test-ui-control-v2.ps1` WPF `BridgeSupervisor`→Native 匿名管道联测，均 exit 0；使用临时诊断核心，没有打开真实串口、音频或 BM 网络。随后从最终源码提交重新构建 alpha17，包 `test-control` 与 UI control-v2 parser 检查也 exit 0，13 帧 Native Dispatcher 样本由真实 PowerShell parser 消费。
 - 13 帧 Native Dispatcher 样本已由实际 PowerShell parser 解析通过。PowerShell 7 遇到的间歇 fixture 结果保留另查，不作为本版 UI 验收依据；最终独立 review 未发现可复现 P1/P2。
 
-上述宿主复核使用 fake、临时隔离配置、WPF 离线交互或合成 Dispatcher 帧。未连接真实 COM、CAT、音频、PTT、RF 或 BM，也未读取真实配置、凭据或哈希。full40、alpha.17 完整包和包级验证以 source freeze 后的正式构建记录为准。
+最终集成使用源码提交 `245ed0348f66cbd6d181655185d5db849fe1c724` 完成 Native clean full40 构建，并通过 alpha17 包审计和 WinPS 5.1 包级验证。具体 provenance、manifest、EXE 与日志记录见 [Alpha 17 本机目录记录](releases/v0.1.0-alpha.17.md)。宿主复核仍只使用 fake、临时隔离配置、WPF 离线交互或合成 Dispatcher 帧；未连接真实 COM、CAT、音频、PTT、RF 或 BM，也未读取真实配置内容或计算配置哈希。PowerShell 7 的间歇 fixture 结果保留另查，不纳入本版 UI 验收依据。
 
 ## 文件所有者
 
