@@ -447,7 +447,9 @@ try {
     $groupCard = @($script:mainWindow.FindName('ChannelCardsPanel').Children | Where-Object { [string]$_.Tag.channel_key -ceq 'group:91:2' }) | Select-Object -First 1
     $quickCallButton = @($groupCard.Child.Children[2].Children | Where-Object { $_ -is [System.Windows.Controls.Button] -and [string]$_.Tag.action -ceq 'quick_call' }) | Select-Object -First 1
     Assert-UiChannels ($quickCallButton -and $quickCallButton.Content -ceq '激活组' -and $quickCallButton.IsEnabled) '组呼频道没有直接显示可用的激活组按钮。'
-    $quickCallButton.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))
+    Invoke-UiRoutingDiagnosticChannelQuickCallButton -Channel ($script:channels | Where-Object {
+        (Get-UiChannelKey -Channel $_) -ceq 'group:91:2'
+    } | Select-Object -First 1)
     Assert-UiChannels ($script:supervisor.Commands.Count -eq ($commandCountBeforeQuickCall + 1) -and
         $script:supervisor.Commands[-1].command -ceq 'network_subscription.quick_call_join' -and
         $script:pendingQuickCall -and $script:txChannelKey -ceq 'group:91:2') '组呼卡的直接按钮没有通过真实事件触发动态组激活。'

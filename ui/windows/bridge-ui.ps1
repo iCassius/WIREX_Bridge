@@ -5141,16 +5141,19 @@ function Invoke-UiRoutingDiagnosticChannelQuickCallButton {
     $panel=$script:mainWindow.FindName('ChannelCardsPanel')
     foreach($card in @($panel.Children)){
         if($card -isnot [System.Windows.Controls.Border] -or $card.Child -isnot [System.Windows.Controls.Grid]){continue}
-        if($card.Child.Children.Count -lt 2){continue}
-        $actions=$card.Child.Children[1]
-        if($actions -isnot [System.Windows.Controls.Primitives.UniformGrid]){continue}
-        foreach($candidate in @($actions.Children)){
-            if($candidate -isnot [System.Windows.Controls.Button] -or -not $candidate.Tag -or [string]$candidate.Tag.action -cne 'quick_call'){continue}
-            if((Get-UiChannelKey -Channel $candidate.Tag.channel) -cne $key){continue}
-            if(-not $candidate.IsEnabled){throw '频道激活组按钮未启用。'}
-            $eventArgs=[System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)
-            $candidate.RaiseEvent($eventArgs)
-            return
+        $actionGrids=@($card.Child.Children | Where-Object {
+            $_ -is [System.Windows.Controls.Primitives.UniformGrid]
+        })
+        foreach($actions in $actionGrids){
+            foreach($candidate in @($actions.Children)){
+                if($candidate -isnot [System.Windows.Controls.Button] -or -not $candidate.Tag -or
+                    [string]$candidate.Tag.action -cne 'quick_call' -or -not $candidate.Tag.channel){continue}
+                if((Get-UiChannelKey -Channel $candidate.Tag.channel) -cne $key){continue}
+                if(-not $candidate.IsEnabled){throw '频道激活组按钮未启用。'}
+                $eventArgs=[System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)
+                $candidate.RaiseEvent($eventArgs)
+                return
+            }
         }
     }
     throw '没有找到本机诊断频道的激活组按钮。'
