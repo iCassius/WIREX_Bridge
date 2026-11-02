@@ -15,8 +15,10 @@
 使用 Windows PowerShell 5.1、STA 运行的集成 UI 回归已通过：console 121、channels 117、audio 85、R123 交互 54、BM 管理 80 项；status 状态记录回归通过。`test-ui-r123.ps1` 覆盖 transient 到期/重复 tick、新消息与显式重启、预设与手输、PTT 目标保留、卡片颜色、无 key 静态区，以及 BM toggle 的成功、拒绝和 busy 状态。BM 管理 UI 测试只使用本地 fake transport。RenderOnly 通过 1,919 项布局和实际边界断言，并输出截图。
 
 Root review 曾发现重复的非法静态组 ID 错误在 transient 到期后不会重新显示；运行时现在只对这类新错误显式重启提示期限，普通轮询不续期。P2 修复已由集成回归复验。
-Alpha 19 包启动复验还检查了卡片动态组按钮。R123 新卡在呼号区后增加子项，使旧诊断 helper 硬编码的 Children[1] 指向呼号区，导致诊断在 RX 更新 ACK 后找不到“激活组”按钮。helper 已改为枚举卡片子项里的 UniformGrid，并匹配按钮 Tag.action/Tag.channel；channels fake 通过 117 项且实际调用 helper。将更新后的 bridge-ui.ps1 单独替换进隔离 Alpha 19 包副本、仅更新 manifest 对应文件的长度与 SHA-256 后，WinPS 5.1 package-startup 通过，channel_flow_test.tx_command=tx_policy.replace。该副本用于定位和验证修复；正式 Alpha 19 候选仍需从修复提交重新 clean build/package，并完成全部包级回归。
 
+Alpha 19 的正式候选已从修复提交 `b102cd630d49839eb99869f87958909cd365094d` 完成 clean Native full40 和重新打包。Windows PowerShell 5.1 的正式包 `test-package-startup.ps1`、`test-control.ps1`、`test-ui-control-v2.ps1` 均通过；最后一项使用 R121 保存的 13 帧 Native Dispatcher 数据并通过实际 parser。包启动诊断在 RX 更新 ACK 后找到“激活组”按钮，并观察到 `channel_flow_test.tx_command=tx_policy.replace`。定位时使用的隔离包副本与旧候选已保留归档，正式包未在生成后修改运行资产。
+
+R123 离线 UI 回归和完整 Alpha 19 证据见 [R123 发布交接](R123_发布交接.md) 与 [Alpha 19 本机目录记录](releases/v0.1.0-alpha.19.md)。以上检查没有连接真实电台硬件、串口、BM API 或音频设备，也没有操作 PTT/RF。
 ```powershell
 powershell.exe -NoLogo -NoProfile -STA -File tools/test-ui-console.ps1
 powershell.exe -NoLogo -NoProfile -STA -File tools/test-ui-channels.ps1

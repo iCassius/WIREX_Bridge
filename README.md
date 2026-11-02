@@ -1,26 +1,18 @@
 ﻿# WIREX Bridge：FTX-1 DIRECT 与 BrandMeister 语音桥接
 
-## 当前源码阶段：R123 / Alpha 19 集成回归通过（源码待提交）
+## 当前本机候选：R123 / Alpha 19
 
-R123 固定 WPF 控制台布局、CAT 单一 Apply、串口连接切换、顶部短暂状态和静态组 API 覆盖层已完成集成。Alpha 19 的 profile、启动器和包内 README 已准备，R122 / Alpha 18 仍是最近审计通过的本机候选。
+R123 源码提交 `b102cd630d49839eb99869f87958909cd365094d` 已推送到 `origin/main`。Alpha 19 本机目录为 `build/releases/v0.1.0-alpha.19`，manifest 状态为 `root_audit_passed`，SHA-256 为 `a5751cc3a940638f145cb67c0dc3061467c4424f309e7946bc00407424605916`。Root 核对 41 项资产、37 个源码映射、9 个运行目录和 42 个通用文件；复制本机配置后目录为 43 个文件。
 
-- RenderOnly 实际布局和边界检查通过 1,919 项；CAT fake 回归通过 197 项。
-- 集成 UI 回归通过：console 121、channels 117、audio 85、R123 交互 54、BM 管理 80 项；status 状态记录回归通过。
-- 离线 package / publish / download 检查通过 672 / 137 / 2,987 项。137 项 publish fake 当时跳过仓库 Git 检查；源码提交后还要运行完整 Git 身份检查 fake。
-- Root review 指出“同一非法静态组 ID 的错误提示过期后不再显示”已修复；集成回归复验通过。Alpha 19 profile 保持 41 项资产、37 个源码映射、9 个目录和 40 个 Native 测试名。
-- 源码尚未提交。clean Native full40、正式 package fake 和 Alpha 19 generic package 仍待完成；包状态按授权先保持 awaiting_root_audit。
+clean Native full40 通过 40/40，`source_tree_clean=true`、`compile_only=false`，warning/error 均为 0；EXE 为 999,936 字节，SHA-256 `aad6ce7d48c616215b5979f0c7bba3e4da0eb33dee56f26554e84f3f85e640a7`。RenderOnly、CAT、console、channels、audio、R123 交互、BM 管理、status、package、publish 和 download 离线检查均通过。Windows PowerShell 5.1 包启动、control 与 WPF UI control-v2 通过，后者解析 R121 保存的 13 帧 Native Dispatcher 数据。
 
-本阶段没有连接真实 CAT/COM、HRI、音频设备或 BrandMeister API，没有操作 PTT/RF；硬件行为仍待现场验收。细节见 [R123 UI](docs/R123_UI.md)、[R123 CAT](docs/R123_CAT.md) 和 [R123 runtime](docs/R123_RUNTIME.md)。
+本机配置从 Alpha 18 原字节复制，长 4,455 字节；两份文件内存比较相同，PortableConfig 只读校验通过。未记录配置内容或配置哈希。根启动器备份于 `private/config-backups/R123/start-my-bridge.cmd`，当前以 ASCII 相对路径指向 Alpha 19 启动器；没有启动普通应用。Alpha 18 完整目录及旧构建已可恢复归档到 `private/build-retired/R123/previous-release/`，清单记录路径和长度。
 
-## 最近审计通过的本机候选：R122 / Alpha 18
+本机候选没有制作 ZIP、Git tag 或 GitHub Release。本轮没有连接真实 CAT/COM、HRI、音频设备或 BrandMeister API，没有操作 PTT/RF；硬件行为仍待现场验收。详情见 [R123 发布交接](docs/R123_发布交接.md)、[Alpha 19 本机目录记录](docs/releases/v0.1.0-alpha.19.md)、[R123 UI](docs/R123_UI.md)、[R123 CAT](docs/R123_CAT.md) 和 [R123 runtime](docs/R123_RUNTIME.md)。
 
-R122 源码提交为 `ae886f582e2c9dee7839de5ef7a78208a92a2f75`，已推送到 `origin/main`。本版调整固定 1360×900 WPF 控制台、CAT 单一“应用”批次、DMR ID/两位设备编号、音频设备布局和加入频道只收听流程。首个 R122 UI 源提交为 `0153fcbc6c94128f5861a56ace31f399c4596d85`；`dec6f7e` 仅修正包启动测试 XPath，不更改运行文件；`ae886f5` 修复 Native 尚未启用既有 PTT 目标时的诊断握手，并区分 alpha18 与 alpha14–17 的旧诊断断言。实现细节见 [R122 UI](docs/R122_UI.md)、[R122 Runtime](docs/R122_RUNTIME.md) 和 [R122 CAT](docs/R122_CAT.md)。
+## R122 / Alpha 18（已归档）
 
-基于 clean `ae886f5` 完成 Native full40，40/40 按 alpha18 顺序通过，`compile_only=false`、编译 warning/error 为 0。构建目录为 `build/_work/wirex-bridge-ae886f5-20261102-105245`，EXE 长 999,936 字节，SHA-256 `aa43b27c950dc694a7e15a00ba1c3291fbd99e68b677baaad2d727eee7f4348d`。第一次构建在 `hri_p_status_test` 链接时报 LNK1105；失败目录和日志已可恢复归档，新的 build 目录全量重跑通过。完整记录见 [R122 发布交接](docs/R122_发布交接.md)。
-
-Alpha18 generic package 经 root 审计通过：41 项资产、37 个源码映射、9 个运行目录、42 个通用文件，manifest `package_status=root_audit_passed`，SHA-256 `18a6e9a30f00166b3669a5082eebee4e8b737c249137121d4df235ea4c642fd3`。本机配置随后从前一 alpha17 目录原字节复制，长 3,896 字节；源和副本逐字节相同，源码 `PortableConfig` 只读校验均通过，没有记录配置值或配置哈希。本机目录共 43 个文件，`config.json` 不在 manifest 资产中。根目录 `start-my-bridge.cmd` 已备份到 `private/config-backups/R122/start-my-bridge.cmd`，并以 ASCII 相对路径改为调用 alpha18 唯一 CMD；只做静态检查，没有启动应用。
-
-包级 WinPS 5.1 STA 检查通过：`test-package-startup.ps1`、`test-control.ps1`、包内真实 WPF `test-ui-control-v2.ps1` 均通过。包启动诊断保留原 PTT 目标；本次 Native 尚未启用原目标时，诊断记录先确认同一目标的 `tx_policy.replace`，再确认 `rx_policy.replace`。包内 parser 另解析了 R121 保存的 13 帧 Native Dispatcher 数据。PowerShell 7 profile/publish/download 离线合成检查分别通过 656、136、2817 项。未连接真实 CAT COM、FTX-1、HRI、BM 或音频设备，未触发 PTT/RF；CAT 与 HRI 同时运行仍待实机验证。没有创建 ZIP、Git tag 或 GitHub Release。
+Alpha 18 已由 Alpha 19 接替，完整目录和旧构建保留于 `private/build-retired/R123/previous-release/`。R122 的测试与构建记录见 [R122 发布交接](docs/R122_发布交接.md)。
 
 ## R121 / Alpha 17 前一版配置来源（已归档）
 

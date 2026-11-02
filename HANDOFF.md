@@ -1,22 +1,20 @@
 ﻿# WIREX Bridge 交接入口
 
-## R123 源码阶段（2026-11-02）
+## R123 / Alpha 19 最终交接（2026-11-02）
 
-- R123 固定布局、CAT 单一 Apply、串口切换、顶部 transient 和静态组 API 覆盖层已完成集成。Alpha 19 launcher、README 与 release profile 已准备；profile 保持 41 项资产、37 个源码映射、9 个目录、40 个 Native 测试名。
-- 离线回归通过：RenderOnly 1,919、CAT fake 197、console 121、channels 117、audio 85、R123 交互 54、BM 管理 80 项；status 状态记录回归通过。
-- package 672、download 2,987 项通过。Publish fake 源阶段 137 项通过时跳过仓库 Git 检查；源码提交后需再跑完整 Git 身份检查版本。Root review 提出的重复非法静态组 ID transient P2 已修复并复验通过。
-- 源码提交前，完整 publisher fake、clean Native full40、Alpha 19 generic package 仍待执行；package 状态按授权设为 `awaiting_root_audit`。R122 / Alpha 18 仍是最近审计通过的本机候选。
-- R123 没有做真实 COM/CAT、HRI、音频、BM API、PTT 或 RF 验收。
+源码提交 `b102cd630d49839eb99869f87958909cd365094d` 已推送至 `origin/main`。基于该干净提交在 `build/_work/wirex-bridge-b102cd6-20261102-153831` 完成 Native full40，40/40 通过，`source_tree_clean=true`、`compile_only=false`，编译 warning/error 均为 0。EXE 长 999,936 字节，SHA-256 为 `aad6ce7d48c616215b5979f0c7bba3e4da0eb33dee56f26554e84f3f85e640a7`。首个全量构建在链接 `session_timing_test.exe` 时报告 LNK1105；检查时没有发现仍在运行的 link、cl 或测试进程。随后在新目录重跑 full40 并通过；仅记录观察结果，不推断失败原因。失败目录及日志已可恢复归档。
 
-## R122 / Alpha 18 root 审计通过的本机目录（2026-11-02）
+Alpha 19 本机包位于 `build/releases/v0.1.0-alpha.19`。Root 审计确认 41 项资产、37 个源码映射、9 个运行目录、42 个通用文件；manifest 为 `root_audit_passed`，SHA-256 `a5751cc3a940638f145cb67c0dc3061467c4424f309e7946bc00407424605916`。本轮离线回归通过：RenderOnly 1,919、CAT 197、console 121、channels 117、audio 85、R123 交互 54、BM 管理 80，status 状态记录回归通过；package 672、publisher fake（含 Git 检查）139、download fake 2,987 项通过。Windows PowerShell 5.1 包启动、control、WPF UI control-v2 及 R121 保存的 13 帧 Native Dispatcher 数据解析均通过。详细测试日志和包范围见 [Alpha 19 本机目录记录](docs/releases/v0.1.0-alpha.19.md)。
 
-产品源码提交 `ae886f582e2c9dee7839de5ef7a78208a92a2f75` 已推送到 `origin/main`。`dec6f7e` 只修正包启动测试 XPath；`ae886f5` 修复既有 PTT 目标诊断并区分新版和旧版测试合同，包测试执行器来自包含该 test-only 修复的 ae886f5 源树。
+本机 `config.json` 从 Alpha 18 根目录原字节复制到 Alpha 19，长度 4,455 字节，源与副本内存比较相同，PortableConfig 只读验证均通过；没有记录配置内容或配置哈希。Alpha 18 配置随完整目录移入归档。根 `start-my-bridge.cmd` 原件备份在 `private/config-backups/R123/start-my-bridge.cmd`，当前 ASCII 文件使用相对路径调用 Alpha 19 唯一启动器；本轮没有启动正常应用。
 
-clean Native full40 在最终目录 `build/_work/wirex-bridge-ae886f5-20261102-105245` 通过 40/40，`compile_only=false`、warning/error 均为 0；EXE 为 999,936 字节，SHA-256 `aa43b27c950dc694a7e15a00ba1c3291fbd99e68b677baaad2d727eee7f4348d`。首轮在 `hri_p_status_test` 链接时报 LNK1105；失败目录/日志保存在 `private/build-retired/R122/failed-candidates/alpha18-ae886f5-attempt1-lnk1105/`，同一 clean commit 新目录重跑通过。
+Alpha 18 完整发行目录、旧构建目录及日志可恢复归档于 `private/build-retired/R123/previous-release/`；`archive-inventory.json` 记录 214 个文件和 48,745,685 字节，清单只记录路径与长度。Alpha 19 是 `build/releases/` 唯一版本；`build/_work/` 仅保留 b102 最终构建目录和 clean full40 日志。此前定位诊断 helper 问题的 e918 候选、失败包及隔离副本也保留在 `private/build-retired/R123/` 下；LNK1105 首次失败目录另存于 `private/build-retired/R123/failed-candidates/`。
 
-Alpha18 generic 包由 profile 重新生成，root 审计确认 41 项资产、37 个源码映射、9 个目录、42 个通用文件；manifest 为 `root_audit_passed`，SHA-256 `18a6e9a30f00166b3669a5082eebee4e8b737c249137121d4df235ea4c642fd3`。本机配置从 alpha17 原文件复制后逐字节相同，长 3,896 字节，PortableConfig 只读验证通过；未记录配置值或哈希。当前目录 43 个文件，配置不在 manifest 内。根启动器备份于 `private/config-backups/R122/start-my-bridge.cmd`，ASCII 静态指向 alpha18 唯一 CMD，没有正常启动应用。
+本地候选不是 ZIP、Git tag 或 GitHub Release。本轮没有连接真实 COM/CAT、HRI、BM API、音频或电台，没有触发 PTT/RF。Alpha 19 仍待现场硬件验收。R123 UI 与运行时行为见 [R123 runtime](docs/R123_RUNTIME.md)、[R123 UI](docs/R123_UI.md) 和 [R123 CAT](docs/R123_CAT.md)。
 
-配置覆盖前的 WinPS 5.1 STA 包 startup、control、WPF control-v2 均通过；包 startup 报告 `tx_command=tx_policy.replace` 后确认 `rx_policy.replace`。本轮包 parser 处理 R121 保存的 Native Dispatcher 13 帧并通过；源码 CAT、频道、DMR ID、console、RenderOnly 回归及 PowerShell 7 的 656/136/2817 项离线 profile/publish/download 检查通过。0153 候选与临时诊断副本位于 `private/build-retired/R122/failed-candidates/alpha18-0153fcbc-routing-fix/`；Alpha17 47 文件目录、245ed03 构建及日志归档于 `private/build-retired/R122/previous-release/`，清单不含 config hash。当前 `build/releases/` 只保留 alpha18，`build/_work/` 只保留最终 ae886f5 build 与对应日志。无实机 CAT/HRI/BM/音频/PTT/RF 测试；没有创建 ZIP、tag 或 GitHub Release。详见 [R122 发布交接](docs/R122_发布交接.md) 和 [Alpha 18 本机候选记录](docs/releases/v0.1.0-alpha.18.md)。
+## R122 / Alpha 18（已归档）
+
+Alpha 18 已由 Alpha 19 接替。原完整目录及 `ae886f5` 构建和日志保留于 `private/build-retired/R123/previous-release/`；逐文件归档检查见 [R123 发布交接](docs/R123_发布交接.md)。R122 当时的验证详情仍见 [R122 发布交接](docs/R122_发布交接.md)。
 
 ## R121 / Alpha 17 最终交接（2026-11-02，现已归档）
 
