@@ -2,9 +2,11 @@
 param()
 
 $ErrorActionPreference = 'Stop'
+$script:assertionCount = 0
 Add-Type -AssemblyName PresentationFramework
 function Assert-UiStatus {
     param([bool]$Condition, [string]$Message)
+    $script:assertionCount++
     if (-not $Condition) { throw $Message }
 }
 
@@ -24,11 +26,15 @@ $wantedFunctions = @('Test-UiSourceIdentityRecord', 'Get-UiSourceIdentityDisplay
     'Format-ProfileTarget', 'Format-ProfileReceiveTarget', 'Set-MainTargetSummary', 'On-UiTimerTick',
     'Get-UiChannelKey', 'Get-UiChannelByKey', 'Get-UiChannelCurrentCall', 'Get-UiChannelCallerLabel',
     'Get-UiChannelCallerDetails', 'Get-UiChannelCardPresentation', 'New-UiDmIdLinkTextBlock',
-    'New-UiChannelActionButton', 'Update-UiChannelDisplays', 'Update-CallTargetChoices', 'Set-OfflineDisplay')
+    'New-UiChannelActionButton', 'Update-UiChannelDisplays', 'Update-CallTargetChoices', 'Set-OfflineDisplay',
+    'Get-UiKnownChannelName', 'Get-UiChannelDisplayName', 'Test-UiBmStaticChannelReadback',
+    'Get-UiChannelActivationPresentation', 'Reset-UiChannelActivationForBmReconnect', 'Clear-UiChannelActivationAfterGroupPtt')
 $found = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wantedFunctions -ccontains $node.Name }, $true))
 Assert-UiStatus ($found.Count -eq $wantedFunctions.Count) '没有找到状态记录验证函数。'
 foreach ($functionAst in $found) { Invoke-Expression $functionAst.Extent.Text }
 Import-Module -Name (Join-Path (Join-Path $repoRoot 'ui\windows') 'RadioIdentity.psm1') -Force
+Import-Module -Name (Join-Path (Join-Path $repoRoot 'ui\windows') 'ChannelActivationState.psm1') -Force
+$script:channelActivationState = New-WirexChannelActivationState
 $script:radioIdentityModuleLoaded = $true
 
 function Add-UiCallHistoryRecord {
@@ -393,7 +399,7 @@ $active.lcd_source_identity = [pscustomobject][ordered]@{
 }
 Apply-StatusRecord -Record $active
  $cardTexts = @(Get-TestChannelCardTexts)
-Assert-UiStatus ($script:lastSequence -eq 3 -and $cardTexts -contains '组呼 91' -and $cardTexts -contains 'DMR ID 1234') `
+Assert-UiStatus ($script:lastSequence -eq 3 -and @($cardTexts | Where-Object { $_ -match '^组呼 TG 91(?: ·|$)' }).Count -eq 1 -and $cardTexts -contains 'DMR ID 1234') `
     ('活动组呼未在匹配的频道卡片显示来话 DMR ID。 cards=[' + ($cardTexts -join '|') + ']')
 Assert-UiStatus (@($cardTexts | Where-Object { $_ -match 'CC|LC|接收中|缓冲中|未知' }).Count -eq 0) '频道来话卡片应只显示频道和来话身份，不显示协议字段或推测状态。'
 Assert-UiStatus ($script:mockUiFields['HriSourceIdentityValue'] -ceq 'ID1234 · 已准备' -and
@@ -563,4 +569,4 @@ try {
     if ([System.IO.Directory]::Exists($retentionRoot)) { [System.IO.Directory]::Delete($retentionRoot, $true) }
 }
 
-Write-Output '通过：PS5.1 状态记录、来源标签、run_id/序号/新鲜度、生命周期清理及已完成运行日志保留检查。'
+Write-Output ('通过：PS5.1 状态记录、来源标签、run_id/序号/新鲜度、生命周期清理及已完成运行日志保留检查（{0} 项断言）。' -f $script:assertionCount)

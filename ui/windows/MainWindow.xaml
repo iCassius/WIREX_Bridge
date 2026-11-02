@@ -107,9 +107,73 @@
       <Setter Property="Padding" Value="3,1"/><Setter Property="FontSize" Value="10"/>
       <Style.Triggers><Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="#28533B"/></Trigger></Style.Triggers>
     </Style>
-    <Style TargetType="Slider">
-      <Setter Property="Foreground" Value="#9BE0AE"/><Setter Property="Margin" Value="2,4,10,5"/>
+    <Style x:Key="AudioGainSliderStyle" TargetType="Slider">
+      <Setter Property="Foreground" Value="#4C7FF5"/><Setter Property="Margin" Value="2,4,6,4"/>
+      <Setter Property="MinHeight" Value="34"/><Setter Property="Height" Value="34"/>
       <Setter Property="SmallChange" Value="0.05"/><Setter Property="LargeChange" Value="0.5"/>
+      <Setter Property="IsMoveToPointEnabled" Value="True"/><Setter Property="IsSnapToTickEnabled" Value="False"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Slider">
+            <Grid x:Name="SliderRoot" SnapsToDevicePixels="True">
+              <Grid.RowDefinitions><RowDefinition Height="28"/><RowDefinition Height="6"/></Grid.RowDefinitions>
+              <Border x:Name="TrackRail" Grid.Row="0" Height="18" Margin="12,0" VerticalAlignment="Center" CornerRadius="9" Background="#56595E"/>
+              <UniformGrid x:Name="TickDots" Grid.Row="0" Rows="1" Columns="7" Margin="10,0" VerticalAlignment="Center" IsHitTestVisible="False">
+                <Ellipse Width="4" Height="4" Fill="#92959A" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                <Ellipse Width="4" Height="4" Fill="#92959A" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                <Ellipse Width="4" Height="4" Fill="#92959A" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                <Ellipse Width="4" Height="4" Fill="#92959A" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                <Ellipse Width="4" Height="4" Fill="#92959A" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                <Ellipse Width="4" Height="4" Fill="#92959A" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                <Ellipse Width="4" Height="4" Fill="#92959A" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              </UniformGrid>
+              <Track x:Name="PART_Track" Grid.Row="0" Orientation="Horizontal" VerticalAlignment="Center"
+                     IsDirectionReversed="{TemplateBinding IsDirectionReversed}">
+                <Track.DecreaseRepeatButton>
+                  <RepeatButton Command="{x:Static Slider.DecreaseLarge}" Focusable="False" IsTabStop="False" Background="Transparent">
+                    <RepeatButton.Template>
+                      <ControlTemplate TargetType="RepeatButton">
+                        <Border x:Name="SelectedTrack" Height="18" VerticalAlignment="Center" Background="#4C7FF5" CornerRadius="9"/>
+                        <ControlTemplate.Triggers>
+                          <Trigger Property="IsEnabled" Value="False"><Setter TargetName="SelectedTrack" Property="Background" Value="#858B91"/></Trigger>
+                        </ControlTemplate.Triggers>
+                      </ControlTemplate>
+                    </RepeatButton.Template>
+                  </RepeatButton>
+                </Track.DecreaseRepeatButton>
+                <Track.Thumb>
+                  <Thumb x:Name="PART_Thumb" Width="28" Height="28" Focusable="False">
+                    <Thumb.Template>
+                      <ControlTemplate TargetType="Thumb">
+                        <Ellipse x:Name="ThumbSurface" Fill="#FFFFFF" Stroke="#E9EBEE" StrokeThickness="1"/>
+                        <ControlTemplate.Triggers>
+                          <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ThumbSurface" Property="Fill" Value="#F1F4FF"/></Trigger>
+                          <Trigger Property="IsDragging" Value="True"><Setter TargetName="ThumbSurface" Property="Fill" Value="#DDE7FF"/></Trigger>
+                          <Trigger Property="IsEnabled" Value="False"><Setter TargetName="ThumbSurface" Property="Fill" Value="#B8BEC3"/><Setter TargetName="ThumbSurface" Property="Stroke" Value="#747B80"/></Trigger>
+                        </ControlTemplate.Triggers>
+                      </ControlTemplate>
+                    </Thumb.Template>
+                  </Thumb>
+                </Track.Thumb>
+                <Track.IncreaseRepeatButton>
+                  <RepeatButton Command="{x:Static Slider.IncreaseLarge}" Focusable="False" IsTabStop="False" Background="Transparent">
+                    <RepeatButton.Template><ControlTemplate TargetType="RepeatButton"><Border Background="Transparent"/></ControlTemplate></RepeatButton.Template>
+                  </RepeatButton>
+                </Track.IncreaseRepeatButton>
+              </Track>
+            </Grid>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter TargetName="TrackRail" Property="Background" Value="#42464A"/>
+                <Setter TargetName="TickDots" Property="Opacity" Value="0.45"/>
+              </Trigger>
+              <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                <Setter TargetName="TrackRail" Property="BorderBrush" Value="#91B3FF"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
     </Style>
     <Style TargetType="Expander">
       <Setter Property="Foreground" Value="#EDF3F4"/><Setter Property="Background" Value="#172024"/>
@@ -259,7 +323,7 @@
           <TextBlock Grid.Row="0" Text="日常控制" FontSize="13" FontWeight="Bold" Margin="1,0,0,1" VerticalAlignment="Center"/>
           <Grid x:Name="ChannelConsolePanel" Grid.Row="1" Margin="2,1,2,1">
             <Grid.ColumnDefinitions><ColumnDefinition Width="1.35*"/><ColumnDefinition Width="1*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-            <Grid Grid.Column="0"><Grid.RowDefinitions><RowDefinition Height="17"/><RowDefinition Height="*"/></Grid.RowDefinitions><TextBlock Text="频道 ID" Grid.Row="0" Foreground="#A8B5BB" FontSize="10"/><ComboBox x:Name="ChannelIdBox" Grid.Row="1" IsEditable="True" IsTextSearchEnabled="False" StaysOpenOnEdit="True" Height="29" Margin="2,0" VerticalAlignment="Bottom"><ComboBoxItem Content="460997 中国鹦鹉" Tag="460997|private"/><ComboBoxItem Content="46001 组呼" Tag="46001|group"/><ComboBoxItem Content="91 组呼" Tag="91|group"/></ComboBox></Grid>
+            <Grid Grid.Column="0"><Grid.RowDefinitions><RowDefinition Height="17"/><RowDefinition Height="*"/></Grid.RowDefinitions><TextBlock Text="频道 ID" Grid.Row="0" Foreground="#A8B5BB" FontSize="10"/><ComboBox x:Name="ChannelIdBox" Grid.Row="1" IsEditable="True" IsTextSearchEnabled="False" StaysOpenOnEdit="True" Height="29" Margin="2,0" VerticalAlignment="Bottom"><ComboBoxItem Content="460997 中国鹦鹉" Tag="460997|private" TextSearch.Text="460997"/><ComboBoxItem Content="46001 组呼" Tag="46001|group" TextSearch.Text="46001"/><ComboBoxItem Content="91 组呼" Tag="91|group" TextSearch.Text="91"/></ComboBox></Grid>
             <Grid Grid.Column="1"><Grid.RowDefinitions><RowDefinition Height="17"/><RowDefinition Height="*"/></Grid.RowDefinitions><TextBlock Text="类型" Grid.Row="0" Foreground="#A8B5BB" FontSize="10"/><ComboBox x:Name="ChannelKindBox" Grid.Row="1" SelectedIndex="0" Height="29" Margin="2,0" VerticalAlignment="Bottom"><ComboBoxItem Content="请选择" Tag="unknown"/><ComboBoxItem Content="单呼" Tag="private"/><ComboBoxItem Content="组呼" Tag="group"/></ComboBox></Grid>
             <Button x:Name="AddChannelButton" Grid.Column="2" Content="加入监听" Padding="8,4" Background="#28583C" BorderBrush="#64A477" VerticalAlignment="Bottom" Height="29" Margin="2,0"/>
           </Grid>
@@ -305,11 +369,11 @@
               <Grid Grid.Row="1"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0" Margin="1,0,6,0">
                   <DockPanel><TextBlock Text="播放增益" Foreground="#A8B5BB" FontSize="10"/><TextBlock x:Name="PlaybackGainValueText" DockPanel.Dock="Right" Text="" Foreground="#9BE0AE" FontWeight="Bold" Margin="0,0,4,0" FontSize="10"/></DockPanel>
-                  <Slider x:Name="PlaybackGainSlider" Minimum="0.25" Maximum="16" Value="1" Margin="2,4,6,4"/>
+                  <Slider x:Name="PlaybackGainSlider" Style="{StaticResource AudioGainSliderStyle}" Minimum="0.25" Maximum="16" Value="1"/>
                 </StackPanel>
                 <StackPanel Grid.Column="1" Margin="6,0,1,0">
                   <DockPanel><TextBlock Text="发送增益" Foreground="#A8B5BB" FontSize="10"/><TextBlock x:Name="TransmitGainValueText" DockPanel.Dock="Right" Text="" Foreground="#9BE0AE" FontWeight="Bold" Margin="0,0,4,0" FontSize="10"/></DockPanel>
-                  <Slider x:Name="TransmitGainSlider" Minimum="0.25" Maximum="16" Value="16" Margin="2,4,6,4"/>
+                  <Slider x:Name="TransmitGainSlider" Style="{StaticResource AudioGainSliderStyle}" Minimum="0.25" Maximum="16" Value="16"/>
                 </StackPanel>
               </Grid>
             </Grid>

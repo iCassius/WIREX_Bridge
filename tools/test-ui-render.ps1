@@ -3,7 +3,7 @@
 param()
 $ErrorActionPreference='Stop'
 $script:assertionCount=0
-function Assert-Ui { param([bool]$Ok,[string]$Why) $script:assertionCount++; if(-not $Ok){throw "ASSERTION FAILED: $Why"} }
+function Assert-Ui { param([bool]$Ok,[string]$Why) $script:assertionCount++; if(-not $Ok){throw "ASSERTION FAILED [$script:assertionCount]: $Why"} }
 function Assert-Bom { param([string]$Path) $b=[IO.File]::ReadAllBytes($Path); Assert-Ui ($b.Length -ge 3 -and $b[0] -eq 239 -and $b[1] -eq 187 -and $b[2] -eq 191) ("UTF-8 BOM missing: "+[IO.Path]::GetFileName($Path)) }
 function Node { param([xml]$Doc,[string]$Name) $n=@($Doc.SelectNodes("//*[@*[local-name()='Name']='$Name']")); if($n.Count -ne 1){throw "XAML控件$Name数量异常：$($n.Count)"}; return $n[0] }
 function Rows { param([System.Xml.XmlNode]$N) $d=$N.SelectSingleNode("./*[local-name()='Grid.RowDefinitions']"); if(-not $d){throw '缺少Grid.RowDefinitions'}; @($d.SelectNodes("./*[local-name()='RowDefinition']")) }
@@ -34,6 +34,19 @@ function Check-Render {
  $history=Rect $l 'RadioDetailsExpander';$list=Rect $l 'CallHistoryList';Assert-Ui ([Math]::Abs($history.height-120)-le 1 -and [Math]::Abs($list.height-82)-le 1 -and [int]$l.history_visible_count -eq 5) "$Label历史框不是120/五行"
  $historyRows=@($l.history_page_probe.visual.rows);Assert-Ui ($historyRows.Count -eq 5 -and @($historyRows|Where-Object{-not $_.container_fully_visible -or -not $_.text_fully_visible}).Count -eq 0) "$Label历史五行未完整显示"
  Assert-Ui (@($l.channel_card_layout).Count -eq 6) "$Label频道区不是固定六格"
+ foreach($card in @($l.channel_card_layout|Where-Object{-not $_.blank})){
+  $title=$card.card_title;$meta=$title.tag;$box=$card.card_bounds;$header=$title.bounds;$call=$card.call_area_bounds
+  $prefix=if([string]$meta.kind -ceq 'group'){('组呼 '+[string]$meta.id)}else{('单呼 '+[string]$meta.id)}
+  $expectedKey=[string]$meta.kind+':'+[string]$meta.id+':'+[string]$meta.slot
+  Assert-Ui ($title.name -ceq 'ChannelCardTitle' -and [string]$title.text -ceq [string]$meta.title -and [string]$title.tooltip -ceq [string]$meta.tooltip -and [string]$meta.channel_key -ceq [string]$card.channel_key -and [string]$card.channel_key -ceq $expectedKey) "${Label}频道标题没有保留完整文字或稳定ID/kind/slot"
+  Assert-Ui ($title.text.StartsWith($prefix,[StringComparison]::Ordinal) -and $title.tooltip.Contains([string]$meta.id) -and (-not [string]$meta.name -or $title.tooltip.Contains([string]$meta.name))) "${Label}频道标题没有显示kind、ID和完整已知名称"
+  Assert-Ui ([Math]::Abs([double]$card.height-109) -le 1 -and $header.x -ge ($box.x-.5) -and $header.y -ge ($box.y-.5) -and $header.right -le ($box.right+.5) -and $header.bottom -le ($call.y+.5)) "${Label}频道标题bounds越过109px卡片或压住来话区域"
+  Assert-Ui ($title.text_trimming -ceq 'CharacterEllipsis' -and $title.text_wrapping -ceq 'NoWrap') "${Label}频道长标题没有使用省略显示且保留单行布局"
+  if([bool]$meta.is_bm_static){Assert-Ui ($title.text.Contains('静态组') -and $title.tooltip.Contains('静态组已读取')) "${Label}已确认的静态组分类或简短提示没有出现在频道卡"}
+  if([bool]$meta.request_sent){Assert-Ui ($title.text.Contains('动态组') -and $title.tooltip.Contains('激活请求已发送') -and -not $title.tooltip.Contains('Native')) "${Label}已确认的动态组分类或简短提示没有出现在频道卡"}
+ }
+ $longCard=@($l.channel_card_layout|Where-Object{-not $_.blank -and [string]$_.card_title.tag.name.Length -ge 20}|Select-Object -First 1)
+ Assert-Ui ($longCard.Count -eq 1 -and $longCard[0].card_title.text_trimming -ceq 'CharacterEllipsis' -and $longCard[0].card_title.tooltip.Contains([string]$longCard[0].card_title.tag.name)) "${Label}超长频道名没有省略显示或Tooltip没有保留完整名称"
  $title=Rect $l 'MainTitleText';$bm=Rect $l 'BmStatusCard';$event=Rect $l 'TransientStatusText'
  Assert-Ui ([Math]::Abs(($bm.y+$bm.height/2)-($title.y+$title.height/2))-le 1 -and $l.transient_status.visible -and $event.x -ge $title.right) "$Label标题/BM/事件未对齐到同一行"
  if($m.controls_visible.BmLossMetric){$metric=Rect $l 'BmLossMetric'}else{$metric=Rect $l 'BmRttMetric'};Assert-Ui ($event.x -ge ($metric.right-1)) "$Label事件没有紧随最后可见指标"
@@ -52,7 +65,9 @@ function Check-Render {
  Assert-Ui ($l.channel_state.selected_tx_background -ceq '#28583C' -and $l.channel_state.active_tx_background -ceq '#713237' -and $l.channel_state.muted_selected_background -ceq '#28583C' -and $l.channel_state.receive_caller_text -match 'TEST|Sample Operator') "$Label频道收话/目标/发射状态颜色或呼号内容错误"
  $contrastNames=@('MasterPresetBox','ChannelKindBox','CatPortBox','CatBaudRateBox','CatMainModeBox','CatMainFrequencyMHzBox','CatPowerBox','ChannelIdBox')
  foreach($name in $contrastNames){$c=@($l.combo_contrast|Where-Object{$_.name -ceq $name})|Select-Object -First 1;Assert-Ui ($c -and (Contrast ([string]$c.foreground) ([string]$c.background)) -ge 4.5) "$Label组合框$name文字对比度低于4.5:1"}
- Assert-Ui ($l.combo_interaction.cat_port.opened -and -not $l.combo_interaction.cat_port.handled -and $l.combo_interaction.cat_port.editable_text_preserved) "$Label CAT可编辑串口下拉没有展开或保留手输内容"
+ Assert-Ui ($l.combo_interaction.cat_port.editable_text_preserved) "$Label CAT可编辑串口没有保留手输内容（真实 Popup 点击在 test-ui-r124.ps1 验证）"
+ $playSlider=Rect $l 'PlaybackGainSlider';$txSlider=Rect $l 'TransmitGainSlider';$playValue=Rect $l 'PlaybackGainValueText';$txValue=Rect $l 'TransmitGainValueText'
+ Assert-Ui ([Math]::Abs($playSlider.height-34)-le 1 -and [Math]::Abs($txSlider.height-34)-le 1 -and $playValue.bottom-le($playSlider.y-1) -and $txValue.bottom-le($txSlider.y-1)) "$Label增益滑块高度或当前值文字与轨道边界不符"
 
  $inputs=@('StopButton','RefreshDevicesButton','SerialBox','CatPortBox','CatBaudRateBox','SerialConnectButton','CatMainModeBox','CatMainFrequencyMHzBox','CatPowerBox','ApplyCatSettingsButton','CallsignBox','SourceBox','DeviceNumberBox','MasterPresetBox','MasterPortBox','MasterBox','BmApiKeyBox','PasswordBox','ConnectButton','SaveSettingsButton','CallHistoryPagePreviousButton','CallHistoryPageNextButton','SetHistoryCallTargetButton','CallHistoryList','ChannelIdBox','ChannelKindBox','AddChannelButton','BmStaticGroupsList','BmStaticGroupPagePreviousButton','BmStaticGroupPageNextButton','RefreshBmStaticGroupsButton','RemoveBmStaticGroupButton','BmStaticGroupIdBox','AddBmStaticGroupButton','WaveInEndpointBox','WaveOutEndpointBox','PlaybackGainSlider','TransmitGainSlider')
  $rs=@();foreach($n in $inputs){$v=$m.controls_visible.PSObject.Properties[$n];Assert-Ui ($null -ne $v) "$Label缺$n可见性";if(-not $v.Value){continue};$r=Rect $l $n;Assert-Ui ($r.width -gt 0 -and $r.height -gt 0) "$Label$n没有边界";$rs+=,[pscustomobject]@{Name=$n;R=$r}}
@@ -72,6 +87,20 @@ foreach($f in @($PSCommandPath,$ui,$xaml,$settings)){if(-not [IO.File]::Exists($
 $t=$null;$parse=$null;[void][Management.Automation.Language.Parser]::ParseFile($ui,[ref]$t,[ref]$parse);if($parse.Count){throw "bridge-ui.ps1解析失败：$($parse[0].Message)"}
 $doc=[xml][IO.File]::ReadAllText($xaml,[Text.Encoding]::UTF8);$sd=[xml][IO.File]::ReadAllText($settings,[Text.Encoding]::UTF8);$st=[IO.File]::ReadAllText($settings,[Text.Encoding]::UTF8);$w=$doc.DocumentElement
 Assert-Ui ($w.GetAttribute('Width')-ceq '1360' -and $w.GetAttribute('Height')-ceq '900' -and $w.GetAttribute('MinWidth')-ceq '1360' -and $w.GetAttribute('MinHeight')-ceq '900' -and $w.GetAttribute('ResizeMode')-ceq 'CanMinimize') '主窗口没有固定为1360x900'
+$gainStyle=$doc.SelectSingleNode("//*[local-name()='Style' and @*[local-name()='Key']='AudioGainSliderStyle']")
+$gainTemplate=$gainStyle.SelectSingleNode("./*[local-name()='Setter' and @Property='Template']/*[local-name()='Setter.Value']/*[local-name()='ControlTemplate']")
+$gainTrack=$gainTemplate.SelectSingleNode(".//*[local-name()='Track' and @*[local-name()='Name']='PART_Track']")
+$gainRail=$gainTemplate.SelectSingleNode(".//*[local-name()='Border' and @*[local-name()='Name']='TrackRail']")
+$gainThumb=$gainTemplate.SelectSingleNode(".//*[local-name()='Thumb' and @*[local-name()='Name']='PART_Thumb']")
+$gainDots=$gainTemplate.SelectSingleNode(".//*[local-name()='UniformGrid' and @Columns='7']")
+$playGain=Node $doc 'PlaybackGainSlider';$txGain=Node $doc 'TransmitGainSlider'
+$gainScript=[IO.File]::ReadAllText($ui,[Text.Encoding]::UTF8)
+Assert-Ui ($gainStyle -and $gainTrack -and $gainRail.GetAttribute('Height')-ceq '18' -and $gainRail.GetAttribute('CornerRadius')-ceq '9' -and $gainThumb.GetAttribute('Width')-ceq '28' -and $gainThumb.GetAttribute('Height')-ceq '28' -and @($gainDots.SelectNodes("./*[local-name()='Ellipse']")).Count -eq 7) '增益滑块没有18px圆轨道、28px旋钮和七个装饰刻点'
+Assert-Ui ($playGain.GetAttribute('Style')-ceq '{StaticResource AudioGainSliderStyle}' -and $txGain.GetAttribute('Style')-ceq '{StaticResource AudioGainSliderStyle}' -and $playGain.GetAttribute('Minimum')-ceq '0.25' -and $txGain.GetAttribute('Minimum')-ceq '0.25' -and $playGain.GetAttribute('Maximum')-ceq '16' -and $txGain.GetAttribute('Maximum')-ceq '16' -and $gainTemplate.SelectSingleNode("./*[local-name()='ControlTemplate.Triggers']/*[local-name()='Trigger' and @Property='IsEnabled' and @Value='False']")) '增益样式没有限定到两个音量滑块、保留原范围或提供禁用态'
+$snapSetter=$gainStyle.SelectSingleNode("./*[local-name()='Setter' and @Property='IsSnapToTickEnabled' and @Value='False']")
+$moveSetter=$gainStyle.SelectSingleNode("./*[local-name()='Setter' and @Property='IsMoveToPointEnabled' and @Value='True']")
+Assert-Ui ($snapSetter -and $moveSetter) '滑块不再连续输入或点击轨道不能定位'
+Assert-Ui ($gainScript -match "PlaybackGainSlider'\)\.Add_ValueChanged\(\{ On-UiAudioGainValueChanged \}\)" -and $gainScript -match "TransmitGainSlider'\)\.Add_ValueChanged\(\{ On-UiAudioGainValueChanged \}\)") '播放或发送增益没有连接运行时 ValueChanged 处理器'
 $root=Node $doc 'ConsoleRoot';$rr=Rows $root;Assert-Ui ($rr.Count -eq 3 -and $rr[0].GetAttribute('Height')-ceq '32' -and $rr[1].GetAttribute('Height')-ceq '370') '标题单行/上区高度错误'
 $d=Node $doc 'DashboardPanel';$dc=Cols $d;Assert-Ui ($dc.Count -eq 2 -and @($dc|Where-Object{$_.GetAttribute('Width')-ceq '1*'}).Count -eq 2) '下方两列不等宽'
 $c=Node $doc 'ChannelCardsPanel';Assert-Ui ($c.GetAttribute('Rows')-ceq '2' -and $c.GetAttribute('Columns')-ceq '3') '频道卡不是3x2'
@@ -83,7 +112,7 @@ foreach($i in @(1,2,3,4,5)){Assert-Ui ($rows[$i].GetAttribute('Height')-ceq '*')
 $sr=Cols (Node $doc 'ConnectionRowSerial');$rc=Cols (Node $doc 'RadioCatPanel');$cc=Cols (Node $doc 'CatOperatingPanel');$ac=Cols (Node $doc 'ConnectionRowActions')
 Assert-Ui ($sr.Count -eq 3 -and $sr[0].GetAttribute('Width')-ceq '1*' -and $sr[1].GetAttribute('Width')-ceq '2*' -and $sr[2].GetAttribute('Width')-ceq '1*' -and @($rc|Where-Object{$_.GetAttribute('Width')-ceq '1*'}).Count -eq 2 -and @($cc|Where-Object{$_.GetAttribute('Width')-ceq '1*'}).Count -eq 3 -and @($ac|Where-Object{$_.GetAttribute('Width')-ceq '1*'}).Count -eq 2) '串口/CAT/BM按钮列宽合同错误'
 $f=Node $doc 'CatMainFrequencyMHzBox';$p=Node $doc 'CatPowerBox';$powerTags=@($p.SelectNodes("./*[local-name()='ComboBoxItem']")|ForEach-Object{$_.GetAttribute('Tag')});Assert-Ui ($f.LocalName-ceq 'ComboBox' -and $f.GetAttribute('IsEditable')-ceq 'True' -and $p.LocalName-ceq 'ComboBox' -and @($powerTags)-contains '5' -and @($powerTags)-contains '10' -and @($powerTags)-contains '15' -and @($powerTags)-contains '25' -and @($powerTags)-contains '50' -and ([regex]::Matches([IO.File]::ReadAllText($xaml,[Text.Encoding]::UTF8),'x:Name="ApplyCatSettingsButton"')).Count -eq 1) 'CAT频率/五档功率/唯一应用控件错误'
-$id=Node $doc 'ChannelIdBox';$tags=@($id.SelectNodes("./*[local-name()='ComboBoxItem']")|%{$_.GetAttribute('Tag')});Assert-Ui ($id.LocalName-ceq 'ComboBox' -and $id.GetAttribute('IsEditable')-ceq 'True' -and @($tags)-contains '460997|private' -and @($tags)-contains '46001|group' -and @($tags)-contains '91|group') '频道ID编辑/预设Tag错误'
+$id=Node $doc 'ChannelIdBox';$presetItems=@($id.SelectNodes("./*[local-name()='ComboBoxItem']"));$tags=@($presetItems|%{$_.GetAttribute('Tag')});$searchIds=@($presetItems|%{$_.GetAttribute('TextSearch.Text')});Assert-Ui ($id.LocalName-ceq 'ComboBox' -and $id.GetAttribute('IsEditable')-ceq 'True' -and $id.GetAttribute('IsTextSearchEnabled')-ceq 'False' -and @($tags)-contains '460997|private' -and @($tags)-contains '46001|group' -and @($tags)-contains '91|group' -and @($searchIds)-contains '460997' -and @($searchIds)-contains '46001' -and @($searchIds)-contains '91') '频道ID编辑/预设Tag或可编辑项纯ID显示文本错误'
 $sp=Node $doc 'BmStaticGroupPanel';$hint=Node $doc 'StaticApiRequiredText';$overlay=Node $doc 'StaticApiRequiredOverlay';$list=Node $doc 'BmStaticGroupsList';Assert-Ui ($sp.GetAttribute('Visibility')-ceq 'Visible' -and $hint.GetAttribute('Text')-ceq '需启用BM API key' -and $hint.ParentNode-eq $overlay -and $overlay.ParentNode-eq $list.ParentNode -and $overlay.GetAttribute('Background')-ceq '#151C20') 'API提示没有固定暗色覆盖在静态列表'
 foreach($old in @('FooterText','BmDetail','SerialDisconnectButton','CatSessionStatusText','CatPowerSlider','CatDesiredPowerText','CatOperationStatusText','DisconnectBmButton','ConnectionLockValue','TransmitTargetValue','ChannelStatusText','BmStaticGroupStatus','PlaybackGainStatusValue','PlaybackGainSavedValueText','PlaybackGainRuntimeValueText','HiddenRuntimeControls','OfflineBanner','CoreValue','ControlStatusButton','RxCallLossValue')){Assert-Ui (@($doc.SelectNodes("//*[@*[local-name()='Name']='$old']")).Count -eq 0) "旧控件$old仍存在"}
 $daily=Node $doc 'DailyControlsPanel';$out=@($doc.SelectNodes("//*[local-name()='ScrollViewer' and not(ancestor::*[local-name()='Popup'])]"));$pop=@($doc.SelectNodes("//*[local-name()='ScrollViewer' and ancestor::*[local-name()='Popup']]"))

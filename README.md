@@ -1,5 +1,11 @@
 ﻿# WIREX Bridge：FTX-1 DIRECT 与 BrandMeister 语音桥接
 
+## R124 / v0.1.0 源码候选（2026-11-03）
+
+R124 增加根目录 `WirexBridge.exe` 启动入口，运行组件放在 `runtime/`；首次启动时由现有配置模块在 EXE 同目录创建通用配置。stable 清单不包含用户配置、凭据或日志。源码阶段回归已通过；当前仍待 UI 文案冻结、干净源码提交、Native fresh40、正式 launcher 构建、generic 目录实测与 root 包审。尚未打 tag 或发布。
+
+本阶段离线断言计数：配置 63、launcher 45、package 795、publisher 161（源码树仍有修改，跳过 Git 检查）、downloader 3,262（跳过 0）、ActivationState 345、channels 170、console 121、status 87、CAT 197、UI 63、RenderOnly 1,951、gain 85、R123 固定回归 54。没有连接真实设备、BM、音频或射频路径。
+
 ## 当前本机候选：R123 / Alpha 19
 
 R123 源码提交 `b102cd630d49839eb99869f87958909cd365094d` 已推送到 `origin/main`。Alpha 19 本机目录为 `build/releases/v0.1.0-alpha.19`，manifest 状态为 `root_audit_passed`，SHA-256 为 `a5751cc3a940638f145cb67c0dc3061467c4424f309e7946bc00407424605916`。Root 核对 41 项资产、37 个源码映射、9 个运行目录和 42 个通用文件；复制本机配置后目录为 43 个文件。

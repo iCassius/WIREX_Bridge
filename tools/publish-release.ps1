@@ -8,6 +8,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$script:stableReleaseContractPath = Join-Path $PSScriptRoot 'StableReleaseContract.psm1'
+if (-not [System.IO.File]::Exists($script:stableReleaseContractPath)) { throw 'StableReleaseContract.psm1 is missing.' }
+Import-Module -Name $script:stableReleaseContractPath -Force -Scope Global -ErrorAction Stop
 Add-Type -AssemblyName System.Net.Http -ErrorAction Stop
 
 $script:repositoryFullName = 'iCassius/WIREX_Bridge'
@@ -54,11 +57,26 @@ $script:alpha15TestNames = @($script:alpha14TestNames)
 $script:alpha16TestNames = @($script:alpha15TestNames)
 $script:alpha17TestNames = @($script:alpha16TestNames)
 $script:alpha18TestNames = @($script:alpha17TestNames)
+$script:alpha19TestNames = @($script:alpha18TestNames)
+$script:publishIsPrerelease = $true
 
 function Set-PublishProfile {
     param([Parameter(Mandatory=$true)][string]$Tag)
     switch -CaseSensitive ($Tag) {
+        'v0.1.0' {
+            $script:publishTag = $Tag
+            $script:publishIsPrerelease = $false
+            $script:assetPathMap = [ordered]@{
+                'WIREX_Bridge_v0.1.0.zip'='WIREX_Bridge_v0.1.0.zip'
+                'manifest.json'='manifest.json'
+                'SHA256SUMS.txt'='SHA256SUMS.txt'
+            }
+            $script:expectedDirectories = @('runtime','runtime/docs','runtime/licenses','runtime/licenses/dmr_signal',
+                'runtime/licenses/droidstar_mbe','runtime/private','runtime/ui','runtime/ui/windows')
+            $script:expectedTestNames = $script:alpha19TestNames
+        }
         'v0.1.0-alpha.1' {
+            $script:publishIsPrerelease = $true
             $assetMap = [ordered]@{
                 'wirex_bridge.exe'='wirex_bridge.exe'
                 'build-provenance.json'='build-provenance.json'
@@ -344,6 +362,248 @@ function Get-PublishAssetName {
     return [string]$script:assetPathMap[$RelativePath]
 }
 
+function Get-ExpectedStablePackageRecords {
+    $specification = @'
+WirexBridge.exe|WirexBridge.exe
+build-provenance.json|build-provenance.json
+launcher-build-provenance.json|launcher-build-provenance.json
+README.md|README.md
+SOURCE.txt|SOURCE.txt
+runtime/wirex_bridge.exe|runtime__wirex_bridge.exe
+runtime/private/device-y.bin|runtime__private__device-y.bin
+runtime/start-bm-radio-bridge.ps1|runtime__start-bm-radio-bridge.ps1
+runtime/start-ui.ps1|runtime__start-ui.ps1
+runtime/bridge-user-config.psm1|runtime__bridge-user-config.psm1
+runtime/docs/配置与桌面操作.md|runtime__docs__desktop-user-config.md
+runtime/docs/连接配置.md|runtime__docs__connection-profile.md
+runtime/docs/音量调节.md|runtime__docs__audio-gain.md
+runtime/ui/windows/bridge-ui.ps1|runtime__ui__windows__bridge-ui.ps1
+runtime/ui/windows/BridgeSupervisor.cs|runtime__ui__windows__BridgeSupervisor.cs
+runtime/ui/windows/MainWindow.xaml|runtime__ui__windows__MainWindow.xaml
+runtime/ui/windows/SettingsWindow.xaml|runtime__ui__windows__SettingsWindow.xaml
+runtime/licenses/dmr_signal/COPYING.GPL-3.0.txt|runtime__licenses__dmr-signal__COPYING.GPL-3.0.txt
+runtime/licenses/dmr_signal/NOTICE.md|runtime__licenses__dmr-signal__NOTICE.md
+runtime/licenses/droidstar_mbe/COPYING.GPL-3.0.txt|runtime__licenses__droidstar-mbe__COPYING.GPL-3.0.txt
+runtime/licenses/droidstar_mbe/ISC-NOTICE.txt|runtime__licenses__droidstar-mbe__ISC-NOTICE.txt
+runtime/licenses/droidstar_mbe/source-manifest.json|runtime__licenses__droidstar-mbe__source-manifest.json
+runtime/docs/BM来话身份显示.md|runtime__docs__bm-call-identity.md
+runtime/docs/R106_IPC第二版.md|runtime__docs__r106-ipc-v2.md
+runtime/docs/R106_配置迁移与测试.md|runtime__docs__r106-profile-migration-test.md
+runtime/docs/R108_收发路由状态与alpha6验收.md|runtime__docs__r108-routing-state-alpha6.md
+runtime/docs/R109_下行状态与动态组修复.md|runtime__docs__r109-downlink-dynamic-groups.md
+runtime/docs/R109_动态组激活实现.md|runtime__docs__r109-dynamic-group-activation.md
+runtime/ui/windows/RadioIdentity.psm1|runtime__ui__windows__radio-identity.psm1
+runtime/docs/R112_A_网络音频指标.md|runtime__docs__r112-a-network-audio-metrics.md
+runtime/docs/R113_LCD核心实现.md|runtime__docs__r113-lcd-core-implementation.md
+runtime/docs/R113_身份与LCD接线.md|runtime__docs__r113-identity-lcd-integration.md
+runtime/ui/windows/RadioCat.psm1|runtime__ui__windows__radio-cat.psm1
+runtime/docs/R116_CAT能力与控制实现.md|runtime__docs__r116-cat-controls.md
+runtime/docs/R116_电台控制界面.md|runtime__docs__r116-radio-controls-ui.md
+runtime/ui/windows/RadioCatUi.ps1|runtime__ui__windows__radio-cat-ui.ps1
+runtime/ui/windows/RadioDevices.psm1|runtime__ui__windows__radio-devices.psm1
+runtime/ui/windows/BmServers.psm1|runtime__ui__windows__bm-servers.psm1
+runtime/ui/windows/BmManagement.psm1|runtime__ui__windows__bm-management.psm1
+runtime/ui/windows/BmManagementUi.ps1|runtime__ui__windows__bm-management-ui.ps1
+runtime/ui/windows/PortableConfig.psm1|runtime__ui__windows__portable-config.psm1
+runtime/ui/windows/ChannelActivationState.psm1|runtime__ui__windows__channel-activation-state.psm1
+'@
+    foreach ($line in ($specification -split "`r?`n" | Where-Object { $_ })) {
+        $parts = $line.Split('|')
+        [pscustomobject]@{ Path=$parts[0]; AssetName=$parts[1] }
+    }
+}
+
+function Get-ExpectedStablePackageDirectories {
+    return @('runtime','runtime/docs','runtime/licenses','runtime/licenses/dmr_signal',
+        'runtime/licenses/droidstar_mbe','runtime/private','runtime/ui','runtime/ui/windows')
+}
+
+function Assert-StableArchiveMatchesPackage {
+    param([string]$PackageRoot,[string]$ArchivePath,[object[]]$Records)
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+    $canonicalPathMap = New-WirexStableCanonicalPathMap -Paths (@($Records | ForEach-Object { [string]$_.Path }) + 'manifest.json')
+    $limits = Get-WirexStableReleaseLimits
+    $archiveItem = Get-Item -LiteralPath $ArchivePath -ErrorAction Stop
+    if (-not (Test-WirexStableLengthWithinLimit -Length ([long]$archiveItem.Length) -MaximumBytes ([long]$limits.MaximumArchiveBytes))) {
+        throw 'Stable ZIP exceeds the fixed 512 MiB download limit.'
+    }
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    $archive = [System.IO.Compression.ZipFile]::OpenRead($ArchivePath)
+    try {
+        $total = [long]0
+        foreach ($entry in $archive.Entries) {
+            $name = [string]$entry.FullName
+            if ([string]::IsNullOrWhiteSpace($name) -or $name.Contains('\') -or $name.Contains(':') -or
+                $name.StartsWith('/') -or $name.EndsWith('/') -or $name -match '(^|/)\.{1,2}(/|$)' -or
+                $name -match '[\x00-\x1f\x7f]' -or
+                @($name.Split('/') | Where-Object { $_.EndsWith('.') -or $_.EndsWith(' ') }).Count -gt 0) {
+                throw 'Stable ZIP contains an unsafe path.'
+            }
+            $canonicalPath = Resolve-WirexStableCanonicalPath -Path $name -CanonicalPathMap $canonicalPathMap
+            if (-not [string]::Equals($name, [string]$canonicalPath, [System.StringComparison]::Ordinal)) {
+                throw 'Stable ZIP entry path differs from its exact canonical spelling.'
+            }
+            if (-not $seen.Add($name)) { throw 'Stable ZIP contains an unexpected or case-insensitive duplicate path.' }
+            if (-not (Test-WirexStableRegularZipEntry -ExternalAttributes ([int]$entry.ExternalAttributes) -Length ([long]$entry.Length))) {
+                throw 'Stable ZIP contains a non-regular file entry.'
+            }
+            $maximumFileBytes = [long](Get-WirexStableMaximumFileBytes -Path $canonicalPath)
+            if (-not (Test-WirexStableLengthWithinLimit -Length ([long]$entry.Length) -MaximumBytes $maximumFileBytes)) {
+                throw "Stable ZIP entry exceeds its fixed per-file download limit: $canonicalPath"
+            }
+            $path = Join-Path $PackageRoot $canonicalPath.Replace('/',[System.IO.Path]::DirectorySeparatorChar)
+            $item = Get-Item -LiteralPath $path -ErrorAction Stop
+            if ([long]$entry.Length -ne [long]$item.Length) { throw 'Stable ZIP entry length differs from the audited folder.' }
+            $stream = $entry.Open()
+            try {
+                $zipHash = Get-StreamSha256 -Stream $stream -ExpectedLength ([long]$item.Length)
+            } finally { $stream.Dispose() }
+            $folderHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($zipHash -cne $folderHash) { throw 'Stable ZIP entry differs from the audited folder bytes.' }
+            $total += [long]$entry.Length
+            if (-not (Test-WirexStableLengthWithinLimit -Length $total -MaximumBytes ([long]$limits.MaximumUncompressedBytes))) {
+                throw 'Stable ZIP contents exceed the 2 GiB limit.'
+            }
+        }
+        if ($seen.Count -ne $canonicalPathMap.Count) { throw 'Stable ZIP is missing one or more audited folder files.' }
+        return $total
+    } finally { $archive.Dispose() }
+}
+
+function Assert-StablePublishPackage {
+    param([string]$PackageRoot,[string]$ExpectedCommit,[string]$DistributionDirectory)
+    $root = [System.IO.Path]::GetFullPath($PackageRoot)
+    $manifestPath = Join-Path $root 'manifest.json'
+    $limits = Get-WirexStableReleaseLimits
+    try {
+        if (-not [System.IO.File]::Exists($manifestPath)) { throw 'Stable manifest.json is missing.' }
+        $manifestInfo = Get-Item -LiteralPath $manifestPath -ErrorAction Stop
+        if (-not (Test-WirexStableLengthWithinLimit -Length ([long]$manifestInfo.Length) -MaximumBytes ([long]$limits.MaximumManifestBytes))) {
+            throw 'Stable manifest.json exceeds its fixed size limit.'
+        }
+        $manifest = (Get-StrictUtf8Text -Path $manifestPath) | ConvertFrom-Json -ErrorAction Stop
+    }
+    catch { throw 'Stable manifest.json is invalid.' }
+    if ([int]$manifest.schema_version -ne 1 -or
+        [string]$manifest.package_kind -cne 'wirex_bridge_stable_release_green_directory' -or
+        [string]$manifest.package_status -cne 'root_audit_passed' -or
+        [string]$manifest.version -cne 'v0.1.0' -or [string]$manifest.tag_candidate -cne 'v0.1.0' -or
+        [string]$manifest.source.repository -cne $script:repositoryUrl -or
+        ([string]$manifest.source.commit).ToLowerInvariant() -cne $ExpectedCommit -or
+        $manifest.source.working_tree_clean -ne $true -or
+        ([string]$manifest.build.source_commit).ToLowerInvariant() -cne $ExpectedCommit -or
+        $manifest.build.source_tree_clean -ne $true -or $manifest.build.compile_only -ne $false -or
+        $manifest.build.build_completed -ne $true -or [string]$manifest.build.result -cne 'passed' -or
+        $manifest.tag_created -ne $false -or $manifest.github_release_published -ne $false) {
+        throw 'Stable package does not attest the audited clean source and build.'
+    }
+    if ([string]$manifest.approved_y_fixture.path -cne 'runtime/private/device-y.bin' -or
+        [long]$manifest.approved_y_fixture.length_bytes -ne 100 -or
+        ([string]$manifest.approved_y_fixture.sha256).ToLowerInvariant() -cne $script:approvedFixtureSha256) {
+        throw 'Stable manifest does not retain the approved HRI protocol template.'
+    }
+    $tests = @($manifest.build.passed_tests | ForEach-Object { [string]$_ })
+    if ([int]$manifest.build.passed_test_count -ne $script:expectedTestNames.Count -or $tests.Count -ne $script:expectedTestNames.Count) {
+        throw 'Stable manifest does not record the fixed offline Native test set.'
+    }
+    for ($i=0; $i -lt $tests.Count; $i++) { if ($tests[$i] -cne $script:expectedTestNames[$i]) { throw 'Stable Native test inventory is not exact.' } }
+
+    $records = @(Get-ExpectedStablePackageRecords)
+    $expectedFiles = @($records | ForEach-Object { [string]$_.Path }) + 'manifest.json'
+    $actualFiles = @(); $actualDirectories = @()
+    foreach ($item in (Get-ChildItem -LiteralPath $root -Force -Recurse -ErrorAction Stop)) {
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Stable package contains a reparse point.' }
+        $relative = $item.FullName.Substring($root.TrimEnd([System.IO.Path]::DirectorySeparatorChar).Length + 1).Replace('\','/')
+        if ($item.PSIsContainer) { $actualDirectories += $relative } else { $actualFiles += $relative }
+    }
+    if ((@($actualFiles | Sort-Object -CaseSensitive) -join "`n") -cne (@($expectedFiles | Sort-Object -CaseSensitive) -join "`n") -or
+        (@($actualDirectories | Sort-Object -CaseSensitive) -join "`n") -cne (@(Get-ExpectedStablePackageDirectories | Sort-Object -CaseSensitive) -join "`n")) {
+        throw ('Stable folder package inventory differs from the audited ' + $expectedFiles.Count + '-file layout.')
+    }
+    if (@($manifest.files).Count -ne $records.Count) { throw 'Stable manifest file count differs from its fixed folder inventory.' }
+    $recordByPath = New-Object 'System.Collections.Hashtable' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($item in @($manifest.files)) {
+        $path = [string]$item.path
+        $expected = @($records | Where-Object { [string]$_.Path -ceq $path })
+        if ($expected.Count -ne 1 -or [string]$item.asset_name -cne [string]$expected[0].AssetName -or $recordByPath.ContainsKey($path)) {
+            throw 'Stable manifest contains an unknown, duplicate, or incorrectly named package path.'
+        }
+        if ([string]$item.source -match '(?i)[A-Z]:\\|\\\\') { throw 'Stable manifest source contains a machine-local path.' }
+        $file = Join-Path $root $path.Replace('/',[System.IO.Path]::DirectorySeparatorChar)
+        $info = Get-Item -LiteralPath $file -ErrorAction Stop
+        $maximumFileBytes = [long](Get-WirexStableMaximumFileBytes -Path $path)
+        if (-not (Test-WirexStableLengthWithinLimit -Length ([long]$info.Length) -MaximumBytes $maximumFileBytes)) {
+            throw "Stable package file exceeds its fixed download limit: $path"
+        }
+        $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ([long]$item.length_bytes -ne [long]$info.Length -or [string]$item.sha256 -cne $hash) {
+            throw 'A stable package file does not match its manifest length and SHA-256.'
+        }
+        if ($path -ceq 'runtime/private/device-y.bin' -and ($hash -cne $script:approvedFixtureSha256 -or [long]$info.Length -ne 100)) {
+            throw 'Stable package contains a different HRI protocol template.'
+        }
+        $recordByPath[$path] = $item
+    }
+    foreach ($path in @('WirexBridge.exe','build-provenance.json','launcher-build-provenance.json','README.md','SOURCE.txt')) {
+        if (-not $recordByPath.ContainsKey($path)) { throw "Stable manifest is missing $path." }
+    }
+    $manifestBytes = (Get-StrictUtf8Text -Path $manifestPath)
+    if ($manifestBytes -match '(?i)[A-Z]:\\|\\\\') { throw 'Stable manifest includes a machine-local absolute path.' }
+    $sourceText = Get-StrictUtf8Text -Path (Join-Path $root 'SOURCE.txt')
+    if ($sourceText -match '(?i)[A-Z]:\\|\\\\') { throw 'Stable SOURCE.txt contains a machine-local absolute path.' }
+
+    $launcherBuild = Get-StrictUtf8Text -Path (Join-Path $root 'launcher-build-provenance.json') | ConvertFrom-Json -ErrorAction Stop
+    $launcherRecord = $recordByPath['WirexBridge.exe']
+    if ([int]$launcherBuild.schema_version -ne 1 -or [string]$launcherBuild.result -cne 'passed' -or
+        [string]$launcherBuild.source.path -cne 'ui/launcher/WirexBridgeLauncher.cs' -or
+        [string]$launcherBuild.source.commit -cne $ExpectedCommit -or
+        [string]$launcherBuild.compiler.command -cne 'csc.exe /nologo /target:winexe /platform:x64 /optimize+ /debug- /codepage:65001' -or
+        [string]$launcherBuild.compiler.target -cne 'x64 Windows GUI executable' -or
+        [string]$launcherBuild.output.path -cne 'WirexBridge.exe' -or
+        [string]$launcherBuild.output.sha256 -cne [string]$launcherRecord.sha256 -or
+        [long]$launcherBuild.output.length_bytes -ne [long]$launcherRecord.length_bytes -or
+        [string]$manifest.launcher_build.executable_sha256 -cne [string]$launcherRecord.sha256 -or
+        [string]$manifest.launcher_build.provenance_sha256 -cne (Get-FileHash -LiteralPath (Join-Path $root 'launcher-build-provenance.json') -Algorithm SHA256).Hash.ToLowerInvariant()) {
+        throw 'Stable launcher build provenance does not match the release manifest and executable.'
+    }
+
+    if ([string]::IsNullOrWhiteSpace($DistributionDirectory)) {
+        $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $root '..\..\..'))
+        $distributionRoot = Join-Path $repositoryRoot 'build\_work\r124-distribution\v0.1.0'
+    } else {
+        $distributionRoot = [System.IO.Path]::GetFullPath($DistributionDirectory)
+    }
+    $zipPath = Join-Path $distributionRoot 'WIREX_Bridge_v0.1.0.zip'
+    $checksumPath = Join-Path $distributionRoot 'SHA256SUMS.txt'
+    if (-not [System.IO.File]::Exists($zipPath) -or -not [System.IO.File]::Exists($checksumPath)) { throw 'Stable distribution ZIP and SHA256SUMS.txt are missing.' }
+    $distributionFiles = @(Get-ChildItem -LiteralPath $distributionRoot -Force)
+    if ($distributionFiles.Count -ne 3 -or @($distributionFiles | Where-Object { $_.Name -cnotin @('WIREX_Bridge_v0.1.0.zip','SHA256SUMS.txt','manifest.json') }).Count -ne 0) {
+        throw 'Stable distribution directory must contain exactly ZIP, manifest.json, and SHA256SUMS.txt.'
+    }
+    $manifestCopy = Join-Path $distributionRoot 'manifest.json'
+    $zipInfo = Get-Item -LiteralPath $zipPath -ErrorAction Stop
+    if (-not (Test-WirexStableLengthWithinLimit -Length ([long]$zipInfo.Length) -MaximumBytes ([long]$limits.MaximumArchiveBytes)) -or
+        -not (Test-WirexStableLengthWithinLimit -Length ([long](Get-Item -LiteralPath $manifestCopy).Length) -MaximumBytes ([long]$limits.MaximumManifestBytes)) -or
+        -not (Test-WirexStableLengthWithinLimit -Length ([long](Get-Item -LiteralPath $checksumPath).Length) -MaximumBytes 4096)) {
+        throw 'Stable ZIP, manifest, or SHA256SUMS.txt exceeds its fixed download limit.'
+    }
+    if ((Get-FileHash -LiteralPath $manifestCopy -Algorithm SHA256).Hash -cne (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash) {
+        throw 'Stable distribution manifest.json differs from the audited candidate.'
+    }
+    $zipHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $manifestHash = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $sumLines = @(Get-StrictUtf8Text -Path $checksumPath) -split "`r?`n" | Where-Object { $_ }
+    if ($sumLines.Count -ne 2 -or $sumLines[0] -cne ($zipHash + '  WIREX_Bridge_v0.1.0.zip') -or
+        $sumLines[1] -cne ($manifestHash + '  manifest.json')) { throw 'Stable SHA256SUMS.txt does not match the release ZIP and manifest.' }
+    [void](Assert-StableArchiveMatchesPackage -PackageRoot $root -ArchivePath $zipPath -Records $records)
+    $assets = @(
+        [pscustomobject]@{Name='WIREX_Bridge_v0.1.0.zip';Path=$zipPath;Length=[long](Get-Item $zipPath).Length;Sha256=$zipHash},
+        [pscustomobject]@{Name='manifest.json';Path=$manifestCopy;Length=[long](Get-Item $manifestCopy).Length;Sha256=$manifestHash},
+        [pscustomobject]@{Name='SHA256SUMS.txt';Path=$checksumPath;Length=[long](Get-Item $checksumPath).Length;Sha256=(Get-FileHash -LiteralPath $checksumPath -Algorithm SHA256).Hash.ToLowerInvariant()}
+    )
+    return ,([pscustomobject]@{Manifest=$manifest;Assets=$assets})
+}
+
 function Get-StrictUtf8Text {
     param([string]$Path)
     $encoding = New-Object System.Text.UTF8Encoding($false, $true)
@@ -402,10 +662,12 @@ function Assert-LocalRepositoryIdentity {
 }
 
 function Assert-PublishPackage {
-    param([string]$PackageRoot, [string]$ExpectedCommit, [string]$Tag = $script:publishTag)
+    param([string]$PackageRoot, [string]$ExpectedCommit, [string]$Tag = $script:publishTag,
+          [string]$DistributionDirectory)
     [void](Set-PublishProfile -Tag $Tag)
     $root = [System.IO.Path]::GetFullPath($PackageRoot)
     if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw 'ReleaseDirectory does not exist.' }
+    if ($Tag -ceq 'v0.1.0') { return (Assert-StablePublishPackage -PackageRoot $root -ExpectedCommit $ExpectedCommit -DistributionDirectory $DistributionDirectory) }
     $manifestPath = Join-Path $root 'manifest.json'
     if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw 'Package is missing manifest.json.' }
     try { $manifest = (Get-StrictUtf8Text -Path $manifestPath) | ConvertFrom-Json -ErrorAction Stop }
@@ -751,7 +1013,7 @@ function Assert-ReleaseIdentity {
     param([object]$Release, [string]$ExpectedCommit, [string]$Notes, [bool]$MustBeDraft)
     if ($null -eq $Release -or [string]$Release.tag_name -cne $script:publishTag -or
         [string]$Release.target_commitish -cne $ExpectedCommit -or
-        [string]$Release.body -cne $Notes -or $Release.prerelease -ne $true -or
+        [string]$Release.body -cne $Notes -or $Release.prerelease -ne $script:publishIsPrerelease -or
         $Release.draft -ne $MustBeDraft) {
         throw 'The existing GitHub release does not match the expected tag, notes, commit, or prerelease state.'
     }
@@ -759,7 +1021,7 @@ function Assert-ReleaseIdentity {
 
 function Get-PublishReleaseAction {
     param([object]$Release, [string]$ExpectedCommit, [string]$Notes)
-    if ($null -eq $Release -or $Release.prerelease -ne $true) { throw 'A matching prerelease record is required.' }
+    if ($null -eq $Release -or $Release.prerelease -ne $script:publishIsPrerelease) { throw 'The GitHub release prerelease state does not match this release profile.' }
     if ($Release.draft -eq $true) {
         Assert-ReleaseIdentity -Release $Release -ExpectedCommit $ExpectedCommit -Notes $Notes -MustBeDraft $true
         return 'publish'
@@ -884,7 +1146,7 @@ function New-DraftRelease {
         name = 'WIREX Bridge ' + $script:publishTag
         body = $Notes
         draft = $true
-        prerelease = $true
+        prerelease = $script:publishIsPrerelease
     }
     try { return (Send-GitHubRequest -Method 'POST' -Uri ($script:repoBase + '/releases') -Content (New-GitHubJsonContent -Value $body)).Data }
     catch {
@@ -947,13 +1209,13 @@ function Assert-AllReleaseAssets {
 
 function Publish-VerifiedRelease {
     param([object]$Release, [string]$ExpectedCommit, [string]$Notes)
-    $body = [ordered]@{ target_commitish=$ExpectedCommit; body=$Notes; draft=$false; prerelease=$true }
+    $body = [ordered]@{ target_commitish=$ExpectedCommit; body=$Notes; draft=$false; prerelease=$script:publishIsPrerelease }
     try {
         return (Send-GitHubRequest -Method 'PATCH' -Uri ($script:repoBase + '/releases/' + [long]$Release.id) -Content (New-GitHubJsonContent -Value $body)).Data
     } catch {
         if (-not (Test-UnknownOutcomeError -Exception $_.Exception)) { throw }
         $recovered = Get-ReleaseByTag
-        if ($null -eq $recovered -or $recovered.draft -ne $false -or $recovered.prerelease -ne $true -or
+        if ($null -eq $recovered -or $recovered.draft -ne $false -or $recovered.prerelease -ne $script:publishIsPrerelease -or
             [string]$recovered.target_commitish -cne $ExpectedCommit -or [string]$recovered.body -cne $Notes) {
             throw 'Release publication outcome is unknown; no retry was attempted.'
         }
@@ -983,9 +1245,14 @@ function Invoke-ReleasePublisher {
     $script:anonymousClient = $null
     $script:token = $null
     try {
-    $helper = Export-CommitHelperBlob -RepositoryRoot $root -ExpectedCommit $Commit
-    $assets = @($package.Assets) + @($helper)
-    $expectedRemoteAssetCount = $package.Assets.Count + 1
+    if ($Tag -ceq 'v0.1.0') {
+        $assets = @($package.Assets)
+        $expectedRemoteAssetCount = 3
+    } else {
+        $helper = Export-CommitHelperBlob -RepositoryRoot $root -ExpectedCommit $Commit
+        $assets = @($package.Assets) + @($helper)
+        $expectedRemoteAssetCount = $package.Assets.Count + 1
+    }
     if (@($assets | ForEach-Object { [string]$_.Name } | Sort-Object -Unique).Count -ne $expectedRemoteAssetCount) { throw 'Release asset names are not unique.' }
         Initialize-GitHubClient
         Assert-GitHubIdentityAndRepository
@@ -1001,12 +1268,12 @@ function Invoke-ReleasePublisher {
         $publishAction = Get-PublishReleaseAction -Release $release -ExpectedCommit $Commit -Notes $notes
         Assert-AllReleaseAssets -ReleaseId ([long]$release.id) -ExpectedAssets $assets
         if ($publishAction -ceq 'already-published') {
-            Write-Output ('Verified published prerelease ' + $script:publishTag + '; assets=' + $assets.Count + '.')
+            Write-Output ('Verified published release ' + $script:publishTag + '; assets=' + $assets.Count + '.')
             return
         }
         $published = Publish-VerifiedRelease -Release $release -ExpectedCommit $Commit -Notes $notes
         Assert-ReleaseIdentity -Release $published -ExpectedCommit $Commit -Notes $notes -MustBeDraft $false
-        Write-Output ('Published prerelease ' + $script:publishTag + '; assets=' + $assets.Count + '.')
+        Write-Output ('Published release ' + $script:publishTag + '; assets=' + $assets.Count + '.')
     } finally {
         if ($null -ne $script:githubClient) { $script:githubClient.Dispose(); $script:githubClient=$null }
         if ($null -ne $script:anonymousClient) { $script:anonymousClient.Dispose(); $script:anonymousClient=$null }

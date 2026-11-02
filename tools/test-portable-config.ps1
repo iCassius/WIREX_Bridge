@@ -43,6 +43,37 @@ try {
     Assert-PortableConfig ($defaults.connection.master -ceq '43.129.83.124' -and $defaults.ui.bm_server_selection_id -ceq 'bm-china-4602') 'the default Master and selector should match the current BM catalog'
     Assert-PortableConfig (-not [System.IO.File]::Exists($configPath)) 'reading defaults must not create config.json'
 
+    $bootstrapDirectory = Join-Path $tempDirectory 'exe root 中文 path'
+    $null = [System.IO.Directory]::CreateDirectory($bootstrapDirectory)
+    $bootstrapConfigPath = Initialize-PortableConfig -PortableDirectory $bootstrapDirectory
+    Assert-PortableConfig ([string]::Equals($bootstrapConfigPath, (Join-Path $bootstrapDirectory 'config.json'), [System.StringComparison]::OrdinalIgnoreCase)) `
+        'Initialize-PortableConfig should return the absolute config.json path beside the launcher'
+    Assert-PortableConfig ([System.IO.File]::Exists($bootstrapConfigPath)) 'Initialize-PortableConfig should atomically create a missing config'
+    $bootstrapConfig = Get-WirexPortableConfig -Path $bootstrapConfigPath
+    Assert-PortableConfig ($bootstrapConfig.connection.callsign -ceq '' -and $bootstrapConfig.connection.password -ceq '' -and
+        $bootstrapConfig.connection.api_key -ceq '') 'the one default config schema must not contain personal credentials'
+    Assert-PortableConfig (@(Get-ChildItem -LiteralPath $bootstrapDirectory -Filter 'config.json.init-*.tmp').Count -eq 0) `
+        'atomic first-start initialization should leave no temporary file'
+    Add-Member -InputObject $bootstrapConfig -NotePropertyName unknown_future_setting -NotePropertyValue 'preserve-byte-for-byte'
+    $bootstrapBytes = [System.Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -InputObject $bootstrapConfig -Depth 24) + "`n")
+    [System.IO.File]::WriteAllBytes($bootstrapConfigPath, $bootstrapBytes)
+    $bootstrapHash = (Get-FileHash -LiteralPath $bootstrapConfigPath -Algorithm SHA256).Hash
+    [void](Initialize-PortableConfig -PortableDirectory $bootstrapDirectory)
+    Assert-PortableConfig ((Get-FileHash -LiteralPath $bootstrapConfigPath -Algorithm SHA256).Hash -ceq $bootstrapHash) `
+        'helper must validate existing config without rewriting bytes or unknown fields'
+    $bootstrapBadBytes = [System.Text.Encoding]::UTF8.GetBytes('{ broken-json')
+    [System.IO.File]::WriteAllBytes($bootstrapConfigPath, $bootstrapBadBytes)
+    $bootstrapBadRejected = $false
+    try { [void](Initialize-PortableConfig -PortableDirectory $bootstrapDirectory) }
+    catch { $bootstrapBadRejected = $true }
+    Assert-PortableConfig $bootstrapBadRejected 'helper must stop on malformed existing config'
+    Assert-PortableConfig ([System.Linq.Enumerable]::SequenceEqual([byte[]]$bootstrapBadBytes, [byte[]][System.IO.File]::ReadAllBytes($bootstrapConfigPath))) `
+        'helper must preserve malformed config bytes rather than overwrite them'
+    $missingDirectoryRejected = $false
+    try { [void](Initialize-PortableConfig -PortableDirectory (Join-Path $tempDirectory 'absent-directory')) }
+    catch { $missingDirectoryRejected = $true }
+    Assert-PortableConfig $missingDirectoryRejected 'helper must stop when the launcher directory does not exist'
+
     $defaults.connection.PSObject.Properties['callsign'].Value = 'N0CALL'
     $defaults.connection.PSObject.Properties['password'].Value = $fakePassword
     $defaults.connection.PSObject.Properties['api_key'].Value = $fakeToken

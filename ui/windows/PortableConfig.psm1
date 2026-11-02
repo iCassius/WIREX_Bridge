@@ -520,4 +520,52 @@ function Save-WirexPortableConfig {
     return $validated
 }
 
-Export-ModuleMember -Function Get-WirexPortableConfig, Save-WirexPortableConfig
+function Initialize-PortableConfig {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string]$PortableDirectory)
+
+    $directory = [System.IO.Path]::GetFullPath($PortableDirectory)
+    if (-not [System.IO.Directory]::Exists($directory)) {
+        throw '便携配置目录不存在或无法访问；没有启动 WIREX Bridge。'
+    }
+    $path = Join-Path $directory 'config.json'
+
+    if ([System.IO.File]::Exists($path)) {
+        [void](Get-WirexPortableConfig -Path $path)
+        return $path
+    }
+
+    $temporaryPath = $path + '.init-' + [guid]::NewGuid().ToString('N') + '.tmp'
+    try {
+        $defaults = ConvertTo-WirexPortableConfig -Config (New-WirexPortableConfigDefaults)
+        $json = (ConvertTo-Json -InputObject $defaults -Depth 24) + "`n"
+        if ([System.Text.Encoding]::UTF8.GetByteCount($json) -gt $script:WirexPortableConfigMaxBytes) {
+            throw '默认 config.json 超过允许大小。'
+        }
+        [System.IO.File]::WriteAllText($temporaryPath, $json, (New-Object System.Text.UTF8Encoding($false)))
+        try {
+            [System.IO.File]::Move($temporaryPath, $path)
+        } catch [System.IO.IOException] {
+            # Another launcher may have won the create race. Never replace that file.
+            if (-not [System.IO.File]::Exists($path)) { throw }
+        }
+        [void](Get-WirexPortableConfig -Path $path)
+        return $path
+    } catch {
+        if ($_.Exception.Message -like 'config.json*' -or $_.Exception.Message -like '便携配置*' -or
+            $_.Exception.Message -like 'connection *' -or $_.Exception.Message -like 'devices.*' -or
+            $_.Exception.Message -like 'audio.*' -or $_.Exception.Message -like '频道*' -or
+            $_.Exception.Message -like 'tx_channel_id*' -or $_.Exception.Message -like 'routing.*' -or
+            $_.Exception.Message -like 'ui.*' -or $_.Exception.Message -like 'CAT *' -or
+            $_.Exception.Message -like 'config.json 不能*') {
+            throw
+        }
+        throw '无法创建或验证 config.json；请检查便携目录的写入权限。没有启动 WIREX Bridge。'
+    } finally {
+        if ([System.IO.File]::Exists($temporaryPath)) {
+            try { [System.IO.File]::Delete($temporaryPath) } catch { }
+        }
+    }
+}
+
+Export-ModuleMember -Function Get-WirexPortableConfig, Save-WirexPortableConfig, Initialize-PortableConfig

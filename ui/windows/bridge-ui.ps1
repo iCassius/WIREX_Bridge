@@ -2,6 +2,7 @@
 param(
     [string]$UserConfigDirectory,
     [string]$PackageDirectory,
+    [string]$PortableDirectory,
     [switch]$OfflinePreview,
     [switch]$NoAutoConnect,
     [switch]$RenderOnly,
@@ -25,16 +26,38 @@ $script:packageRoot = if ([string]::IsNullOrWhiteSpace($PackageDirectory)) {
 } else {
     [System.IO.Path]::GetFullPath($PackageDirectory)
 }
+$script:portableDirectoryWasExplicit = $PSBoundParameters.ContainsKey('PortableDirectory') -and
+    -not [string]::IsNullOrWhiteSpace($PortableDirectory)
+$script:portableRoot = if ($script:portableDirectoryWasExplicit) {
+    [System.IO.Path]::GetFullPath($PortableDirectory)
+} else { $script:packageRoot }
+$script:isolatedUiMode = [bool]($RenderOnly -or $OfflinePreview -or $UiTestFixture -or $RoutingDiagnostic)
+
+function Test-UiPathWithinDirectory {
+    param([Parameter(Mandatory=$true)][string]$Path,[Parameter(Mandatory=$true)][string]$Directory)
+    try {
+        $fullPath = [System.IO.Path]::GetFullPath($Path).TrimEnd([char[]]@('\','/'))
+        $fullDirectory = [System.IO.Path]::GetFullPath($Directory).TrimEnd([char[]]@('\','/'))
+        if ([string]::Equals($fullPath,$fullDirectory,[StringComparison]::OrdinalIgnoreCase)) { return $true }
+        $prefix = $fullDirectory + [System.IO.Path]::DirectorySeparatorChar
+        return $fullPath.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)
+    } catch { return $false }
+}
 
 function Test-UiRoutingDiagnosticConfigDirectory {
-    param([string]$Directory,[string]$PackageRoot,[switch]$RequireFixture)
+    param([string]$Directory,[string]$PackageRoot,[string]$PortableRoot='',[switch]$RequireFixture)
     if ([string]::IsNullOrWhiteSpace($Directory)) { throw '路由诊断必须指定独立的用户配置目录。' }
+    if (-not [System.IO.Path]::IsPathRooted($Directory)) { throw '路由诊断的 -UserConfigDirectory 必须使用绝对路径。' }
     try {
         $resolvedDirectory = [System.IO.Path]::GetFullPath($Directory)
         $canonicalDirectory = [System.IO.Path]::GetFullPath((Join-Path $PackageRoot 'private\user-config'))
     } catch { throw '路由诊断配置目录路径无效。' }
     if ([string]::Equals($resolvedDirectory.TrimEnd('\'),$canonicalDirectory.TrimEnd('\'),[System.StringComparison]::OrdinalIgnoreCase)) {
         throw '路由诊断不能使用便携目录的默认个人配置目录；请传入隔离的 -UserConfigDirectory。'
+    }
+    if (($PortableRoot -and (Test-UiPathWithinDirectory -Path $resolvedDirectory -Directory $PortableRoot)) -or
+        (Test-UiPathWithinDirectory -Path $resolvedDirectory -Directory $PackageRoot)) {
+        throw '路由诊断的 -UserConfigDirectory 不能等于或位于 PortableDirectory/PackageDirectory；请传入外部隔离目录。'
     }
     if ($RequireFixture) {
         $markerPath = Join-Path $resolvedDirectory 'routing-diagnostic-fixture.json'
@@ -59,6 +82,11 @@ function Test-UiRoutingDiagnosticConfigDirectory {
     return $resolvedDirectory
 }
 
+$validatedDiagnosticDirectory = if ($RoutingDiagnostic) {
+    Test-UiRoutingDiagnosticConfigDirectory -Directory $UserConfigDirectory -PackageRoot $script:packageRoot `
+        -PortableRoot $script:portableRoot -RequireFixture:$RoutingDiagnosticAutoTest
+} else { $UserConfigDirectory }
+
 $script:modulePath = Join-Path $script:packageRoot 'bridge-user-config.psm1'
 if (-not [System.IO.File]::Exists($script:modulePath)) {
     $script:modulePath = Join-Path $script:packageRoot 'tools\bridge-user-config.psm1'
@@ -69,6 +97,12 @@ if (-not [System.IO.File]::Exists($script:modulePath)) {
 if (-not [System.IO.File]::Exists($script:modulePath)) { throw '缺少本机配置模块 bridge-user-config.psm1。' }
 $script:portableConfigModulePath = Join-Path $script:uiRoot 'PortableConfig.psm1'
 if (-not [System.IO.File]::Exists($script:portableConfigModulePath)) { throw '缺少统一配置模块 PortableConfig.psm1。' }
+Import-Module -Name $script:portableConfigModulePath -Force
+foreach ($commandName in @('Get-WirexPortableConfig','Save-WirexPortableConfig')) {
+    if (-not (Get-Command -Name $commandName -ErrorAction SilentlyContinue)) { throw "统一配置模块缺少 $commandName。" }
+}
+$script:channelActivationStateModulePath = Join-Path $script:uiRoot 'ChannelActivationState.psm1'
+if (-not [System.IO.File]::Exists($script:channelActivationStateModulePath)) { throw '缺少频道激活状态模块。' }
 $script:supervisorSource = Join-Path $script:uiRoot 'BridgeSupervisor.cs'
 $script:mainXamlPath = Join-Path $script:uiRoot 'MainWindow.xaml'
 $script:settingsXamlPath = Join-Path $script:uiRoot 'SettingsWindow.xaml'
@@ -87,11 +121,46 @@ foreach ($path in @($script:supervisorSource, $script:mainXamlPath, $script:sett
     if (-not [System.IO.File]::Exists($path)) { throw "缺少桌面界面文件：$path" }
 }
 
-Import-Module -Name $script:modulePath -Force
-Import-Module -Name $script:portableConfigModulePath -Force
-foreach ($commandName in @('Get-WirexPortableConfig','Save-WirexPortableConfig')) {
-    if (-not (Get-Command -Name $commandName -ErrorAction SilentlyContinue)) { throw "统一配置模块缺少 $commandName。" }
+Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
+if ($script:isolatedUiMode) {
+    if (-not [string]::IsNullOrWhiteSpace($UserConfigDirectory)) {
+        $script:portableConfigDirectory = [System.IO.Path]::GetFullPath($UserConfigDirectory)
+    } else {
+        $script:portableConfigDirectory = Join-Path ([System.IO.Path]::GetTempPath()) ('wirex-ui-isolated-' + [guid]::NewGuid().ToString('N'))
+    }
+    [System.IO.Directory]::CreateDirectory($script:portableConfigDirectory) | Out-Null
+    $script:portableConfigPath = Join-Path $script:portableConfigDirectory 'config.json'
+    $script:configDirectory = $script:portableConfigDirectory
+} else {
+    try {
+        if (-not [System.IO.Directory]::Exists($script:packageRoot)) { throw 'Runtime 目录不存在。' }
+        if (-not [System.IO.Directory]::Exists($script:portableRoot)) { throw '便携程序根目录不存在。' }
+        $script:portableConfigDirectory = $script:portableRoot
+        $script:configDirectory = Join-Path $script:packageRoot 'private\runtime'
+        [System.IO.Directory]::CreateDirectory($script:configDirectory) | Out-Null
+        if (-not (Get-Command -Name Initialize-PortableConfig -ErrorAction SilentlyContinue)) {
+            throw '配置模块缺少 Initialize-PortableConfig。'
+        }
+        $resolvedConfigPath = [System.IO.Path]::GetFullPath([string](Initialize-PortableConfig -PortableDirectory $script:portableRoot))
+        $expectedConfigPath = [System.IO.Path]::GetFullPath((Join-Path $script:portableRoot 'config.json'))
+        if (-not [System.IO.Path]::IsPathRooted($resolvedConfigPath) -or
+            -not [string]::Equals($resolvedConfigPath,$expectedConfigPath,[StringComparison]::OrdinalIgnoreCase)) {
+            throw '配置模块返回的 config.json 路径与 PortableDirectory 不一致。'
+        }
+        if ($script:portableDirectoryWasExplicit -and
+            (Test-UiPathWithinDirectory -Path $resolvedConfigPath -Directory $script:packageRoot)) {
+            throw 'PortableDirectory 返回的 config.json 落在 Runtime 目录内。'
+        }
+        $script:portableConfigPath = $resolvedConfigPath
+    } catch {
+        $startupConfigError = '无法创建或读取便携配置 config.json：' + [string]$_.Exception.Message
+        try { [void][System.Windows.MessageBox]::Show($startupConfigError,'WIREX Bridge',[System.Windows.MessageBoxButton]::OK,[System.Windows.MessageBoxImage]::Error) } catch { }
+        throw $startupConfigError
+    }
 }
+
+Import-Module -Name $script:modulePath -Force
+Import-Module -Name $script:channelActivationStateModulePath -Force
 if ($script:radioCatModuleAvailable) {
     try {
         Import-Module -Name $script:radioCatModulePath -Force
@@ -120,10 +189,6 @@ if ($script:bmServersModuleAvailable) {
         }
     } catch { $script:bmServersModuleAvailable = $false }
 }
-$validatedDiagnosticDirectory = if ($RoutingDiagnostic) {
-    Test-UiRoutingDiagnosticConfigDirectory -Directory $UserConfigDirectory -PackageRoot $script:packageRoot -RequireFixture:$RoutingDiagnosticAutoTest
-} else { $UserConfigDirectory }
-Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 if (-not ('WirexBridge.Ui.BridgeSupervisor' -as [type])) { Add-Type -Path $script:supervisorSource }
 $script:workAreaWidth = [double][System.Windows.SystemParameters]::WorkArea.Width
 $script:workAreaHeight = [double][System.Windows.SystemParameters]::WorkArea.Height
@@ -137,22 +202,6 @@ if (-not [string]::IsNullOrWhiteSpace($RenderWorkArea)) {
 $script:maxWindowWidth = [Math]::Max(1, [Math]::Floor($script:workAreaWidth * 0.95))
 $script:maxWindowHeight = [Math]::Max(1, [Math]::Floor($script:workAreaHeight * 0.95))
 
-$script:isolatedUiMode = [bool]($RenderOnly -or $OfflinePreview -or $UiTestFixture -or $RoutingDiagnostic)
-if ($script:isolatedUiMode) {
-    if (-not [string]::IsNullOrWhiteSpace($UserConfigDirectory)) {
-        $script:portableConfigDirectory = [System.IO.Path]::GetFullPath($UserConfigDirectory)
-    } else {
-        $script:portableConfigDirectory = Join-Path ([System.IO.Path]::GetTempPath()) ('wirex-ui-isolated-' + [guid]::NewGuid().ToString('N'))
-    }
-    [System.IO.Directory]::CreateDirectory($script:portableConfigDirectory) | Out-Null
-    $script:portableConfigPath = Join-Path $script:portableConfigDirectory 'config.json'
-    $script:configDirectory = $script:portableConfigDirectory
-} else {
-    $script:portableConfigDirectory = $script:packageRoot
-    $script:portableConfigPath = Join-Path $script:packageRoot 'config.json'
-    $script:configDirectory = Join-Path $script:packageRoot 'private\runtime'
-    [System.IO.Directory]::CreateDirectory($script:configDirectory) | Out-Null
-}
 $script:audioSettingsPath = ''
 $script:identityModulePath = Join-Path $script:uiRoot 'RadioIdentity.psm1'
 $script:identityCachePath = Join-Path $script:configDirectory 'radio-identity-cache.json'
@@ -303,6 +352,7 @@ $script:serialDisconnectCatStopRequested = $false
 $script:serialDisconnectDeadlineUtc = [DateTime]::MinValue
 $script:quickCallCapabilities = $false
 $script:pendingQuickCall = $null
+$script:channelActivationState = New-WirexChannelActivationState
 $script:pendingDynamicLocalListen = $null
 $script:pendingDynamicCallTarget = $null
 $script:controlDiagnostic = $false
@@ -318,6 +368,7 @@ $script:identityNativeCallRefreshKeys = @{}
 $script:identityNativeCallRefreshOrder = New-Object 'System.Collections.Generic.List[string]'
 $script:controlOverflowHandled = $false
 $script:pendingControlRequests = @{}
+$script:expiredQuickCallRequests = @{}
 $script:resolvedTimedOutRoutingRequests = @{}
 $script:pendingStatusRequestId = ''
 $script:pendingRoutingStatusRequestId = ''
@@ -358,6 +409,8 @@ $script:loadingCallTargetSelection = $false
 $script:loadingChannelPreset = $false
 $script:channelPresetId = ''
 $script:channelPresetKind = ''
+$script:channelAutoKind = ''
+$script:channelKindExplicit = $false
 $script:savedPlaybackGainMilli = $null
 $script:savedTransmitGainMilli = $null
 $script:reportedPlaybackGainMilli = $null
@@ -393,6 +446,7 @@ $script:identityQueueCooldownSeconds = 30
 $script:identityQueueCooldownMaxSeconds = 900
 $script:identityApiBaseUri = 'https://radioid.net/api/dmr/user/'
 $script:identityDiagnosticPath = Join-Path $script:configDirectory 'identity-query-errors.jsonl'
+$script:quickCallDiagnosticPath = Join-Path $script:configDirectory 'quick-call-requests.jsonl'
 $script:closingAfterIdentityQuery = $false
 $script:portableConfig = $null
 $script:gatewayIdentityState = $null
@@ -1419,6 +1473,50 @@ function Add-UiIdentityDiagnostic {
     } catch { }
 }
 
+function Add-UiQuickCallDiagnostic {
+    param(
+        [Parameter(Mandatory=$true)][string]$RunId,
+        [Parameter(Mandatory=$true)][string]$RequestId,
+        [Parameter(Mandatory=$true)][uint64]$DestinationId,
+        [Parameter(Mandatory=$true)][ValidateRange(1,2)][int]$Slot,
+        [Parameter(Mandatory=$true)][ValidateSet('submitted','ok','rejected','unsupported','timeout','stale')][string]$Result,
+        [Parameter()][AllowEmptyString()][string]$ErrorCode='',
+        [Parameter()][AllowEmptyString()][string]$ActivationStatus='',
+        [Parameter()][AllowNull()][object]$FramesSent,
+        [Parameter()][bool]$Replayed=$false
+    )
+    try {
+        if ($script:isolatedUiMode -or $script:controlDiagnostic -or [string]::IsNullOrWhiteSpace($script:quickCallDiagnosticPath)) { return $false }
+        $requestGuid = [guid]::Empty
+        if ($RunId -cnotmatch '^[0-9]{1,10}-[0-9]{1,20}$' -or
+            -not [guid]::TryParse($RequestId,[ref]$requestGuid) -or $DestinationId -lt 1 -or $DestinationId -gt 16777215 -or $DestinationId -eq 4000) { return $false }
+        $directory = [System.IO.Path]::GetDirectoryName($script:quickCallDiagnosticPath)
+        if ([string]::IsNullOrWhiteSpace($directory) -or -not [System.IO.Directory]::Exists($directory)) { return $false }
+        $safeError = if (-not $ErrorCode) { '' } elseif ($ErrorCode -cmatch '^[a-z0-9_]{1,64}$') { $ErrorCode } else { 'unknown_error' }
+        $safeActivation = if ($ActivationStatus -ceq 'request_sent') { 'request_sent' } else { '' }
+        $safeFrames = $null
+        if ($FramesSent -is [byte] -or $FramesSent -is [int16] -or $FramesSent -is [uint16] -or
+            $FramesSent -is [int32] -or $FramesSent -is [uint32] -or $FramesSent -is [int64] -or $FramesSent -is [uint64]) {
+            $safeFrames = [uint64]$FramesSent
+        }
+        $record = [pscustomobject][ordered]@{
+            timestamp_utc=[DateTimeOffset]::UtcNow.ToString('o',[Globalization.CultureInfo]::InvariantCulture)
+            run_id=$RunId; request_id=$RequestId; destination_id=$DestinationId; slot=$Slot
+            result=$Result; error_code=$safeError; activation_status=$safeActivation; frames_sent=$safeFrames; replayed=[bool]$Replayed
+        }
+        $line = ConvertTo-Json -InputObject $record -Compress -Depth 3
+        $encodedLine = $line + [Environment]::NewLine
+        $encoding = New-Object System.Text.UTF8Encoding($false)
+        $addedBytes = $encoding.GetByteCount($encodedLine)
+        $existingBytes = if ([System.IO.File]::Exists($script:quickCallDiagnosticPath)) {
+            (New-Object System.IO.FileInfo($script:quickCallDiagnosticPath)).Length
+        } else { [int64]0 }
+        if ($existingBytes + $addedBytes -gt 262144) { return $false }
+        [System.IO.File]::AppendAllText($script:quickCallDiagnosticPath,$encodedLine,$encoding)
+        return $true
+    } catch { return $false }
+}
+
 function Set-UiIdentityError {
     param([Parameter(Mandatory=$true)][string]$ErrorCode,[string]$Message='',
         [string]$ErrorType='', [string]$Detail='', [string]$Stage='query',[switch]$ShowToUser)
@@ -1968,8 +2066,90 @@ function New-UiChannelRecord {
         throw '频道网络参数无效。'
     }
     $label = ([string]$Name).Trim()
-    if (-not $label) { $label = $idValue.ToString([Globalization.CultureInfo]::InvariantCulture) }
+    if (-not $label) {
+        $label = Get-UiKnownChannelName -Id $idValue -Kind $Kind
+        if (-not $label) { $label = $idValue.ToString([Globalization.CultureInfo]::InvariantCulture) }
+    }
     return [pscustomobject][ordered]@{ id=$idValue; kind=$Kind; slot=[int]$Slot; name=$label }
+}
+
+function Get-UiKnownChannelName {
+    param([Parameter(Mandatory=$true)][uint64]$Id,[Parameter(Mandatory=$true)][string]$Kind)
+    if ($Kind -ceq 'group' -and $Id -eq 91) { return 'World-wide' }
+    if ($Kind -ceq 'group' -and $Id -eq 46001) { return '全国' }
+    if ($Kind -ceq 'private' -and $Id -eq 460997) { return '中国鹦鹉' }
+    return ''
+}
+
+function Get-UiChannelDisplayName {
+    param([Parameter(Mandatory=$true)][object]$Channel)
+    $name = ([string]$Channel.name).Trim()
+    if ($name -and $name -cne [string]$Channel.id) { return $name }
+    return Get-UiKnownChannelName -Id ([uint64]$Channel.id) -Kind ([string]$Channel.kind)
+}
+
+function Test-UiBmStaticChannelReadback {
+    param([Parameter(Mandatory=$true)][object]$Channel)
+    if ([string]$Channel.kind -cne 'group' -or [string]$script:bmManagementStatus -cne 'loaded' -or
+        -not (Get-Command -Name Get-BmManagementUiDeviceId -ErrorAction SilentlyContinue) -or
+        -not (Get-Command -Name Get-BmManagementUiApiKey -ErrorAction SilentlyContinue)) { return $false }
+    try {
+        $deviceId = [string](Get-BmManagementUiDeviceId)
+        $apiKey = [string](Get-BmManagementUiApiKey)
+    } catch { return $false }
+    if ([string]::IsNullOrWhiteSpace($deviceId) -or [string]::IsNullOrWhiteSpace($apiKey) -or
+        [string]$script:bmManagementObservedDeviceId -cne $deviceId -or
+        [string]$script:bmManagementObservedApiKey -cne $apiKey) { return $false }
+    $currentGroups = @($script:bmManagementGroups | Where-Object {
+        [string]$_.type -ceq 'static' -and [string]$_.device_id -ceq $deviceId -and
+        [uint64]$_.talkgroup -eq [uint64]$Channel.id
+    })
+    if (@($currentGroups | Where-Object { [int]$_.slot -eq [int]$Channel.slot }).Count -gt 0) { return $true }
+    if (@($currentGroups | Where-Object { [int]$_.slot -eq 0 }).Count -eq 0) { return $false }
+
+    # BM API slot 0 is specific to a simplex device profile. The current UI
+    # channel list must identify exactly one software TS for this TG before
+    # that API row can label a channel card; a duplicate TS is ambiguous.
+    $context = $script:bmManagementAddContext
+    if (-not $context -or -not [bool]$context.success -or [string]$context.device_id -cne $deviceId -or
+        [int]$context.status -ne 4 -or [int]$context.add_slot -ne 0) { return $false }
+    $softwareChannels = @($script:channels | Where-Object {
+        [string]$_.kind -ceq 'group' -and [uint64]$_.id -eq [uint64]$Channel.id
+    })
+    return ($softwareChannels.Count -eq 1 -and [int]$softwareChannels[0].slot -eq [int]$Channel.slot)
+}
+
+function Get-UiChannelActivationPresentation {
+    param([Parameter(Mandatory=$true)][object]$Channel)
+    $name = Get-UiChannelDisplayName -Channel $Channel
+    $kindLabel = if ([string]$Channel.kind -ceq 'group') { '组呼' } else { '单呼' }
+    $title = '{0} {1}' -f $kindLabel,[uint64]$Channel.id
+    if ($name) { $title += ' · ' + $name }
+    $request = $null
+    $source = ''
+    $sourceTooltip = ''
+    if ([string]$Channel.kind -ceq 'group') {
+        if (Test-UiBmStaticChannelReadback -Channel $Channel) {
+            $source = '静态组'
+            $sourceTooltip = ('TG {0} TS{1}；静态组已读取。' -f [uint64]$Channel.id,[int]$Channel.slot)
+        } elseif (-not [string]::IsNullOrWhiteSpace([string]$script:controlRunId) -and
+            [string]$script:latestStatus.run_id -ceq [string]$script:controlRunId) {
+            $request = Get-WirexChannelActivationRequestSent -State $script:channelActivationState `
+                -RunId ([string]$script:controlRunId) -ChannelKey (Get-UiChannelKey -Channel $Channel) -Slot ([int]$Channel.slot)
+            if ($request) {
+                $source = '动态组'
+                $sourceTooltip = ('TG {0} TS{1}；激活请求已发送。' -f [uint64]$Channel.id,[int]$Channel.slot)
+            }
+        }
+    }
+    if ($source) { $title += ' · ' + $source }
+    $tooltip = $title
+    if ($sourceTooltip) { $tooltip += "`n" + $sourceTooltip }
+    return [pscustomobject][ordered]@{
+        title=$title; tooltip=$tooltip; name=$name; source=$source
+        is_bm_static=($source -ceq '静态组'); request_sent=($null -ne $request); request=$request
+        channel_key=(Get-UiChannelKey -Channel $Channel); id=[uint64]$Channel.id; kind=[string]$Channel.kind; slot=[int]$Channel.slot
+    }
 }
 
 function Get-UiChannelCurrentCall {
@@ -2126,10 +2306,7 @@ function Update-UiChannelDisplays {
         $presentation = Get-UiChannelCardPresentation -Channel $channel
         $isMuted = [bool]$presentation.is_muted
         $isTx = [bool]$presentation.is_selected_tx
-        $kindText = if ([string]$channel.kind -ceq 'private') { '单呼' } else { '组呼' }
-        $label = if ([string]::IsNullOrWhiteSpace([string]$channel.name) -or [string]$channel.name -ceq [string]$channel.id) {
-            '{0} {1}' -f $kindText,$channel.id
-        } else { '{0} · {1}' -f [string]$channel.name,$channel.id }
+        $activationPresentation = Get-UiChannelActivationPresentation -Channel $channel
         $call = Get-UiChannelCurrentCall -Channel $channel
         $card = New-Object System.Windows.Controls.Border
         $card.Background = [Windows.Media.BrushConverter]::new().ConvertFromString([string]$presentation.background)
@@ -2141,9 +2318,9 @@ function Update-UiChannelDisplays {
         $card.Tag = [pscustomobject]@{ channel_key=$key; call_active=[bool]$call; blank=$false }
         $cardBody = New-Object System.Windows.Controls.Grid
         $headerRow = New-Object System.Windows.Controls.RowDefinition
-        $headerRow.Height = [Windows.GridLength]::new(18)
+        $headerRow.Height = [Windows.GridLength]::new(21)
         $contentRow = New-Object System.Windows.Controls.RowDefinition
-        $contentRow.Height = [Windows.GridLength]::new(78)
+        $contentRow.Height = [Windows.GridLength]::new(75)
         [void]$cardBody.RowDefinitions.Add($headerRow)
         [void]$cardBody.RowDefinitions.Add($contentRow)
         $leftColumn = New-Object System.Windows.Controls.ColumnDefinition
@@ -2153,21 +2330,25 @@ function Update-UiChannelDisplays {
         [void]$cardBody.ColumnDefinitions.Add($leftColumn)
         [void]$cardBody.ColumnDefinitions.Add($buttonColumn)
         $cardTitle = New-Object System.Windows.Controls.TextBlock
-        $cardTitle.Text = $label
-        $cardTitle.FontSize = 15
-        $cardTitle.Height = 18
+        $cardTitle.Name = 'ChannelCardTitle'
+        $cardTitle.Text = [string]$activationPresentation.title
+        $cardTitle.ToolTip = [string]$activationPresentation.tooltip
+        $cardTitle.Tag = $activationPresentation
+        $cardTitle.FontSize = 14
+        $cardTitle.Height = 16
         $cardTitle.FontWeight = [Windows.FontWeights]::Bold
         $cardTitle.Foreground = if ($isMuted) { [Windows.Media.Brushes]::DarkGray } else { [Windows.Media.Brushes]::White }
         $cardTitle.TextTrimming = [Windows.TextTrimming]::CharacterEllipsis
         $cardTitle.Margin = [Windows.Thickness]::new(0.0,0.0,5.0,0.0)
         [Windows.Controls.Grid]::SetRow($cardTitle,0)
         [Windows.Controls.Grid]::SetColumn($cardTitle,0)
+        [Windows.Controls.Grid]::SetColumnSpan($cardTitle,2)
         [void]$cardBody.Children.Add($cardTitle)
         $callArea = New-Object System.Windows.Controls.Border
         $callArea.Tag = 'ChannelCallArea'
-        $callArea.Height = 78
-        $callArea.MinHeight = 78
-        $callArea.MaxHeight = 78
+        $callArea.Height = 75
+        $callArea.MinHeight = 75
+        $callArea.MaxHeight = 75
         $callArea.Padding = [Windows.Thickness]::new(5.0,4.0,5.0,4.0)
         $callArea.Background = [Windows.Media.BrushConverter]::new().ConvertFromString([string]$presentation.call_background)
         $callArea.BorderBrush = [Windows.Media.BrushConverter]::new().ConvertFromString('#35434A')
@@ -2198,9 +2379,9 @@ function Update-UiChannelDisplays {
         $actionGrid = New-Object System.Windows.Controls.Primitives.UniformGrid
         $actionGrid.Columns = 2
         $actionGrid.Rows = 2
-        $actionGrid.Height = 78
-        $actionGrid.MinHeight = 78
-        $actionGrid.MaxHeight = 78
+        $actionGrid.Height = 75
+        $actionGrid.MinHeight = 75
+        $actionGrid.MaxHeight = 75
         $actionGrid.VerticalAlignment = [Windows.VerticalAlignment]::Top
         $actionGrid.Margin = [Windows.Thickness]::new(0.0)
         [Windows.Controls.Grid]::SetRow($actionGrid,1)
@@ -2208,25 +2389,42 @@ function Update-UiChannelDisplays {
         $txButton = New-UiChannelActionButton -Text $(if ($isTx) { '呼叫目标' } else { '设为呼叫' }) -Channel $channel -Action tx
         $txButton.IsEnabled = ($canTxMutation -and -not $isTx)
         $txButton.ToolTip = if ($isTx) { '已选为下次 PTT 呼叫目标' } else { '选择此频道作为下次 PTT 目标' }
-        $txButton.Height = 37
+        $txButton.Height = 36
         [void]$actionGrid.Children.Add($txButton)
         $removeButton = New-UiChannelActionButton -Text '取消监听' -Channel $channel -Action remove
         $removeButton.IsEnabled = $canReceiveMutation
-        $removeButton.Height = 37
+        $removeButton.Height = 36
         [void]$actionGrid.Children.Add($removeButton)
         $muteButton = New-UiChannelActionButton -Text $(if ($isMuted) { '恢复收听' } else { '临时屏蔽' }) -Channel $channel -Action mute
         $muteButton.IsEnabled = $canReceiveMutation
-        $muteButton.Height = 37
+        $muteButton.Height = 36
         [void]$actionGrid.Children.Add($muteButton)
         if ([string]$channel.kind -ceq 'group' -and [uint64]$channel.id -ne 4000) {
             $quickCallReady = ($script:latestStatus -and [string]$script:latestStatus.bm_state -ceq 'ready') -or
                 ($RoutingDiagnostic -and $RoutingDiagnosticAutoTest)
-            $fourthButton = New-UiChannelActionButton -Text '激活组' -Channel $channel -Action quick_call
-            $fourthButton.ToolTip = '直接激活这个动态组'
-            $fourthButton.IsEnabled = ($script:quickCallCapabilities -and $script:controlConfirmed -and $quickCallReady -and
+            $runId = [string]$script:controlRunId
+            $quickCallPending = ($runId -and (Test-WirexChannelActivationPending -State $script:channelActivationState -RunId $runId))
+            if ($script:pendingQuickCall -and -not [bool]$script:pendingQuickCall.timed_out) { $quickCallPending = $true }
+            $buttonText = if ($activationPresentation.is_bm_static) { '静态组' }
+                elseif ($activationPresentation.request_sent) { '已发送' }
+                elseif ($quickCallPending -and $script:pendingQuickCall -and
+                    [string]$script:pendingQuickCall.channel_key -ceq $key -and -not [bool]$script:pendingQuickCall.timed_out) { '请求处理中' }
+                else { '激活组' }
+            $fourthButton = New-UiChannelActionButton -Text $buttonText -Channel $channel -Action quick_call
+            if ($activationPresentation.is_bm_static) {
+                $fourthButton.ToolTip = [string]$activationPresentation.tooltip
+            } elseif ($activationPresentation.request_sent) {
+                $fourthButton.ToolTip = [string]$activationPresentation.tooltip
+            } elseif ($quickCallPending) {
+                $fourthButton.ToolTip = '另一项激活请求仍在等待本机结果；收到结果或等待超时后才可再次操作。'
+            } else {
+                $fourthButton.ToolTip = '向本机 Native 请求发送一次动态组 Quick Call。'
+            }
+            $fourthButton.IsEnabled = (-not $activationPresentation.is_bm_static -and -not $activationPresentation.request_sent -and
+                -not $quickCallPending -and $script:quickCallCapabilities -and $script:controlConfirmed -and $quickCallReady -and
                 -not $script:channelMutationSafetyStopPending -and -not $script:pendingRoutingMutation -and
                 -not $script:pendingChannelMutation -and -not $script:routingMutationFence)
-            $fourthButton.Height = 37
+            $fourthButton.Height = 36
             [void]$actionGrid.Children.Add($fourthButton)
         } else {
             $emptyAction = New-Object System.Windows.Controls.Border
@@ -2256,17 +2454,64 @@ function Update-CallTargetChoices { Update-UiChannelDisplays }
 function Invoke-UiChannelQuickCall {
     param([Parameter(Mandatory=$true)][object]$Channel)
     if ([string]$Channel.kind -cne 'group') { throw '只有组呼频道可激活动态组。' }
+    if (Test-UiBmStaticChannelReadback -Channel $Channel) {
+        Set-DynamicGroupStatus ('TG {0} TS{1} 已由 BM API 静态组列表回读；无需发送动态组请求。' -f [uint64]$Channel.id,[int]$Channel.slot)
+        Update-DynamicGroupControls
+        return $false
+    }
+    $runId = [string]$script:controlRunId
+    if ([string]::IsNullOrWhiteSpace($runId) -or -not $script:quickCallCapabilities -or -not $script:controlConfirmed) {
+        throw '本机 Native 控制通道尚未确认，未发送动态组请求。'
+    }
+    if (-not ($RoutingDiagnostic -and $RoutingDiagnosticAutoTest) -and
+        (-not $script:latestStatus -or [string]$script:latestStatus.run_id -cne $runId -or [string]$script:latestStatus.bm_state -cne 'ready')) {
+        throw '本机状态没有确认 BM ready，未发送动态组请求。'
+    }
+    $channelKey = Get-UiChannelKey -Channel $Channel
+    if (-not ($RoutingDiagnostic -and $RoutingDiagnosticAutoTest)) {
+        $sent = Get-WirexChannelActivationRequestSent -State $script:channelActivationState `
+            -RunId $runId -ChannelKey $channelKey -Slot ([int]$Channel.slot)
+        if ($sent) {
+            Set-DynamicGroupStatus ('TG {0} TS{1}：本会话已收到 Native request_sent 和两帧确认，不会再次发送。' -f [uint64]$Channel.id,[int]$Channel.slot)
+            Update-DynamicGroupControls
+            return $false
+        }
+        if (Test-WirexChannelActivationPending -State $script:channelActivationState -RunId $runId) {
+            throw '上一项组呼激活请求仍在等待本机结果。'
+        }
+    }
+    if ($script:pendingQuickCall -and -not [bool]$script:pendingQuickCall.timed_out) {
+        throw '上一项组呼激活请求仍在等待本机结果。'
+    }
     $parameters = [ordered]@{ group=[pscustomobject][ordered]@{ destination_id=[uint64]$Channel.id; slot=[uint64]$Channel.slot } }
     $requestId = [guid]::NewGuid().ToString('D')
-    $script:pendingQuickCall = [pscustomobject]@{ request_id=$requestId; destination_id=[uint64]$Channel.id; slot=[uint64]$Channel.slot; started_utc=[DateTime]::UtcNow; timed_out=$false }
+    $script:pendingQuickCall = [pscustomobject][ordered]@{
+        run_id=$runId; request_id=$requestId; channel_key=$channelKey; destination_id=[uint64]$Channel.id
+        slot=[int]$Channel.slot; started_utc=[DateTime]::UtcNow; timed_out=$false
+    }
     $script:pendingControlRequests[$requestId] = 'network_subscription.quick_call_join'
     $parametersJson = ConvertTo-Json -InputObject $parameters -Depth 4 -Compress
     if (-not $script:supervisor.SendControlCommand($requestId,'network_subscription.quick_call_join',$parametersJson)) {
         [void]$script:pendingControlRequests.Remove($requestId)
         $script:pendingQuickCall = $null
+        [void](Add-UiQuickCallDiagnostic -RunId $runId -RequestId $requestId -DestinationId ([uint64]$Channel.id) `
+            -Slot ([int]$Channel.slot) -Result rejected -ErrorCode control_send_failed)
         throw '动态组激活请求没有送达核心。'
     }
-    Set-UiChannelStatus -Text ('已提交 TG {0} 动态组激活请求。' -f $Channel.id)
+    if (-not ($RoutingDiagnostic -and $RoutingDiagnosticAutoTest)) {
+        if (-not (Start-WirexChannelActivationRequest -State $script:channelActivationState -RunId $runId `
+                -RequestId $requestId -ChannelKey $channelKey -DestinationId ([uint64]$Channel.id) -Slot ([int]$Channel.slot))) {
+            $script:pendingQuickCall.timed_out = $true
+            Set-DynamicGroupStatus '请求已送达本机 Native，但本机未能登记等待状态；收到的结果仍会逐项校验。' -Failed $true
+        }
+        [void](Add-UiQuickCallDiagnostic -RunId $runId -RequestId $requestId -DestinationId ([uint64]$Channel.id) `
+            -Slot ([int]$Channel.slot) -Result submitted)
+    }
+    if (-not ($RoutingDiagnostic -and $RoutingDiagnosticAutoTest)) {
+        Set-UiChannelStatus -Text ('已提交 TG {0} TS{1} 动态组请求，等待本机 Native 结果。' -f $Channel.id,[int]$Channel.slot)
+    }
+    Update-DynamicGroupControls
+    return $true
 }
 
 function Start-UiChannelMutation {
@@ -2462,13 +2707,17 @@ function Complete-UiChannelMutation {
 
 function Add-UiChannelFromInputs {
     try {
-        $idText = [string](Get-UiControl 'ChannelIdBox').Text
+        $channelIdCombo = Get-UiControl 'ChannelIdBox'
+        $preset = Get-UiSelectedChannelPreset -Combo $channelIdCombo
+        $idText = if ($preset) { [string]$preset.id } else { [string]$channelIdCombo.Text }
         $kindBox = Get-UiControl 'ChannelKindBox'
         $kind = if ($kindBox.SelectedItem -is [System.Windows.Controls.ComboBoxItem]) { [string]$kindBox.SelectedItem.Tag } else { '' }
         if ($kind -cnotin @('group','private')) {
             throw '请选择组呼或单呼类型。'
         }
-        $channel = New-UiChannelRecord -Id $idText -Kind $kind -Slot $script:channelEditorSlot
+        $slot = if ($preset -and $kind -ceq [string]$preset.kind) { [uint64]$preset.slot } else { [uint64]$script:channelEditorSlot }
+        $name = if ($preset -and $kind -ceq [string]$preset.kind) { [string]$preset.name } else { '' }
+        $channel = New-UiChannelRecord -Id $idText -Kind $kind -Slot $slot -Name $name
         $key = Get-UiChannelKey -Channel $channel
         if ($null -ne (Get-UiChannelByKey -Key $key)) { throw '频道列表已包含相同网络目标。' }
         if (@($script:channels).Count -ge 256) { throw '频道列表已达256项上限。' }
@@ -2478,26 +2727,37 @@ function Add-UiChannelFromInputs {
         $makeTx = [string]::IsNullOrWhiteSpace($script:txChannelKey)
         $txKey = if ($makeTx) { $key } else { [string]$script:txChannelKey }
         Start-UiChannelMutation -Channels $candidate -TxKey $txKey -MutedKeys $script:mutedChannelKeys -Action '加入频道'
-        $channelIdCombo = Get-UiControl 'ChannelIdBox'
         $script:loadingChannelPreset = $true
         $channelIdCombo.SelectedIndex = -1
         $channelIdCombo.Text = ''
         $script:channelPresetId = ''; $script:channelPresetKind = ''
-        $script:loadingChannelPreset = $false
+        $script:channelAutoKind = ''
+        $script:channelKindExplicit = $false
         $kindBox.SelectedIndex = 0
+        $script:loadingChannelPreset = $false
     } catch { $script:loadingChannelPreset = $false; Set-UiChannelStatus -Text $_.Exception.Message -Failed $true }
 }
 
 function Set-UiChannelPresetFromSelection {
     param([object]$SelectedItem)
     if ($script:loadingChannelPreset) { return }
-    if ($SelectedItem -is [System.Windows.Controls.ComboBoxItem] -and [string]$SelectedItem.Tag -match '^([0-9]{1,8})\|(group|private)$') {
-        $presetId = $Matches[1]; $presetKind = $Matches[2]
+    $metadata = $null
+    if ($SelectedItem -is [System.Windows.Controls.ComboBoxItem] -and $SelectedItem.Tag -and
+        $SelectedItem.Tag.PSObject.Properties['id'] -and $SelectedItem.Tag.PSObject.Properties['kind'] -and
+        $SelectedItem.Tag.PSObject.Properties['slot'] -and $SelectedItem.Tag.PSObject.Properties['name']) {
+        $metadata = $SelectedItem.Tag
+    }
+    if ($metadata -and [string]$metadata.kind -cin @('group','private') -and
+        [uint64]$metadata.id -ge 1 -and [uint64]$metadata.id -le 16777215 -and [int]$metadata.slot -in @(1,2)) {
+        $presetId = ([uint64]$metadata.id).ToString([Globalization.CultureInfo]::InvariantCulture)
+        $presetKind = [string]$metadata.kind
         $script:loadingChannelPreset = $true
         try {
             $combo = Get-UiControl 'ChannelIdBox'
             $combo.Text = $presetId
             $script:channelPresetId = $presetId; $script:channelPresetKind = $presetKind
+            $script:channelAutoKind = $presetKind
+            $script:channelKindExplicit = $false
             (Get-UiControl 'ChannelKindBox').SelectedIndex = $(if ($presetKind -ceq 'private') { 1 } else { 2 })
         } finally { $script:loadingChannelPreset = $false }
         return $true
@@ -2508,12 +2768,21 @@ function Set-UiChannelPresetFromSelection {
 
 function Update-UiChannelPresetFromManualText {
     $combo = Get-UiControl 'ChannelIdBox'
-    if ($script:loadingChannelPreset -or [string]$combo.Text -ceq [string]$script:channelPresetId) { return $false }
-    $previousPresetKind = [string]$script:channelPresetKind
+    if ($script:loadingChannelPreset) { return $false }
+    $selectedPreset = Get-UiSelectedChannelPreset -Combo $combo
+    if ($selectedPreset -and [string]$combo.Text -ceq ([uint64]$selectedPreset.id).ToString([Globalization.CultureInfo]::InvariantCulture)) {
+        return $false
+    }
     $kindBox = Get-UiControl 'ChannelKindBox'
     $selectedKind = if ($kindBox.SelectedItem -is [System.Windows.Controls.ComboBoxItem]) { [string]$kindBox.SelectedItem.Tag } else { '' }
     $script:channelPresetId = ''; $script:channelPresetKind = ''
-    if ($previousPresetKind -and $selectedKind -ceq $previousPresetKind) { $kindBox.SelectedIndex = 0 }
+    $automaticKind = [string]$script:channelAutoKind
+    $script:channelAutoKind = ''
+    if ($automaticKind -and $selectedKind -ceq $automaticKind -and -not [bool]$script:channelKindExplicit) {
+        $script:loadingChannelPreset = $true
+        try { $kindBox.SelectedIndex = 0; $script:channelKindExplicit = $false }
+        finally { $script:loadingChannelPreset = $false }
+    }
     if ($combo.SelectedIndex -ge 0) {
         $script:loadingChannelPreset = $true
         try { $combo.SelectedIndex = -1 } finally { $script:loadingChannelPreset = $false }
@@ -2523,10 +2792,33 @@ function Update-UiChannelPresetFromManualText {
 
 function Initialize-UiChannelInputHandlers {
     $channelIdCombo = Get-UiControl 'ChannelIdBox'
+    foreach ($item in @($channelIdCombo.Items)) {
+        if ($item -isnot [System.Windows.Controls.ComboBoxItem] -or $null -eq $item.Tag) { continue }
+        if ($item.Tag.PSObject.Properties['id'] -and $item.Tag.PSObject.Properties['kind']) { continue }
+        if ([string]$item.Tag -cnotmatch '^([0-9]{1,8})\|(group|private)$') { continue }
+        $id = [uint64]0
+        if (-not [uint64]::TryParse([string]$Matches[1],[Globalization.NumberStyles]::None,
+                [Globalization.CultureInfo]::InvariantCulture,[ref]$id)) { continue }
+        $kind = [string]$Matches[2]
+        $item.Tag = [pscustomobject][ordered]@{
+            id=$id; kind=$kind; slot=[int]$script:channelEditorSlot
+            name=(Get-UiKnownChannelName -Id $id -Kind $kind)
+        }
+    }
     $channelIdCombo.Add_SelectionChanged({
         $combo = Get-UiControl 'ChannelIdBox'
         [void](Set-UiChannelPresetFromSelection -SelectedItem $combo.SelectedItem)
     })
+    $kindBox = Get-UiControl 'ChannelKindBox'
+    $kindBox.Add_SelectionChanged({
+        if (-not $script:loadingChannelPreset) { $script:channelKindExplicit = $true; $script:channelAutoKind = '' }
+    })
+    foreach ($kindItem in @($kindBox.Items | Where-Object { $_ -is [System.Windows.Controls.ComboBoxItem] })) {
+        $kindItem.AddHandler([System.Windows.UIElement]::PreviewMouseLeftButtonDownEvent,
+            [System.Windows.Input.MouseButtonEventHandler]{
+                if (-not $script:loadingChannelPreset) { $script:channelKindExplicit = $true; $script:channelAutoKind = '' }
+            },$true)
+    }
     [void]$channelIdCombo.ApplyTemplate()
     $channelIdTextBox = $channelIdCombo.Template.FindName('PART_EditableTextBox',$channelIdCombo)
     if (-not $channelIdTextBox) { return $false }
@@ -2534,6 +2826,21 @@ function Initialize-UiChannelInputHandlers {
         [void](Update-UiChannelPresetFromManualText)
     })
     return $true
+}
+
+function Get-UiSelectedChannelPreset {
+    param([Parameter(Mandatory=$true)][System.Windows.Controls.ComboBox]$Combo)
+    $item = $Combo.SelectedItem
+    if ($item -isnot [System.Windows.Controls.ComboBoxItem] -or $null -eq $item.Tag -or
+        -not $item.Tag.PSObject.Properties['id'] -or -not $item.Tag.PSObject.Properties['kind'] -or
+        -not $item.Tag.PSObject.Properties['slot']) { return $null }
+    $id = [uint64]0
+    if (-not [uint64]::TryParse([string]$item.Tag.id,[Globalization.NumberStyles]::None,
+            [Globalization.CultureInfo]::InvariantCulture,[ref]$id) -or $id -lt 1 -or $id -gt 16777215 -or
+        [string]$item.Tag.kind -cnotin @('group','private') -or [int]$item.Tag.slot -notin @(1,2)) { return $null }
+    $textId = $id.ToString([Globalization.CultureInfo]::InvariantCulture)
+    if ([string]$Combo.Text -cne $textId) { return $null }
+    return $item.Tag
 }
 
 function Remove-UiChannel {
@@ -3318,6 +3625,56 @@ function ConvertFrom-UiControlFrame {
     return $record
 }
 
+function Reset-UiChannelActivationForBmReconnect {
+    param([Parameter(Mandatory=$true)][string]$RunId)
+    if ([string]::IsNullOrWhiteSpace($RunId) -or -not $script:channelActivationState) { return $false }
+    foreach ($pending in @($script:channelActivationState.pending_by_request.Values)) {
+        if ([string]$pending.run_id -cne $RunId) { continue }
+        $requestId = [string]$pending.request_id
+        [void](Add-UiQuickCallDiagnostic -RunId $RunId -RequestId $requestId `
+            -DestinationId ([uint64]$pending.destination_id) -Slot ([int]$pending.slot) -Result stale -ErrorCode bm_session_reconnected)
+        $script:expiredQuickCallRequests[($RunId + '|' + $requestId)] = $true
+        if ($script:expiredQuickCallRequests.Count -gt 128) {
+            $oldestKey = [string]@($script:expiredQuickCallRequests.Keys)[0]
+            [void]$script:expiredQuickCallRequests.Remove($oldestKey)
+        }
+        [void]$script:pendingControlRequests.Remove($requestId)
+    }
+    $script:pendingQuickCall = $null
+    Reset-WirexChannelActivationState -State $script:channelActivationState -RunId $RunId | Out-Null
+    Add-UiEvent 'BM 连接离开 ready；本机会话的组呼请求标记已清除'
+    Update-DynamicGroupControls
+    return $true
+}
+
+function Clear-UiChannelActivationAfterGroupPtt {
+    param([Parameter(Mandatory=$true)][string]$RunId,[Parameter(Mandatory=$true)][string]$EventName)
+    if ($EventName -cnotin @('tx_started_from_radio_ptt_down','tx_started_explicitly_by_t_key') -or
+        -not $script:activeRouting -or -not $script:activeRouting.tx_target) { return $false }
+    $target = $script:activeRouting.tx_target
+    if (-not $target.PSObject.Properties['kind'] -or [string]$target.kind -cne 'group' -or
+        -not $target.PSObject.Properties['slot'] -or
+        -not (Test-UiControlUnsigned -Value $target.slot -Minimum 1 -Maximum 2) -or
+        -not $target.PSObject.Properties['destination_id'] -or
+        -not (Test-UiControlUnsigned -Value $target.destination_id -Minimum 1 -Maximum 16777215)) { return $false }
+    $destinationId = [uint64]$target.destination_id
+    if ($destinationId -eq 4000) { return $false }
+    $slotNumber = [int]$target.slot
+    $hasDifferentRequestSent = $false
+    foreach ($candidate in @($script:channelActivationState.request_sent_by_target.Values)) {
+        if (-not $candidate -or [string]$candidate.run_id -cne $RunId -or [int]$candidate.slot -ne $slotNumber) { continue }
+        $sent = Get-WirexChannelActivationRequestSent -State $script:channelActivationState -RunId $RunId `
+            -ChannelKey ([string]$candidate.channel_key) -Slot $slotNumber
+        if (-not $sent) { continue }
+        if ([uint64]$sent.destination_id -eq $destinationId) { return $false }
+        $hasDifferentRequestSent = $true
+    }
+    if (-not $hasDifferentRequestSent) { return $false }
+    if (-not (Clear-WirexChannelActivationSlot -State $script:channelActivationState -RunId $RunId -Slot $slotNumber)) { return $false }
+    Update-DynamicGroupControls
+    return $true
+}
+
 function Reset-UiControlState {
     param([string]$Text = '本机控制：等待')
     if (-not $script:identityNativeDeferredBySource) { $script:identityNativeDeferredBySource = @{} }
@@ -3371,6 +3728,8 @@ function Reset-UiControlState {
         $script:audioGainPendingRequest = $null
     }
     $script:pendingQuickCall = $null
+    $script:expiredQuickCallRequests = @{}
+    if ($script:channelActivationState) { Reset-WirexChannelActivationState -State $script:channelActivationState -RunId '' | Out-Null }
     $script:pendingDynamicLocalListen = $null
     $script:controlDiagnostic = $false
     $script:controlOverflowHandled = $false
@@ -3684,6 +4043,7 @@ function Process-UiControlEvents {
                 continue
             }
             $script:controlRunId = [string]$record.run_id
+            Reset-WirexChannelActivationState -State $script:channelActivationState -RunId $script:controlRunId | Out-Null
             $script:controlDiagnostic = [bool]$record.diagnostic
             $script:controlCapabilities = @($record.supported_commands) -join ','
             $gainCapability = Test-UiAudioGainCapability -Capabilities $script:controlCapabilities
@@ -3729,6 +4089,13 @@ function Process-UiControlEvents {
         if ($record.command -ceq 'audio.gains.set' -and $script:audioGainExpiredRequests.ContainsKey([string]$record.request_id)) {
             [void](Consume-UiAudioGainExpiredResult -Record $record)
             continue
+        }
+        if ($record.command -ceq 'network_subscription.quick_call_join') {
+            $expiredQuickCallKey = ([string]$record.run_id + '|' + [string]$record.request_id)
+            if ($script:expiredQuickCallRequests.ContainsKey($expiredQuickCallKey)) {
+                [void]$script:expiredQuickCallRequests.Remove($expiredQuickCallKey)
+                continue
+            }
         }
         if ($record.command -ceq 'audio.gains.set' -and $script:audioGainPendingRequest -and
             [string]$script:audioGainPendingRequest.request_id -ceq [string]$record.request_id -and
@@ -3797,30 +4164,54 @@ function Process-UiControlEvents {
                 continue
             }
             if ($record.command -ceq 'network_subscription.quick_call_join') {
-                if ($script:pendingQuickCall -and $script:pendingQuickCall.request_id -ceq [string]$record.request_id) {
-                    $script:pendingQuickCall = $null
-                }
                 if ($RoutingDiagnosticAutoTest) {
+                    if ($script:pendingQuickCall -and $script:pendingQuickCall.request_id -ceq [string]$record.request_id -and
+                        $script:pendingQuickCall.run_id -ceq [string]$record.run_id) { $script:pendingQuickCall = $null }
                     Fail-UiRoutingDiagnosticAutoTest -Message '本地频道诊断中的组呼激活请求未获确认。'
                     continue
                 }
-                $quickCallError = switch -CaseSensitive ($detail) {
-                    'media_busy' { '当前正在收发，请空闲后激活。' }
-                    'quick_call_not_ready' { 'BM 或核心未就绪，请检查连接后激活。' }
-                    'invalid_or_forbidden_group' { '组号或 TS 无效；TG4000 用于断开动态组。' }
-                    'disconnect_group_forbidden' { 'TG4000 用于断开动态组，不能作为激活目标。' }
-                    'quick_call_send_failed' { '激活发送失败，请检查 BM 连接后重新激活。' }
-                    'quick_call_partial_send' { '激活未完整发送；请重新连接后再尝试激活。' }
-                    'quick_call_send_incomplete' { '激活未能完成，请检查 BM 连接后重新激活。' }
-                    default { '激活请求未完成：' + $detail }
+                $completion = Complete-WirexChannelActivationRequest -State $script:channelActivationState `
+                    -RunId ([string]$record.run_id) -RequestId ([string]$record.request_id) `
+                    -Result ([string]$record.result)
+                if (-not $completion.matched) {
+                    if ($script:pendingQuickCall -and $script:pendingQuickCall.request_id -ceq [string]$record.request_id -and
+                        $script:pendingQuickCall.run_id -ceq [string]$record.run_id) {
+                        [void](Add-UiQuickCallDiagnostic -RunId ([string]$record.run_id) -RequestId ([string]$record.request_id) `
+                            -DestinationId ([uint64]$script:pendingQuickCall.destination_id) -Slot ([int]$script:pendingQuickCall.slot) `
+                            -Result stale -ErrorCode unmatched_result)
+                    }
+                    Update-DynamicGroupControls
+                    continue
                 }
-                Set-DynamicGroupStatus $quickCallError -Failed $true
+                if ($script:pendingQuickCall -and $script:pendingQuickCall.request_id -ceq [string]$record.request_id -and
+                    $script:pendingQuickCall.run_id -ceq [string]$record.run_id) { $script:pendingQuickCall = $null }
+                if (-not $completion.current) {
+                    [void](Add-UiQuickCallDiagnostic -RunId ([string]$record.run_id) -RequestId ([string]$record.request_id) `
+                        -DestinationId ([uint64]$completion.request.destination_id) -Slot ([int]$completion.request.slot) `
+                        -Result stale -ErrorCode superseded_result)
+                    Update-DynamicGroupControls
+                    continue
+                }
+                [void](Add-UiQuickCallDiagnostic -RunId ([string]$record.run_id) -RequestId ([string]$record.request_id) `
+                    -DestinationId ([uint64]$completion.request.destination_id) -Slot ([int]$completion.request.slot) `
+                    -Result ([string]$record.result) -ErrorCode $detail)
+                $quickCallError = switch -CaseSensitive ($detail) {
+                    'media_busy' { '本机 Native 拒绝：media_busy（本机收发、音频路由或清理流程仍忙）。' }
+                    'quick_call_not_ready' { '本机 Native 拒绝：quick_call_not_ready（本机控制、BM连接或UDP传输未就绪）。' }
+                    'invalid_or_forbidden_group' { '本机 Native 拒绝：invalid_or_forbidden_group（组号或时隙无效或被禁止）。' }
+                    'disconnect_group_forbidden' { '本机 Native 拒绝：disconnect_group_forbidden（TG 4000 是断开组，不能作为激活目标）。' }
+                    'quick_call_send_failed' { '本机 Native 拒绝：quick_call_send_failed（Quick Call 帧未能发送）。' }
+                    'quick_call_partial_send' { '本机 Native 拒绝：quick_call_partial_send（header 已发出，EOT 帧发送失败；核心没有重试）。' }
+                    'quick_call_send_incomplete' { '本机 Native 拒绝：quick_call_send_incomplete（Quick Call 帧发送未完整完成）。' }
+                    default { '本机 Native 返回激活错误：' + $detail }
+                }
                 Set-UiControlStatus -Text '动态组激活未完成' -Confirmed $script:controlConfirmed
                 if ($detail -ceq 'quick_call_partial_send') {
                     Add-UiEvent '动态组激活部分发送：header 已发送，EOT 发送失败；核心没有重试'
                 } else {
                     Add-UiEvent ('动态组激活失败：' + $detail)
                 }
+                Set-DynamicGroupStatus $quickCallError -Failed $true
                 Update-DynamicGroupControls
                 continue
             }
@@ -3902,7 +4293,6 @@ function Process-UiControlEvents {
             }
             'network_subscription.quick_call_join' {
                 $pendingQuickCall = $script:pendingQuickCall
-                $script:pendingQuickCall = $null
                 if ($RoutingDiagnosticAutoTest -and $script:routingDiagnosticAutoTestPhase -ne 3) {
                     Fail-UiRoutingDiagnosticAutoTest -Message '频道添加流程触发了意外组呼激活。'
                     continue
@@ -3926,14 +4316,38 @@ function Process-UiControlEvents {
                     Update-DynamicGroupControls
                     continue
                 }
-                if ($record.replayed) {
-                    Set-DynamicGroupStatus ('TG {0}：激活请求已发送，等待该组来话。' -f $record.destination_id)
-                } else {
-                    Set-DynamicGroupStatus ('TG {0}：激活请求已发送，等待该组来话。' -f $record.destination_id)
+                $completion = Complete-WirexChannelActivationRequest -State $script:channelActivationState `
+                    -RunId ([string]$record.run_id) -RequestId ([string]$record.request_id) -Result ok `
+                    -ActivationStatus ([string]$record.activation_status) -DestinationId $record.destination_id `
+                    -Slot $record.slot -FramesSent $record.frames_sent -Replayed ([bool]$record.replayed)
+                if ($pendingQuickCall -and $pendingQuickCall.request_id -ceq [string]$record.request_id -and
+                    $pendingQuickCall.run_id -ceq [string]$record.run_id) { $script:pendingQuickCall = $null }
+                if (-not $completion.matched -or -not $completion.current -or -not $completion.sent) {
+                    if ($completion.matched) {
+                        $nativeResultError = if ($completion.current) { 'invalid_native_result' } else { 'superseded_result' }
+                        [void](Add-UiQuickCallDiagnostic -RunId ([string]$record.run_id) -RequestId ([string]$record.request_id) `
+                            -DestinationId ([uint64]$completion.request.destination_id) -Slot ([int]$completion.request.slot) `
+                            -Result $(if ($completion.current) { 'rejected' } else { 'stale' }) -ErrorCode $nativeResultError `
+                            -ActivationStatus ([string]$record.activation_status) `
+                            -FramesSent $record.frames_sent -Replayed ([bool]$record.replayed))
+                        if ($completion.current) {
+                            Set-DynamicGroupStatus ('TG {0} TS{1}：本机 Native 结果未确认两帧已发送；请检查连接后手动重试。' -f `
+                                $completion.request.destination_id,$completion.request.slot) -Failed $true
+                        }
+                    }
+                    Update-DynamicGroupControls
+                    continue
                 }
-                Set-UiControlStatus -Text '动态组激活请求已发送' -Confirmed $true
-                Add-UiEvent ('已发送一次动态组激活请求 · TG {0}' -f $record.destination_id)
-                if ($record.replayed) { Add-UiEvent '读取已缓存的激活结果；没有再次发送帧' }
+                [void](Add-UiQuickCallDiagnostic -RunId ([string]$record.run_id) -RequestId ([string]$record.request_id) `
+                    -DestinationId ([uint64]$completion.request.destination_id) -Slot ([int]$completion.request.slot) `
+                    -Result ok -ActivationStatus ([string]$record.activation_status) -FramesSent $record.frames_sent `
+                    -Replayed ([bool]$record.replayed))
+                Set-UiControlStatus -Text '动态组激活请求已发送（两帧）' -Confirmed $true
+                Add-UiEvent ('Native 确认激活请求已发送两帧 · TG {0} TS{1}' -f `
+                    $completion.request.destination_id,$completion.request.slot)
+                Set-DynamicGroupStatus ('TG {0} TS{1}：本会话已发送激活请求（Native确认两帧）；BM持续状态未确认。' -f `
+                    $completion.request.destination_id,$completion.request.slot)
+                if ($record.replayed) { Add-UiEvent '读取本机缓存的发送结果；没有再次发送帧' }
                 Update-DynamicGroupControls
             }
             'status' {
@@ -5671,6 +6085,11 @@ function Apply-StatusRecord {
     $script:latestStatus = $Record
     Set-MainText -Name 'CoreValue' -Text '运行中'
     $bm = [string]$Record.bm_state
+    $previousBmState = [string]$script:lastUiBmState
+    if ($previousBmState -ceq 'ready' -and $bm -cne 'ready') {
+        [void](Reset-UiChannelActivationForBmReconnect -RunId ([string]$Record.run_id))
+    }
+    [void](Clear-UiChannelActivationAfterGroupPtt -RunId ([string]$Record.run_id) -EventName ([string]$Record.event))
     if ($Record.PSObject.Properties['bm_connection']) {
         [void](Set-UiBmConnectionSnapshot -Connection $Record.bm_connection -BmState $bm `
             -Resolving ([bool]$Record.bm_resolving) -ErrorCode ([string]$Record.bm_connection_error) -Source status_jsonl)
@@ -6372,8 +6791,14 @@ function On-UiTimerTick {
             if ($script:pendingQuickCall -and -not [bool]$script:pendingQuickCall.timed_out -and
                 ([DateTime]::UtcNow - [DateTime]$script:pendingQuickCall.started_utc).TotalSeconds -ge 8) {
                 $script:pendingQuickCall.timed_out = $true
-                Set-DynamicGroupStatus '尚未收到激活结果；请检查连接，结果确认后再操作。' -Failed $true
+                [void](Set-WirexChannelActivationRequestTimedOut -State $script:channelActivationState `
+                    -RunId ([string]$script:pendingQuickCall.run_id) -RequestId ([string]$script:pendingQuickCall.request_id))
+                [void](Add-UiQuickCallDiagnostic -RunId ([string]$script:pendingQuickCall.run_id) `
+                    -RequestId ([string]$script:pendingQuickCall.request_id) -DestinationId ([uint64]$script:pendingQuickCall.destination_id) `
+                    -Slot ([int]$script:pendingQuickCall.slot) -Result timeout -ErrorCode control_result_timeout)
+                Set-DynamicGroupStatus '等待本机 Native 结果超时；没有确认是否发送，请检查状态后手动重试。' -Failed $true
                 Add-UiEvent '动态组激活等待超时；保留原 request_id，没有自动重发'
+                Update-DynamicGroupControls
             }
             if ($script:pendingRoutingMutation -and
                 ([DateTime]::UtcNow - [DateTime]$script:pendingRoutingMutation.started_utc).TotalSeconds -ge 8) {
@@ -7244,26 +7669,55 @@ function Complete-UiRadioCatOperationAndPersist {
     return $completed
 }
 
+function Test-UiMouseOriginWithinElement {
+    param([AllowNull()][object]$Origin,[Parameter(Mandatory=$true)][System.Windows.DependencyObject]$Element)
+    $current = $Origin -as [System.Windows.DependencyObject]
+    while ($current) {
+        if ([object]::ReferenceEquals($current,$Element)) { return $true }
+        if ($current -is [System.Windows.Media.Visual] -or $current -is [System.Windows.Media.Media3D.Visual3D]) {
+            $current = [System.Windows.Media.VisualTreeHelper]::GetParent($current)
+        } elseif ($current -is [System.Windows.ContentElement]) {
+            $current = [System.Windows.ContentOperations]::GetParent($current)
+        } else {
+            $current = [System.Windows.LogicalTreeHelper]::GetParent($current)
+        }
+    }
+    return $false
+}
+
 function Add-UiComboOpenHandlers {
     param([System.Windows.Window]$Window)
-    foreach ($name in @('MasterPresetBox','SerialBox','WaveInEndpointBox','WaveOutEndpointBox','CatPortBox','CatBaudRateBox','ChannelKindBox','CatMainModeBox')) {
+    foreach ($name in @('MasterPresetBox','SerialBox','WaveInEndpointBox','WaveOutEndpointBox','CatPortBox',
+            'CatBaudRateBox','ChannelIdBox','ChannelKindBox','CatMainModeBox','CatMainFrequencyMHzBox','CatPowerBox')) {
         $combo=$Window.FindName($name); if (-not $combo) { continue }
-        $combo.Add_PreviewMouseLeftButtonDown({ param($sender,$eventArgs)
-            if ($sender.IsEditable) {
-                $sender.IsDropDownOpen=$true
-                return
-            }
-            if (-not $sender.IsDropDownOpen) { $sender.IsDropDownOpen=$true; $eventArgs.Handled=$true }
-        })
         if ($combo.IsEditable) {
             [void]$combo.ApplyTemplate()
-            $textBox=$combo.Template.FindName('PART_EditableTextBox',$combo)
-            if ($textBox -is [System.Windows.Controls.TextBox]) {
-                $textBox.Add_PreviewMouseLeftButtonDown({ param($sender,$eventArgs)
-                    $owner=[System.Windows.Controls.ComboBox]$sender.TemplatedParent
-                    if ($owner) { $owner.IsDropDownOpen=$true }
-                })
-            }
+            $combo.AddHandler([System.Windows.UIElement]::PreviewMouseLeftButtonDownEvent,[System.Windows.Input.MouseButtonEventHandler]{
+                param($sender,$eventArgs)
+                $comboOwner=[System.Windows.Controls.ComboBox]$sender
+                $textBox=$comboOwner.Template.FindName('PART_EditableTextBox',$comboOwner)
+                $mouseOrigin=$eventArgs.OriginalSource
+                if (-not $mouseOrigin) { $mouseOrigin=$eventArgs.Source }
+                if ($textBox -isnot [System.Windows.Controls.TextBox] -or
+                    -not (Test-UiMouseOriginWithinElement -Origin $mouseOrigin -Element $textBox)) { return }
+                $openScript={ if ($comboOwner.IsEnabled -and $comboOwner.IsVisible) { $comboOwner.IsDropDownOpen=$true } }.GetNewClosure()
+                [void]$comboOwner.Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Input,[Action]$openScript)
+            },$true)
+            $combo.AddHandler([System.Windows.UIElement]::MouseLeftButtonUpEvent,[System.Windows.Input.MouseButtonEventHandler]{
+                param($sender,$eventArgs)
+                $comboOwner=[System.Windows.Controls.ComboBox]$sender
+                $textBox=$comboOwner.Template.FindName('PART_EditableTextBox',$comboOwner)
+                $mouseOrigin=$eventArgs.OriginalSource
+                if (-not $mouseOrigin) { $mouseOrigin=$eventArgs.Source }
+                if ($textBox -isnot [System.Windows.Controls.TextBox] -or
+                    -not (Test-UiMouseOriginWithinElement -Origin $mouseOrigin -Element $textBox)) { return }
+                $openScript={ if ($comboOwner.IsEnabled -and $comboOwner.IsVisible) { $comboOwner.IsDropDownOpen=$true } }.GetNewClosure()
+                [void]$comboOwner.Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Input,[Action]$openScript)
+            },$true)
+        } else {
+            $combo.Add_PreviewMouseLeftButtonDown({ param($sender,$eventArgs)
+                if (-not $sender.IsDropDownOpen) { $sender.IsDropDownOpen=$true; $eventArgs.Handled=$true }
+            })
         }
     }
 }
@@ -7520,7 +7974,7 @@ if ($RenderOnly) {
     $script:portableConfig.connection.source_id=[uint64]3149876
     $script:channels=@(
         (New-UiChannelRecord -Id 91 -Kind group -Slot 2),
-        (New-UiChannelRecord -Id 9990 -Kind private -Slot 2),
+        (New-UiChannelRecord -Id 9990 -Kind private -Slot 2 -Name ('测试长频道名称' * 8)),
         (New-UiChannelRecord -Id 460997 -Kind private -Slot 2)
     )
     $script:txChannelKey='group:91:2'
@@ -7632,9 +8086,22 @@ if ($RenderOnly) {
     $channelCardsEvidence=@($script:mainWindow.FindName('ChannelCardsPanel').Children | ForEach-Object {
         if ($_.Tag.blank) {
             $blankCardBounds=(Get-WpfElementLayoutEvidence -Window $script:mainWindow -Element $_).actual
-            [pscustomobject]@{blank=$true;channel_key='';height=[double]$_.ActualHeight;card_bounds=$blankCardBounds;card_body_width=0;call_area_width=0;action_area_width=0;action_area_height=0;call_active=$false;call_area_height=0;call_area_bounds=$null;action_area_bounds=$null;action_count=0;buttons=@();buttons_bounds=@();text=@()}
+            [pscustomobject]@{blank=$true;channel_key='';height=[double]$_.ActualHeight;card_bounds=$blankCardBounds;card_title=$null;card_body_width=0;call_area_width=0;action_area_width=0;action_area_height=0;call_active=$false;call_area_height=0;call_area_bounds=$null;action_area_bounds=$null;action_count=0;buttons=@();buttons_bounds=@();text=@()}
         } else {
             $cardBounds=(Get-WpfElementLayoutEvidence -Window $script:mainWindow -Element $_).actual
+            $titleElement=@($_.Child.Children | Where-Object { $_ -is [System.Windows.Controls.TextBlock] -and [string]$_.Name -ceq 'ChannelCardTitle' }) | Select-Object -First 1
+            $titleEvidence=$null
+            if ($titleElement) {
+                $titleOrigin=$titleElement.TranslatePoint([System.Windows.Point]::new(0,0),$script:mainWindow)
+                $titleBounds=Get-WpfElementLayoutEvidence -Window $script:mainWindow -Element $titleElement
+                $titleEvidence=[pscustomobject][ordered]@{
+                    name=[string]$titleElement.Name;text=[string]$titleElement.Text;tooltip=[string]$titleElement.ToolTip
+                    tag=$titleElement.Tag;x=[double]$titleOrigin.X;y=[double]$titleOrigin.Y
+                    width=[double]$titleElement.ActualWidth;height=[double]$titleElement.ActualHeight
+                    text_trimming=[string]$titleElement.TextTrimming;text_wrapping=[string]$titleElement.TextWrapping
+                    bounds=$titleBounds.actual
+                }
+            }
             $callArea=@($_.Child.Children | Where-Object { $_ -is [System.Windows.Controls.Border] -and [string]$_.Tag -ceq 'ChannelCallArea' }) | Select-Object -First 1
             $actions=@($_.Child.Children | Where-Object { $_ -is [System.Windows.Controls.Primitives.UniformGrid] }) | Select-Object -First 1
             $callBounds=(Get-WpfElementLayoutEvidence -Window $script:mainWindow -Element $callArea).actual
@@ -7647,7 +8114,7 @@ if ($RenderOnly) {
                     width=[double]$button.ActualWidth;height=[double]$button.ActualHeight;visible=[bool]$button.IsVisible
                 }
             })
-            [pscustomobject]@{blank=$false;channel_key=[string]$_.Tag.channel_key;height=[double]$_.ActualHeight;min_height=[double]$_.MinHeight;card_bounds=$cardBounds;card_body_width=[double]$_.Child.ActualWidth;call_area_width=[double]$callArea.ActualWidth;action_area_width=[double]$actions.ActualWidth;action_area_height=[double]$actions.ActualHeight;call_active=[bool]$_.Tag.call_active;call_area_height=[double]$callArea.ActualHeight;call_area_bounds=$callBounds;action_area_bounds=$actionBounds;action_count=[int]$actions.Children.Count;buttons=@(Get-UiVisualButtonTexts -Root $_);buttons_bounds=$buttonBounds;text=@(Get-UiVisualTextValues -Root $_)}
+            [pscustomobject]@{blank=$false;channel_key=[string]$_.Tag.channel_key;height=[double]$_.ActualHeight;min_height=[double]$_.MinHeight;card_bounds=$cardBounds;card_title=$titleEvidence;card_body_width=[double]$_.Child.ActualWidth;call_area_width=[double]$callArea.ActualWidth;action_area_width=[double]$actions.ActualWidth;action_area_height=[double]$actions.ActualHeight;call_active=[bool]$_.Tag.call_active;call_area_height=[double]$callArea.ActualHeight;call_area_bounds=$callBounds;action_area_bounds=$actionBounds;action_count=[int]$actions.Children.Count;buttons=@(Get-UiVisualButtonTexts -Root $_);buttons_bounds=$buttonBounds;text=@(Get-UiVisualTextValues -Root $_)}
         }
     })
     $selectedChannel = Get-UiChannelByKey -Key $script:txChannelKey

@@ -13,6 +13,28 @@ function Assert-UiChannels {
     if (-not $Condition) { throw $Message }
 }
 
+function Get-BmManagementUiDeviceId { return [string]$script:testBmDeviceId }
+function Get-BmManagementUiApiKey { return [string]$script:testBmApiKey }
+
+function Receive-TestQuickCallResult {
+    param([Parameter(Mandatory=$true)][object]$Request,[Parameter(Mandatory=$true)][string]$Result,
+        [string]$ErrorCode='',[string]$ActivationStatus='',[uint64]$DestinationId=0,[uint64]$Slot=0,
+        [uint64]$FramesSent=0,[bool]$Replayed=$false)
+    $script:testControlSequence++
+    $record=[ordered]@{
+        type='control_result';command='network_subscription.quick_call_join';run_id=[string]$Request.run_id
+        request_id=[string]$Request.request_id;control_seq=[uint64]$script:testControlSequence
+        result=$Result;replayed=$Replayed
+    }
+    if ($Result -ceq 'ok') {
+        $record.activation_status=$ActivationStatus; $record.destination_id=$DestinationId
+        $record.slot=$Slot; $record.frames_sent=$FramesSent
+    } else { $record.error=$ErrorCode }
+    $script:testControlRecord=[pscustomobject]$record
+    $script:supervisor.Events=@('{}')
+    [void](Process-UiControlEvents)
+}
+
 function Get-TestFileHash {
     param([Parameter(Mandatory=$true)][string]$Path)
     $sha = [System.Security.Cryptography.SHA256]::Create()
@@ -25,6 +47,16 @@ function Get-TestUiControl {
     $control = $script:mainWindow.FindName($Name)
     if (-not $control) { throw "测试窗口缺少控件 $Name。" }
     return $control
+}
+
+function Get-TestChannelButton {
+    param([Parameter(Mandatory=$true)][string]$ChannelKey,[Parameter(Mandatory=$true)][string]$Action)
+    $card=@($script:mainWindow.FindName('ChannelCardsPanel').Children | Where-Object {
+        -not $_.Tag.blank -and [string]$_.Tag.channel_key -ceq $ChannelKey
+    }) | Select-Object -First 1
+    if (-not $card) { return $null }
+    $grid=@($card.Child.Children | Where-Object { $_ -is [System.Windows.Controls.Primitives.UniformGrid] }) | Select-Object -First 1
+    return @($grid.Children | Where-Object { $_ -is [System.Windows.Controls.Button] -and [string]$_.Tag.action -ceq $Action }) | Select-Object -First 1
 }
 
 function New-TestChannelSupervisor {
@@ -70,6 +102,8 @@ function Open-TestMainWindow {
     $script:mainWindow.Show()
     $script:mainWindow.UpdateLayout()
     Add-UiComboOpenHandlers -Window $script:mainWindow
+    if (-not (Initialize-UiChannelInputHandlers)) { throw '频道 ID 下拉框没有可编辑输入区。' }
+    (Get-TestUiControl 'AddChannelButton').Add_Click({ Add-UiChannelFromInputs })
     return $script:mainWindow
 }
 
@@ -148,6 +182,7 @@ $radioCatPath = Join-Path $repoRoot 'ui\windows\RadioCatUi.ps1'
 $mainXamlPath = Join-Path $repoRoot 'ui\windows\MainWindow.xaml'
 $settingsXamlPath = Join-Path $repoRoot 'ui\windows\SettingsWindow.xaml'
 $portableConfigModulePath = Join-Path $repoRoot 'ui\windows\PortableConfig.psm1'
+$channelActivationStateModulePath = Join-Path $repoRoot 'ui\windows\ChannelActivationState.psm1'
 $radioIdentityModulePath = Join-Path $repoRoot 'ui\windows\RadioIdentity.psm1'
 $bridgeUserConfigModulePath = Join-Path $repoRoot 'tools\bridge-user-config.psm1'
 $mainTokens = $null; $mainErrors = $null
@@ -170,6 +205,10 @@ $functionNames = @(
     'Set-UiChannelStatus','New-UiChannelActionButton','Update-UiChannelDisplays','Set-UiChannelPage','Start-UiChannelMutation',
     'Get-UiChannelCallerDetails','New-UiDmIdLinkTextBlock','Open-UiDmIdProfile','Get-UiNativeIdentityCallsign',
     'Get-UiChannelTargetFromRouting','Complete-UiChannelMutation','Add-UiChannelFromInputs','Remove-UiChannel','Set-UiChannelMuted',
+    'Get-UiKnownChannelName','Get-UiChannelDisplayName','Test-UiBmStaticChannelReadback','Get-UiChannelActivationPresentation',
+    'Set-UiChannelPresetFromSelection','Update-UiChannelPresetFromManualText','Initialize-UiChannelInputHandlers','Get-UiSelectedChannelPreset',
+    'Add-UiQuickCallDiagnostic','Reset-UiChannelActivationForBmReconnect','Clear-UiChannelActivationAfterGroupPtt',
+    'Test-UiMouseOriginWithinElement','Set-DynamicGroupStatus',
     'Save-SettingsFromWindow','Get-UiSafeSettingsSaveErrorText','Copy-UiPortableConfigValue','ConvertTo-UiOptionalUnsigned',
     'Get-UiComboValue','Get-UiComboItemValue','Request-Reconnect','Start-BridgeRun',
     'Get-UiRadioCatPortConflictMessage','Test-UiRadioCatUserActionBusy','Get-UiRadioCatSessionState',
@@ -193,7 +232,8 @@ $functionNames = @(
     'Expire-UiAudioGainRequest',
     'Get-UiSourceIdentityDisplay','Get-UiRadioCatSelectedPort','Get-UiRadioCatStopBits','Get-UiRadioCatBaudRate',
     'Update-UiReceiveMetricsDisplay','Update-UiIdentityActionState','Complete-UiIdentityQuery','Expire-UiNativeIdentityUpdate',
-    'Start-UiChannelMutationSafetyStop','Clear-UiChannelMutationSafetyState','Get-UiVisualTextValues'
+    'Start-UiChannelMutationSafetyStop','Clear-UiChannelMutationSafetyState','Get-UiVisualTextValues',
+    'Test-UiPathWithinDirectory','Test-UiRoutingDiagnosticConfigDirectory'
 )
 # Extract the selected functions by their own AST names; this keeps the test tied to production bodies.
 $selected = @($allDefinitions | Where-Object { $functionNames -ccontains $_.Name })
@@ -201,6 +241,7 @@ Invoke-Expression (($selected | ForEach-Object { $_.Extent.Text }) -join "`r`n")
 $script:actualStartBridgeRun = (Get-Command Start-BridgeRun -CommandType Function).ScriptBlock
 $script:actualCompleteBridgePreparation = (Get-Command Complete-BridgePreparation -CommandType Function).ScriptBlock
 Import-Module -Name $portableConfigModulePath -Force
+Import-Module -Name $channelActivationStateModulePath -Force
 Import-Module -Name $radioIdentityModulePath -Force
 Import-Module -Name $bridgeUserConfigModulePath -Force
 
@@ -249,13 +290,17 @@ $script:mainWindow = $null; $script:settingsWindow = $null
 $script:profilePath = ''
 $script:bmServerSelectionPreferenceId = 'bm-china-4602'
 $script:channels = @(); $script:txChannelKey = ''; $script:mutedChannelKeys = @{}
-$script:channelPageIndex = 0
+$script:channelPageIndex = 0; $script:channelEditorSlot=[uint64]2
+$script:channelPresetId=''; $script:channelPresetKind=''; $script:channelAutoKind=''; $script:channelKindExplicit=$false; $script:loadingChannelPreset=$false
 $script:pendingRoutingMutation = $null; $script:pendingChannelMutation = $null; $script:pendingChannelStopMutation = $null
 $script:channelMutationSafetyStopPending = $false
 $script:routingMutationFence = $false; $script:activeRouting = $null; $script:activeProfile = $null; $script:storedProfile = $null
 $script:supervisor = $null; $script:controlConfirmed = $false; $script:routingCapabilities = $false
 $script:pendingControlRequests = @{}; $script:timedOutRoutingMutations = @{}; $script:resolvedTimedOutRoutingRequests = @{}
 $script:pendingRoutingStatusRequestId = ''; $script:pendingStatusRequestId = ''; $script:pendingQuickCall = $null
+$script:controlRunId=''; $script:controlLastSequence=[uint64]0; $script:channelActivationState=New-WirexChannelActivationState
+$script:expiredQuickCallRequests=@{}; $script:quickCallDiagnosticPath=Join-Path $testRoot 'quick-call-requests.jsonl'
+$script:controlDiagnostic=$false; $script:isolatedUiMode=$true
 $script:pendingDynamicCallTarget = $null; $script:stopTask = $null; $script:statusStream = $null
 $script:nativeExitCleanupPending = $false; $script:nativeExitCleanupStarted = $false
 $script:radioModeApplyAfterStop = $null; $script:radioModePreviousHriPortName = ''; $script:closingAfterStop = $false; $script:reconnectAfterStop = $false
@@ -285,6 +330,55 @@ $rootConfigHashBefore = ''
 if ($rootConfigExistedBefore) {
     $rootConfigHashBefore = Get-TestFileHash -Path $rootConfigPath
 }
+
+# RoutingDiagnostic uses PortableDirectory only as a forbidden-root comparison. All paths and canaries below are synthetic.
+$diagnosticRoot = Join-Path $testRoot 'routing-isolation'
+$diagnosticRuntimeRoot = Join-Path $diagnosticRoot 'runtime'
+$diagnosticPortableRoot = Join-Path $diagnosticRoot 'portable'
+$diagnosticExternalRoot = Join-Path $diagnosticRoot 'external-fixture'
+[void][System.IO.Directory]::CreateDirectory($diagnosticRuntimeRoot)
+[void][System.IO.Directory]::CreateDirectory($diagnosticPortableRoot)
+[void][System.IO.Directory]::CreateDirectory($diagnosticExternalRoot)
+$diagnosticPortableConfig = Join-Path $diagnosticPortableRoot 'config.json'
+$diagnosticRuntimeConfig = Join-Path $diagnosticRuntimeRoot 'config.json'
+$diagnosticPortableSentinel = '{ invalid portable config fixture'
+$diagnosticRuntimeSentinel = '{ invalid runtime config fixture'
+[System.IO.File]::WriteAllText($diagnosticPortableConfig,$diagnosticPortableSentinel,[System.Text.Encoding]::UTF8)
+[System.IO.File]::WriteAllText($diagnosticRuntimeConfig,$diagnosticRuntimeSentinel,[System.Text.Encoding]::UTF8)
+$diagnosticPortableHashBefore = Get-TestFileHash -Path $diagnosticPortableConfig
+$diagnosticRuntimeHashBefore = Get-TestFileHash -Path $diagnosticRuntimeConfig
+$diagnosticMarker = [pscustomobject][ordered]@{
+    schema_version=1; purpose='wirex-routing-diagnostic-test'; fixture_id=[guid]::NewGuid().ToString('N'); source_id=1
+}
+[System.IO.File]::WriteAllText((Join-Path $diagnosticExternalRoot 'routing-diagnostic-fixture.json'),
+    (ConvertTo-Json -InputObject $diagnosticMarker -Compress),(New-Object System.Text.UTF8Encoding($false)))
+$acceptedDiagnosticPath = Test-UiRoutingDiagnosticConfigDirectory -Directory $diagnosticExternalRoot `
+    -PackageRoot $diagnosticRuntimeRoot -PortableRoot $diagnosticPortableRoot -RequireFixture
+Assert-UiChannels ([string]::Equals($acceptedDiagnosticPath,[System.IO.Path]::GetFullPath($diagnosticExternalRoot),[StringComparison]::OrdinalIgnoreCase)) `
+    '绝对路径外部隔离目录和有效 fixture marker 被拒绝。'
+$relativeDiagnosticRejected = $false
+try { [void](Test-UiRoutingDiagnosticConfigDirectory -Directory 'relative-diagnostic-fixture' -PackageRoot $diagnosticRuntimeRoot -PortableRoot $diagnosticPortableRoot) }
+catch { $relativeDiagnosticRejected = ($_.Exception.Message -match '绝对路径') }
+Assert-UiChannels $relativeDiagnosticRejected '路由诊断接受了相对 UserConfigDirectory。'
+$forbiddenDiagnosticPaths = @(
+    [pscustomobject]@{ path=$diagnosticPortableRoot; label='PortableDirectory 本身' },
+    [pscustomobject]@{ path=(Join-Path $diagnosticPortableRoot 'private\user-config'); label='PortableDirectory 子目录' },
+    [pscustomobject]@{ path=$diagnosticRuntimeRoot; label='PackageDirectory/runtime 本身' },
+    [pscustomobject]@{ path=(Join-Path $diagnosticRuntimeRoot 'private\user-config\nested'); label='runtime 子目录' }
+)
+foreach ($forbiddenPath in $forbiddenDiagnosticPaths) {
+    $diagnosticRejected = $false
+    $diagnosticError = ''
+    try {
+        [void](Test-UiRoutingDiagnosticConfigDirectory -Directory $forbiddenPath.path -PackageRoot $diagnosticRuntimeRoot `
+            -PortableRoot $diagnosticPortableRoot -RequireFixture)
+    } catch { $diagnosticError = [string]$_.Exception.Message; $diagnosticRejected = ($diagnosticError -match '不能等于或位于') }
+    Assert-UiChannels ($diagnosticRejected -and $diagnosticError -notmatch 'routing-diagnostic-fixture\.json') `
+        ('诊断隔离未在 fixture 检查前拒绝 {0}，错误={1}' -f $forbiddenPath.label,$diagnosticError)
+}
+Assert-UiChannels ((Get-TestFileHash -Path $diagnosticPortableConfig) -ceq $diagnosticPortableHashBefore -and
+    (Get-TestFileHash -Path $diagnosticRuntimeConfig) -ceq $diagnosticRuntimeHashBefore) `
+    '诊断拒绝路径探测改写了 synthetic portable/runtime config canary。'
 
 # Offline stubs keep the actual channel functions and WPF callbacks under test without starting external services.
 function Update-UiRadioCatControls { $script:testCatControlsUpdated++ }
@@ -367,7 +461,49 @@ try {
     $script:mutedChannelKeys = @{}
     $kindBox = Get-TestUiControl 'ChannelKindBox'
     $kindBox.SelectedItem = @($kindBox.Items | Where-Object { [string]$_.Tag -ceq 'group' })[0]
-    (Get-TestUiControl 'ChannelIdBox').Text = '12345'
+    $channelIdBox = Get-TestUiControl 'ChannelIdBox'
+    $privatePreset = @($channelIdBox.Items | Where-Object { $_.Tag -and [uint64]$_.Tag.id -eq 460997 }) | Select-Object -First 1
+    $channelIdBox.SelectedItem = $privatePreset
+    [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{},[System.Windows.Threading.DispatcherPriority]::ApplicationIdle)
+    Assert-UiChannels ($channelIdBox.Text -ceq '460997' -and $privatePreset.Tag.kind -ceq 'private' -and
+        $privatePreset.Tag.name -ceq '中国鹦鹉' -and [string]$kindBox.SelectedItem.Tag -ceq 'private' -and
+        (Get-UiSelectedChannelPreset -Combo $channelIdBox).id -eq 460997) '选择中文单呼预设后，纯ID/类型/name元数据没有保留。'
+    (Get-TestUiControl 'AddChannelButton').RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))
+    Assert-UiChannels ($script:channels.Count -eq 1 -and (Get-UiChannelKey -Channel $script:channels[0]) -ceq 'private:460997:2' -and
+        $script:txChannelKey -ceq 'private:460997:2') '点击加入中文单呼预设后没有从Tag安全读取ID/kind，或没有初始化首个PTT目标。'
+    $groupPreset = @($channelIdBox.Items | Where-Object { $_.Tag -and [uint64]$_.Tag.id -eq 46001 }) | Select-Object -First 1
+    $channelIdBox.SelectedItem = $groupPreset
+    [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{},[System.Windows.Threading.DispatcherPriority]::ApplicationIdle)
+    Assert-UiChannels ($channelIdBox.Text -ceq '46001' -and [string]$kindBox.SelectedItem.Tag -ceq 'group' -and
+        $groupPreset.Tag.kind -ceq 'group' -and $groupPreset.Tag.name -ceq '全国') '选择全国组呼预设后，纯ID/类型/名称元数据不正确。'
+    (Get-TestUiControl 'AddChannelButton').RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))
+    Assert-UiChannels ($script:channels.Count -eq 2 -and $script:txChannelKey -ceq 'private:460997:2' -and
+        (Get-UiChannelKey -Channel $script:channels[1]) -ceq 'group:46001:2') '加入第二个预设频道时更改了已有PTT目标。'
+    $worldPreset = @($channelIdBox.Items | Where-Object { $_.Tag -and [uint64]$_.Tag.id -eq 91 }) | Select-Object -First 1
+    $channelIdBox.SelectedItem = $worldPreset
+    [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{},[System.Windows.Threading.DispatcherPriority]::ApplicationIdle)
+    Assert-UiChannels ($channelIdBox.Text -ceq '91' -and $worldPreset.Tag.name -ceq 'World-wide' -and
+        [string]$kindBox.SelectedItem.Tag -ceq 'group') 'World-wide组呼预设没有以纯ID和已知名称呈现。'
+    $channelIdBox.SelectedIndex = -1
+    $channelIdBox.Text = '765430'
+    Assert-UiChannels ($channelIdBox.Text -ceq '765430' -and [string]$kindBox.SelectedItem.Tag -ceq 'unknown' -and
+        $null -eq (Get-UiSelectedChannelPreset -Combo $channelIdBox)) '从预设改为手输 ID 后没有清除自动带入的类型。'
+    (Get-TestUiControl 'AddChannelButton').RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))
+    Assert-UiChannels ($script:channels.Count -eq 2 -and $script:txChannelKey -ceq 'private:460997:2') `
+        '从私呼预设改为手输 ID 后，自动填入的单呼类型没有清空为未选择。'
+    $kindBox.SelectedItem = @($kindBox.Items | Where-Object { [string]$_.Tag -ceq 'private' })[0]
+    $channelIdBox.Text = '765432'
+    Assert-UiChannels ($channelIdBox.Text -ceq '765432' -and [string]$kindBox.SelectedItem.Tag -ceq 'private' -and
+        [bool]$script:channelKindExplicit) '用户明确选单呼类型后手动输入没有保留该类型。'
+    (Get-TestUiControl 'AddChannelButton').RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))
+    Assert-UiChannels ($script:channels.Count -eq 3 -and (Get-UiChannelKey -Channel $script:channels[2]) -ceq 'private:765432:2' -and
+        $script:txChannelKey -ceq 'private:460997:2') '手输频道没有保留明确类型，或更改了已有PTT目标。'
+    $script:channels = @(); $script:txChannelKey = ''
+    $script:portableConfig.channels = [object[]]@(); $script:portableConfig.tx_channel_id = ''
+    $script:portableConfig = Save-WirexPortableConfig -Path $script:portableConfigPath -Config $script:portableConfig
+    $kindBox.SelectedItem = @($kindBox.Items | Where-Object { [string]$_.Tag -ceq 'group' })[0]
+    $channelIdBox.SelectedIndex = -1; $channelIdBox.Text = '12345'
+    $script:channelKindExplicit = $false
     Add-UiChannelFromInputs
     Assert-UiChannels ($script:channels.Count -eq 1 -and (Get-UiChannelKey -Channel $script:channels[0]) -ceq 'group:12345:2') '新频道没有使用内部默认网络参数。'
     Assert-UiChannels ($script:txChannelKey -ceq 'group:12345:2') '空列表加入首频道后没有将首项设为默认 PTT 目标。'
@@ -433,6 +569,10 @@ try {
     $script:supervisor = New-TestChannelSupervisor
     $script:controlConfirmed = $true
     $script:routingCapabilities = $true
+    $script:controlRunId='4242-1730592000123'
+    $script:channelActivationState=New-WirexChannelActivationState
+    Reset-WirexChannelActivationState -State $script:channelActivationState -RunId $script:controlRunId | Out-Null
+    $script:pendingControlRequests=@{}
     $script:activeRouting = [pscustomobject]@{
         local_source_id=[uint64]123456; media_owner='rx_active'; rx_policy_revision=[uint64]5; tx_policy_revision=[uint64]7
         tx_target=[pscustomobject]@{destination_id=[uint64]91;kind='group';slot=[uint64]2;transmit_enabled=$true}
@@ -441,7 +581,7 @@ try {
     $script:txChannelKey = 'group:91:2'
     $script:channels = @($script:channels)
     $script:quickCallCapabilities = $true
-    $script:latestStatus = [pscustomobject]@{ bm_state='ready' }
+    $script:latestStatus = [pscustomobject]@{ run_id=$script:controlRunId;bm_state='ready' }
     Update-UiChannelDisplays
     $commandCountBeforeQuickCall = $script:supervisor.Commands.Count
     $groupCard = @($script:mainWindow.FindName('ChannelCardsPanel').Children | Where-Object { [string]$_.Tag.channel_key -ceq 'group:91:2' }) | Select-Object -First 1
@@ -459,6 +599,7 @@ try {
         @($privateActions.Children | Where-Object { $_ -is [System.Windows.Controls.Button] }).Count -eq 3) '私呼卡第四个操作格没有留空。'
     $script:pendingQuickCall = $null
     $script:pendingControlRequests = @{}
+    Reset-WirexChannelActivationState -State $script:channelActivationState -RunId $script:controlRunId | Out-Null
     $beforeMute = [System.IO.File]::ReadAllText($script:portableConfigPath,[System.Text.Encoding]::UTF8)
     Set-UiChannelMuted -Channel ($script:channels | Where-Object { $_.kind -ceq 'private' } | Select-Object -First 1)
     Assert-UiChannels ($script:pendingRoutingMutation.command -ceq 'rx_policy.replace' -and
@@ -690,8 +831,7 @@ try {
     Register-UiRadioCatPortTextInput
     $editBox = $catPort.Template.FindName('PART_EditableTextBox',$catPort)
     Assert-UiChannels ($editBox -is [System.Windows.Controls.TextBox]) 'CAT 端口编辑区没有真实 TextBox。'
-    [void](Invoke-TestPreviewClick -Element $editBox)
-    Assert-UiChannels ($catPort.IsDropDownOpen) '点击 CAT 可编辑文本区没有打开端口候选。'
+    Assert-UiChannels ($catPort.IsEditable -and $editBox.IsEnabled) 'CAT 可编辑文本区不可输入。'
     [void]$catPort.Focus(); [void]$editBox.Focus(); $editBox.SelectAll(); $editBox.Text = 'COM777'
     Assert-UiChannels ($script:radioCatPortTextEditExplicit -and $script:radioCatPortSelectionExplicit -and $catPort.Text -ceq 'COM777') `
         ('CAT 编辑区输入没有触发实际 TextChanged 选择状态。 edit={0}, explicit={1}, focused={2}/{3}, tag={4}, text={5}' -f `
@@ -957,6 +1097,242 @@ return [pscustomobject]@{ operation='query'; status='cancelled'; port_name=[stri
     $commandJson = [string]::Join("`n",$commandText.ToArray())
     Assert-UiChannels ($commandJson -notmatch 'synthetic-password-7a91|synthetic-api-key-42bf' -and
         [Environment]::CommandLine -notmatch 'synthetic-password-7a91|synthetic-api-key-42bf') '合成密码或 API Key 出现在控制命令或进程命令行。'
+
+    # Channel labels and activation status must come from scoped local evidence.
+    $script:testBmDeviceId='device-fixture-1'; $script:testBmApiKey='api-key-fixture-only'
+    $script:bmManagementStatus='loaded'; $script:bmManagementObservedDeviceId=$script:testBmDeviceId
+    $script:bmManagementObservedApiKey=$script:testBmApiKey
+    $script:bmManagementGroups=@([pscustomobject]@{device_id=$script:testBmDeviceId;talkgroup=[uint64]46001;slot=2;type='static'})
+    $script:bmManagementAddContext=[pscustomobject]@{success=$true;device_id=$script:testBmDeviceId;status=2;add_slot=2}
+    $script:controlRunId='4242-1730592000123'; $script:controlLastSequence=[uint64]0
+    $script:channelActivationState=New-WirexChannelActivationState
+    Reset-WirexChannelActivationState -State $script:channelActivationState -RunId $script:controlRunId | Out-Null
+    $script:latestStatus=[pscustomobject]@{run_id=$script:controlRunId;bm_state='ready';current_call_valid=$false}
+    $script:channels=@(
+        (New-UiChannelRecord -Id 12345 -Kind group -Slot 2),
+        (New-UiChannelRecord -Id 23456 -Kind group -Slot 2),
+        (New-UiChannelRecord -Id 22222 -Kind group -Slot 2),
+        (New-UiChannelRecord -Id 46001 -Kind group -Slot 2),
+        (New-UiChannelRecord -Id 460997 -Kind private -Slot 2)
+    )
+    $script:txChannelKey='group:12345:2'; $script:channelPageIndex=0; $script:mutedChannelKeys=@{}
+    $script:quickCallCapabilities=$true; $script:controlConfirmed=$true; $script:controlDiagnostic=$false
+    $script:isolatedUiMode=$false; $script:quickCallDiagnosticPath=Join-Path $testRoot 'quick-call-requests.jsonl'
+    $script:pendingQuickCall=$null; $script:pendingControlRequests=@{}; $script:expiredQuickCallRequests=@{}
+    $script:pendingRoutingMutation=$null; $script:pendingChannelMutation=$null; $script:pendingChannelStopMutation=$null
+    $script:channelMutationSafetyStopPending=$false; $script:routingMutationFence=$false
+    $script:RoutingDiagnostic=$false; $script:RoutingDiagnosticAutoTest=$false
+    $script:supervisor=New-TestChannelSupervisor; $script:supervisor.ControlVersion=2
+    $script:testControlSequence=[uint64]0
+
+    $staticChannel=$script:channels[3]; $staticPresentation=Get-UiChannelActivationPresentation -Channel $staticChannel
+    $dynamicPresentation=Get-UiChannelActivationPresentation -Channel $script:channels[0]
+    $privatePresentation=Get-UiChannelActivationPresentation -Channel $script:channels[4]
+    Assert-UiChannels ($staticPresentation.is_bm_static -and $staticPresentation.source -ceq '静态组' -and
+        $staticPresentation.title -ceq '组呼 46001 · 全国 · 静态组' -and
+        [string]$staticPresentation.tooltip -match 'TG 46001 TS2；静态组已读取' -and
+        [string]$staticPresentation.tooltip -notmatch 'Native|回读含有' -and
+        (Test-UiBmStaticChannelReadback -Channel $staticChannel)) '匹配设备、API 身份、TG和slot的 BM 静态回读没有识别为静态组。'
+
+    $savedStaticTestChannels=@($script:channels)
+    $script:bmManagementGroups=@([pscustomobject]@{device_id=$script:testBmDeviceId;talkgroup=[uint64]46001;slot=0;type='static'})
+    $script:bmManagementAddContext=[pscustomobject]@{success=$true;device_id=$script:testBmDeviceId;status=4;add_slot=0}
+    Assert-UiChannels (Test-UiBmStaticChannelReadback -Channel $staticChannel) `
+        'BM slot 0 在同设备 status 4/simplex 回读与唯一软件时隙上没有正确映射。'
+    $ambiguousSlotOne=New-UiChannelRecord -Id 46001 -Kind group -Slot 1
+    $script:channels=@($savedStaticTestChannels)+@($ambiguousSlotOne)
+    Assert-UiChannels (-not (Test-UiBmStaticChannelReadback -Channel $staticChannel) -and
+        -not (Test-UiBmStaticChannelReadback -Channel $ambiguousSlotOne)) `
+        'BM slot 0 在同 TG 同时配置两个软件slot时被错误映射到任意一个。'
+    $script:channels=$savedStaticTestChannels
+    $script:bmManagementAddContext=[pscustomobject]@{success=$true;device_id=$script:testBmDeviceId;status=2;add_slot=2}
+    Assert-UiChannels (-not (Test-UiBmStaticChannelReadback -Channel $staticChannel)) `
+        'BM slot 0 在 duplex/status 2 上下文中被错误解释为软件 slot 2。'
+    $slotOneChannel=New-UiChannelRecord -Id 46001 -Kind group -Slot 1
+    $script:bmManagementGroups=@([pscustomobject]@{device_id=$script:testBmDeviceId;talkgroup=[uint64]46001;slot=1;type='static'})
+    Assert-UiChannels ((Test-UiBmStaticChannelReadback -Channel $slotOneChannel) -and
+        -not (Test-UiBmStaticChannelReadback -Channel $staticChannel)) 'BM API slot 1 没有只匹配同 slot 频道。'
+    $script:bmManagementGroups=@([pscustomobject]@{device_id=$script:testBmDeviceId;talkgroup=[uint64]46001;slot=2;type='static'})
+    Assert-UiChannels (Test-UiBmStaticChannelReadback -Channel $staticChannel) 'BM API slot 2 没有匹配 TS2 频道。'
+    $script:bmManagementGroups=@([pscustomobject]@{device_id='other-device';talkgroup=[uint64]46001;slot=2;type='static'})
+    Assert-UiChannels (-not (Test-UiBmStaticChannelReadback -Channel $staticChannel)) '错误设备的 BM 静态组记录被用于当前频道。'
+    $script:bmManagementGroups=@([pscustomobject]@{device_id=$script:testBmDeviceId;talkgroup=[uint64]46001;slot=0;type='static'})
+    $script:bmManagementAddContext=[pscustomobject]@{success=$true;device_id='other-device';status=4;add_slot=0}
+    Assert-UiChannels (-not (Test-UiBmStaticChannelReadback -Channel $staticChannel)) 'slot 0 context 设备不匹配时被错误映射。'
+    $script:bmManagementAddContext=[pscustomobject]@{success=$true;device_id=$script:testBmDeviceId;status=4;add_slot=0}
+    Assert-UiChannels (Test-UiBmStaticChannelReadback -Channel $staticChannel) '恢复当前 simplex context 后 slot 0 静态回读没有匹配唯一软件slot。'
+    $script:bmManagementGroups=@([pscustomobject]@{device_id=$script:testBmDeviceId;talkgroup=[uint64]46001;slot=2;type='static'})
+    $script:bmManagementAddContext=[pscustomobject]@{success=$true;device_id=$script:testBmDeviceId;status=2;add_slot=2}
+    $script:testBmApiKey='different-api-key'
+    Assert-UiChannels (-not (Test-UiBmStaticChannelReadback -Channel $staticChannel)) 'BM API 身份变化后仍使用旧静态组回读禁用激活。'
+    $script:testBmApiKey='api-key-fixture-only'
+    Assert-UiChannels ($dynamicPresentation.source -ceq '' -and $dynamicPresentation.title -ceq '组呼 12345' -and
+        $privatePresentation.source -ceq '' -and $privatePresentation.title -ceq '单呼 460997 · 中国鹦鹉') `
+        '动态来源未知时出现状态占位文字，或把中国鹦鹉单呼误标为 BM 静态组。'
+    Update-UiChannelDisplays
+    $staticButton=Get-TestChannelButton -ChannelKey 'group:46001:2' -Action quick_call
+    $staticTitle=@($script:mainWindow.FindName('ChannelCardsPanel').Children | Where-Object {
+        -not $_.Tag.blank -and [string]$_.Tag.channel_key -ceq 'group:46001:2'
+    } | ForEach-Object { @($_.Child.Children | Where-Object { $_ -is [System.Windows.Controls.TextBlock] -and $_.Name -ceq 'ChannelCardTitle' }) }) | Select-Object -First 1
+    Assert-UiChannels ($staticButton -and -not $staticButton.IsEnabled -and $staticButton.Content -ceq '静态组' -and
+        $staticTitle.Text -ceq '组呼 46001 · 全国 · 静态组' -and
+        [string]$staticTitle.ToolTip -match 'TG 46001 TS2；静态组已读取' -and
+        [string]$staticTitle.ToolTip -notmatch 'Native|回读含有' -and
+        $staticTitle.Tag.id -eq 46001 -and $staticTitle.Tag.kind -ceq 'group' -and $staticTitle.Tag.source -ceq '静态组') `
+        '静态组卡片没有显示完整频道身份/证据，或仍允许激活。'
+
+    $script:pendingQuickCall=$null
+    $dynamicOne=$script:channels[0]
+    $dynamicTwo=$script:channels[1]
+    $dynamicThree=$script:channels[2]
+    $commandCountBefore=$script:supervisor.Commands.Count
+    Assert-UiChannels ((Invoke-UiChannelQuickCall -Channel $dynamicOne) -and
+        $script:supervisor.Commands.Count -eq ($commandCountBefore+1) -and
+        $script:supervisor.Commands[-1].command -ceq 'network_subscription.quick_call_join') '有效动态组请求没有只发送一个本机 quick_call_join 命令。'
+    $failedRequest=$script:pendingQuickCall
+    Update-UiChannelDisplays
+    $pendingOne=Get-TestChannelButton -ChannelKey 'group:12345:2' -Action quick_call
+    $pendingTwo=Get-TestChannelButton -ChannelKey 'group:23456:2' -Action quick_call
+    Assert-UiChannels ($pendingOne -and -not $pendingOne.IsEnabled -and $pendingOne.Content -ceq '请求处理中' -and
+        $pendingTwo -and -not $pendingTwo.IsEnabled) 'pending quick_call 期间没有禁用同槽和其他槽的激活按钮。'
+    $duplicateBlocked=$false
+    try { [void](Invoke-UiChannelQuickCall -Channel $dynamicTwo) } catch { $duplicateBlocked = ($_.Exception.Message -match '仍在等待本机结果') }
+    Assert-UiChannels ($duplicateBlocked -and $script:supervisor.Commands.Count -eq ($commandCountBefore+1)) `
+        '方法层没有拒绝覆盖尚未完成的请求，或重复操作又发送了命令。'
+    Receive-TestQuickCallResult -Request $failedRequest -Result rejected -ErrorCode media_busy
+    $mediaBusyRequestSent=Get-WirexChannelActivationRequestSent -State $script:channelActivationState -RunId $script:controlRunId `
+        -ChannelKey 'group:12345:2' -Slot 2
+    $mediaBusyDiagnostic=if([IO.File]::Exists($script:quickCallDiagnosticPath)){[IO.File]::ReadAllText($script:quickCallDiagnosticPath)}else{''}
+    Assert-UiChannels ($null -eq $script:pendingQuickCall -and
+        $script:transientStatusLastMessage -match '本机 Native 拒绝：media_busy' -and -not $mediaBusyRequestSent) `
+        ('media_busy 拒绝没有显示本机具体原因，或失败结果被误记为已发送。 pending={0}, status={1}, sent={2}, stateRun={3}, diag={4}' -f `
+            [bool]$script:pendingQuickCall,[string]$script:transientStatusLastMessage,[bool]$mediaBusyRequestSent,
+            [string]$script:channelActivationState.run_id,$mediaBusyDiagnostic)
+
+    Assert-UiChannels (Invoke-UiChannelQuickCall -Channel $dynamicOne) 'Native 拒绝后没有允许新请求。'
+    $shortSendRequest=$script:pendingQuickCall
+    Receive-TestQuickCallResult -Request $shortSendRequest -Result ok -ActivationStatus request_sent `
+        -DestinationId 12345 -Slot 2 -FramesSent 1
+    Assert-UiChannels ($null -eq (Get-WirexChannelActivationRequestSent -State $script:channelActivationState -RunId $script:controlRunId `
+            -ChannelKey 'group:12345:2' -Slot 2) -and $script:transientStatusLastMessage -match '未确认两帧已发送') `
+        'Native 返回单帧结果时被误记为成功，或没有释放请求以供手动重试。'
+
+    Assert-UiChannels (Invoke-UiChannelQuickCall -Channel $dynamicOne) '失败后允许用户手动重试的组呼请求没有提交。'
+    $successfulRequest=$script:pendingQuickCall
+    Receive-TestQuickCallResult -Request $successfulRequest -Result ok -ActivationStatus request_sent `
+        -DestinationId 12345 -Slot 2 -FramesSent 2
+    $sentOne=Get-WirexChannelActivationRequestSent -State $script:channelActivationState -RunId $script:controlRunId `
+        -ChannelKey 'group:12345:2' -Slot 2
+    Assert-UiChannels ($sentOne -and $sentOne.activation_status -ceq 'request_sent' -and $sentOne.frames_sent -eq 2 -and
+        $script:transientStatusLastMessage -match 'BM持续状态未确认' -and
+        -not (Get-WirexChannelActivationRequestSent -State $script:channelActivationState -RunId '9999-1234567' `
+            -ChannelKey 'group:12345:2' -Slot 2)) 'Native 两帧确认后没有按 run ID 标记 request_sent，或界面声称已确认 BM 持续状态。'
+    Update-UiChannelDisplays
+    $sentButton=Get-TestChannelButton -ChannelKey 'group:12345:2' -Action quick_call
+    $sentPresentation=Get-UiChannelActivationPresentation -Channel $dynamicOne
+    $sentCard=@($script:mainWindow.FindName('ChannelCardsPanel').Children | Where-Object {
+        -not $_.Tag.blank -and [string]$_.Tag.channel_key -ceq 'group:12345:2'
+    } | Select-Object -First 1)
+    $sentTitle=@($sentCard.Child.Children | Where-Object {
+        $_ -is [System.Windows.Controls.TextBlock] -and [string]$_.Name -ceq 'ChannelCardTitle'
+    } | Select-Object -First 1)
+    $afterSuccessCount=$script:supervisor.Commands.Count
+    Assert-UiChannels ($sentButton -and -not $sentButton.IsEnabled -and $sentButton.Content -ceq '已发送' -and
+        $sentPresentation.source -ceq '动态组' -and $sentPresentation.title -ceq '组呼 12345 · 动态组' -and
+        [string]$sentPresentation.tooltip -match 'TG 12345 TS2；激活请求已发送' -and
+        [string]$sentPresentation.tooltip -notmatch 'Native|回读|request_sent|两帧' -and
+        $sentTitle -and $sentTitle.Text -ceq '组呼 12345 · 动态组' -and
+        [string]$sentTitle.ToolTip -match '激活请求已发送' -and $sentTitle.Tag.request_sent -and
+        -not (Invoke-UiChannelQuickCall -Channel $dynamicOne) -and $script:supervisor.Commands.Count -eq $afterSuccessCount) `
+        '本机会话 request_sent 后仍可重复发送，或卡片没有显示本地请求状态。'
+
+    Assert-UiChannels (Invoke-UiChannelQuickCall -Channel $dynamicThree) '同槽新组请求没有获准替换旧本地 request_sent 标记。'
+    Assert-UiChannels (-not (Get-WirexChannelActivationRequestSent -State $script:channelActivationState -RunId $script:controlRunId `
+            -ChannelKey 'group:12345:2' -Slot 2)) '同槽新组请求后旧目标的本地 request_sent 标记没有清除。'
+    $supersededRequest=$script:pendingQuickCall
+    [void](Set-WirexChannelActivationRequestTimedOut -State $script:channelActivationState `
+        -RunId $script:controlRunId -RequestId ([string]$supersededRequest.request_id))
+    $script:pendingQuickCall.timed_out=$true
+    Assert-UiChannels (Invoke-UiChannelQuickCall -Channel $dynamicTwo) '超时后用户不能重试同一 slot 的另一个频道。'
+    $newGroupRequest=$script:pendingQuickCall
+    Receive-TestQuickCallResult -Request $supersededRequest -Result ok -ActivationStatus request_sent `
+        -DestinationId 22222 -Slot 2 -FramesSent 2
+    Assert-UiChannels ($script:pendingQuickCall.request_id -ceq $newGroupRequest.request_id -and
+        -not (Get-WirexChannelActivationRequestSent -State $script:channelActivationState -RunId $script:controlRunId `
+            -ChannelKey 'group:22222:2' -Slot 2)) '超时旧请求的迟到成功覆盖了同槽新请求状态。'
+    Receive-TestQuickCallResult -Request $newGroupRequest -Result ok -ActivationStatus request_sent `
+        -DestinationId 23456 -Slot 2 -FramesSent 2
+    $script:activeRouting=[pscustomobject]@{tx_target=[pscustomobject]@{destination_id=[uint64]23456;kind='group';slot=[uint64]2}}
+    $sameTgCleared=Clear-UiChannelActivationAfterGroupPtt -RunId $script:controlRunId -EventName 'tx_started_from_radio_ptt_down'
+    Update-UiChannelDisplays
+    $sameTgButton=Get-TestChannelButton -ChannelKey 'group:23456:2' -Action quick_call
+    $sameTgRequestSent=Get-WirexChannelActivationRequestSent -State $script:channelActivationState -RunId $script:controlRunId `
+        -ChannelKey 'group:23456:2' -Slot 2
+    Assert-UiChannels (-not $sameTgCleared -and $sameTgRequestSent -and $sameTgButton -and -not $sameTgButton.IsEnabled) `
+        '同一 TG、同一 slot 的组呼 PTT 清除了 request_sent 或重新启用了按钮。'
+
+    $script:activeRouting=[pscustomobject]@{tx_target=[pscustomobject]@{destination_id=[uint64]460997;kind='private';slot=[uint64]2}}
+    $privatePttCleared=Clear-UiChannelActivationAfterGroupPtt -RunId $script:controlRunId -EventName 'tx_started_from_radio_ptt_down'
+    $privatePttRequestSent=Get-WirexChannelActivationRequestSent -State $script:channelActivationState -RunId $script:controlRunId `
+        -ChannelKey 'group:23456:2' -Slot 2
+    Assert-UiChannels (-not $privatePttCleared -and $privatePttRequestSent) '私呼 PTT 清除了组呼 request_sent。'
+
+    $script:activeRouting=[pscustomobject]@{tx_target=[pscustomobject]@{kind='group';slot=[uint64]2}}
+    $unknownPttCleared=Clear-UiChannelActivationAfterGroupPtt -RunId $script:controlRunId -EventName 'tx_started_from_radio_ptt_down'
+    $unknownPttRequestSent=Get-WirexChannelActivationRequestSent -State $script:channelActivationState -RunId $script:controlRunId `
+        -ChannelKey 'group:23456:2' -Slot 2
+    Assert-UiChannels (-not $unknownPttCleared -and $unknownPttRequestSent) '缺少 destination_id 的组呼 PTT 清除了 request_sent。'
+
+    $slotOneGroup=New-UiChannelRecord -Id 33333 -Kind group -Slot 1
+    Assert-UiChannels (Invoke-UiChannelQuickCall -Channel $slotOneGroup) 'slot 1 测试组请求没有通过正常 quick_call 流程启动。'
+    $slotOneRequest=$script:pendingQuickCall
+    Receive-TestQuickCallResult -Request $slotOneRequest -Result ok -ActivationStatus request_sent `
+        -DestinationId 33333 -Slot 1 -FramesSent 2
+    $slotOneRequestSent=Get-WirexChannelActivationRequestSent -State $script:channelActivationState -RunId $script:controlRunId `
+        -ChannelKey 'group:33333:1' -Slot 1
+    Assert-UiChannels ($slotOneRequestSent -and $slotOneRequestSent.destination_id -eq 33333) 'slot 1 测试请求没有经由本机结果登记 request_sent。'
+
+    $script:activeRouting=[pscustomobject]@{tx_target=[pscustomobject]@{destination_id=[uint64]22222;kind='group';slot=[uint64]2}}
+    $pttCleared=Clear-UiChannelActivationAfterGroupPtt -RunId $script:controlRunId -EventName 'tx_started_from_radio_ptt_down'
+    $pttRequestSent=Get-WirexChannelActivationRequestSent -State $script:channelActivationState -RunId $script:controlRunId `
+        -ChannelKey 'group:23456:2' -Slot 2
+    $otherSlotRequestSent=Get-WirexChannelActivationRequestSent -State $script:channelActivationState -RunId $script:controlRunId `
+        -ChannelKey 'group:33333:1' -Slot 1
+    Assert-UiChannels ($pttCleared -and -not $pttRequestSent -and $otherSlotRequestSent) `
+        '不同 TG 的合法同槽组呼 PTT 没有清除旧标记，或误清了另一 slot 的请求标记。'
+
+    Assert-UiChannels (Invoke-UiChannelQuickCall -Channel $dynamicOne) 'PTT 清除本地标记后没有允许再次手动请求。'
+    $reconnectRequest=$script:pendingQuickCall
+    Receive-TestQuickCallResult -Request $reconnectRequest -Result ok -ActivationStatus request_sent `
+        -DestinationId 12345 -Slot 2 -FramesSent 2
+    $reconnectCleared=Reset-UiChannelActivationForBmReconnect -RunId $script:controlRunId
+    $reconnectedRequestSent=Get-WirexChannelActivationRequestSent -State $script:channelActivationState -RunId $script:controlRunId `
+        -ChannelKey 'group:12345:2' -Slot 2
+    Assert-UiChannels ($reconnectCleared -and -not $reconnectedRequestSent) 'BM 离开 ready 后没有清除本会话请求状态。'
+    Assert-UiChannels (Invoke-UiChannelQuickCall -Channel $dynamicOne) '重连清状态后没有允许用户重新请求。'
+    $lateRequest=$script:pendingQuickCall
+    [void](Reset-UiChannelActivationForBmReconnect -RunId $script:controlRunId)
+    Receive-TestQuickCallResult -Request $lateRequest -Result ok -ActivationStatus request_sent `
+        -DestinationId 12345 -Slot 2 -FramesSent 2
+    Assert-UiChannels (-not (Get-WirexChannelActivationRequestSent -State $script:channelActivationState -RunId $script:controlRunId `
+            -ChannelKey 'group:12345:2' -Slot 2) -and $script:expiredQuickCallRequests.Count -eq 0) `
+        'BM 重连前发起的迟到响应没有被丢弃，或伪造为新会话成功。'
+    $quickCallRows=@([System.IO.File]::ReadAllLines($script:quickCallDiagnosticPath) | ForEach-Object { ConvertFrom-Json -InputObject $_ })
+    $quickCallAllowedFields=@('timestamp_utc','run_id','request_id','destination_id','slot','result','error_code','activation_status','frames_sent','replayed')
+    $quickCallBadRows=New-Object 'System.Collections.Generic.List[object]'
+    foreach($quickCallRow in $quickCallRows){
+        $extraFields=@($quickCallRow.PSObject.Properties | Where-Object { $quickCallAllowedFields -cnotcontains $_.Name })
+        $missingFields=@($quickCallAllowedFields | Where-Object { $null -eq $quickCallRow.PSObject.Properties[[string]$_] })
+        if($extraFields.Count -gt 0 -or $missingFields.Count -gt 0){$quickCallBadRows.Add($quickCallRow)}
+    }
+    $quickCallDiagnosticIncludesKey=($commandJson -match 'api-key-fixture-only|different-api-key')
+    Assert-UiChannels ($quickCallRows.Count -ge 8 -and $quickCallBadRows.Count -eq 0 -and -not $quickCallDiagnosticIncludesKey) `
+        ('Quick Call 有界诊断日志缺少结果阶段，或记录了凭据/未授权字段。 count={0}, badRows={1}, keyInEarlierCommands={2}, firstFields={3}' -f `
+            $quickCallRows.Count,$quickCallBadRows.Count,$quickCallDiagnosticIncludesKey,(@($quickCallRows[0].PSObject.Properties.Name) -join ','))
+    $quickCallCommandJson=[string]::Join("`n",@($script:supervisor.Commands | ForEach-Object { [string]$_.parameters_json }))
+    Assert-UiChannels ($quickCallCommandJson -notmatch 'api-key-fixture-only|different-api-key|synthetic-password-7a91' -and
+        $script:txChannelKey -ceq 'group:12345:2') 'Quick Call 命令携带了凭据，或激活操作更改了已保存的 PTT 目标。'
+
     Assert-UiChannels ([System.IO.File]::Exists($script:portableConfigPath) -and
         [System.IO.Path]::GetFullPath($script:portableConfigPath).StartsWith([System.IO.Path]::GetFullPath($testRoot),[StringComparison]::OrdinalIgnoreCase)) '测试配置没有留在唯一临时根目录 config.json。'
     $rootConfigExistedAfter = [System.IO.File]::Exists($rootConfigPath)

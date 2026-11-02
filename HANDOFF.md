@@ -1,5 +1,11 @@
 ﻿# WIREX Bridge 交接入口
 
+## R124 / v0.1.0 源码阶段交接（2026-11-03）
+
+stable 包采用根目录 `WirexBridge.exe` 加 `runtime/` 运行目录，通用清单不收录用户配置、凭据或日志。源码阶段回归通过：config 63、launcher 45、package 795、publisher 161（因源码树有修改而跳过 Git 检查）、downloader 3,262（跳过 0）、ActivationState 345、channels 170、console 121、status 87、CAT 197、UI 63、RenderOnly 1,951、gain 85、R123 固定回归 54。测试没有连接真实设备、BM、音频、PTT 或 RF。
+
+此前的实际 WPF 输入回归通过 63 项断言，root 接受该证据。后续另一次尝试时 Dota 2 在前台，WPF 窗口没有收到输入事件；该次不形成有效 UI 结果，未再抢占输入。当前源码阶段已冻结；Native fresh40、干净提交上的正式 launcher、generic 目录实测及 root 包审仍待完成。publisher 完整 Git 检查须在提交后重跑。打包工具可能生成待审计的中间 ZIP；root 审核 generic 目录并标记通过后，再将中间分发移出候选并生成最终 ZIP、manifest 和 checksums 三项资产，供 root 复核。当前未创建 tag 或 GitHub Release。详见 [R124 发布记录](docs/R124_RELEASE.md)。
+
 ## R123 / Alpha 19 最终交接（2026-11-02）
 
 源码提交 `b102cd630d49839eb99869f87958909cd365094d` 已推送至 `origin/main`。基于该干净提交在 `build/_work/wirex-bridge-b102cd6-20261102-153831` 完成 Native full40，40/40 通过，`source_tree_clean=true`、`compile_only=false`，编译 warning/error 均为 0。EXE 长 999,936 字节，SHA-256 为 `aad6ce7d48c616215b5979f0c7bba3e4da0eb33dee56f26554e84f3f85e640a7`。首个全量构建在链接 `session_timing_test.exe` 时报告 LNK1105；检查时没有发现仍在运行的 link、cl 或测试进程。随后在新目录重跑 full40 并通过；仅记录观察结果，不推断失败原因。失败目录及日志已可恢复归档。

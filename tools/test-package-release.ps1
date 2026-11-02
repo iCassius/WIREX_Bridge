@@ -31,6 +31,102 @@ function Write-Utf8NoBom {
     [System.IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding($false)))
 }
 
+function New-StableArchiveVariant {
+    param([string]$SourcePath,[string]$DestinationPath,[string]$RenameFrom,[string]$RenameTo,
+        [string]$AttributesPath,[int]$Attributes)
+    Add-Type -AssemblyName System.IO.Compression -ErrorAction Stop
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+    $sourceArchive = [System.IO.Compression.ZipFile]::OpenRead($SourcePath)
+    $outputStream = [System.IO.File]::Open($DestinationPath,[System.IO.FileMode]::CreateNew,[System.IO.FileAccess]::ReadWrite,[System.IO.FileShare]::None)
+    $destinationArchive = $null
+    try {
+        $destinationArchive = [System.IO.Compression.ZipArchive]::new($outputStream,[System.IO.Compression.ZipArchiveMode]::Create,$false)
+        foreach ($sourceEntry in $sourceArchive.Entries) {
+            $targetName = if ([string]$sourceEntry.FullName -ceq $RenameFrom) { $RenameTo } else { [string]$sourceEntry.FullName }
+            $targetEntry = $destinationArchive.CreateEntry($targetName,[System.IO.Compression.CompressionLevel]::Optimal)
+            $targetEntry.ExternalAttributes = if ([string]$sourceEntry.FullName -ceq $AttributesPath) { $Attributes } else { [int]$sourceEntry.ExternalAttributes }
+            $inputStream = $sourceEntry.Open()
+            $entryStream = $targetEntry.Open()
+            try { $inputStream.CopyTo($entryStream) } finally { $entryStream.Dispose(); $inputStream.Dispose() }
+        }
+    } finally {
+        if ($null -ne $destinationArchive) { $destinationArchive.Dispose() }
+        $outputStream.Dispose()
+        $sourceArchive.Dispose()
+    }
+}
+
+function New-SyntheticStablePackage {
+    param([Parameter(Mandatory=$true)][string]$PackageRoot, [Parameter(Mandatory=$true)][string]$FixturePath)
+    $profile = Set-ReleaseVersion -Version 'v0.1.0'
+    [System.IO.Directory]::CreateDirectory($PackageRoot) | Out-Null
+    foreach ($relativeDirectory in $profile.Directories) {
+        [System.IO.Directory]::CreateDirectory((Join-Path $PackageRoot ([string]$relativeDirectory).Replace('/', [System.IO.Path]::DirectorySeparatorChar))) | Out-Null
+    }
+    foreach ($relativePath in $profile.PackageFiles | Where-Object { $_ -cne 'manifest.json' }) {
+        $fullPath = Join-Path $PackageRoot ([string]$relativePath).Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+        $parent = Split-Path -Parent $fullPath
+        if (-not [System.IO.Directory]::Exists($parent)) { [System.IO.Directory]::CreateDirectory($parent) | Out-Null }
+        if ([string]$relativePath -ceq 'runtime/private/device-y.bin') {
+            Copy-Item -LiteralPath $FixturePath -Destination $fullPath -ErrorAction Stop
+        } else {
+            Write-Utf8NoBom -Path $fullPath -Text ('synthetic v0.1.0 package file: ' + [string]$relativePath)
+        }
+    }
+
+    $records = @()
+    foreach ($relativePath in $profile.PackageFiles | Where-Object { $_ -cne 'manifest.json' }) {
+        $records += ,(Get-ReleaseFileRecord -PackageRoot $PackageRoot -RelativePath ([string]$relativePath) `
+            -Source 'synthetic v0.1.0 package fixture')
+    }
+    $recordByPath = @{}
+    foreach ($record in $records) { $recordByPath[[string]$record.path] = $record }
+    $commit = '0123456789abcdef0123456789abcdef01234567'
+    $manifest = [ordered]@{
+        schema_version = 1
+        package_kind = 'wirex_bridge_stable_release_green_directory'
+        package_status = 'awaiting_root_audit'
+        version = 'v0.1.0'
+        tag_candidate = 'v0.1.0'
+        tag_created = $false
+        github_release_published = $false
+        source = [ordered]@{ repository='https://github.com/iCassius/WIREX_Bridge.git'; commit=$commit; working_tree_clean=$true }
+        build = [ordered]@{
+            source_commit=$commit; source_tree_clean=$true; compile_only=$false; build_completed=$true
+            output_directory='build/_work/synthetic-native-build'; evidence_log='build/_work/synthetic-native-build.log'
+            evidence_log_sha256=('1' * 64); provenance_asset='build-provenance.json'
+            provenance_sha256=[string]$recordByPath['build-provenance.json'].sha256; result='passed'
+            passed_test_count=$profile.TestNames.Count; passed_tests=@($profile.TestNames)
+            compiler_warnings=0; compiler_errors=0; executable_sha256=[string]$recordByPath['runtime/wirex_bridge.exe'].sha256
+        }
+        release_scope = $profile.ReleaseScope
+        not_included = @($profile.NotIncluded)
+        hardware_validation = [ordered]@{
+            current_release_hil='not performed'; current_profile_and_volume_settings='not tested'
+            previous_direct_parrot_echo='older source only'; previous_tg91_listening='older source only'
+            radio_state='unknown'; rf_transmission='not tested'
+        }
+        approved_y_fixture = [ordered]@{
+            path='runtime/private/device-y.bin'; length_bytes=100
+            sha256=(Get-FileHash -LiteralPath $FixturePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+        excluded_private_files = @(Get-ReleaseExcludedPrivateFiles -Version 'v0.1.0')
+        runtime_directories = @($profile.Directories | Where-Object { [string]$_ -like 'runtime*' })
+        manifest_asset_name = 'manifest.json'
+        files = @($records)
+        launcher_build = [ordered]@{
+            source_commit=$commit; source_path='ui/launcher/WirexBridgeLauncher.cs'; source_sha256=('2' * 64)
+            compiler_family='Microsoft .NET Framework csc.exe'; compiler_version='synthetic-test'
+            target='x64 Windows GUI executable'; output_directory='build/_work/synthetic-launcher-build'
+            executable_asset='WirexBridge.exe'; executable_sha256=[string]$recordByPath['WirexBridge.exe'].sha256
+            provenance_asset='launcher-build-provenance.json'
+            provenance_sha256=[string]$recordByPath['launcher-build-provenance.json'].sha256
+            build_log_path='build/_work/synthetic-launcher-build/launcher-build.log'; build_log_sha256=('3' * 64)
+        }
+    }
+    Write-Utf8NoBom -Path (Join-Path $PackageRoot 'manifest.json') -Text ((ConvertTo-Json -InputObject $manifest -Depth 16) + "`n")
+}
+
 function Test-Alpha14SyntheticLauncher {
     param([Parameter(Mandatory=$true)][string]$TestRoot, [string]$Version = '14')
     $alphaLabel = 'alpha.' + $Version
@@ -134,12 +230,42 @@ Assert-True (Test-ReleaseVersion -Value 'v0.1.0-alpha.3') 'alpha.3 明确版本�
 Assert-True (Test-ReleaseVersion -Value 'v0.1.0-alpha.4') 'alpha.4 明确版本允许'
 Assert-True (Test-ReleaseVersion -Value 'v0.1.0-alpha.5') 'alpha.5 明确版本允许'
 Assert-True (Test-ReleaseVersion -Value 'v0.1.0-alpha.9') 'alpha.9 明确版本允许'
-Assert-True (-not (Test-ReleaseVersion -Value 'v0.1.0')) '正式版本格式不能混入 alpha 标签'
+Assert-True (Test-ReleaseVersion -Value 'v0.1.0') 'stable v0.1.0 has its own explicit release profile'
 Assert-True (-not (Test-ReleaseVersion -Value 'v0.2.0-alpha.1')) '未登记的 alpha 版本必须拒绝'
 Assert-True (-not (Test-ReleaseVersion -Value 'V0.1.0-ALPHA.1')) '版本匹配区分大小写'
 Assert-Throws { Get-ReleaseAssetName -RelativePath 'docs/未知文件.md' } '未列入白名单的文件路径'
 Assert-Throws { Get-ReleaseAssetName -RelativePath '../private/secret.txt' } '越界路径'
 
+$stableProfile = Get-ReleaseProfile -Version 'v0.1.0'
+[void](Set-ReleaseVersion -Version 'v0.1.0')
+Assert-Equal @($stableProfile.PackageFiles | Sort-Object -Unique).Count $stableProfile.PackageFiles.Count 'stable folder layout has no duplicate file paths'
+Assert-Equal $stableProfile.AssetMap.Count ($stableProfile.PackageFiles.Count - 1) 'stable folder manifest has one unique asset name per non-manifest file'
+Assert-Equal @($stableProfile.PackageFiles | Where-Object { $_ -notmatch '/' }).Count 6 'stable package root contains exactly six necessary files'
+Assert-True (@($stableProfile.SourceFiles | Where-Object {
+    [string]$_.Source -ceq 'ui\windows\ChannelActivationState.psm1' -and
+    [string]$_.Destination -ceq 'runtime/ui/windows/ChannelActivationState.psm1'
+}).Count -eq 1 -and $stableProfile.PackageFiles -ccontains 'runtime/ui/windows/ChannelActivationState.psm1' -and
+    [string]$stableProfile.AssetMap['runtime/ui/windows/ChannelActivationState.psm1'] -ceq 'runtime__ui__windows__channel-activation-state.psm1') `
+    'stable profile maps the new channel activation runtime dependency to one source path and one ASCII asset name'
+Assert-True ($stableProfile.PackageFiles -ccontains 'runtime/private/device-y.bin') `
+    'stable runtime keeps the approved HRI protocol template at runtime/private/device-y.bin'
+Assert-True (@($stableProfile.PackageFiles | Where-Object { $_ -match '^([^/]+\.(cmd|ps1))$' }).Count -eq 0) `
+    'stable package root contains no CMD or PowerShell user entry point'
+Assert-True (@($stableProfile.PackageFiles | Where-Object { $_ -match '(^|/)tests?/' -or $_ -match 'test-' }).Count -eq 0) `
+    'stable runtime contains no test script or development test assets'
+$stablePathSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+foreach ($relativePath in $stableProfile.PackageFiles) {
+    Assert-True ($stablePathSet.Add([string]$relativePath)) ('stable folder path is unique without case sensitivity: ' + [string]$relativePath)
+}
+$stableAssetSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+foreach ($relativePath in $stableProfile.PackageFiles | Where-Object { $_ -cne 'manifest.json' }) {
+    Assert-True ($stableAssetSet.Add((Get-ReleaseAssetName -RelativePath ([string]$relativePath)))) `
+        ('stable asset name is unique without case sensitivity: ' + [string]$relativePath)
+}
+Assert-True ((Get-ReleaseAssetName -RelativePath 'runtime/wirex_bridge.exe') -ceq 'runtime__wirex_bridge.exe') `
+    'stable Native runtime has a fixed asset name'
+
+[void](Set-ReleaseVersion -Version 'v0.1.0-alpha.1')
 $expectedTests = @(Get-ExpectedReleaseTests)
 Assert-Equal $expectedTests.Count 27 '正式 builder 测试清单数'
 Assert-True (@($expectedTests | Select-Object -Unique).Count -eq $expectedTests.Count) 'builder 测试名称不重复'
@@ -1477,6 +1603,7 @@ try {
     }
     $packageManifest = [ordered]@{
         schema_version=1
+        package_kind='wirex_bridge_private_alpha_release_green_directory'
         package_status='awaiting_root_audit'
         version='v0.1.0-alpha.1'
         tag_candidate='v0.1.0-alpha.1'
@@ -1524,6 +1651,7 @@ try {
     }
     $alpha9InventoryManifest = [ordered]@{
         schema_version = 1
+        package_kind = 'wirex_bridge_private_alpha_release_green_directory'
         package_status = 'awaiting_root_audit'
         version = 'v0.1.0-alpha.9'
         tag_candidate = 'v0.1.0-alpha.9'
@@ -1581,6 +1709,7 @@ try {
     }
     $alpha10InventoryManifest = [ordered]@{
         schema_version = 1
+        package_kind = 'wirex_bridge_private_alpha_release_green_directory'
         package_status = 'awaiting_root_audit'
         version = 'v0.1.0-alpha.10'
         tag_candidate = 'v0.1.0-alpha.10'
@@ -1638,6 +1767,7 @@ try {
     }
     $alpha11InventoryManifest = [ordered]@{
         schema_version = 1
+        package_kind = 'wirex_bridge_private_alpha_release_green_directory'
         package_status = 'awaiting_root_audit'
         version = 'v0.1.0-alpha.11'
         tag_candidate = 'v0.1.0-alpha.11'
@@ -1695,6 +1825,7 @@ try {
     }
     $alpha12InventoryManifest = [ordered]@{
         schema_version = 1
+        package_kind = 'wirex_bridge_private_alpha_release_green_directory'
         package_status = 'awaiting_root_audit'
         version = 'v0.1.0-alpha.12'
         tag_candidate = 'v0.1.0-alpha.12'
@@ -1750,6 +1881,7 @@ try {
     }
     $alpha13InventoryManifest = [ordered]@{
         schema_version = 1
+        package_kind = 'wirex_bridge_private_alpha_release_green_directory'
         package_status = 'awaiting_root_audit'
         version = 'v0.1.0-alpha.13'
         tag_candidate = 'v0.1.0-alpha.13'
@@ -1815,6 +1947,7 @@ try {
     }
     $alpha14InventoryManifest = [ordered]@{
         schema_version = 1
+        package_kind = 'wirex_bridge_private_alpha_release_green_directory'
         package_status = 'awaiting_root_audit'
         version = 'v0.1.0-alpha.14'
         tag_candidate = 'v0.1.0-alpha.14'
@@ -1920,6 +2053,108 @@ try {
     Assert-Throws { Assert-ReleasePackageInventory -PackageRoot $alpha19InventoryRoot -Version 'v0.1.0-alpha.19' } `
         'alpha.19 package inventory rejects a package-root user config file'
     Remove-Item -LiteralPath (Join-Path $alpha19InventoryRoot 'config.json') -Force -ErrorAction Stop
+
+    $stablePackageRoot = Join-Path $testRoot 'package-v0.1.0-stable'
+    New-SyntheticStablePackage -PackageRoot $stablePackageRoot -FixturePath $approvedFixturePath
+    Assert-True ((Assert-ReleasePackageInventory -PackageRoot $stablePackageRoot -Version 'v0.1.0') -eq $null) `
+        'stable synthetic folder package validates the exact root/runtime layout and HRI template hash'
+    $sharedStableLimits = Get-WirexStableReleaseLimits
+    Assert-True ((Test-WirexStableLengthWithinLimit -Length ([long]$sharedStableLimits.MaximumArchiveBytes) -MaximumBytes ([long]$sharedStableLimits.MaximumArchiveBytes)) -and
+        -not (Test-WirexStableLengthWithinLimit -Length ([long]$sharedStableLimits.MaximumArchiveBytes + 1) -MaximumBytes ([long]$sharedStableLimits.MaximumArchiveBytes))) `
+        'shared stable ZIP size boundary accepts 512 MiB and rejects one byte above it'
+    $launcherPerFileMaximum = [long](Get-WirexStableMaximumFileBytes -Path 'WirexBridge.exe')
+    Assert-True ((Test-WirexStableLengthWithinLimit -Length $launcherPerFileMaximum -MaximumBytes $launcherPerFileMaximum) -and
+        -not (Test-WirexStableLengthWithinLimit -Length ($launcherPerFileMaximum + 1) -MaximumBytes $launcherPerFileMaximum)) `
+        'shared stable per-file boundary rejects the first byte above the launcher cap'
+    $bridgeUiPerFileMaximum = [long](Get-WirexStableMaximumFileBytes -Path 'runtime/ui/windows/bridge-ui.ps1')
+    Assert-True ($bridgeUiPerFileMaximum -eq 4MB -and
+        (Test-WirexStableLengthWithinLimit -Length $bridgeUiPerFileMaximum -MaximumBytes $bridgeUiPerFileMaximum) -and
+        -not (Test-WirexStableLengthWithinLimit -Length ($bridgeUiPerFileMaximum + 1) -MaximumBytes $bridgeUiPerFileMaximum)) `
+        'shared stable bridge-ui script limit preserves the established 4 MiB cap'
+    $stableDistributionRoot = Join-Path $testRoot 'stable-distribution'
+    $stableDistribution = New-StableReleaseDistribution -PackageRoot $stablePackageRoot `
+        -RepositoryRoot $repositoryRoot -DistributionDirectory $stableDistributionRoot
+    Assert-True ([System.IO.File]::Exists($stableDistribution.archive) -and [System.IO.File]::Exists($stableDistribution.manifest) -and
+        [System.IO.File]::Exists($stableDistribution.checksum)) `
+        'stable packaging creates ZIP, byte-exact manifest, and detached checksum outside the folder candidate'
+    $distributionFiles = @(Get-ChildItem -LiteralPath $stableDistributionRoot -File -Recurse | ForEach-Object { $_.Name } | Sort-Object -CaseSensitive)
+    Assert-True ($distributionFiles.Count -eq 3 -and
+        @($distributionFiles | Where-Object { [string]$_ -ceq 'WIREX_Bridge_v0.1.0.zip' }).Count -eq 1 -and
+        @($distributionFiles | Where-Object { [string]$_ -ceq 'manifest.json' }).Count -eq 1 -and
+        @($distributionFiles | Where-Object { [string]$_ -ceq 'SHA256SUMS.txt' }).Count -eq 1) `
+        'stable release distribution contains exactly the three approved top-level assets'
+    $packageManifestBytes = [System.IO.File]::ReadAllBytes((Join-Path $stablePackageRoot 'manifest.json'))
+    $distributionManifestBytes = [System.IO.File]::ReadAllBytes($stableDistribution.manifest)
+    Assert-True ([System.Linq.Enumerable]::SequenceEqual([byte[]]$packageManifestBytes,[byte[]]$distributionManifestBytes) -and
+        $stableDistribution.manifest_sha256 -ceq (Get-FileHash -LiteralPath $stableDistribution.manifest -Algorithm SHA256).Hash.ToLowerInvariant()) `
+        'standalone distribution manifest preserves the exact audited manifest bytes and hash'
+    $stableArchiveFacts = Test-ReleaseArchiveMatchesPackage -PackageRoot $stablePackageRoot -ArchivePath $stableDistribution.archive
+    Assert-Equal $stableArchiveFacts.EntryCount $stableProfile.PackageFiles.Count 'stable ZIP contains exactly the audited folder files'
+    Assert-True ($stableArchiveFacts.ManifestSha256 -ceq (Get-FileHash -LiteralPath (Join-Path $stablePackageRoot 'manifest.json') -Algorithm SHA256).Hash.ToLowerInvariant()) `
+        'stable ZIP includes the exact standalone manifest bytes'
+    $renamedArchive = Join-Path $testRoot 'stable-case-renamed.zip'
+    New-StableArchiveVariant -SourcePath $stableDistribution.archive -DestinationPath $renamedArchive `
+        -RenameFrom 'runtime/ui/windows/ChannelActivationState.psm1' -RenameTo 'runtime/ui/windows/channelActivationState.psm1' `
+        -AttributesPath '' -Attributes 0
+    Assert-Throws { Test-ReleaseArchiveMatchesPackage -PackageRoot $stablePackageRoot -ArchivePath $renamedArchive } `
+        'stable packager archive verifier rejects a single non-canonical case variant'
+    foreach ($typeCase in @(
+        [pscustomobject]@{ Name='symlink'; Attributes=([int]0xa000 -shl 16) },
+        [pscustomobject]@{ Name='fifo'; Attributes=([int]0x1000 -shl 16) },
+        [pscustomobject]@{ Name='character-device'; Attributes=([int]0x2000 -shl 16) },
+        [pscustomobject]@{ Name='block-device'; Attributes=([int]0x6000 -shl 16) },
+        [pscustomobject]@{ Name='socket'; Attributes=([int]0xc000 -shl 16) },
+        [pscustomobject]@{ Name='directory'; Attributes=([int]0x4000 -shl 16) },
+        [pscustomobject]@{ Name='dos-directory-bit'; Attributes=0x10 }
+    )) {
+        $invalidTypeArchive = Join-Path $testRoot ('stable-type-' + [string]$typeCase.Name + '.zip')
+        New-StableArchiveVariant -SourcePath $stableDistribution.archive -DestinationPath $invalidTypeArchive `
+            -RenameFrom '' -RenameTo '' -AttributesPath 'WirexBridge.exe' -Attributes ([int]$typeCase.Attributes)
+        Assert-Throws { Test-ReleaseArchiveMatchesPackage -PackageRoot $stablePackageRoot -ArchivePath $invalidTypeArchive } `
+            ('stable packager archive verifier rejects ZIP entry type ' + [string]$typeCase.Name)
+    }
+    Assert-True ($stableDistribution.archive_sha256 -ceq (Get-FileHash -LiteralPath $stableDistribution.archive -Algorithm SHA256).Hash.ToLowerInvariant()) `
+        'stable distribution metadata records the archive SHA-256'
+    Assert-True ($stableDistribution.archive_uncompressed_bytes -gt 0) 'stable distribution records bounded uncompressed size'
+    $stableChecksums = [System.IO.File]::ReadAllText($stableDistribution.checksum, [System.Text.Encoding]::UTF8)
+    Assert-True ($stableChecksums.Contains($stableDistribution.archive_sha256 + '  WIREX_Bridge_v0.1.0.zip') -and
+        $stableChecksums.Contains($stableArchiveFacts.ManifestSha256 + '  manifest.json')) `
+        'detached SHA256SUMS covers both the ZIP and standalone manifest'
+    $stableZip = [System.IO.Compression.ZipFile]::OpenRead($stableDistribution.archive)
+    try {
+        $stableZipPaths = @($stableZip.Entries | ForEach-Object { [string]$_.FullName })
+        Assert-True ($stableZipPaths -ccontains 'WirexBridge.exe' -and $stableZipPaths -ccontains 'runtime/private/device-y.bin') `
+            'stable ZIP root contains the launcher and the approved runtime HRI template'
+        Assert-True (@($stableZipPaths | Where-Object { $_ -match '(^|/)config\.json$|(^|/)logs/|\.log$' }).Count -eq 0) `
+            'stable ZIP contains no user config or runtime logs'
+    } finally { $stableZip.Dispose() }
+
+    foreach ($unsafeZipPath in @('../escape.txt','runtime/../../escape.txt','runtime/config.json:stream','runtime\\escape.txt')) {
+        Assert-Throws { Assert-ReleaseArchivePath -Path $unsafeZipPath } ('unsafe ZIP entry path is rejected: ' + $unsafeZipPath)
+    }
+    $caseCollisionZip = Join-Path $testRoot 'stable-case-collision.zip'
+    Copy-Item -LiteralPath $stableDistribution.archive -Destination $caseCollisionZip
+    $caseArchive = [System.IO.Compression.ZipFile]::Open($caseCollisionZip, [System.IO.Compression.ZipArchiveMode]::Update)
+    try { [void]$caseArchive.CreateEntry('wirexbridge.exe') } finally { $caseArchive.Dispose() }
+    Assert-Throws { Test-ReleaseArchiveMatchesPackage -PackageRoot $stablePackageRoot -ArchivePath $caseCollisionZip } `
+        'ZIP entry that collides with an existing Windows path by letter case is rejected'
+    $symlinkZip = Join-Path $testRoot 'stable-symlink.zip'
+    Copy-Item -LiteralPath $stableDistribution.archive -Destination $symlinkZip
+    $symlinkArchive = [System.IO.Compression.ZipFile]::Open($symlinkZip, [System.IO.Compression.ZipArchiveMode]::Update)
+    try {
+        $entry = @($symlinkArchive.Entries | Where-Object { $_.FullName -ceq 'WirexBridge.exe' })[0]
+        $entry.ExternalAttributes = [int](0xa000 -shl 16)
+    } finally { $symlinkArchive.Dispose() }
+    Assert-Throws { Test-ReleaseArchiveMatchesPackage -PackageRoot $stablePackageRoot -ArchivePath $symlinkZip } `
+        'ZIP Unix symbolic-link entry is rejected'
+    Assert-Throws { New-StableReleaseDistribution -PackageRoot $stablePackageRoot -RepositoryRoot $repositoryRoot `
+        -DistributionDirectory $stableDistributionRoot } 'stable ZIP and checksum are not overwritten'
+
+    Write-Utf8NoBom -Path (Join-Path $stablePackageRoot 'config.json') -Text '{"synthetic":"private user config"}'
+    Assert-Throws { Assert-ReleasePackageInventory -PackageRoot $stablePackageRoot -Version 'v0.1.0' } `
+        'stable package inventory rejects config.json before ZIP generation'
+    Remove-Item -LiteralPath (Join-Path $stablePackageRoot 'config.json') -Force -ErrorAction Stop
+    [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.1')
 
     $alpha2PackageRoot = Join-Path $testRoot 'package-alpha2'
     Copy-Item -LiteralPath $packageRoot -Destination $alpha2PackageRoot -Recurse
