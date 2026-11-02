@@ -37,7 +37,7 @@ Quick Call 拒绝信息会显示本机 Native 返回的错误码及对应本地�
 
 如果 `config.json` 不存在，统一配置模块创建唯一默认结构；如果创建、读取或验证失败，界面显示具体错误并退出，随后不会加载设备、BM 或 Native 启动组件，也不会自动连接。默认配置不包含 API key 或密码。
 
-`RoutingDiagnostic` 继续使用强制隔离的 `UserConfigDirectory`，不调用 portable 配置 helper，不初始化 EXE 根目录的 `config.json`。`PortableDirectory` 只用于路径比较，不读取该目录的配置。bridge 在其他启动初始化前拒绝相对路径，以及等于或位于 `PortableDirectory`/`PackageDirectory`（runtime）下的诊断目录。自动诊断还要求外部隔离目录中有严格校验的 fixture marker。
+`RoutingDiagnostic` 继续使用强制隔离的 `UserConfigDirectory`，不调用 portable 配置 helper，不初始化 EXE 根目录的 `config.json`。`PortableDirectory` 只用于路径比较，不读取该目录的配置。bridge 在其他启动初始化前拒绝相对路径，以及等于或位于 `PortableDirectory`/`PackageDirectory`（runtime）下的诊断目录。自动诊断还要求外部隔离目录中有严格校验的 fixture marker。主窗口 Loaded 事件会优先处理经过验证的 `RoutingDiagnosticAutoTest`，直接调用 `Start-BridgeRun`，不运行设备发现；这样 launcher 传入的 `NoAutoConnect` 不会阻断本机 Native 诊断，而普通 `NoAutoConnect` 仍只显示离线 UI。
 
 ## 验收范围
 
@@ -46,7 +46,7 @@ Quick Call 拒绝信息会显示本机 Native 返回的错误码及对应本地�
 | 回归 | 结果 | 覆盖范围 |
 | --- | --- | --- |
 | `test-channel-activation-state.ps1` | 通过，345 项断言 | 状态模块内存 smoke；不启动 Native/UI，不访问 BM 或硬件 |
-| `test-ui-channels.ps1` | 通过，170 项断言 | 频道集成、R123 保留项、BM 静态回读、Quick Call、Portable/Runtime 诊断路径 canary 和真实 WPF 输入事件 |
+| `test-ui-channels.ps1` | 通过，171 项断言 | 频道集成、R123 保留项、BM 静态回读、Quick Call、诊断启动分支及真实 WPF 输入事件 |
 | `test-ui-r124.ps1` | 通过，63 项断言 | 11 个 ComboBox 主体真实点击、编辑/预设/Add、音量滑块输入 |
 | `test-ui-render.ps1` | 通过，1951 项断言 | RenderOnly 控件布局、频道标题边界和长名称 tooltip |
 | `test-ui-console.ps1` | 通过，121 项断言 | 控制台与 CAT 生命周期、连接/清理交互 |

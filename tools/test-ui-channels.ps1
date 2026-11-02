@@ -273,6 +273,17 @@ Assert-UiChannels ($bridgeSource -match '\$pagePreviousButton\.Add_Click\(\{ Set
 Assert-UiChannels ($bridgeSource -match '(?s)if \(-not \$script:isolatedUiMode\)\s*\{\s*if \(\$script:serialConnectCatAfterCoreReady\)\s*\{\s*\[void\]\(Connect-UiRadioCatSession\)\s*\$script:serialConnectCatAfterCoreReady = \$false\s*\}\s*elseif \(-not \$NoAutoConnect\)\s*\{\s*\[void\]\(Connect-UiRadioCatSession -Automatic\)\s*\}\s*\}' -and
     $radioCatSource -match '(?s)if \(\$Automatic -and \$script:NoAutoConnect\) \{ return \$false \}') `
     '串口组合启动没有区分用户显式连接与自动 CAT 连接，或 NoAutoConnect 未阻止自动连接。'
+$loadedHandlerMatch = [regex]::Match($bridgeSource,'(?s)\$script:mainWindow\.Add_Loaded\(\{(?<body>.*?)\r?\n\}\)')
+$loadedHandlerBody = if ($loadedHandlerMatch.Success) { $loadedHandlerMatch.Groups['body'].Value } else { '' }
+$diagnosticBranchMatch = [regex]::Match($loadedHandlerBody,'(?s)if \(\$RoutingDiagnostic -and \$RoutingDiagnosticAutoTest\) \{(?<body>.*?)\}')
+$diagnosticBranchBody = if ($diagnosticBranchMatch.Success) { $diagnosticBranchMatch.Groups['body'].Value } else { '' }
+Assert-UiChannels ($loadedHandlerMatch.Success -and
+    $loadedHandlerBody.IndexOf('if ($UiTestFixture)',[StringComparison]::Ordinal) -ge 0 -and
+    $loadedHandlerBody.IndexOf('if ($UiTestFixture)',[StringComparison]::Ordinal) -lt $loadedHandlerBody.IndexOf('if ($RoutingDiagnostic -and $RoutingDiagnosticAutoTest)',[StringComparison]::Ordinal) -and
+    $loadedHandlerBody.IndexOf('if ($RoutingDiagnostic -and $RoutingDiagnosticAutoTest)',[StringComparison]::Ordinal) -lt $loadedHandlerBody.IndexOf('if ($RenderOnly -or $OfflinePreview -or $NoAutoConnect)',[StringComparison]::Ordinal) -and
+    $diagnosticBranchMatch.Success -and $diagnosticBranchBody -match '^\s*Start-BridgeRun\s*return\s*$' -and
+    $diagnosticBranchBody -notmatch 'Start-UiDeviceDiscovery') `
+    'RoutingDiagnosticAutoTest 与 NoAutoConnect 同时出现时必须绕过通用离线早退，直接启动隔离诊断且跳过设备发现；UiTestFixture 与普通 NoAutoConnect 分支仍按原顺序处理。'
 Assert-UiChannels ($bridgeSource -match '(?s)function Start-BridgeRun\s*\{\s*param\(\[switch\]\$BmStartDisconnected\)\s*\$script:bmStartDisconnectedForRun = \[bool\]\$BmStartDisconnected\s*if \(Test-UiRadioCatUserActionBusy\)' -and
     $bridgeSource -match '(?s)function Complete-BridgePreparation\s*\{.*?if \(Test-UiRadioCatUserActionBusy\)') '直接和准备完成的 HRI 启动路径没有检查 CAT 用户动作。'
 Assert-UiChannels ($bridgeSource -match '(?s)function Start-BridgeRun\s*\{.*?Get-UiRadioCatPortConflictMessage -HriPortName \$savedHriPort' -and

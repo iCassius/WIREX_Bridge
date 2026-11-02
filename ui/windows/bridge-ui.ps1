@@ -7943,6 +7943,10 @@ $script:mainWindow.Add_Loaded({
     if ($UiTestFixture) {
         Set-OfflineDisplay -Reason '隔离 UI 测试没有启动设备或网络。'; Set-ConnectionButtonState; return
     }
+    if ($RoutingDiagnostic -and $RoutingDiagnosticAutoTest) {
+        Start-BridgeRun
+        return
+    }
     if ($RenderOnly -or $OfflinePreview -or $NoAutoConnect) {
         Set-OfflineDisplay -Reason '离线预览：没有连接设备或网络。'
         Set-ConnectionButtonState; return

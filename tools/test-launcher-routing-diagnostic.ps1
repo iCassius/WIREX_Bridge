@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][ValidateNotNullOrEmpty()][string]$PackageDirectory,
@@ -17,15 +17,16 @@ $packageRoot = [System.IO.Path]::GetFullPath($PackageDirectory)
 $launcher = Join-Path $packageRoot 'WirexBridge.exe'
 $runtimeRoot = Join-Path $packageRoot 'runtime'
 $configModule = Join-Path $runtimeRoot 'ui\windows\PortableConfig.psm1'
-foreach ($path in @($launcher, (Join-Path $runtimeRoot 'tools\start-ui.ps1'),
+foreach ($path in @($launcher, (Join-Path $runtimeRoot 'start-ui.ps1'),
         (Join-Path $runtimeRoot 'ui\windows\bridge-ui.ps1'),
         (Join-Path $runtimeRoot 'wirex_bridge.exe'), $configModule)) {
     if (-not [System.IO.File]::Exists($path)) { throw "Release candidate is incomplete: $path" }
 }
 if (-not [System.IO.Directory]::Exists($workRoot)) { throw 'app/build/_work does not exist.' }
 $isolatedPrefix = $workRoot.TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
-$testRoot = Join-Path $workRoot ('launcher-routing-diagnostic-' + [guid]::NewGuid().ToString('N') + ' 中文 path')
-$isolated = Join-Path $testRoot 'isolated user config'
+$diagnosticId = [guid]::NewGuid().ToString('N').Substring(0, 8)
+$testRoot = Join-Path $workRoot ('rd-' + $diagnosticId)
+$isolated = Join-Path $testRoot 'cfg'
 $created = $false
 $launcherProcess = $null
 
@@ -35,12 +36,17 @@ try {
     $created = $true
     $resolvedTestRoot = [System.IO.Path]::GetFullPath($testRoot)
     if (-not $resolvedTestRoot.StartsWith($isolatedPrefix, [System.StringComparison]::OrdinalIgnoreCase) -or
-        [System.IO.Path]::GetFileName($resolvedTestRoot) -notlike 'launcher-routing-diagnostic-* 中文 path') {
+        [System.IO.Path]::GetFileName($resolvedTestRoot) -notlike 'rd-????????') {
         throw 'Diagnostic test directory escaped build/_work.'
     }
 
     Import-Module -Name $configModule -Force -ErrorAction Stop
-    $config = New-WirexPortableConfigDefaults
+    $configPath = [System.IO.Path]::GetFullPath((Join-Path $isolated 'config.json'))
+    $maximumBackupPathLength = $configPath.Length + '.backup-'.Length + 19 + 1 + 32
+    if ($maximumBackupPathLength -ge 260) {
+        throw ('Diagnostic config backup path must stay below MAX_PATH; calculated=' + $maximumBackupPathLength)
+    }
+    $config = Get-WirexPortableConfig -Path $configPath
     $config.connection.callsign = 'TEST'
     $config.connection.gateway_id = [uint64]100
     $config.connection.source_id = [uint64]1
@@ -49,7 +55,7 @@ try {
     $config.connection.color_code = [uint64]1
     $config.connection.password = ''
     $config.connection.api_key = ''
-    [void](Save-WirexPortableConfig -Path (Join-Path $isolated 'config.json') -Config $config)
+    [void](Save-WirexPortableConfig -Path $configPath -Config $config)
     $marker = [pscustomobject][ordered]@{
         schema_version = 1
         purpose = 'wirex-routing-diagnostic-test'
@@ -104,7 +110,7 @@ try {
     if ($created) {
         $resolvedTestRoot = [System.IO.Path]::GetFullPath($testRoot)
         if (-not $resolvedTestRoot.StartsWith($isolatedPrefix, [System.StringComparison]::OrdinalIgnoreCase) -or
-            [System.IO.Path]::GetFileName($resolvedTestRoot) -notlike 'launcher-routing-diagnostic-* 中文 path') {
+            [System.IO.Path]::GetFileName($resolvedTestRoot) -notlike 'rd-????????') {
             throw 'Refusing cleanup because the temporary diagnostic directory failed path validation.'
         }
         Remove-Item -LiteralPath $resolvedTestRoot -Recurse -Force -ErrorAction Stop

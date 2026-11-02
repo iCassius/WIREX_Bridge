@@ -24,7 +24,7 @@ stable profile 使用 tag `v0.1.0`；alpha.1–alpha.19 的历史资产路径和
 
 ## 源码阶段状态
 
-截至 2026-11-03，源码阶段离线回归结果如下。publisher 的 161 项合成断言通过，但因源码树尚有修改而跳过仓库 Git 检查；提交后必须重跑完整 Git 检查。downloader 的 3,262 项断言通过，跳过 0 项。
+截至 2026-11-03，R124 源码阶段离线回归结果如下。publisher 的 161 项合成断言是在源码树有修改时运行，跳过了仓库 Git 检查；这条结果只记录合成校验，不作为 clean-commit Git 检查结果。downloader 的 3,262 项断言通过，跳过 0 项。
 
 | 检查 | 通过断言 |
 | --- | ---: |
@@ -34,7 +34,7 @@ stable profile 使用 tag `v0.1.0`；alpha.1–alpha.19 的历史资产路径和
 | publisher 合成校验 | 161 |
 | downloader | 3,262 |
 | ChannelActivationState | 345 |
-| channels | 170 |
+| channels | 171 |
 | console | 121 |
 | status | 87 |
 | CAT | 197 |
@@ -43,7 +43,7 @@ stable profile 使用 tag `v0.1.0`；alpha.1–alpha.19 的历史资产路径和
 | gain | 85 |
 | R123 固定回归 | 54 |
 
-这些检查用于源码阶段离线验证，不包含设备、BM、音频、PTT 或 RF 实测。正式 launcher 必须从真实干净源码提交重新构建；Native fresh40、generic 目录实测和 root 文件审计尚未完成。root 审核 generic 目录并标记通过前，不生成最终 ZIP；发行前还需 root 审核 ZIP、原字节 manifest 副本及 SHA256SUMS 三项资产。本阶段没有创建 tag 或发布 GitHub Release。
+这些检查用于源码阶段离线验证，不包含设备、BM、音频、PTT 或 RF 实测。routing diagnostic 的主窗口 Loaded 分支现在会在 `NoAutoConnect` 通用早退前直接启动隔离 `Start-BridgeRun`，并跳过设备发现；普通 `NoAutoConnect` 路径保持离线显示。为验证该流程，曾将更新后的 `bridge-ui.ps1` 单独覆盖到按候选 manifest 逐项复制的临时包中，并用候选 EXE 完成 PowerShell 5.1、WPF、Native、内存发送与正常关闭流程；该临时覆盖只用于预检，最终发行文件须来自同一干净源码提交的正式构建与打包记录。构建来源和文件哈希以 candidate manifest/provenance 为准。本阶段没有创建 tag 或发布 GitHub Release。
 
 此前的实际 WPF 输入回归通过 63 项断言，root 接受该证据。另一次后续尝试时 Dota 2 在前台，WPF 窗口没有收到输入事件；该次没有形成有效 UI 输入结果，也不覆盖此前通过的 63 项结果。没有再次抢占前台输入。
 

@@ -2,9 +2,9 @@
 
 ## R124 / v0.1.0 源码阶段交接（2026-11-03）
 
-stable 包采用根目录 `WirexBridge.exe` 加 `runtime/` 运行目录，通用清单不收录用户配置、凭据或日志。源码阶段回归通过：config 63、launcher 45、package 795、publisher 161（因源码树有修改而跳过 Git 检查）、downloader 3,262（跳过 0）、ActivationState 345、channels 170、console 121、status 87、CAT 197、UI 63、RenderOnly 1,951、gain 85、R123 固定回归 54。测试没有连接真实设备、BM、音频、PTT 或 RF。
+stable 包采用根目录 `WirexBridge.exe` 加 `runtime/` 运行目录，通用清单不收录用户配置、凭据或日志。源码阶段回归记录：config 63、launcher 45、package 795、publisher 161（该次跳过仓库 Git 检查）、downloader 3,262（跳过 0）、ActivationState 345、channels 171、console 121、status 87、CAT 197、UI 63、RenderOnly 1,951、gain 85、R123 固定回归 54。测试没有连接真实设备、BM、音频、PTT 或 RF。
 
-此前的实际 WPF 输入回归通过 63 项断言，root 接受该证据。后续另一次尝试时 Dota 2 在前台，WPF 窗口没有收到输入事件；该次不形成有效 UI 结果，未再抢占输入。当前源码阶段已冻结；Native fresh40、干净提交上的正式 launcher、generic 目录实测及 root 包审仍待完成。publisher 完整 Git 检查须在提交后重跑。打包工具可能生成待审计的中间 ZIP；root 审核 generic 目录并标记通过后，再将中间分发移出候选并生成最终 ZIP、manifest 和 checksums 三项资产，供 root 复核。当前未创建 tag 或 GitHub Release。详见 [R124 发布记录](docs/R124_RELEASE.md)。
+真实 WPF 输入回归曾通过 63 项断言，root 接受该证据。另一次尝试时 Dota 2 在前台，WPF 窗口没有收到输入事件；该次不形成有效 UI 结果，未再抢占输入。EXE 自动 routing diagnostic 曾因 Loaded 事件先走 `NoAutoConnect` 离线早退而未启动 Native；修复后，使用短路径合成配置和临时 manifest-copy overlay 的真实 EXE→PowerShell 5.1→WPF→Native 流程通过，完成两帧内存发送并正常关闭。此结果是诊断预检；最终候选以相同 clean source commit 的 Native、launcher 构建及 package provenance 为准。打包工具会创建待 root 审计的中间 ZIP；root 审核 generic 目录并标记通过后，再将中间分发移出候选并生成最终 ZIP、manifest 和 checksums 三项资产，供 root 复核。当前未创建 tag 或 GitHub Release。详见 [R124 发布记录](docs/R124_RELEASE.md)。
 
 ## R123 / Alpha 19 最终交接（2026-11-02）
 
