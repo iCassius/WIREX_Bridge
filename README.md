@@ -1,6 +1,14 @@
 ﻿# WIREX Bridge：FTX-1 DIRECT 与 BrandMeister 语音桥接
 
-## 当前工作：R121 / Alpha 17 本机绿色目录
+## 当前工作：R122 源码阶段（alpha18 profile 准备）
+
+R122 调整固定 1360×900 WPF 控制台：下方连接配置和日常控制严格等宽，串口控件同高并对齐底边；CAT 模式、频率、功率由一个“应用”入口按字段确认；音频设备选择移到日常控制区音量上方；身份区显示 DMR ID 与两位设备编号；加入频道只进入监听列表。历史、3×2 频道卡与日常控制外卡片继续保留。实现细节见 [R122 UI](docs/R122_UI.md)、[R122 Runtime](docs/R122_RUNTIME.md) 和 [R122 CAT](docs/R122_CAT.md)。
+
+WinPS 5.1 STA 离线检查通过：CAT 模块 56 项、CAT/WPF 168 项、DMR ID 转换 29 项、频道交互 115 项、控制台 121 项、RenderOnly 2128 项；主窗口和设置窗口截图已检查。PowerShell 7 profile/publish/download 合成检查分别通过 656、136、2817 项；alpha18 profile 沿用 alpha17 的 41 个资产映射、37 个源码映射、9 个目录和 40 个 Native 测试名。后 3 项使用离线合成文件，不生成发布包或请求网络。
+
+R122 源码目前已通过上述定向回归；集成 Native full40、alpha18 generic package 和包内启动/control 检查留在源码冻结后的构建阶段。没有连接真实 CAT COM、FTX-1、HRI、BM 或音频设备，也没有触发 PTT/RF；CAT 与 HRI 同时运行的实际效果仍待实机验证。alpha18 实际包结果将在包阶段另行记录。
+
+## R121 / Alpha 17 本机绿色目录（前一交付）
 
 Alpha 17 包基于源码提交 `245ed0348f66cbd6d181655185d5db849fe1c724`。该干净提交已推送到 `origin/main`。Native 完整构建通过 40/40 项，`compile_only=false`，MSVC warning/error 均为 0；Alpha 17 本机目录已通过 root 独立包审计，manifest 状态为 `root_audit_passed`。
 

@@ -10,7 +10,7 @@
   <Grid Margin="12">
     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
     <TextBlock Grid.Row="0" Text="频道说明" FontSize="16" FontWeight="Bold" Margin="2,0,0,8"/>
-    <TextBlock Grid.Row="1" Text="现有频道继续使用已保存的网络参数。新加入的频道使用默认参数。" Foreground="#A8B5BB" FontSize="13" TextWrapping="Wrap" Margin="3,4"/>
+    <TextBlock Grid.Row="1" Text="新加入的频道会进入监听列表。呼叫目标可在频道卡片上单独选择。" Foreground="#A8B5BB" FontSize="13" TextWrapping="Wrap" Margin="3,4"/>
     <Grid Grid.Row="2" Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
       <Button x:Name="CancelSettingsButton" Grid.Column="1" Content="关闭" MinWidth="78"/>
     </Grid>

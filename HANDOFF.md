@@ -1,5 +1,13 @@
 ﻿# WIREX Bridge 交接入口
 
+## R122 源码阶段交接（2026-11-02）
+
+R122 更新固定 1360×900 WPF 主窗口、50:50 下方分区、单一 CAT“应用”入口、DMR ID/设备编号字段、音频设备位置和频道加入监听流程。连接区域无内嵌装饰边框；串口与频道录入控件已对齐；保留 3×2 频道卡和三行历史。alpha18 profile、版号启动器与 package README 已准备，实际候选包留待集成构建阶段生成。
+
+WinPS 5.1 STA 离线检查：CAT 模块 56 项、CAT/WPF 168 项、DMR ID 转换 29 项、频道交互 115 项、控制台 121 项、RenderOnly 2128 项通过。另有 PowerShell 7 离线 profile/publish/download fake 检查通过 656/136/2817 项；alpha18 延用 41 项资产映射、37 个源码映射、9 个目录和 40 项 Native 测试顺序，通用 manifest 继续排除 `config.json`、备份、credentials 和 tempSecrets。
+
+尚未连接真实 CAT COM、FTX-1、HRI、BM 或音频设备，没有触发 PTT/RF。尤其 CAT 配置写入与 HRI 同时运行仍待实机确认。Native full40、alpha18 generic package，以及配置覆盖前的 WinPS 包启动、test-control 和 UI control-v2 检查留待集成阶段。功能、测量与测试边界见 [R122 UI](docs/R122_UI.md)、[R122 Runtime](docs/R122_RUNTIME.md)、[R122 CAT](docs/R122_CAT.md)。
+
 ## R121 / Alpha 17 最终交接（2026-11-02）
 
 源码树位于 `C:\Users\cassi\Documents\Project\FTX1_project\WIREX_Bridge\app`，分支 `main`。Alpha 17 的源码提交为 `245ed0348f66cbd6d181655185d5db849fe1c724`，已推送到 `origin/main`。本次更新只补充交接文档，产品源码仍以该提交为准。

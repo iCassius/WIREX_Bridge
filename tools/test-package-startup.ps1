@@ -30,8 +30,8 @@ try {
     throw ('候选包 manifest.json 无法读取：{0}' -f $_.Exception.Message)
 }
 $packageVersion = [string]$packageManifest.version
-if (@('v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12', 'v0.1.0-alpha.13', 'v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17') -cnotcontains $packageVersion) {
-    throw ('包级启动检查只支持 alpha.9 至 alpha.17；manifest.version 为：{0}' -f $packageVersion)
+if (@('v0.1.0-alpha.9', 'v0.1.0-alpha.10', 'v0.1.0-alpha.11', 'v0.1.0-alpha.12', 'v0.1.0-alpha.13', 'v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17', 'v0.1.0-alpha.18') -cnotcontains $packageVersion) {
+    throw ('包级启动检查只支持 alpha.9 至 alpha.18；manifest.version 为：{0}' -f $packageVersion)
 }
 $releaseProfile = Set-ReleaseVersion -Version $packageVersion
 Assert-ReleasePackageInventory -PackageRoot $sourcePackage -Version $releaseProfile.Version | Out-Null
@@ -76,7 +76,7 @@ if ($packageVersion -ceq 'v0.1.0-alpha.13') {
         }
     }
 }
-if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17')) {
+if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17', 'v0.1.0-alpha.18')) {
     foreach ($moduleName in @(
         'RadioCat.psm1', 'RadioCatUi.ps1', 'RadioDevices.psm1',
         'BmServers.psm1', 'BmManagement.psm1', 'BmManagementUi.ps1', 'PortableConfig.psm1'
@@ -360,7 +360,7 @@ function Test-NoArgumentStartupFailurePrompt {
         throw '唯一 CMD 未把 ASCII 错误提示和 pause 放在无参数启动失败分支中，或未保留原退出码。'
     }
     $originalUiLauncherBytes = $null
-if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17')) {
+if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17', 'v0.1.0-alpha.18')) {
         $uiLauncherPath = Join-Path $packageCopy 'start-ui.ps1'
         $originalUiLauncherBytes = [System.IO.File]::ReadAllBytes($uiLauncherPath)
         [System.IO.File]::WriteAllText($uiLauncherPath, "throw 'synthetic startup failure only'`r`n",
@@ -516,17 +516,17 @@ function Test-Alpha15AudioControlCompatibility {
     Write-Output ('通过：{0} 包内 UI 接受带/不带 audio.gains.set 的 v2 命令集，并仅对新能力启用热调；Supervisor 精确门控且限制完整请求体 4096 字节。' -f $packageLabel)
 }
 
-function Test-Alpha17BmConnectionCompatibility {
-    param([Parameter(Mandatory=$true)][string]$PackageRoot)
+function Test-BmConnectionCapabilityCompatibility {
+    param([Parameter(Mandatory=$true)][string]$PackageRoot,[Parameter(Mandatory=$true)][string]$PackageLabel)
     $uiPath = Join-Path $PackageRoot 'ui\windows\bridge-ui.ps1'
     $supervisorPath = Join-Path $PackageRoot 'ui\windows\BridgeSupervisor.cs'
     $tokens = $null
     $parseErrors = $null
     $uiAst = [System.Management.Automation.Language.Parser]::ParseFile($uiPath, [ref]$tokens, [ref]$parseErrors)
-    if ($parseErrors.Count -gt 0) { throw 'alpha.17 bridge-ui.ps1 cannot be parsed by Windows PowerShell 5.1.' }
+    if ($parseErrors.Count -gt 0) { throw ($PackageLabel + ' bridge-ui.ps1 cannot be parsed by Windows PowerShell 5.1.') }
     foreach ($functionName in @('Test-UiRoutingCapabilityList','Test-UiHasCapability')) {
         $functionAst = $uiAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $functionName }, $true)
-        if ($null -eq $functionAst) { throw ('alpha.17 package UI is missing capability validator {0}.' -f $functionName) }
+        if ($null -eq $functionAst) { throw ('{0} package UI is missing capability validator {1}.' -f $PackageLabel,$functionName) }
         Invoke-Expression $functionAst.Extent.Text
     }
     $legacyCommands = [string[]]@('hello','status','shutdown','routing.status','rx_policy.replace',
@@ -534,13 +534,13 @@ function Test-Alpha17BmConnectionCompatibility {
     $bmCommands = [string[]]@($legacyCommands + 'bm.connection.set')
     if (-not (Test-UiRoutingCapabilityList -Commands $legacyCommands) -or
         -not (Test-UiRoutingCapabilityList -Commands $bmCommands)) {
-        throw 'alpha.17 UI must continue accepting the legacy v2 command list and its bm.connection.set extension.'
+        throw ($PackageLabel + ' UI must continue accepting the legacy v2 command list and its bm.connection.set extension.')
     }
     $legacyText = $legacyCommands -join ','
     $bmText = $bmCommands -join ','
     if ((Test-UiHasCapability -Capabilities $legacyText -Command 'bm.connection.set') -or
         -not (Test-UiHasCapability -Capabilities $bmText -Command 'bm.connection.set')) {
-        throw 'alpha.17 UI must treat bm.connection.set as optional and recognize it only when Native advertises it.'
+        throw ($PackageLabel + ' UI must treat bm.connection.set as optional and recognize it only when Native advertises it.')
     }
     $uiText = [System.IO.File]::ReadAllText($uiPath, [System.Text.Encoding]::UTF8)
     foreach ($requiredFragment in @(
@@ -548,14 +548,51 @@ function Test-Alpha17BmConnectionCompatibility {
         "if (`$bmConnectionAdvertised) { `$names += @('bm_connection','bm_resolving','bm_connection_error') }"
     )) {
         if (-not $uiText.Contains($requiredFragment)) {
-            throw ('alpha.17 UI does not gate BM status fields on the optional Native capability: ' + $requiredFragment)
+            throw ($PackageLabel + ' UI does not gate BM status fields on the optional Native capability: ' + $requiredFragment)
         }
     }
     $supervisorText = [System.IO.File]::ReadAllText($supervisorPath, [System.Text.Encoding]::UTF8)
     if (-not $supervisorText.Contains('command == "bm.connection.set"')) {
-        throw 'alpha.17 packaged BridgeSupervisor does not allow the optional bm.connection.set command.'
+        throw ($PackageLabel + ' packaged BridgeSupervisor does not allow the optional bm.connection.set command.')
     }
-    Write-Output '通过：alpha.17 UI 保持旧 Native 命令集可用，并只在 Native 广告 bm.connection.set 时启用 BM 状态和切换字段。'
+    Write-Output ('通过：{0} UI 保持旧 Native 命令集可用，并只在 Native 广告 bm.connection.set 时启用 BM 状态和切换字段。' -f $PackageLabel)
+}
+
+function Test-Alpha18UiLayoutContract {
+    param([Parameter(Mandatory=$true)][string]$PackageRoot)
+    $mainXamlPath = Join-Path $PackageRoot 'ui\windows\MainWindow.xaml'
+    $settingsXamlPath = Join-Path $PackageRoot 'ui\windows\SettingsWindow.xaml'
+    foreach ($path in @($mainXamlPath,$settingsXamlPath)) {
+        if (-not [System.IO.File]::Exists($path)) { throw ($packageLabel + ' 包缺少窗口XAML：' + [System.IO.Path]::GetFileName($path)) }
+    }
+    try {
+        $mainDocument = [xml][System.IO.File]::ReadAllText($mainXamlPath,[System.Text.Encoding]::UTF8)
+        $settingsText = [System.IO.File]::ReadAllText($settingsXamlPath,[System.Text.Encoding]::UTF8)
+    } catch { throw ($packageLabel + ' 窗口XAML无法解析：' + $_.Exception.Message) }
+    $dashboard = $mainDocument.SelectSingleNode("//*[@*[local-name()='Name']='DashboardPanel']")
+    $columns = @($dashboard.SelectNodes("./*[local-name()='ColumnDefinitions']/*[local-name()='ColumnDefinition']"))
+    if (-not $dashboard -or $columns.Count -ne 2 -or
+        [string]$columns[0].GetAttribute('Width') -cne '1*' -or [string]$columns[1].GetAttribute('Width') -cne '1*') {
+        throw ($packageLabel + ' 主窗口下方左右分区没有固定为等宽两列。')
+    }
+    foreach ($name in @('ApplyCatSettingsButton','CatOperationStatusText','DeviceNumberBox','SourceBox','AudioDevicePanel','VolumeControlsPanel')) {
+        if (-not $mainDocument.SelectSingleNode("//*[@*[local-name()='Name']='$name']")) {
+            throw ($packageLabel + ' 主窗口缺少R122控件 ' + $name + '。')
+        }
+    }
+    foreach ($name in @('ApplyCatModeButton','ApplyCatFrequencyButton','ApplyCatPowerButton','GatewayBox','ColorCodeBox','MakeChannelTxTargetCheckBox')) {
+        if ($mainDocument.SelectSingleNode("//*[@*[local-name()='Name']='$name']")) {
+            throw ($packageLabel + ' 主窗口仍包含旧布局控件 ' + $name + '。')
+        }
+    }
+    $deviceNumber = $mainDocument.SelectSingleNode("//*[@*[local-name()='Name']='DeviceNumberBox']")
+    if ([string]$deviceNumber.GetAttribute('MaxLength') -cne '2') { throw ($packageLabel + ' 设备编号字段未限制为两位。') }
+    $dailyPanel = $mainDocument.SelectSingleNode("//*[@*[local-name()='Name']='DailyControlsPanel']")
+    if (@($dailyPanel.SelectNodes("descendant::*[local-name()='Border']")).Count -ne 0) {
+        throw ($packageLabel + ' 日常控制外卡片中仍包含嵌套装饰边框。')
+    }
+    if ($settingsText -match '切换PTT|同时设为PTT') { throw ($packageLabel + ' 设置窗口仍显示旧PTT切换说明。') }
+    Write-Output ('通过：{0} 主窗口包含R122固定布局、DMR设备编号和唯一CAT应用入口。' -f $packageLabel)
 }
 
 try {
@@ -569,9 +606,10 @@ try {
     Copy-Item -LiteralPath $sourcePackage -Destination $packageCopy -Recurse
     $copied = $true
     Test-NoArgumentStartupFailurePrompt
-    if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17')) { Test-Alpha14DefaultStartup }
-    if ($packageVersion -cin @('v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17')) { Test-Alpha15AudioControlCompatibility -PackageRoot $packageCopy }
-    if ($packageVersion -ceq 'v0.1.0-alpha.17') { Test-Alpha17BmConnectionCompatibility -PackageRoot $packageCopy }
+    if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17', 'v0.1.0-alpha.18')) { Test-Alpha14DefaultStartup }
+    if ($packageVersion -cin @('v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17', 'v0.1.0-alpha.18')) { Test-Alpha15AudioControlCompatibility -PackageRoot $packageCopy }
+    if ($packageVersion -cin @('v0.1.0-alpha.17', 'v0.1.0-alpha.18')) { Test-BmConnectionCapabilityCompatibility -PackageRoot $packageCopy -PackageLabel $packageLabel }
+    if ($packageVersion -ceq 'v0.1.0-alpha.18') { Test-Alpha18UiLayoutContract -PackageRoot $packageCopy }
 
     $scriptFiles = @(Get-ChildItem -LiteralPath $packageCopy -Recurse -File | Where-Object {
         $_.Extension -in @('.ps1', '.psm1')
@@ -592,7 +630,7 @@ try {
 
     $modulePath = Join-Path $packageCopy 'bridge-user-config.psm1'
     Import-Module -Name $modulePath -Force -ErrorAction Stop
-    if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17')) {
+    if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17', 'v0.1.0-alpha.18')) {
         $portableModulePath = Join-Path $packageCopy 'ui\windows\PortableConfig.psm1'
         Import-Module -Name $portableModulePath -Force -ErrorAction Stop
         $packagedConfigFiles = @(Get-ChildItem -LiteralPath $packageCopy -Recurse -File | Where-Object {
@@ -644,7 +682,7 @@ try {
     }
 
     [System.IO.Directory]::CreateDirectory($isolatedConfig) | Out-Null
-    if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17')) {
+    if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17', 'v0.1.0-alpha.18')) {
         $diagnosticConfigPath = Join-Path $isolatedConfig 'config.json'
         $diagnosticConfig = Get-WirexPortableConfig -Path $diagnosticConfigPath
         $diagnosticConfig.connection.callsign = 'R110T'
@@ -683,12 +721,13 @@ try {
     $resultPath = Join-Path $isolatedConfig 'routing-diagnostic-result.json'
     if (-not [System.IO.File]::Exists($resultPath)) { throw '隔离路由诊断没有生成结果文件。' }
     $result = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($resultPath, [System.Text.Encoding]::UTF8)) -ErrorAction Stop
-    if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17')) {
+    if ($packageVersion -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17', 'v0.1.0-alpha.18')) {
         $channelFlowTest = $result.channel_flow_test
         if ([int]$result.schema_version -ne 2 -or -not [bool]$result.passed -or
             -not [bool]$channelFlowTest.passed -or [string]$channelFlowTest.channel_key -cne 'group:12345:1' -or
-            [string]$channelFlowTest.tx_command -cne 'tx_policy.replace' -or
+            [string]$channelFlowTest.tx_command -cne 'unchanged' -or
             [string]$channelFlowTest.rx_command -cne 'rx_policy.replace' -or
+            -not [bool]$channelFlowTest.ptt_unchanged_after_add -or
             -not [bool]$channelFlowTest.root_config_saved -or
             [string]$channelFlowTest.quick_call_command -cne 'network_subscription.quick_call_join' -or
             [uint64]$channelFlowTest.frames_sent -ne 2 -or [bool]$channelFlowTest.bm_connected -or
@@ -698,11 +737,11 @@ try {
             throw ('{0} 隔离频道诊断 schema 2 结果不符合双 ACK、组呼和退出检查：{1}' -f $packageLabel, $result.message)
         }
         $savedDiagnosticConfig = Get-WirexPortableConfig -Path (Join-Path $isolatedConfig 'config.json')
-        if ([string]$savedDiagnosticConfig.tx_channel_id -cne 'group:12345:1' -or
+        if ([string]$savedDiagnosticConfig.tx_channel_id -cne [string]$diagnosticConfig.tx_channel_id -or
             @($savedDiagnosticConfig.channels | Where-Object {
                 [string]$_.kind -ceq 'group' -and [uint64]$_.id -eq 12345 -and [uint64]$_.slot -eq 1
             }).Count -ne 1) {
-            throw ($packageLabel + ' 诊断没有把频道和 TX 目标保存到隔离根目录 config.json。')
+            throw ($packageLabel + ' 诊断没有把新监听频道保存到隔离配置，或添加频道时更改了现有 PTT 目标。')
         }
     } else {
         $dynamicGroupTest = $result.dynamic_group_action_test

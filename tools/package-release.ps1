@@ -70,6 +70,7 @@ $script:alpha14TestNames = @($script:alpha13TestNames)
 $script:alpha15TestNames = @($script:alpha14TestNames)
 $script:alpha16TestNames = @($script:alpha15TestNames)
 $script:alpha17TestNames = @($script:alpha16TestNames)
+$script:alpha18TestNames = @($script:alpha17TestNames)
 $script:activeReleaseVersion = 'v0.1.0-alpha.1'
 
 function Get-ReleaseProfile {
@@ -742,7 +743,33 @@ function Get-ReleaseProfile {
                 NotIncluded = $alpha17NotIncluded
             }
         }
-        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.17 release profiles are supported.' }
+        'v0.1.0-alpha.18' {
+            $alpha17 = Get-ReleaseProfile -Version 'v0.1.0-alpha.17'
+            $alpha18SourceFiles = @($alpha17.SourceFiles | Where-Object {
+                [string]$_.Destination -cne 'README.md' -and
+                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha17.cmd' -and
+                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha17.ps1'
+            }) + @(
+                @{ Source='docs\releases\v0.1.0-alpha.18-package-README.md'; Destination='README.md' },
+                @{ Source='tools\start-wirex-bridge-alpha18.cmd'; Destination='start-wirex-bridge.cmd' },
+                @{ Source='tools\start-wirex-bridge-alpha18.ps1'; Destination='tools/start-wirex-bridge.ps1' }
+            )
+            $alpha18NotIncluded = @($alpha17.NotIncluded | ForEach-Object {
+                ([string]$_).Replace('alpha.17', 'alpha.18')
+            })
+            return [pscustomobject]@{
+                Version = 'v0.1.0-alpha.18'
+                TestNames = $script:alpha18TestNames
+                SourceFiles = $alpha18SourceFiles
+                PackageFiles = @($alpha17.PackageFiles)
+                Directories = @($alpha17.Directories)
+                AssetMap = $alpha17.AssetMap
+                PackageReadme = 'docs\releases\v0.1.0-alpha.18-package-README.md'
+                ReleaseScope = 'R122 DIRECT: 50:50 fixed console layout, consolidated CAT settings, DMR device number and relocated audio controls; inherit alpha.17 runtime assets and Native test sequence'
+                NotIncluded = $alpha18NotIncluded
+            }
+        }
+        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.18 release profiles are supported.' }
     }
 }
 
@@ -977,7 +1004,7 @@ function Get-ReleaseExcludedPrivateFiles {
             'private/user-config/bm-server-preferences.json'
         )
     }
-    if ($Version -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17')) {
+    if ($Version -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17', 'v0.1.0-alpha.18')) {
         $excluded += @(
             'config.json',
             'config.*.backup*',

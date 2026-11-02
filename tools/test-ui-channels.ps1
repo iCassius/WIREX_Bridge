@@ -183,6 +183,7 @@ $functionNames = @(
     'Set-ConnectionButtonState','Set-ConnectionConfigLocked','Test-UiBmTransportFieldsLocked','Set-UiIdentityRowVisibility','Update-UiPlaybackGainDisplay',
     'Test-UiAudioGainCapability','Update-UiAudioGainControls','Update-UiAudioGainValueLabels',
     'Convert-UiGainSliderToMilli',
+    'Set-UiGatewayIdentityState','Get-UiGatewayIdentityForSave',
     'Complete-UiRadioCatOperationAndPersist','Complete-UiRadioCatOperation','Invoke-UiRadioCatPollTick','Start-UiRadioCatOperation',
     'Test-UiRadioCatHardwareAccessAllowed','Test-UiRadioCatExplicitFakeHook','Test-UiRadioCatPortConflictWithHri',
     'Get-UiRadioCatHriPortForOperation','Process-UiControlEvents','Read-StatusUpdates',
@@ -209,9 +210,11 @@ $radioCatSource = [System.IO.File]::ReadAllText($radioCatPath)
 foreach ($forbidden in @('FavoritesPanel','FavoritesList','TransmitEnabledBox','CatStopBitsBox','FavoritesButton')) {
     Assert-UiChannels ($mainXaml -notmatch ('x:Name="' + [regex]::Escape($forbidden) + '"')) ("MainWindow.xaml 仍含已删除控件 {0}。" -f $forbidden)
 }
-foreach ($required in @('ChannelIdBox','ChannelKindBox','MakeChannelTxTargetCheckBox','AddChannelButton','ChannelCardsPanel','CatPortBox','BmApiKeySetupLink','BmPasswordSetupLink')) {
+foreach ($required in @('ChannelIdBox','ChannelKindBox','AddChannelButton','ChannelCardsPanel','CatPortBox','DeviceNumberBox','BmApiKeySetupLink','BmPasswordSetupLink')) {
     Assert-UiChannels ($mainXaml -match ('x:Name="' + [regex]::Escape($required) + '"')) ("MainWindow.xaml 缺少 {0}。" -f $required)
 }
+Assert-UiChannels ($mainXaml -notmatch 'x:Name="GatewayBox"|x:Name="ColorCodeBox"|x:Name="MakeChannelTxTargetCheckBox"' -and
+    $bridgeSource -notmatch 'GatewayBox|ColorCodeBox|MakeChannelTxTargetCheckBox') '旧Gateway/色码/自动PTT编辑控件仍被保留或脚本仍引用。'
 Assert-UiChannels ($mainXaml -notmatch 'x:Name="ChannelListPanel"') 'MainWindow.xaml 仍有重复频道清单。'
 Assert-UiChannels ($mainXaml -notmatch 'ReadRadioButton|读取电台' -and
     $mainXaml -match 'Content="连接串口"' -and $mainXaml -match 'Content="断开串口"') '电台控制仍显示读取按钮，或串口连接/断开标签错误。'
@@ -307,11 +310,13 @@ try {
     $script:portableConfig.connection.callsign = 'N0TEST'
     $script:portableConfig.connection.gateway_id = [uint64]12345
     $script:portableConfig.connection.source_id = [uint64]123456
+    $script:portableConfig.connection.color_code = [uint64]7
     $script:portableConfig.connection.password = 'synthetic-password-7a91'
     $script:portableConfig.connection.api_key = 'synthetic-api-key-42bf'
     $script:portableConfig.channels = [object[]]@()
     $script:portableConfig.tx_channel_id = ''
     $script:portableConfig = Save-WirexPortableConfig -Path $script:portableConfigPath -Config $script:portableConfig
+    [void](Set-UiGatewayIdentityState -Config $script:portableConfig)
     $script:channels = @($script:portableConfig.channels)
     $script:txChannelKey = [string]$script:portableConfig.tx_channel_id
 
@@ -366,6 +371,16 @@ try {
     $emptyKeyConfig.connection = $script:portableConfig.connection.PSObject.Copy()
     $emptyKeyConfig.connection.api_key = ''
     Assert-UiChannels ($null -ne (ConvertFrom-UiPortableConfigToProfile -Config $emptyKeyConfig)) 'BM API Key 为空时连接 Profile 被拒绝。'
+
+    $priorTxAfterAdd = [string]$script:txChannelKey
+    $kindBox.SelectedItem = @($kindBox.Items | Where-Object { [string]$_.Tag -ceq 'group' })[0]
+    (Get-TestUiControl 'ChannelIdBox').Text = '23456'
+    Add-UiChannelFromInputs
+    Assert-UiChannels ($script:channels.Count -eq 2 -and $script:txChannelKey -ceq $priorTxAfterAdd -and
+        (Get-WirexPortableConfig -Path $script:portableConfigPath).tx_channel_id -ceq $priorTxAfterAdd) `
+        '已有呼叫目标时，加入监听频道改动了 PTT 目标或没有保存新频道。'
+    Assert-UiChannels ((Get-WirexPortableConfig -Path $script:portableConfigPath).connection.color_code -eq 7) `
+        '保存其他配置时色码字段被归零、删除或改写。'
 
     $script:channels = @()
     $sameGroupTs2 = New-UiChannelRecord -Id 12345 -Kind group -Slot 2
@@ -749,11 +764,10 @@ try {
     $script:radioCatOperationCancelled = $false
     $script:supervisor = $null; $script:preparationStarted = $false; $script:preparePowerShell = $null
     (Get-TestUiControl 'CallsignBox').Text = 'N0TEST'
-    (Get-TestUiControl 'GatewayBox').Text = '12345'
     (Get-TestUiControl 'SourceBox').Text = '123456'
     (Get-TestUiControl 'MasterBox').Text = '43.129.83.124'
     (Get-TestUiControl 'MasterPortBox').Text = '62031'
-    (Get-TestUiControl 'ColorCodeBox').Text = '1'
+    (Get-TestUiControl 'DeviceNumberBox').Text = ''
     (Get-TestUiControl 'PasswordBox').Password = 'synthetic-password-7a91'
     (Get-TestUiControl 'BmApiKeyBox').Password = 'synthetic-api-key-42bf'
     Set-ConnectionButtonState

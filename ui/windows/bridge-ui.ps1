@@ -335,7 +335,7 @@ $script:routingLastUpdateUtc = [DateTime]::MinValue
 $script:routingDiagnosticAutoTestStarted = $false
 $script:routingDiagnosticAutoTestPhase = 0
 $script:routingDiagnosticChannelFlowTest = [pscustomobject][ordered]@{
-    passed=$false;channel_key='group:12345:1';tx_command='';rx_command='';root_config_saved=$false
+    passed=$false;channel_key='group:12345:1';tx_command='';rx_command='';ptt_unchanged_after_add=$false;root_config_saved=$false
     quick_call_command='';frames_sent=[uint64]0;bm_connected=$false;used_memory_sink=$true
     routing_unchanged_after_activation=$false;normal_shutdown_requested=$false
 }
@@ -388,6 +388,7 @@ $script:identityApiBaseUri = 'https://radioid.net/api/dmr/user/'
 $script:identityDiagnosticPath = Join-Path $script:configDirectory 'identity-query-errors.jsonl'
 $script:closingAfterIdentityQuery = $false
 $script:portableConfig = $null
+$script:gatewayIdentityState = $null
 $script:channels = @()
 $script:channelPageIndex = 0
 $script:txChannelKey = ''
@@ -2412,8 +2413,9 @@ function Add-UiChannelFromInputs {
         if ($null -ne (Get-UiChannelByKey -Key $key)) { throw '频道列表已包含相同网络目标。' }
         if (@($script:channels).Count -ge 256) { throw '频道列表已达256项上限。' }
         $candidate = @($script:channels) + @($channel)
-        $makeTx = ((Get-UiControl 'MakeChannelTxTargetCheckBox').IsChecked -eq $true -or
-            [string]::IsNullOrWhiteSpace($script:txChannelKey))
+        # Adding a listener never replaces an existing PTT target. The first
+        # configured channel initializes an otherwise empty target.
+        $makeTx = [string]::IsNullOrWhiteSpace($script:txChannelKey)
         $txKey = if ($makeTx) { $key } else { [string]$script:txChannelKey }
         Start-UiChannelMutation -Channels $candidate -TxKey $txKey -MutedKeys $script:mutedChannelKeys -Action '加入频道'
         (Get-UiControl 'ChannelIdBox').Clear()
@@ -5073,15 +5075,16 @@ function Start-UiRoutingDiagnosticAutoTest {
         (Get-UiControl 'ChannelIdBox').Text='12345'
         $kindBox=Get-UiControl 'ChannelKindBox'
         $kindBox.SelectedItem=@($kindBox.Items|Where-Object {[string]$_.Tag -ceq 'group'})[0]
-        (Get-UiControl 'MakeChannelTxTargetCheckBox').IsChecked=$true
+        $script:routingDiagnosticOriginalTxKey=[string]$script:txChannelKey
         $button=Get-UiControl 'AddChannelButton'
         $eventArgs=[System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)
         $button.RaiseEvent($eventArgs)
-        if(-not $script:pendingChannelMutation -or [string]$script:pendingChannelMutation.stage -cne 'tx' -or
-            -not $script:pendingRoutingMutation -or [string]$script:pendingRoutingMutation.command -cne 'tx_policy.replace'){
+        if(-not $script:pendingChannelMutation -or [string]$script:pendingChannelMutation.stage -cne 'rx' -or
+            -not $script:pendingRoutingMutation -or [string]$script:pendingRoutingMutation.command -cne 'rx_policy.replace' -or
+            [string]$script:pendingChannelMutation.tx_key -cne $script:routingDiagnosticOriginalTxKey){
             throw 'add-channel'
         }
-        Write-UiRoutingDiagnosticProgress -Message 'channel-add-clicked-tx-request-sent'
+        Write-UiRoutingDiagnosticProgress -Message 'channel-add-clicked-listen-update-sent'
     }catch{
         Write-UiRoutingDiagnosticProgress -Message 'channel-add-initialization-failed'
         Fail-UiRoutingDiagnosticAutoTest -Message '隔离频道诊断无法通过主窗口频道添加流程启动。'
@@ -5092,23 +5095,18 @@ function Complete-UiRoutingDiagnosticAutoTest {
     param([AllowNull()][object]$Mutation,[Parameter(Mandatory=$true)][object]$Routing)
     try{
         if($script:routingDiagnosticAutoTestPhase -eq 1){
-            if(-not $Mutation -or [string]$Mutation.command -cne 'tx_policy.replace' -or
-                [uint64]$Routing.tx_target.destination_id -ne 12345 -or [string]$Routing.tx_target.kind -cne 'group' -or
-                [uint64]$Routing.tx_target.slot -ne 1 -or -not [bool]$Routing.transmit_enabled){throw 'tx-ack'}
-            $script:routingDiagnosticChannelFlowTest.tx_command=[string]$Mutation.command
-            $script:routingDiagnosticAutoTestPhase=2
-            Write-UiRoutingDiagnosticProgress -Message 'channel-tx-acknowledged-rx-request-sent'
-            return
-        }
-        if($script:routingDiagnosticAutoTestPhase -eq 2){
+            $actualTxKey = if ($Routing.tx_target) { Get-UiChannelKey -Channel ([pscustomobject]@{
+                id=[uint64]$Routing.tx_target.destination_id; kind=[string]$Routing.tx_target.kind; slot=[int]$Routing.tx_target.slot
+            }) } else { '' }
             $expectedGroup=@($Routing.rx_policy.allow_groups|Where-Object {[uint64]$_.destination_id -eq 12345 -and [uint64]$_.slot -eq 1}).Count -eq 1
             if(-not $Mutation -or [string]$Mutation.command -cne 'rx_policy.replace' -or -not $expectedGroup -or
-                [uint64]$Routing.tx_target.destination_id -ne 12345 -or [string]$Routing.tx_target.kind -cne 'group' -or
-                [uint64]$Routing.tx_target.slot -ne 1 -or -not [bool]$Routing.transmit_enabled){throw 'rx-ack'}
+                $actualTxKey -cne $script:routingDiagnosticOriginalTxKey -or -not [bool]$Routing.transmit_enabled){throw 'rx-ack'}
             $saved=Get-WirexPortableConfig -Path $script:portableConfigPath
-            if([string]$saved.tx_channel_id -cne 'group:12345:1' -or
+            if([string]$saved.tx_channel_id -cne $script:routingDiagnosticOriginalTxKey -or
                 @($saved.channels|Where-Object {[string]$_.kind -ceq 'group' -and [uint64]$_.id -eq 12345 -and [uint64]$_.slot -eq 1}).Count -ne 1){throw 'root-config'}
+            $script:routingDiagnosticChannelFlowTest.tx_command='unchanged'
             $script:routingDiagnosticChannelFlowTest.rx_command=[string]$Mutation.command
+            $script:routingDiagnosticChannelFlowTest.ptt_unchanged_after_add=$true
             $script:routingDiagnosticChannelFlowTest.root_config_saved=$true
             $script:routingDiagnosticRoutingBeforeQuickCall=ConvertTo-Json -InputObject $Routing -Compress -Depth 16
             $script:routingDiagnosticAutoTestPhase=3
@@ -5131,7 +5129,7 @@ function Complete-UiRoutingDiagnosticAutoTest {
             $after=ConvertTo-Json -InputObject $Routing -Compress -Depth 16
             if([string]::IsNullOrWhiteSpace($before) -or $before -cne $after){throw 'routing-changed'}
             $saved=Get-WirexPortableConfig -Path $script:portableConfigPath
-            if([string]$saved.tx_channel_id -cne 'group:12345:1' -or
+            if([string]$saved.tx_channel_id -cne $script:routingDiagnosticOriginalTxKey -or
                 @($saved.channels|Where-Object {[string]$_.kind -ceq 'group' -and [uint64]$_.id -eq 12345 -and [uint64]$_.slot -eq 1}).Count -ne 1){throw 'root-config-readback'}
             $script:routingDiagnosticChannelFlowTest.passed=$true
             $script:routingDiagnosticChannelFlowTest.quick_call_command='network_subscription.quick_call_join'
@@ -5141,7 +5139,7 @@ function Complete-UiRoutingDiagnosticAutoTest {
             $script:routingDiagnosticChannelFlowTest.routing_unchanged_after_activation=$true
             $script:routingDiagnosticChannelFlowTest.normal_shutdown_requested=$true
             Write-UiRoutingDiagnosticProgress -Message 'channel-flow-test-passed'
-            Write-UiRoutingDiagnosticResult -Passed $true -Message '本地Native IPC确认了频道TX和RX更新，并验证组呼激活仅通过内存接收器。' -Routing $Routing
+            Write-UiRoutingDiagnosticResult -Passed $true -Message '本地Native IPC确认加入频道只更新RX、保留原PTT目标，并验证组呼激活仅通过内存接收器。' -Routing $Routing
             Request-StopAndExit
             return
         }
@@ -5155,7 +5153,7 @@ function Fail-UiRoutingDiagnosticAutoTest {
     param([Parameter(Mandatory=$true)][string]$Message)
     $script:routingDiagnosticAutoTestPhase=-1
     $script:routingDiagnosticChannelFlowTest=[pscustomobject][ordered]@{
-        passed=$false;message=$Message;phase=$script:routingDiagnosticAutoTestPhase
+        passed=$false;message=$Message;phase=$script:routingDiagnosticAutoTestPhase;ptt_unchanged_after_add=$false
         channel_key='group:12345:1';bm_connected=$false;used_memory_sink=$true
     }
     Write-UiRoutingDiagnosticProgress -Message 'channel-flow-test-failed'
@@ -6528,7 +6526,7 @@ function Import-UiPortableConfig {
         $script:portableConfigError = ''
         return $true
     } catch {
-        $script:portableConfig = $null; $script:channels = @(); $script:txChannelKey = ''; $script:storedProfile = $null
+        $script:portableConfig = $null; $script:gatewayIdentityState = $null; $script:channels = @(); $script:txChannelKey = ''; $script:storedProfile = $null
         $script:portableConfigError = '统一配置无法读取；请检查 config.json。'
         return $false
     }
@@ -6560,13 +6558,78 @@ function Set-UiComboValue {
     return $false
 }
 
+function Set-UiGatewayIdentityState {
+    param([Parameter(Mandatory=$true)][object]$Config)
+    $connection = $Config.connection
+    $sourceId = [uint64]$connection.source_id
+    $gatewayId = [uint64]$connection.gateway_id
+    $deviceNumber = ''
+    $state = 'legacy_unmatched'
+    if ($sourceId -eq 0 -and $gatewayId -eq 0) {
+        # A new, empty profile can start with the common two-digit suffix.
+        # It is not written as a Gateway until a DMR ID is supplied.
+        $deviceNumber = '01'
+        $state = 'new_empty'
+    } elseif ($sourceId -gt 0 -and $gatewayId -eq $sourceId) {
+        # Older profiles sometimes stored only the bare DMR ID in Gateway.
+        # Keep it intact until the user explicitly chooses a suffix.
+        $state = 'legacy_bare_id'
+    } elseif ($sourceId -gt 0) {
+        $base = [uint64]($sourceId * [uint64]100)
+        $upper = [uint64]($base + [uint64]100)
+        if ($gatewayId -ge $base -and $gatewayId -lt $upper) {
+            $deviceNumber = ([uint64]($gatewayId - $base)).ToString('D2',[Globalization.CultureInfo]::InvariantCulture)
+            $state = 'split_gateway'
+        }
+    }
+    $script:gatewayIdentityState = [pscustomobject][ordered]@{
+        source_id=$sourceId; gateway_id=$gatewayId; device_number=$deviceNumber; state=$state
+    }
+    return $script:gatewayIdentityState
+}
+
+function Get-UiGatewayIdentityForSave {
+    param(
+        [Parameter(Mandatory=$true)][AllowEmptyString()][string]$SourceText,
+        [Parameter(Mandatory=$true)][AllowEmptyString()][string]$DeviceNumberText,
+        [Parameter(Mandatory=$true)][object]$State
+    )
+    $sourceId = ConvertTo-UiOptionalUnsigned -Text $SourceText -Maximum 16777215 -Label '本机 DMR ID'
+    $deviceNumber = ([string]$DeviceNumberText).Trim()
+    $sourceChanged = ($sourceId -ne [uint64]$State.source_id)
+    $deviceNumberChanged = ($deviceNumber -cne [string]$State.device_number)
+
+    if ($sourceId -eq 0 -and [uint64]$State.source_id -eq 0 -and [uint64]$State.gateway_id -eq 0) {
+        if ($deviceNumberChanged) { throw '请先填写本机 DMR ID，再选择设备编号。' }
+        return [pscustomobject][ordered]@{ source_id=[uint64]0; gateway_id=[uint64]0; device_number=[string]$State.device_number }
+    }
+
+    if (-not $deviceNumber) {
+        if ($sourceChanged -or $deviceNumberChanged) { throw '请填写两位设备编号（00–99），再保存本机 DMR ID。' }
+        return [pscustomobject][ordered]@{
+            source_id=$sourceId; gateway_id=[uint64]$State.gateway_id; device_number=''
+        }
+    }
+    if ($deviceNumber -cnotmatch '^(?:[0-9]{2})$') { throw '设备编号必须是两位数字（00–99）。' }
+    if ($sourceId -eq 0) { throw '请先填写本机 DMR ID，再选择设备编号。' }
+
+    $suffix = [uint64]::Parse($deviceNumber,[Globalization.CultureInfo]::InvariantCulture)
+    $gatewayId = [uint64]($sourceId * [uint64]100 + $suffix)
+    return [pscustomobject][ordered]@{
+        source_id=$sourceId; gateway_id=$gatewayId; device_number=$deviceNumber
+    }
+}
+
 function Apply-UiPortableConfigToControls {
     if (-not $script:portableConfig -or -not $script:mainWindow) { return }
     $c=$script:portableConfig.connection
-    foreach ($pair in @(@('CallsignBox',[string]$c.callsign),@('GatewayBox',[string]$c.gateway_id),@('SourceBox',[string]$c.source_id),
-            @('MasterBox',[string]$c.master),@('MasterPortBox',[string]$c.master_port),@('ColorCodeBox',[string]$c.color_code))) {
+    $identityState = Set-UiGatewayIdentityState -Config $script:portableConfig
+    foreach ($pair in @(@('CallsignBox',[string]$c.callsign),@('SourceBox',[string]$c.source_id),
+            @('MasterBox',[string]$c.master),@('MasterPortBox',[string]$c.master_port))) {
         $control=$script:mainWindow.FindName($pair[0]); if ($control) { $control.Text=$pair[1] }
     }
+    $deviceNumberBox=$script:mainWindow.FindName('DeviceNumberBox')
+    if ($deviceNumberBox) { $deviceNumberBox.Text=[string]$identityState.device_number }
     $preset=$script:mainWindow.FindName('MasterPresetBox'); if ($preset -and -not (Set-UiComboValue -Combo $preset -Value ([string]$script:portableConfig.ui.bm_server_selection_id))) { [void](Set-UiComboValue -Combo $preset -Value 'custom') }
     $password=$script:mainWindow.FindName('PasswordBox'); if ($password) { $password.Password=[string]$c.password }
     $api=$script:mainWindow.FindName('BmApiKeyBox'); if ($api) { $api.Password=[string]$c.api_key }
@@ -6848,7 +6911,7 @@ function Set-ConnectionConfigLocked {
         $control=if ($script:mainWindow) { $script:mainWindow.FindName($name) } else { $null }
         if ($control) { $control.IsEnabled=-not $catPortLocked }
     }
-    foreach ($name in @('CallsignBox','GatewayBox','SourceBox','MasterPresetBox','MasterBox','MasterPortBox','ColorCodeBox','PasswordBox')) {
+    foreach ($name in @('CallsignBox','SourceBox','DeviceNumberBox','MasterPresetBox','MasterBox','MasterPortBox','PasswordBox')) {
         $control=if ($script:mainWindow) { $script:mainWindow.FindName($name) } else { $null }
         if ($control) { $control.IsEnabled=-not $bmLocked }
     }
@@ -6962,14 +7025,16 @@ function Save-SettingsFromWindow {
     try {
         if (-not $script:portableConfig) { throw '统一配置尚未加载。' }
         if ((Test-UiRadioCatUserActionBusy) -or $script:stopTask -or $script:nativeExitCleanupPending -or $script:channelMutationSafetyStopPending) { throw '请等待当前设备操作结束后再保存。' }
+        if (-not $script:gatewayIdentityState) { [void](Set-UiGatewayIdentityState -Config $script:portableConfig) }
         $candidate = Copy-UiPortableConfigValue -Value $script:portableConfig
         $c=$candidate.connection; $d=$candidate.devices; $a=$candidate.audio
         $c.callsign=([string](Get-UiControl 'CallsignBox').Text).Trim()
-        $c.gateway_id=ConvertTo-UiOptionalUnsigned -Text ([string](Get-UiControl 'GatewayBox').Text) -Maximum 4294967295 -Label 'Gateway ID'
-        $c.source_id=ConvertTo-UiOptionalUnsigned -Text ([string](Get-UiControl 'SourceBox').Text) -Maximum 16777215 -Label '本机 DMR ID'
+        $identity = Get-UiGatewayIdentityForSave -SourceText ([string](Get-UiControl 'SourceBox').Text) `
+            -DeviceNumberText ([string](Get-UiControl 'DeviceNumberBox').Text) -State $script:gatewayIdentityState
+        $c.gateway_id=[uint64]$identity.gateway_id
+        $c.source_id=[uint64]$identity.source_id
         $c.master=([string](Get-UiControl 'MasterBox').Text).Trim()
         $c.master_port=ConvertTo-UiOptionalUnsigned -Text ([string](Get-UiControl 'MasterPortBox').Text) -Maximum 65535 -Label 'UDP 端口'
-        $c.color_code=ConvertTo-UiOptionalUnsigned -Text ([string](Get-UiControl 'ColorCodeBox').Text) -Maximum 15 -Label '色码'
         $c.password=[string](Get-UiControl 'PasswordBox').Password; $c.api_key=[string](Get-UiControl 'BmApiKeyBox').Password
         $server=Get-UiControl 'MasterPresetBox'; $serverValue=Get-UiComboValue -Combo $server
         $candidateBmServerSelectionPreferenceId = [string]$script:bmServerSelectionPreferenceId
@@ -6991,6 +7056,9 @@ function Save-SettingsFromWindow {
         $d.cat_stop_bits='Two'
         $savedConfig = Save-WirexPortableConfig -Path $script:portableConfigPath -Config $candidate
         $script:portableConfig=$savedConfig
+        [void](Set-UiGatewayIdentityState -Config $savedConfig)
+        $savedDeviceNumberBox=Get-UiControl 'DeviceNumberBox'
+        if ($savedDeviceNumberBox) { $savedDeviceNumberBox.Text=[string]$script:gatewayIdentityState.device_number }
         $script:bmServerSelectionPreferenceId=$candidateBmServerSelectionPreferenceId
         $script:storedProfile=$null
         if ($c.callsign -and [uint64]$c.gateway_id -gt 0 -and [uint64]$c.source_id -gt 0 -and @($script:channels).Count -gt 0) {
@@ -7444,14 +7512,39 @@ if ($RenderOnly) {
     Save-RenderedWindow -Window $settings -Path (Join-Path $renderDirectory 'settings-window.png')
     $channelCardsEvidence=@($script:mainWindow.FindName('ChannelCardsPanel').Children | ForEach-Object {
         if ($_.Tag.blank) {
-            [pscustomobject]@{blank=$true;channel_key='';height=[double]$_.ActualHeight;card_body_width=0;call_area_width=0;action_area_width=0;action_area_height=0;call_active=$false;call_area_height=0;action_count=0;buttons=@();text=@()}
+            [pscustomobject]@{blank=$true;channel_key='';height=[double]$_.ActualHeight;card_body_width=0;call_area_width=0;action_area_width=0;action_area_height=0;call_active=$false;call_area_height=0;action_count=0;buttons=@();buttons_bounds=@();text=@()}
         } else {
             $callArea=@($_.Child.Children[0].Children | Where-Object { $_ -is [System.Windows.Controls.Border] -and [string]$_.Tag -ceq 'ChannelCallArea' }) | Select-Object -First 1
             $actions=$_.Child.Children[1]
-            [pscustomobject]@{blank=$false;channel_key=[string]$_.Tag.channel_key;height=[double]$_.ActualHeight;min_height=[double]$_.MinHeight;card_body_width=[double]$_.Child.ActualWidth;call_area_width=[double]$callArea.ActualWidth;action_area_width=[double]$actions.ActualWidth;action_area_height=[double]$actions.ActualHeight;call_active=[bool]$_.Tag.call_active;call_area_height=[double]$callArea.ActualHeight;action_count=[int]$actions.Children.Count;buttons=@(Get-UiVisualButtonTexts -Root $_);text=@(Get-UiVisualTextValues -Root $_)}
+            $buttonBounds=@(foreach($button in @($actions.Children | Where-Object { $_ -is [System.Windows.Controls.Button] })) {
+                $origin=$button.TranslatePoint([System.Windows.Point]::new(0,0),$script:mainWindow)
+                [pscustomobject][ordered]@{
+                    name=[string]$button.Name;action=$(if($button.Tag){[string]$button.Tag.action}else{''})
+                    text=@(Get-UiVisualTextValues -Root $button);x=[double]$origin.X;y=[double]$origin.Y
+                    width=[double]$button.ActualWidth;height=[double]$button.ActualHeight;visible=[bool]$button.IsVisible
+                }
+            })
+            [pscustomobject]@{blank=$false;channel_key=[string]$_.Tag.channel_key;height=[double]$_.ActualHeight;min_height=[double]$_.MinHeight;card_body_width=[double]$_.Child.ActualWidth;call_area_width=[double]$callArea.ActualWidth;action_area_width=[double]$actions.ActualWidth;action_area_height=[double]$actions.ActualHeight;call_active=[bool]$_.Tag.call_active;call_area_height=[double]$callArea.ActualHeight;action_count=[int]$actions.Children.Count;buttons=@(Get-UiVisualButtonTexts -Root $_);buttons_bounds=$buttonBounds;text=@(Get-UiVisualTextValues -Root $_)}
         }
     })
-    $controlNames=@('MainTitleText','ConsoleTop','DashboardPanel','ConnectionConfigPanel','DailyControlsPanel','ConnectionRowSerial','ConnectionRowAudio','ConnectionRowBm','ConnectionRowActions','ConnectButton','DisconnectBmButton','SerialConnectButton','SerialDisconnectButton','StopButton','SaveSettingsButton','FooterText','OfflineBanner','OfflineBannerText','SettingsErrorText','ProfileMigrationText','DeviceDiscoveryText','ChannelConsolePanel','ChannelCardsScroll','ChannelCardsPanel','ChannelPageNav','ChannelPagePreviousButton','ChannelPageText','ChannelPageNextButton','ChannelIdBox','ChannelKindBox','MakeChannelTxTargetCheckBox','AddChannelButton','BmStatusCard','BmValue','BmRttMetric','BmRttValue','BmLossMetric','BmLossValue','BmApiKeyBox','PasswordBox','RefreshDevicesButton','BmStaticGroupPanel','BmStaticGroupsList','BmStaticGroupPagePreviousButton','BmStaticGroupPageText','BmStaticGroupPageNextButton','RadioDetailsExpander','CallHistoryList','CallHistoryPagePreviousButton','CallHistoryPageText','CallHistoryPageNextButton','CatOperatingPanel','RadioCatPanel','CatObservedPanel','CatObservedMainModeText','CatObservedFrequencyText','CatObservedPowerText','CatSessionStatusText','CatPortBox','CatBaudRateBox','PlaybackGainSlider','TransmitGainSlider')
+    $controlNames=@(
+        'MainTitleText','ConsoleTop','DashboardPanel','ConnectionConfigPanel','DailyControlsPanel',
+        'ConnectionRowSerial','SerialBox','SerialConnectButton','SerialDisconnectButton',
+        'ConnectionRowAudio','AudioDevicePanel','WaveInEndpointBox','WaveOutEndpointBox','VolumeControlsPanel',
+        'ConnectionRowBm','ConnectionRowActions','CallsignBox','SourceBox','DeviceNumberBox',
+        'MasterPresetBox','MasterPortBox','MasterBox','BmApiKeyBox','PasswordBox',
+        'ConnectButton','DisconnectBmButton','SaveSettingsButton','StopButton','FooterText',
+        'OfflineBanner','OfflineBannerText','SettingsErrorText','ProfileMigrationText','DeviceDiscoveryText',
+        'ChannelConsolePanel','ChannelCardsScroll','ChannelCardsPanel','ChannelPageNav',
+        'ChannelPagePreviousButton','ChannelPageText','ChannelPageNextButton','ChannelIdBox','ChannelKindBox','AddChannelButton',
+        'BmStatusCard','BmValue','BmRttMetric','BmRttValue','BmLossMetric','BmLossValue','RefreshDevicesButton',
+        'BmStaticGroupPanel','BmStaticGroupsList','BmStaticGroupPagePreviousButton','BmStaticGroupPageText','BmStaticGroupPageNextButton',
+        'BmStaticGroupIdBox','AddBmStaticGroupButton','RefreshBmStaticGroupsButton','RemoveBmStaticGroupButton',
+        'RadioDetailsExpander','CallHistoryList','CallHistoryPagePreviousButton','CallHistoryPageText','CallHistoryPageNextButton','SetHistoryCallTargetButton',
+        'CatOperatingPanel','RadioCatPanel','CatObservedPanel','CatObservedMainModeText','CatObservedFrequencyText','CatObservedPowerText','CatOperationStatusText','CatSessionStatusText',
+        'CatPortBox','CatBaudRateBox','CatMainModeBox','CatMainFrequencyMHzBox','CatPowerSlider','ApplyCatSettingsButton',
+        'PlaybackGainSlider','TransmitGainSlider'
+    )
     $layout=[pscustomobject][ordered]@{
         render_only=$true; work_area_width=$script:workAreaWidth; work_area_height=$script:workAreaHeight
         max_window_width=$script:maxWindowWidth; max_window_height=$script:maxWindowHeight

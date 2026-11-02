@@ -25,6 +25,71 @@ function Get-UiRenderRect {
     return $entry.Value.actual
 }
 
+function Assert-UiRenderNoInputOverlap {
+    param([Parameter(Mandatory=$true)][object]$Layout,[Parameter(Mandatory=$true)][string]$Label)
+    $names = @(
+        'StopButton','RefreshDevicesButton','SerialBox','CatPortBox','CatBaudRateBox','SerialConnectButton','SerialDisconnectButton',
+        'CatMainModeBox','CatMainFrequencyMHzBox','CatPowerSlider','ApplyCatSettingsButton',
+        'CallsignBox','SourceBox','DeviceNumberBox','MasterPresetBox','MasterPortBox','MasterBox','BmApiKeyBox','PasswordBox',
+        'ConnectButton','DisconnectBmButton','SaveSettingsButton','ChannelPagePreviousButton','ChannelPageNextButton',
+        'CallHistoryPagePreviousButton','CallHistoryPageNextButton','SetHistoryCallTargetButton','CallHistoryList',
+        'ChannelIdBox','ChannelKindBox','AddChannelButton','BmStaticGroupsList',
+        'BmStaticGroupPagePreviousButton','BmStaticGroupPageNextButton','RefreshBmStaticGroupsButton','RemoveBmStaticGroupButton',
+        'BmStaticGroupIdBox','AddBmStaticGroupButton','WaveInEndpointBox','WaveOutEndpointBox',
+        'PlaybackGainSlider','TransmitGainSlider'
+    )
+    $rects = @()
+    foreach ($name in $names) {
+        $visibleProperty = $Layout.main.controls_visible.PSObject.Properties[$name]
+        Assert-UiRender ($null -ne $visibleProperty) "$Label 布局信息没有记录 $name 的可见状态。"
+        if (-not [bool]$visibleProperty.Value) { continue }
+        $rect = Get-UiRenderRect -Layout $Layout -Name $name
+        Assert-UiRender ($rect.width -gt 0 -and $rect.height -gt 0) "$Label 可见控件 $name 没有实际尺寸。"
+        $rects += [pscustomobject]@{ Name=$name; Rect=$rect }
+    }
+    for ($i=0; $i -lt $rects.Count; $i++) {
+        for ($j=$i + 1; $j -lt $rects.Count; $j++) {
+            $a=$rects[$i]; $b=$rects[$j]
+            $overlapX = [Math]::Min([double]$a.Rect.right,[double]$b.Rect.right) - [Math]::Max([double]$a.Rect.x,[double]$b.Rect.x)
+            $overlapY = [Math]::Min([double]$a.Rect.bottom,[double]$b.Rect.bottom) - [Math]::Max([double]$a.Rect.y,[double]$b.Rect.y)
+            Assert-UiRender ($overlapX -le 0.5 -or $overlapY -le 0.5) "$Label 输入/按钮 $($a.Name) 与 $($b.Name) 的实际可见范围重叠。"
+        }
+    }
+    $channelPanel = Get-UiRenderRect -Layout $Layout -Name 'ChannelCardsPanel'
+    $channelButtons = @()
+    foreach ($card in @($Layout.channel_card_layout | Where-Object { -not $_.blank })) {
+        $buttonBounds = @($card.buttons_bounds)
+        Assert-UiRender ($buttonBounds.Count -eq @($card.buttons).Count -and [int]$card.action_count -eq 4) `
+            "$Label 频道卡没有为每个实际操作按钮提供边界或没有保留四格操作区。"
+        $visibleButtonBounds = @($buttonBounds | Where-Object { $_.visible })
+        foreach ($buttonText in @($card.buttons)) {
+            Assert-UiRender (@($visibleButtonBounds | Where-Object { @($_.text) -contains [string]$buttonText }).Count -gt 0) `
+                "$Label 频道卡操作 $buttonText 没有对应的可见按钮实际边界。"
+        }
+        foreach ($button in $visibleButtonBounds) {
+            $buttonRect = [pscustomobject]@{
+                x=[double]$button.x; y=[double]$button.y
+                width=[double]$button.width; height=[double]$button.height
+                right=([double]$button.x + [double]$button.width)
+                bottom=([double]$button.y + [double]$button.height)
+            }
+            Assert-UiRender ($buttonRect.width -gt 0 -and $buttonRect.height -gt 0 -and
+                $buttonRect.x -ge ($channelPanel.x - 1) -and $buttonRect.y -ge ($channelPanel.y - 1) -and
+                $buttonRect.right -le ($channelPanel.right + 1) -and $buttonRect.bottom -le ($channelPanel.bottom + 1)) `
+                "$Label 频道卡动态按钮 $($button.name) 超出频道卡面板或没有实际尺寸。"
+            $channelButtons += [pscustomobject]@{ Name=[string]$button.action; Rect=$buttonRect }
+        }
+    }
+    for ($i=0; $i -lt $channelButtons.Count; $i++) {
+        for ($j=$i + 1; $j -lt $channelButtons.Count; $j++) {
+            $a=$channelButtons[$i]; $b=$channelButtons[$j]
+            $overlapX = [Math]::Min($a.Rect.right,$b.Rect.right) - [Math]::Max($a.Rect.x,$b.Rect.x)
+            $overlapY = [Math]::Min($a.Rect.bottom,$b.Rect.bottom) - [Math]::Max($a.Rect.y,$b.Rect.y)
+            Assert-UiRender ($overlapX -le 0.5 -or $overlapY -le 0.5) "$Label 频道卡按钮 $($a.Name) 与 $($b.Name) 的实际边界重叠。"
+        }
+    }
+}
+
 function Assert-UiRenderLayout {
     param([Parameter(Mandatory=$true)][string]$LayoutPath,[Parameter(Mandatory=$true)][string]$RenderDirectory,[Parameter(Mandatory=$true)][string]$Label)
     if (-not [System.IO.File]::Exists($LayoutPath)) { throw "$Label 未生成 layout-info.json。" }
@@ -36,7 +101,9 @@ function Assert-UiRenderLayout {
     $right = Get-UiRenderRect -Layout $layout -Name 'DailyControlsPanel'
     $serialRow = Get-UiRenderRect -Layout $layout -Name 'ConnectionRowSerial'
     $radioRow = Get-UiRenderRect -Layout $layout -Name 'CatOperatingPanel'
-    $audioRow = Get-UiRenderRect -Layout $layout -Name 'ConnectionRowAudio'
+    $audioRow = Get-UiRenderRect -Layout $layout -Name 'AudioDevicePanel'
+    $audioFields = Get-UiRenderRect -Layout $layout -Name 'ConnectionRowAudio'
+    $volumePanel = Get-UiRenderRect -Layout $layout -Name 'VolumeControlsPanel'
     $bmRow = Get-UiRenderRect -Layout $layout -Name 'ConnectionRowBm'
     $actionRow = Get-UiRenderRect -Layout $layout -Name 'ConnectionRowActions'
     $connect = Get-UiRenderRect -Layout $layout -Name 'ConnectButton'
@@ -44,24 +111,46 @@ function Assert-UiRenderLayout {
     $save = Get-UiRenderRect -Layout $layout -Name 'SaveSettingsButton'
     $serialConnect = Get-UiRenderRect -Layout $layout -Name 'SerialConnectButton'
     $serialDisconnect = Get-UiRenderRect -Layout $layout -Name 'SerialDisconnectButton'
+    $serialSelector = Get-UiRenderRect -Layout $layout -Name 'SerialBox'
+    $catModeInput = Get-UiRenderRect -Layout $layout -Name 'CatMainModeBox'
+    $catFrequencyInput = Get-UiRenderRect -Layout $layout -Name 'CatMainFrequencyMHzBox'
+    $catPowerInput = Get-UiRenderRect -Layout $layout -Name 'CatPowerSlider'
+    $catApply = Get-UiRenderRect -Layout $layout -Name 'ApplyCatSettingsButton'
+    $catStatus = Get-UiRenderRect -Layout $layout -Name 'CatOperationStatusText'
+    $channelIdInput = Get-UiRenderRect -Layout $layout -Name 'ChannelIdBox'
+    $channelKindInput = Get-UiRenderRect -Layout $layout -Name 'ChannelKindBox'
+    $addChannel = Get-UiRenderRect -Layout $layout -Name 'AddChannelButton'
+    $audioInput = Get-UiRenderRect -Layout $layout -Name 'WaveInEndpointBox'
+    $audioOutput = Get-UiRenderRect -Layout $layout -Name 'WaveOutEndpointBox'
     Assert-UiRender ($main.controls_bounds.ConsoleTop.fully_visible -and $main.controls_bounds.DashboardPanel.fully_visible) "$Label 上下区域没有完整显示。"
     Assert-UiRender ($main.controls_bounds.ConnectionConfigPanel.fully_visible -and $main.controls_bounds.DailyControlsPanel.fully_visible) "$Label 左右区域没有完整显示。"
     Assert-UiRender ($main.controls_bounds.ConnectButton.fully_visible -and $main.controls_bounds.DisconnectBmButton.fully_visible -and
         $main.controls_bounds.SaveSettingsButton.fully_visible -and $main.controls_bounds.SerialConnectButton.fully_visible -and
         $main.controls_bounds.SerialDisconnectButton.fully_visible) "$Label BM 或串口连接/断开/保存按钮被裁切。"
-    foreach ($name in @('ConnectionRowSerial','CatOperatingPanel','ConnectionRowAudio','ConnectionRowBm','ConnectionRowActions')) {
+    foreach ($name in @('ConnectionRowSerial','CatOperatingPanel','ConnectionRowBm','ConnectionRowActions','AudioDevicePanel','ConnectionRowAudio','VolumeControlsPanel')) {
         $rowEntry = $main.controls_bounds.PSObject.Properties[$name]
         Assert-UiRender ($rowEntry -and $rowEntry.Value.fully_visible) "$Label 连接区第 $name 布局行未完整显示。"
     }
     Assert-UiRender ($top.bottom -le ($dashboard.y + 1)) "$Label 上下区域发生覆盖。"
     Assert-UiRender ($left.right -le ($right.x + 1)) "$Label 左右区域发生覆盖。"
     $leftRatio = $left.width / $dashboard.width
-    Assert-UiRender ($leftRatio -ge 0.38 -and $leftRatio -le 0.42) "$Label 连接区比例不是约 40%。"
-    Assert-UiRender ($right.width -gt $left.width) "$Label 日常控制区没有占据约 60% 宽度。"
+    Assert-UiRender ($leftRatio -ge 0.48 -and $leftRatio -le 0.52 -and [Math]::Abs($left.width - $right.width) -le 2) "$Label 左右区域没有保持严格50:50。"
     Assert-UiRender ($connect.bottom -le $left.bottom -and $disconnectBm.bottom -le $left.bottom -and $save.bottom -le $left.bottom -and
-        $serialRow.y -ge $left.y -and $radioRow.y -ge $serialRow.bottom -and $audioRow.y -ge $radioRow.bottom -and
-        $bmRow.y -ge $audioRow.bottom -and $actionRow.y -ge $bmRow.bottom -and $actionRow.bottom -le $left.bottom) `
-        "$Label 左侧5行配置发生重叠或超出固定区域。"
+        $serialRow.y -ge $left.y -and $radioRow.y -ge $serialRow.bottom -and
+        $bmRow.y -ge $radioRow.bottom -and $actionRow.y -ge $bmRow.bottom -and $actionRow.bottom -le $left.bottom) `
+        "$Label 左侧配置发生重叠或超出固定区域。"
+    Assert-UiRender ([Math]::Abs($serialSelector.height - $serialConnect.height) -le 1 -and
+        [Math]::Abs($serialSelector.bottom - $serialConnect.bottom) -le 1 -and
+        [Math]::Abs($serialSelector.height - $serialDisconnect.height) -le 1 -and
+        [Math]::Abs($serialSelector.bottom - $serialDisconnect.bottom) -le 1) "$Label 串口选择框和连接/断开按钮没有同高并对齐底边。"
+    Assert-UiRender ($audioRow.x -ge $right.x -and $audioRow.right -le $right.right -and
+        $audioFields.y -ge $audioRow.y -and $audioFields.bottom -le $audioRow.bottom -and
+        $audioRow.bottom -le $volumePanel.y + 1 -and $volumePanel.bottom -le $right.bottom) `
+        "$Label 音频输入/输出没有完整放在右侧音量控制上方。"
+    Assert-UiRender ([Math]::Abs($channelIdInput.height - $addChannel.height) -le 1 -and
+        [Math]::Abs($channelKindInput.height - $addChannel.height) -le 1 -and
+        [Math]::Abs($channelIdInput.bottom - $addChannel.bottom) -le 1 -and
+        [Math]::Abs($channelKindInput.bottom - $addChannel.bottom) -le 1) "$Label 加入监听按钮没有与频道输入框同高、对齐底边。"
     $bmStatus = Get-UiRenderRect -Layout $layout -Name 'BmStatusCard'
     $bmRtt = Get-UiRenderRect -Layout $layout -Name 'BmRttMetric'
     $bmRttValue = Get-UiRenderRect -Layout $layout -Name 'BmRttValue'
@@ -74,7 +163,7 @@ function Assert-UiRenderLayout {
     $bmTitleCenter = $bmStatus.y + ($bmStatus.height / 2)
     $titleCenter = $title.y + ($title.height / 2)
     $lossVisible = [bool]$main.controls_visible.BmLossMetric -and [bool]$main.controls_visible.BmLossValue
-    Assert-UiRender ([Math]::Abs($bmTitleCenter - $titleCenter) -le 18 -and $title.right -le $bmStatus.x -and $bmStatus.right -le $stop.x -and
+    Assert-UiRender ([Math]::Abs($bmTitleCenter - $titleCenter) -le 1 -and $title.right -le $bmStatus.x -and $bmStatus.right -le $stop.x -and
         $bmRttValue.width -gt 0 -and $layout.main.controls_bounds.BmRttValue.text -match '42 ms' -and
         (($lossValid -and $lossVisible -and $bmLossValue.width -gt 0 -and $lossText -match '^\d+(\.\d+)?%$') -or
             (-not $lossValid -and -not $lossVisible -and $lossText -ceq ''))) `
@@ -86,10 +175,20 @@ function Assert-UiRenderLayout {
     $catMode = Get-UiRenderRect -Layout $layout -Name 'CatObservedMainModeText'
     $catFrequency = Get-UiRenderRect -Layout $layout -Name 'CatObservedFrequencyText'
     $catPower = Get-UiRenderRect -Layout $layout -Name 'CatObservedPowerText'
-    Assert-UiRender ([Math]::Abs($catMode.y - $catFrequency.y) -le 1 -and [Math]::Abs($catMode.y - $catPower.y) -le 1 -and
+    $catModeCenter = $catMode.y + ($catMode.height / 2)
+    $catFrequencyCenter = $catFrequency.y + ($catFrequency.height / 2)
+    $catPowerCenter = $catPower.y + ($catPower.height / 2)
+    Assert-UiRender ([Math]::Abs($catModeCenter - $catFrequencyCenter) -le 1 -and [Math]::Abs($catModeCenter - $catPowerCenter) -le 5 -and
         $catMode.right -le $catFrequency.x -and $catFrequency.right -le $catPower.x -and
         $catMode.x -ge $radioRow.x -and $catPower.right -le $radioRow.right) `
         "$Label MAIN模式、频率和功率没有占用互不覆盖的固定列范围。"
+    Assert-UiRender ($catModeInput.width -ge 110 -and $catFrequencyInput.width -ge 140 -and $catPowerInput.width -ge 125 -and
+        $catModeInput.x -lt $catFrequencyInput.x -and $catFrequencyInput.right -le $catPowerInput.x + 1 -and
+        $catPowerInput.right -le $catApply.x + 1 -and $catApply.right -le $radioRow.right) `
+        "$Label CAT模式、频率、功率输入列过窄或没有按顺序留在同一行。"
+    Assert-UiRender ($catStatus.y -ge [Math]::Max($catModeInput.bottom,$catFrequencyInput.bottom) -and
+        $catStatus.y -ge $catApply.bottom -and $catStatus.bottom -le $radioRow.bottom -and $catStatus.right -le $radioRow.right) `
+        "$Label CAT操作结果行与输入控件或CAT卡片边界发生重叠。"
     Assert-UiRender ($xamlText -match 'Text="功率 W"' -and $xamlText -match 'Text="当前"' -and
         $xamlText -match 'x:Name="CatDesiredPowerText"') "$Label 功率行没有分别标明当前值和目标值。"
     Assert-UiRender ($layout.channel_list_present -eq $false) "$Label 仍显示下方重复频道清单。"
@@ -185,6 +284,7 @@ function Assert-UiRenderLayout {
         @($layout.main.controls_bounds.DisconnectBmButton.visual_text) -contains '断开BM') "$Label 串口与BM连接/断开按钮文字不准确。"
     Assert-UiRender ($main.area_scrollviewer_count -eq 0 -and $main.non_popup_scrollbar_count -eq 0) `
         "$Label 窗口可见树仍包含区域滚动查看器或可见滚动条。"
+    Assert-UiRenderNoInputOverlap -Layout $layout -Label $Label
     return $layout
 }
 
@@ -208,9 +308,10 @@ $xamlDocument = [xml][System.IO.File]::ReadAllText($xamlPath,[System.Text.Encodi
 $settingsXamlDocument = [xml][System.IO.File]::ReadAllText($settingsXamlPath,[System.Text.Encoding]::UTF8)
 $xamlText = [System.IO.File]::ReadAllText($xamlPath,[System.Text.Encoding]::UTF8)
 $settingsXamlText = [System.IO.File]::ReadAllText($settingsXamlPath,[System.Text.Encoding]::UTF8)
-foreach ($required in @('BmApiKeySetupLink','BmPasswordSetupLink','MakeChannelTxTargetCheckBox','ChannelIdBox','ChannelKindBox','AddChannelButton',
+foreach ($required in @('BmApiKeySetupLink','BmPasswordSetupLink','SerialBox','CatPortBox','CatBaudRateBox','ChannelIdBox','ChannelKindBox','AddChannelButton',
         'ChannelCardsPanel','ChannelPagePreviousButton','ChannelPageText','ChannelPageNextButton','SerialConnectButton','SerialDisconnectButton',
-        'CatSessionStatusText','DisconnectBmButton','BmLossValue','ConnectionRowSerial','CatOperatingPanel','ConnectionRowAudio','ConnectionRowBm',
+        'CatSessionStatusText','DisconnectBmButton','BmLossValue','ConnectionRowSerial','CatOperatingPanel','ConnectionRowAudio','AudioDevicePanel','VolumeControlsPanel','ConnectionRowBm',
+        'CatMainModeBox','CatMainFrequencyMHzBox','CatPowerSlider','ApplyCatSettingsButton','CatOperationStatusText','SourceBox','DeviceNumberBox','WaveInEndpointBox','WaveOutEndpointBox',
         'ConnectionRowActions','CallHistoryPagePreviousButton','CallHistoryPageText','CallHistoryPageNextButton',
         'BmStaticGroupPagePreviousButton','BmStaticGroupPageText','BmStaticGroupPageNextButton')) {
     Assert-UiRender ($xamlText -match ('x:Name="' + [regex]::Escape($required) + '"')) "XAML 缺少 $required。"
@@ -219,11 +320,32 @@ Assert-UiRender ($xamlText -match 'Rows="2" Columns="3"' -and $xamlText -notmatc
 Assert-UiRender ($xamlText -notmatch 'CoreStatusCard|RadioStatusCard|AudioStatusCard') '主界面仍定义核心、电台或音频状态卡。'
 Assert-UiRender ($xamlText -match 'x:Name="FooterText" Grid.Row="1" Grid.Column="1"' -and $xamlText -notmatch 'x:Name="FooterText"[^>]*Grid.ColumnSpan') '事件消息没有放在标题中央统一状态区。'
 Assert-UiRender ($xamlText -match 'Width="1360" Height="900" MinWidth="1360" MinHeight="900" ResizeMode="CanMinimize"') '主窗口没有使用固定1360×900最小尺寸。'
+Assert-UiRender ($xamlText -match 'Grid.ColumnDefinitions><ColumnDefinition Width="1\*"/><ColumnDefinition Width="1\*"/></Grid.ColumnDefinitions>') 'Dashboard没有使用等宽两列。'
+Assert-UiRender ($xamlText -match 'x:Name="ApplyCatSettingsButton"[^>]*Content="应用"' -and
+    $xamlText -notmatch 'ApplyCatModeButton|ApplyCatFrequencyButton|ApplyCatPowerButton' -and
+    ([regex]::Matches($xamlText,'x:Name="ApplyCatSettingsButton"')).Count -eq 1) 'CAT设置区没有只保留唯一的“应用”按钮。'
+Assert-UiRender ($xamlText -match 'x:Name="CatMainModeBox"[^>]*MinWidth="116"' -and
+    $xamlText -match 'x:Name="CatMainFrequencyMHzBox"[^>]*MinWidth="145"' -and
+    $xamlText -match 'x:Name="CatPowerSlider"[^>]*MinWidth="135"') 'CAT模式/频率/功率输入没有保留可读宽度。'
+Assert-UiRender ($xamlText -match 'x:Name="CatOperationStatusText"[^>]*Text=""[^>]*TextTrimming="CharacterEllipsis"' -and
+    $xamlText -match 'x:Name="CatOperationStatusText"[^>]*ToolTip="\{Binding RelativeSource=\{RelativeSource Self\}, Path=Text\}"') `
+    'CAT逐项反馈状态行没有保留省略显示和完整内容提示。'
+Assert-UiRender ($xamlText -match 'x:Name="DeviceNumberBox" MaxLength="2"' -and
+    $xamlText -notmatch 'GatewayBox|ColorCodeBox|MakeChannelTxTargetCheckBox|同时设为PTT目标|切换PTT') '旧网关/色码/加入PTT控件或切换说明仍留在XAML。'
+foreach ($name in @('ChannelConsolePanel','BmStaticGroupPanel','AudioDevicePanel','VolumeControlsPanel')) {
+    $node = $xamlDocument.SelectSingleNode("//*[@*[local-name()='Name']='$name']")
+    Assert-UiRender ($node -and $node.LocalName -ceq 'Grid') "$name 没有使用无内嵌边框的布局容器。"
+    $borderAncestors = @($node.SelectNodes("ancestor::*[local-name()='Border']"))
+    Assert-UiRender ($borderAncestors.Count -eq 1 -and $borderAncestors[0].GetAttribute('Name','http://schemas.microsoft.com/winfx/2006/xaml') -ceq 'DailyControlsPanel') "$name 内部仍套有视觉边框。"
+}
+$dailyPanelNode = $xamlDocument.SelectSingleNode("//*[@*[local-name()='Name']='DailyControlsPanel']")
+$dailyNestedBorders = @($dailyPanelNode.SelectNodes("descendant::*[local-name()='Border']"))
+Assert-UiRender ($dailyNestedBorders.Count -eq 0) '日常控制外卡片中仍有内嵌装饰边框。'
 Assert-UiRender ($xamlText -match 'StackPanel x:Name="BmStatusCard"' -and $xamlText -notmatch 'Border x:Name="BmStatusCard"') 'BM状态仍被单独绘制成状态卡。'
 Assert-UiRender ($xamlText -match 'x:Name="BmLossMetric"[^>]*Visibility="Collapsed"' -and $xamlText -match 'x:Name="BmLossValue" Text=""') '没有有效loss采样时BM loss没有默认隐藏。'
 Assert-UiRender ($xamlText -notmatch '<Border x:Name="OfflineBanner"[^>]*Grid.Row=' -and
     $xamlText -match 'StackPanel x:Name="HiddenRuntimeControls"[^>]*Visibility="Collapsed"') '离线提示或配置错误仍占主界面独立可见行。'
-Assert-UiRender ($settingsXamlText -notmatch 'TS1|TS2|时隙') '频道说明窗口仍显示时隙入口。'
+Assert-UiRender ($settingsXamlText -notmatch 'TS1|TS2|时隙|切换PTT') '频道说明窗口仍显示时隙或PTT切换说明。'
 Assert-UiRender ($xamlText -notmatch 'x:Name="ChannelListPanel"') 'XAML 仍包含重复频道清单控件。'
 Assert-UiRender ($xamlText -notmatch 'ReadRadioButton|读取电台|CatConnectButton|CatDisconnectButton' -and $xamlText -match 'Content="连接串口"' -and
     $xamlText -match 'Content="断开串口"' -and $xamlText -match 'Content="连接BM"' -and $xamlText -match 'Content="断开BM"') '主窗口仍显示旧读取按钮，或串口/BM连接控制文字错误。'
@@ -248,7 +370,7 @@ foreach ($listBox in $listBoxes) {
 }
 Assert-UiRender (@($settingsXamlDocument.SelectNodes("//*[local-name()='ScrollViewer']")).Count -eq 0) '频道说明窗口包含滚动区域。'
 
-$taskRoot = [System.IO.Path]::GetFullPath((Join-Path ([System.IO.Path]::GetTempPath()) ('wirex-r121-render-' + [guid]::NewGuid().ToString('N'))))
+$taskRoot = [System.IO.Path]::GetFullPath((Join-Path ([System.IO.Path]::GetTempPath()) ('wirex-r122-render-' + [guid]::NewGuid().ToString('N'))))
 $package = Join-Path $taskRoot 'package'
 $config = Join-Path $taskRoot 'config'
 [void][System.IO.Directory]::CreateDirectory($package)
@@ -260,7 +382,9 @@ $config = Join-Path $taskRoot 'config'
 $referenceLayout = $null
 $fixedControlNames = @('MainTitleText','ConsoleTop','ChannelCardsPanel','RadioDetailsExpander','DashboardPanel','ConnectionConfigPanel','DailyControlsPanel',
     'ConnectionRowSerial','CatOperatingPanel','ConnectionRowAudio','ConnectionRowBm','ConnectionRowActions',
-    'SerialConnectButton','SerialDisconnectButton','ConnectButton','DisconnectBmButton','SaveSettingsButton')
+    'AudioDevicePanel','VolumeControlsPanel','SerialBox','SerialConnectButton','SerialDisconnectButton','CatMainModeBox','CatMainFrequencyMHzBox','CatPowerSlider','ApplyCatSettingsButton','CatOperationStatusText',
+    'SourceBox','DeviceNumberBox','WaveInEndpointBox','WaveOutEndpointBox','ChannelIdBox','ChannelKindBox','AddChannelButton',
+    'ConnectButton','DisconnectBmButton','SaveSettingsButton')
 foreach ($case in @(
     [pscustomobject]@{ Label='default-1360x900'; Size='1360x900'; Directory=(Join-Path $taskRoot 'default') },
     [pscustomobject]@{ Label='minimum-1360x900'; Size='1360x900'; Directory=(Join-Path $taskRoot 'minimum') }

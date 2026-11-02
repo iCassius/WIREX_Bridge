@@ -122,7 +122,7 @@
     <Grid Grid.Row="0" Margin="0,0,0,6">
       <Grid.RowDefinitions><RowDefinition Height="30"/><RowDefinition Height="20"/></Grid.RowDefinitions>
       <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-      <TextBlock x:Name="MainTitleText" Text="WIREX BRIDGE  ·  FTX-1" Grid.RowSpan="2" FontSize="19" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,12,0"/>
+      <TextBlock x:Name="MainTitleText" Text="WIREX BRIDGE  ·  FTX-1" Grid.Row="0" FontSize="19" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,12,0"/>
       <StackPanel x:Name="BmStatusCard" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Visible">
         <TextBlock Text="BrandMeister" Foreground="#A8B5BB" FontSize="12" Margin="0,0,8,0" VerticalAlignment="Center"/>
         <TextBlock x:Name="BmValue" Text="未连接" FontSize="13" FontWeight="Bold" Margin="0,0,12,0" VerticalAlignment="Center"/>
@@ -159,9 +159,9 @@
           <Grid.RowDefinitions><RowDefinition Height="20"/><RowDefinition Height="*"/></Grid.RowDefinitions>
           <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
           <TextBlock Grid.Row="0" Text="来话历史" FontSize="11" FontWeight="Bold" VerticalAlignment="Center" Margin="2,0,8,0"/>
-          <Button x:Name="CallHistoryPagePreviousButton" Grid.Column="1" Content="‹" MinWidth="25" Height="19" Padding="4,0"/>
+          <Button x:Name="CallHistoryPagePreviousButton" Grid.Column="1" Content="‹" MinWidth="25" Height="18" Padding="4,0"/>
           <TextBlock x:Name="CallHistoryPageText" Grid.Column="2" Text="1 / 1" Foreground="#A8B5BB" FontSize="10" VerticalAlignment="Center" Margin="4,0"/>
-          <Button x:Name="CallHistoryPageNextButton" Grid.Column="4" Content="›" MinWidth="25" Height="19" Padding="4,0"/>
+          <Button x:Name="CallHistoryPageNextButton" Grid.Column="4" Content="›" MinWidth="25" Height="18" Padding="4,0"/>
           <Button x:Name="SetHistoryCallTargetButton" Grid.Column="5" Content="设为PTT目标" Width="94" Height="20" Padding="3,0" Margin="5,0,1,0" IsEnabled="False"/>
           <ListBox x:Name="CallHistoryList" Grid.Row="1" Grid.ColumnSpan="6" Height="54" FontSize="10" Padding="0" BorderThickness="0"
                    ScrollViewer.VerticalScrollBarVisibility="Disabled" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
@@ -179,11 +179,11 @@
     </Grid>
 
     <Grid x:Name="DashboardPanel" Grid.Row="2">
-      <Grid.ColumnDefinitions><ColumnDefinition Width="2*"/><ColumnDefinition Width="3*"/></Grid.ColumnDefinitions>
+      <Grid.ColumnDefinitions><ColumnDefinition Width="1*"/><ColumnDefinition Width="1*"/></Grid.ColumnDefinitions>
 
       <Border x:Name="ConnectionConfigPanel" Grid.Column="0" Background="#1D2529" BorderBrush="#46545B" BorderThickness="1" Padding="6" Margin="0,0,6,0">
         <Grid>
-          <Grid.RowDefinitions><RowDefinition Height="24"/><RowDefinition Height="56"/><RowDefinition Height="62"/><RowDefinition Height="54"/><RowDefinition Height="*"/><RowDefinition Height="34"/></Grid.RowDefinitions>
+          <Grid.RowDefinitions><RowDefinition Height="24"/><RowDefinition Height="56"/><RowDefinition Height="70"/><RowDefinition Height="*"/><RowDefinition Height="34"/></Grid.RowDefinitions>
           <Grid Grid.Row="0">
             <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
             <TextBlock Text="连接配置" FontSize="13" FontWeight="Bold" VerticalAlignment="Center"/>
@@ -191,34 +191,32 @@
           </Grid>
           <Grid x:Name="ConnectionRowSerial" Grid.Row="1">
             <Grid.ColumnDefinitions><ColumnDefinition Width="1.2*"/><ColumnDefinition Width="1.05*"/><ColumnDefinition Width="0.8*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="0.65*"/></Grid.ColumnDefinitions>
-            <StackPanel Grid.Column="0"><TextBlock Text="Wires-X 串口" Foreground="#A8B5BB" FontSize="10"/><ComboBox x:Name="SerialBox" Height="27"/></StackPanel>
+            <StackPanel Grid.Column="0" VerticalAlignment="Bottom"><TextBlock Text="Wires-X 串口" Foreground="#A8B5BB" FontSize="10"/><ComboBox x:Name="SerialBox" Height="27" Margin="2,0"/></StackPanel>
             <Grid x:Name="RadioCatPanel" Grid.Column="1" Grid.ColumnSpan="2"><Grid.ColumnDefinitions><ColumnDefinition Width="1.15*"/><ColumnDefinition Width="0.95*"/></Grid.ColumnDefinitions>
-              <StackPanel><TextBlock Text="CAT 串口" Foreground="#A8B5BB" FontSize="10"/><ComboBox x:Name="CatPortBox" IsEditable="True" IsTextSearchEnabled="False" Height="27"/></StackPanel>
-              <StackPanel Grid.Column="1"><TextBlock Text="波特率" Foreground="#A8B5BB" FontSize="10"/><ComboBox x:Name="CatBaudRateBox" Height="27" FontSize="11" Padding="3,2"><ComboBoxItem Content="4800" Tag="4800"/><ComboBoxItem Content="9600" Tag="9600"/><ComboBoxItem Content="19200" Tag="19200"/><ComboBoxItem Content="38400" Tag="38400"/><ComboBoxItem Content="115200" Tag="115200"/></ComboBox></StackPanel>
+              <StackPanel VerticalAlignment="Bottom"><TextBlock Text="CAT 串口" Foreground="#A8B5BB" FontSize="10"/><ComboBox x:Name="CatPortBox" IsEditable="True" IsTextSearchEnabled="False" Height="27" Margin="2,0"/></StackPanel>
+              <StackPanel Grid.Column="1" VerticalAlignment="Bottom"><TextBlock Text="波特率" Foreground="#A8B5BB" FontSize="10"/><ComboBox x:Name="CatBaudRateBox" Height="27" FontSize="11" Padding="3,2" Margin="2,0"><ComboBoxItem Content="4800" Tag="4800"/><ComboBoxItem Content="9600" Tag="9600"/><ComboBoxItem Content="19200" Tag="19200"/><ComboBoxItem Content="38400" Tag="38400"/><ComboBoxItem Content="115200" Tag="115200"/></ComboBox></StackPanel>
             </Grid>
-            <Button x:Name="SerialConnectButton" Grid.Column="3" Content="连接串口" MinWidth="72" Height="27" Padding="5,2" VerticalAlignment="Bottom" Background="#28583C" BorderBrush="#64A477"/>
-            <Button x:Name="SerialDisconnectButton" Grid.Column="4" Content="断开串口" MinWidth="72" Height="27" Padding="5,2" VerticalAlignment="Bottom" IsEnabled="False"/>
+            <Button x:Name="SerialConnectButton" Grid.Column="3" Content="连接串口" MinWidth="72" Height="29" Margin="2,0" Padding="5,2" VerticalAlignment="Bottom" Background="#28583C" BorderBrush="#64A477"/>
+            <Button x:Name="SerialDisconnectButton" Grid.Column="4" Content="断开串口" MinWidth="72" Height="29" Margin="2,0" Padding="5,2" VerticalAlignment="Bottom" IsEnabled="False"/>
             <TextBlock x:Name="CatSessionStatusText" Grid.Column="5" Text="未连接" Foreground="#A8B5BB" FontSize="10" VerticalAlignment="Bottom" Margin="3,0,0,6" TextTrimming="CharacterEllipsis" ToolTip="{Binding RelativeSource={RelativeSource Self}, Path=Text}" ToolTipService.ShowDuration="30000"/>
           </Grid>
           <Border x:Name="CatOperatingPanel" Grid.Row="2" Background="#172024" BorderBrush="#46545B" BorderThickness="1" Padding="4" Visibility="Visible">
             <Grid>
-              <Grid.ColumnDefinitions><ColumnDefinition Width="1.15*"/><ColumnDefinition Width="1.15*"/><ColumnDefinition Width="1.5*"/></Grid.ColumnDefinitions>
-              <StackPanel Grid.Column="0" Margin="1,0,3,0">
-                <DockPanel><TextBlock Text="MAIN 模式" Foreground="#A8B5BB" FontSize="10"/><StackPanel x:Name="CatObservedPanel" Orientation="Horizontal" HorizontalAlignment="Right"><TextBlock x:Name="CatObservedMainModeText" Text="" Foreground="#9BE0AE" FontSize="10"/></StackPanel></DockPanel>
-                <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                  <ComboBox x:Name="CatMainModeBox" SelectedIndex="-1" Height="27"><ComboBoxItem Content="FM" Tag="FM"/><ComboBoxItem Content="FM-N" Tag="FM-N"/><ComboBoxItem Content="C4FM-DN" Tag="C4FM-DN"/><ComboBoxItem Content="C4FM-VW" Tag="C4FM-VW"/></ComboBox>
-                  <Button x:Name="ApplyCatModeButton" Grid.Column="1" Content="应用" MinWidth="43" Height="27" Padding="3,2"/>
-                </Grid>
-              </StackPanel>
-              <StackPanel Grid.Column="1" Margin="1,0,3,0">
-                <DockPanel><TextBlock Text="频率 MHz" Foreground="#A8B5BB" FontSize="10"/><TextBlock x:Name="CatObservedFrequencyText" Text="" Foreground="#9BE0AE" FontSize="10" HorizontalAlignment="Right"/></DockPanel>
-                <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                  <TextBox x:Name="CatMainFrequencyMHzBox" Height="27"/>
-                  <Button x:Name="ApplyCatFrequencyButton" Grid.Column="1" Content="应用" MinWidth="43" Height="27" Padding="3,2"/>
-                </Grid>
-              </StackPanel>
-              <StackPanel Grid.Column="2" Margin="1,0,2,0">
-                <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+              <Grid.RowDefinitions><RowDefinition Height="17"/><RowDefinition Height="29"/><RowDefinition Height="16"/></Grid.RowDefinitions>
+              <Grid.ColumnDefinitions><ColumnDefinition Width="1.05*"/><ColumnDefinition Width="1.35*"/><ColumnDefinition Width="1.55*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+              <Grid Grid.Column="0" Grid.RowSpan="2" Margin="2,0,5,0" VerticalAlignment="Center">
+                <Grid.RowDefinitions><RowDefinition Height="17"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                <DockPanel Grid.Row="0"><TextBlock Text="MAIN 模式" Foreground="#A8B5BB" FontSize="10"/><StackPanel x:Name="CatObservedPanel" Orientation="Horizontal" HorizontalAlignment="Right"><TextBlock x:Name="CatObservedMainModeText" Text="" Foreground="#9BE0AE" FontSize="10"/></StackPanel></DockPanel>
+                <ComboBox x:Name="CatMainModeBox" Grid.Row="1" SelectedIndex="-1" MinWidth="116" Height="27" Margin="2,0"><ComboBoxItem Content="FM" Tag="FM"/><ComboBoxItem Content="FM-N" Tag="FM-N"/><ComboBoxItem Content="C4FM-DN" Tag="C4FM-DN"/><ComboBoxItem Content="C4FM-VW" Tag="C4FM-VW"/></ComboBox>
+              </Grid>
+              <Grid Grid.Column="1" Grid.RowSpan="2" Margin="2,0,5,0" VerticalAlignment="Center">
+                <Grid.RowDefinitions><RowDefinition Height="17"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                <DockPanel Grid.Row="0"><TextBlock Text="频率 MHz" Foreground="#A8B5BB" FontSize="10"/><TextBlock x:Name="CatObservedFrequencyText" Text="" Foreground="#9BE0AE" FontSize="10" HorizontalAlignment="Right"/></DockPanel>
+                <TextBox x:Name="CatMainFrequencyMHzBox" Grid.Row="1" MinWidth="145" Height="29" Margin="2,0"/>
+              </Grid>
+              <Grid Grid.Column="2" Grid.RowSpan="2" Margin="2,0,5,0" VerticalAlignment="Center">
+                <Grid.RowDefinitions><RowDefinition Height="17"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                <Grid Grid.Row="0"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                   <TextBlock Text="功率 W" Foreground="#A8B5BB" FontSize="10"/>
                   <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
                     <TextBlock Text="当前" Foreground="#A8B5BB" FontSize="9" VerticalAlignment="Center"/>
@@ -226,37 +224,30 @@
                     <TextBlock x:Name="CatDesiredPowerText" Text="" Foreground="#9BE0AE" FontSize="9" FontWeight="Bold" TextTrimming="CharacterEllipsis" ToolTip="{Binding RelativeSource={RelativeSource Self}, Path=Text}" VerticalAlignment="Center"/>
                   </StackPanel>
                 </Grid>
-                <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                  <Slider x:Name="CatPowerSlider" Minimum="5" Maximum="50" Value="25" IsSnapToTickEnabled="True" TickFrequency="1" SmallChange="1" LargeChange="5" Margin="3,3,5,2"/>
-                  <Button x:Name="ApplyCatPowerButton" Grid.Column="1" Content="应用" MinWidth="43" Height="27" Padding="3,2"/>
-                </Grid>
-              </StackPanel>
+                <Slider x:Name="CatPowerSlider" Grid.Row="1" Minimum="5" Maximum="50" Value="25" IsSnapToTickEnabled="True" TickFrequency="1" SmallChange="1" LargeChange="5" MinWidth="135" Margin="3,3,5,2"/>
+              </Grid>
+              <Button x:Name="ApplyCatSettingsButton" Grid.Row="1" Grid.Column="3" Content="应用" Width="62" Height="27" Margin="2,0" Padding="6,2" VerticalAlignment="Center"/>
+              <TextBlock x:Name="CatOperationStatusText" Grid.Row="2" Grid.ColumnSpan="4" Text="" Foreground="#EFC36F" FontSize="9" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="3,0" ToolTip="{Binding RelativeSource={RelativeSource Self}, Path=Text}" ToolTipService.ShowDuration="30000"/>
             </Grid>
           </Border>
-          <Grid x:Name="ConnectionRowAudio" Grid.Row="3">
-            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-            <StackPanel Grid.Column="0"><TextBlock Text="音频输入" Foreground="#A8B5BB" FontSize="10"/><ComboBox x:Name="WaveInEndpointBox" Height="27"/></StackPanel>
-            <StackPanel Grid.Column="1"><TextBlock Text="音频输出" Foreground="#A8B5BB" FontSize="10"/><ComboBox x:Name="WaveOutEndpointBox" Height="27"/></StackPanel>
-          </Grid>
-          <Grid x:Name="ConnectionRowBm" Grid.Row="4" Margin="0,1,0,1">
+          <Grid x:Name="ConnectionRowBm" Grid.Row="3" Margin="0,1,0,1">
             <Grid.RowDefinitions><RowDefinition Height="1*"/><RowDefinition Height="1*"/><RowDefinition Height="1*"/></Grid.RowDefinitions>
             <Grid Grid.Row="0"><Grid.ColumnDefinitions><ColumnDefinition Width="1.05*"/><ColumnDefinition Width="1*"/><ColumnDefinition Width="1.1*"/></Grid.ColumnDefinitions>
               <StackPanel><TextBlock Text="呼号" Foreground="#A8B5BB" FontSize="10"/><TextBox x:Name="CallsignBox" Height="27"/></StackPanel>
-              <StackPanel Grid.Column="1"><TextBlock Text="Gateway ID" Foreground="#A8B5BB" FontSize="10"/><TextBox x:Name="GatewayBox" Height="27"/></StackPanel>
-              <StackPanel Grid.Column="2"><TextBlock Text="本机 DMR ID" Foreground="#A8B5BB" FontSize="10"/><TextBox x:Name="SourceBox" Height="27"/></StackPanel>
+              <StackPanel Grid.Column="1"><TextBlock Text="DMR ID" Foreground="#A8B5BB" FontSize="10"/><TextBox x:Name="SourceBox" Height="27"/></StackPanel>
+              <StackPanel Grid.Column="2"><TextBlock Text="设备编号" Foreground="#A8B5BB" FontSize="10"/><TextBox x:Name="DeviceNumberBox" MaxLength="2" TextAlignment="Center" ToolTip="00–99。旧 Gateway 无法拆分时留空；未编辑时保留原值。" Height="27"/></StackPanel>
             </Grid>
-            <Grid Grid.Row="1"><Grid.ColumnDefinitions><ColumnDefinition Width="1.4*"/><ColumnDefinition Width="0.65*"/><ColumnDefinition Width="1.2*"/><ColumnDefinition Width="0.55*"/></Grid.ColumnDefinitions>
+            <Grid Grid.Row="1"><Grid.ColumnDefinitions><ColumnDefinition Width="1.4*"/><ColumnDefinition Width="0.7*"/><ColumnDefinition Width="1.2*"/></Grid.ColumnDefinitions>
               <StackPanel><TextBlock Text="BM 服务器" Foreground="#A8B5BB" FontSize="10"/><ComboBox x:Name="MasterPresetBox" SelectedIndex="0" Height="27"><ComboBoxItem Content="BM 4602" Tag="bm-china-4602"/><ComboBoxItem Content="自定义" Tag="custom"/></ComboBox></StackPanel>
               <StackPanel Grid.Column="1"><TextBlock Text="UDP 端口" Foreground="#A8B5BB" FontSize="10"/><TextBox x:Name="MasterPortBox" Text="62031" Height="27"/></StackPanel>
               <StackPanel Grid.Column="2"><TextBlock Text="主机名 / IPv4" Foreground="#A8B5BB" FontSize="10"/><TextBox x:Name="MasterBox" Text="43.129.83.124" Height="27"/></StackPanel>
-              <StackPanel Grid.Column="3"><TextBlock Text="色码" Foreground="#A8B5BB" FontSize="10"/><TextBox x:Name="ColorCodeBox" Height="27"/></StackPanel>
             </Grid>
             <Grid Grid.Row="2"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
               <StackPanel><TextBlock Foreground="#A8B5BB" FontSize="10"><Run Text="BM API Key  "/><Hyperlink x:Name="BmApiKeySetupLink" Tag="bm_api_key" Foreground="#9BE0AE"><Run Text="设置"/></Hyperlink></TextBlock><PasswordBox x:Name="BmApiKeyBox" Height="27"/></StackPanel>
               <StackPanel Grid.Column="1"><TextBlock Foreground="#A8B5BB" FontSize="10"><Run Text="BM 密码  "/><Hyperlink x:Name="BmPasswordSetupLink" Tag="bm_password" Foreground="#9BE0AE"><Run Text="设置"/></Hyperlink></TextBlock><PasswordBox x:Name="PasswordBox" Height="27"/></StackPanel>
             </Grid>
           </Grid>
-          <Grid x:Name="ConnectionRowActions" Grid.Row="5">
+          <Grid x:Name="ConnectionRowActions" Grid.Row="4">
             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
             <Button x:Name="ConnectButton" Content="连接BM" MinWidth="82" Height="29" Background="#28583C" BorderBrush="#64A477"/>
             <Button x:Name="DisconnectBmButton" Grid.Column="1" Content="断开BM" MinWidth="82" Height="29" IsEnabled="False"/>
@@ -268,22 +259,19 @@
 
       <Border x:Name="DailyControlsPanel" Grid.Column="1" Background="#1D2529" BorderBrush="#46545B" BorderThickness="1" Padding="6" Margin="6,0,0,0">
         <Grid>
-          <Grid.RowDefinitions><RowDefinition Height="21"/><RowDefinition Height="108"/><RowDefinition Height="155"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+          <Grid.RowDefinitions><RowDefinition Height="21"/><RowDefinition Height="92"/><RowDefinition Height="Auto"/><RowDefinition Height="67"/><RowDefinition Height="*"/></Grid.RowDefinitions>
           <TextBlock Grid.Row="0" Text="日常控制" FontSize="13" FontWeight="Bold" Margin="1,0,0,1" VerticalAlignment="Center"/>
-          <Border x:Name="ChannelConsolePanel" Grid.Row="1" Background="#172024" BorderBrush="#46545B" BorderThickness="1" Padding="6" Margin="0,0,0,4">
-            <Grid>
-              <Grid.RowDefinitions><RowDefinition Height="20"/><RowDefinition Height="49"/><RowDefinition Height="20"/></Grid.RowDefinitions>
-              <DockPanel Grid.Row="0"><TextBlock Text="频道控制" FontWeight="Bold" FontSize="12"/><TextBlock x:Name="TransmitTargetValue" DockPanel.Dock="Right" Text="" Foreground="#9BE0AE" FontSize="11" FontWeight="Bold"/></DockPanel>
-              <Grid Grid.Row="1" Margin="0,1,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="1.35*"/><ColumnDefinition Width="1*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <StackPanel><TextBlock Text="频道 ID" Foreground="#A8B5BB" FontSize="10"/><TextBox x:Name="ChannelIdBox" Height="27"/></StackPanel>
-                <StackPanel Grid.Column="1"><TextBlock Text="类型" Foreground="#A8B5BB" FontSize="10"/><ComboBox x:Name="ChannelKindBox" SelectedIndex="0" Height="27"><ComboBoxItem Content="请选择" Tag="unknown"/><ComboBoxItem Content="单呼" Tag="private"/><ComboBoxItem Content="组呼" Tag="group"/></ComboBox></StackPanel>
-                <Button x:Name="AddChannelButton" Grid.Column="2" Content="加入监听" Padding="8,4" Background="#28583C" BorderBrush="#64A477" VerticalAlignment="Bottom" Height="27"/>
-              </Grid>
-              <CheckBox x:Name="MakeChannelTxTargetCheckBox" Grid.Row="2" Content="同时设为PTT目标" IsChecked="False" Foreground="#EDF3F4" Margin="3,0,0,0" FontSize="10"/>
-              <TextBlock x:Name="ChannelStatusText" Grid.Row="2" Text="" Foreground="#EFC36F" FontSize="10" TextTrimming="CharacterEllipsis" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="3,0" ToolTip="{Binding RelativeSource={RelativeSource Self}, Path=Text}" ToolTipService.ShowDuration="30000" Visibility="Collapsed"/>
+          <Grid x:Name="ChannelConsolePanel" Grid.Row="1" Margin="2,1,2,3">
+            <Grid.RowDefinitions><RowDefinition Height="20"/><RowDefinition Height="49"/><RowDefinition Height="18"/></Grid.RowDefinitions>
+            <DockPanel Grid.Row="0"><TextBlock Text="频道控制" FontWeight="Bold" FontSize="12"/><TextBlock x:Name="TransmitTargetValue" DockPanel.Dock="Right" Text="" Foreground="#9BE0AE" FontSize="11" FontWeight="Bold"/></DockPanel>
+            <Grid Grid.Row="1"><Grid.ColumnDefinitions><ColumnDefinition Width="1.35*"/><ColumnDefinition Width="1*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+              <Grid Grid.Column="0"><Grid.RowDefinitions><RowDefinition Height="17"/><RowDefinition Height="*"/></Grid.RowDefinitions><TextBlock Text="频道 ID" Grid.Row="0" Foreground="#A8B5BB" FontSize="10"/><TextBox x:Name="ChannelIdBox" Grid.Row="1" Height="29" Margin="2,0" VerticalAlignment="Bottom"/></Grid>
+              <Grid Grid.Column="1"><Grid.RowDefinitions><RowDefinition Height="17"/><RowDefinition Height="*"/></Grid.RowDefinitions><TextBlock Text="类型" Grid.Row="0" Foreground="#A8B5BB" FontSize="10"/><ComboBox x:Name="ChannelKindBox" Grid.Row="1" SelectedIndex="0" Height="29" Margin="2,0" VerticalAlignment="Bottom"><ComboBoxItem Content="请选择" Tag="unknown"/><ComboBoxItem Content="单呼" Tag="private"/><ComboBoxItem Content="组呼" Tag="group"/></ComboBox></Grid>
+              <Button x:Name="AddChannelButton" Grid.Column="2" Content="加入监听" Padding="8,4" Background="#28583C" BorderBrush="#64A477" VerticalAlignment="Bottom" Height="29" Margin="2,0"/>
             </Grid>
-          </Border>
-          <Border x:Name="BmStaticGroupPanel" Grid.Row="2" Background="#151C20" BorderBrush="#3C494F" BorderThickness="1" Padding="5" Margin="0,0,0,4" Visibility="Collapsed">
+            <TextBlock x:Name="ChannelStatusText" Grid.Row="2" Text="" Foreground="#EFC36F" FontSize="10" TextTrimming="CharacterEllipsis" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="3,0" ToolTip="{Binding RelativeSource={RelativeSource Self}, Path=Text}" ToolTipService.ShowDuration="30000" Visibility="Collapsed"/>
+          </Grid>
+          <Grid x:Name="BmStaticGroupPanel" Grid.Row="2" Margin="2,1,2,3" Visibility="Collapsed">
             <Grid>
               <Grid.RowDefinitions><RowDefinition Height="23"/><RowDefinition Height="58"/><RowDefinition Height="28"/><RowDefinition Height="18"/></Grid.RowDefinitions>
               <Grid Grid.Row="0"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -305,8 +293,17 @@
               </Grid>
               <TextBlock x:Name="BmStaticGroupStatus" Grid.Row="3" Text="" Foreground="#EFC36F" FontSize="10" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" ToolTip="{Binding RelativeSource={RelativeSource Self}, Path=Text}" ToolTipService.ShowDuration="30000" Visibility="Collapsed"/>
             </Grid>
-          </Border>
-          <Border Grid.Row="3" Background="#172024" BorderBrush="#46545B" BorderThickness="1" Padding="6" Margin="0,0,0,0">
+          </Grid>
+          <Grid x:Name="AudioDevicePanel" Grid.Row="3" Margin="2,1,2,1">
+            <Grid.RowDefinitions><RowDefinition Height="17"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+            <TextBlock Grid.Row="0" Text="音频设备" Foreground="#A8B5BB" FontSize="10" FontWeight="Bold" VerticalAlignment="Center"/>
+            <Grid x:Name="ConnectionRowAudio" Grid.Row="1">
+              <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+              <StackPanel Grid.Column="0"><TextBlock Text="输入" Foreground="#A8B5BB" FontSize="10"/><ComboBox x:Name="WaveInEndpointBox" Height="27"/></StackPanel>
+              <StackPanel Grid.Column="1"><TextBlock Text="输出" Foreground="#A8B5BB" FontSize="10"/><ComboBox x:Name="WaveOutEndpointBox" Height="27"/></StackPanel>
+            </Grid>
+          </Grid>
+          <Grid x:Name="VolumeControlsPanel" Grid.Row="4" Margin="2,2,2,1">
             <Grid>
               <Grid.RowDefinitions><RowDefinition Height="18"/><RowDefinition Height="*"/><RowDefinition Height="16"/></Grid.RowDefinitions>
               <TextBlock Grid.Row="0" Text="音量" FontWeight="Bold" FontSize="11" VerticalAlignment="Center"/>
@@ -324,7 +321,7 @@
               </Grid>
               <TextBlock x:Name="PlaybackGainStatusValue" Grid.Row="2" Text="" Foreground="#9BE0AE" FontSize="9" Margin="2,0" TextTrimming="CharacterEllipsis" Visibility="Collapsed"/>
             </Grid>
-          </Border>
+          </Grid>
         </Grid>
       </Border>
     </Grid>

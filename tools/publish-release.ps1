@@ -53,6 +53,7 @@ $script:alpha14TestNames = @($script:alpha13TestNames)
 $script:alpha15TestNames = @($script:alpha14TestNames)
 $script:alpha16TestNames = @($script:alpha15TestNames)
 $script:alpha17TestNames = @($script:alpha16TestNames)
+$script:alpha18TestNames = @($script:alpha17TestNames)
 
 function Set-PublishProfile {
     param([Parameter(Mandatory=$true)][string]$Tag)
@@ -300,7 +301,15 @@ function Set-PublishProfile {
             $script:expectedDirectories = @($alpha16.Directories)
             $script:expectedTestNames = $script:alpha17TestNames
         }
-        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.17 release profiles are supported.' }
+        'v0.1.0-alpha.18' {
+            $alpha17 = Set-PublishProfile -Tag 'v0.1.0-alpha.17'
+            $script:publishTag = $Tag
+            $script:assetPathMap = [ordered]@{}
+            foreach ($path in $alpha17.AssetPathMap.Keys) { $script:assetPathMap[$path] = $alpha17.AssetPathMap[$path] }
+            $script:expectedDirectories = @($alpha17.Directories)
+            $script:expectedTestNames = $script:alpha18TestNames
+        }
+        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.18 release profiles are supported.' }
     }
     return [pscustomobject]@{
         Tag = $script:publishTag
@@ -434,7 +443,7 @@ function Assert-PublishPackage {
             }
         }
     }
-    if ($Tag -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17')) {
+    if ($Tag -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17', 'v0.1.0-alpha.18')) {
         $excludedPrivateFiles = @($manifest.excluded_private_files | ForEach-Object { [string]$_ })
         foreach ($requiredPath in @(
             'config.json',
@@ -450,7 +459,7 @@ function Assert-PublishPackage {
             'private/user-config/bm-server-preferences.json'
         )) {
             if ($excludedPrivateFiles -cnotcontains $requiredPath) {
-                throw 'Alpha 14/15/16 manifest must explicitly exclude the package-root configuration, backups, credentials, and legacy local preferences.'
+                throw 'Alpha 14–18 manifest must explicitly exclude the package-root configuration, backups, credentials, and legacy local preferences.'
             }
         }
     }

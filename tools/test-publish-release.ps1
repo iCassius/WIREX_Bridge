@@ -910,6 +910,44 @@ try {
     Assert-Throws { Assert-PublishPackage -PackageRoot $alpha17Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.17' } `
         'alpha.17 publisher rejects a manifest that omits the package-root config exclusion'
 
+    $alpha17Manifest.excluded_private_files += 'config.json'
+    Write-Utf8NoBom -Path $alpha17ManifestPath -Text ((ConvertTo-Json -InputObject $alpha17Manifest -Depth 12) + [Environment]::NewLine)
+
+    $alpha18Root = Join-Path $testRoot 'package-alpha18'
+    Copy-Item -LiteralPath $alpha17Root -Destination $alpha18Root -Recurse
+    $alpha18Profile = Set-PublishProfile -Tag 'v0.1.0-alpha.18'
+    Write-Utf8NoBom -Path (Join-Path $alpha18Root 'README.md') -Text 'synthetic alpha.18 package README'
+    $alpha18LauncherPath = Join-Path $alpha18Root 'tools\start-wirex-bridge.ps1'
+    Write-Utf8NoBom -Path $alpha18LauncherPath -Text 'synthetic alpha.18 launcher'
+    $alpha18ManifestPath = Join-Path $alpha18Root 'manifest.json'
+    $alpha18Manifest = [System.IO.File]::ReadAllText($alpha18ManifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    foreach ($relativePath in @('README.md', 'tools/start-wirex-bridge.ps1')) {
+        $fullPath = Join-Path $alpha18Root $relativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+        $record = @($alpha18Manifest.files | Where-Object { [string]$_.path -ceq $relativePath })
+        if ($record.Count -ne 1) { throw ('alpha.18 test fixture lacks a unique manifest record for ' + $relativePath) }
+        $record[0].length_bytes = [long](Get-Item -LiteralPath $fullPath).Length
+        $record[0].sha256 = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $record[0].source = 'synthetic alpha.18 test content'
+    }
+    $alpha18Manifest.version = 'v0.1.0-alpha.18'
+    $alpha18Manifest.tag_candidate = 'v0.1.0-alpha.18'
+    $alpha18Manifest.release_scope = 'R122 DIRECT: fixed WPF layout and consolidated CAT settings'
+    $alpha18Manifest.build.passed_test_count = $alpha18Profile.TestNames.Count
+    $alpha18Manifest.build.passed_tests = @($alpha18Profile.TestNames)
+    Write-Utf8NoBom -Path $alpha18ManifestPath -Text ((ConvertTo-Json -InputObject $alpha18Manifest -Depth 12) + [Environment]::NewLine)
+    $alpha18Package = Assert-PublishPackage -PackageRoot $alpha18Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.18'
+    Assert-True ($alpha18Package.Assets.Count -eq $alpha17Package.Assets.Count -and
+        $alpha18Profile.AssetPathMap.Count -eq 41 -and $alpha18Profile.TestNames.Count -eq 40 -and
+        [string]::Join('|', $alpha18Profile.TestNames) -ceq [string]::Join('|', $alpha17Profile.TestNames)) `
+        'alpha.18 publisher accepts the unchanged 41-asset inventory and ordered 40-test sequence'
+    Assert-True (@($alpha18Package.Manifest.excluded_private_files | Where-Object { [string]$_ -ceq 'config.json' }).Count -eq 1 -and
+        @($alpha18Package.Manifest.excluded_private_files | Where-Object { [string]$_ -ceq 'credentials/' }).Count -eq 1) `
+        'alpha.18 manifest retains package-root configuration and credential exclusions'
+    $alpha18Manifest.excluded_private_files = @($alpha18Manifest.excluded_private_files | Where-Object { [string]$_ -cne 'config.json' })
+    Write-Utf8NoBom -Path $alpha18ManifestPath -Text ((ConvertTo-Json -InputObject $alpha18Manifest -Depth 12) + [Environment]::NewLine)
+    Assert-Throws { Assert-PublishPackage -PackageRoot $alpha18Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.18' } `
+        'alpha.18 publisher rejects a manifest that omits the package-root config exclusion'
+
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.9')
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.1')
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.1')

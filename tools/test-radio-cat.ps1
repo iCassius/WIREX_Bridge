@@ -265,6 +265,16 @@ $unchangedPowerState = New-RadioCatFakeState
 $unchangedPower = Invoke-RadioCatFake -Operation setPower -State $unchangedPowerState -PowerWatts 25
 Assert-RadioCatTest ($unchangedPower.status -ceq 'confirmed' -and @($unchangedPowerState.writes | Where-Object { $_ -ceq 'TX;' }).Count -eq 1) 'Same-value power confirmation skips the extra pre-write TX read because no set frame is sent.'
 
+$unchangedModeState = New-RadioCatFakeState
+$unchangedMode = Invoke-RadioCatFake -Operation setMode -State $unchangedModeState -Mode 'FM'
+Assert-RadioCatTest ($unchangedMode.status -ceq 'confirmed' -and $unchangedMode.observed.main_mode.value.mode -ceq 'FM' -and
+    -not ($unchangedModeState.writes -contains 'MD04;')) 'Same-value MAIN mode is confirmed by readback without sending a mode write.'
+
+$unchangedFrequencyState = New-RadioCatFakeState
+$unchangedFrequency = Invoke-RadioCatFake -Operation setFrequency -State $unchangedFrequencyState -FrequencyHz 14250000
+Assert-RadioCatTest ($unchangedFrequency.status -ceq 'confirmed' -and $unchangedFrequency.observed.main_frequency_hz.value -eq [long]14250000 -and
+    -not ($unchangedFrequencyState.writes -contains 'FA014250000;')) 'Same-value MAIN frequency is confirmed by readback without sending a frequency write.'
+
 $txRaceState = New-RadioCatFakeState -TxSequence @(0, 2)
 $txRace = Invoke-RadioCatFake -Operation setPower -State $txRaceState -PowerWatts 30
 Assert-RadioCatTest ($txRace.status -ceq 'busy' -and $txRace.observed.tx_state.value -eq 2 -and -not ($txRaceState.writes -match '^PC[12][0-9]{3};$')) 'A fresh TX2 response immediately before a write blocks that write.'
