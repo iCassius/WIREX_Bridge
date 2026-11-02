@@ -1699,6 +1699,9 @@ Release 标签候选：$Version（打包器不创建标签，也不发布 Releas
         if (-not $isStableRelease) {
             $records += ,(Get-ReleaseFileRecord -PackageRoot $stagingPath -RelativePath 'private/device-y.bin' `
                 -Source ('approved 100-byte Y fixture; SHA-256 ' + $fixtureHash))
+        } else {
+            $records += ,(Get-ReleaseFileRecord -PackageRoot $stagingPath -RelativePath 'runtime/private/device-y.bin' `
+                -Source ('approved 100-byte HRI protocol template; SHA-256 ' + $fixtureHash))
         }
         $assetNames = @($records | ForEach-Object { [string]$_.asset_name })
         if (@($assetNames | Sort-Object -Unique).Count -ne $assetNames.Count) { throw '生成的 release asset_name 存在重复。' }
