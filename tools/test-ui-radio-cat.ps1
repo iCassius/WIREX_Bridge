@@ -1,5 +1,5 @@
 ﻿[CmdletBinding()]
-param()
+param([switch]$CatOnly)
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName PresentationCore
@@ -7,9 +7,13 @@ Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName WindowsBase
 
 function Assert-RadioUi {
-    param([bool]$Condition,[string]$Message)
+    param([object]$Condition,[string]$Message)
     $script:radioUiAssertionCount++
-    if (-not $Condition) { throw $Message }
+    if ($Condition -is [array]) {
+        $caller = (Get-PSCallStack | Select-Object -Skip 1 -First 1)
+        throw ('Assertion received an array condition from line {0}: {1}' -f $caller.ScriptLineNumber,$Message)
+    }
+    if (-not [bool]$Condition) { throw $Message }
 }
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -100,6 +104,7 @@ $script:radioCatCloseMainAfterOperation = $false
 $script:radioCatCloseSettingsAfterOperation = $false
 $script:testStartBridgeRunCalls = 0
 $script:testUiEvents = New-Object 'System.Collections.Generic.List[string]'
+$script:testTransientStatuses = New-Object 'System.Collections.Generic.List[object]'
 
 $testConfig = Get-WirexPortableConfig -Path $script:portableConfigPath
 $testConfig.connection.callsign = 'N0TEST'
@@ -278,6 +283,10 @@ function Set-MainTargetSummary { param([object]$Profile,[string]$OverallLabel) }
 function Set-ConnectionButtonState { }
 function Set-OfflineDisplay { param([string]$Reason) }
 function Add-UiEvent { param([string]$Text) [void]$script:testUiEvents.Add($Text) }
+function Set-UiTransientStatus {
+    param([Parameter(Mandatory=$true)][AllowEmptyString()][string]$Message,[bool]$Failed=$false,[switch]$Restart)
+    [void]$script:testTransientStatuses.Add([pscustomobject]@{ message=$Message; failed=$Failed; restart=[bool]$Restart })
+}
 function Clear-UiIdentityQueryQueue { }
 function Update-DynamicGroupControls { }
 function Update-UiReceiveMetricsDisplay { param([object]$Record) }
@@ -346,9 +355,10 @@ function Cancel-SettingsWindow {
     [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{},[System.Windows.Threading.DispatcherPriority]::Background)
 }
 function Complete-TestCatRunspace {
-    param([int]$TimeoutMs=3000)
+    param([int]$TimeoutMs=3000,[switch]$RefreshStatusHeartbeat)
     $watch = [System.Diagnostics.Stopwatch]::StartNew()
     while ($script:radioCatOperationPowerShell -and $watch.ElapsedMilliseconds -lt $TimeoutMs) {
+        if ($RefreshStatusHeartbeat) { $script:lastStatusUtc = [DateTime]::UtcNow }
         if ($script:radioCatOperationAsync -and $script:radioCatOperationAsync.IsCompleted) {
             [void](Complete-UiRadioCatOperation)
             break
@@ -419,10 +429,37 @@ function Wait-TestRadioCatLogCount {
     $watch.Stop()
     return $false
 }
+function Set-TestRadioCatPowerSelection {
+    param([Parameter(Mandatory=$true)][int]$Watts)
+    $box = Get-SettingsControl 'CatPowerBox'
+    $item = @($box.Items | Where-Object { [string]$_.Tag -ceq [string]$Watts } | Select-Object -First 1)
+    if ($item.Count -eq 0 -or -not [bool]$item[0].IsEnabled) { return $false }
+    if ((Get-UiRadioCatPowerSelection) -eq $Watts -and $null -eq $script:radioCatEditDraft.power) {
+        $alternate = @($box.Items | Where-Object { [bool]$_.IsEnabled -and [int]$_.Tag -ne $Watts } | Select-Object -First 1)
+        if ($alternate.Count -gt 0) { $box.SelectedItem = $alternate[0] }
+    }
+    $box.SelectedItem = $item[0]
+    return ([int](Get-UiRadioCatPowerSelection) -eq $Watts)
+}
+function Set-TestRadioCatFrequencyText {
+    param([Parameter(Mandatory=$true)][string]$Text)
+    $combo = Get-SettingsControl 'CatMainFrequencyMHzBox'
+    [void]$combo.ApplyTemplate()
+    Register-UiRadioCatFrequencyTextInput
+    $textBox = $combo.Template.FindName('PART_EditableTextBox',$combo)
+    if ($textBox -isnot [System.Windows.Controls.TextBox]) { return $false }
+    [void]($textBox.Text = $Text)
+    return ([string]$combo.Text -ceq $Text)
+}
+function Get-TestTransientStatus {
+    if ($script:testTransientStatuses.Count -eq 0) { return '' }
+    return [string]$script:testTransientStatuses[$script:testTransientStatuses.Count - 1].message
+}
 
 try {
     # CAT controls and preferences now live in MainWindow.xaml and config.json.
     $script:mainWindow = Import-WpfWindow -Path $script:mainXamlPath
+    $script:mainWindow.UpdateLayout()
     $script:mainWindow.Opacity = 0
     $script:mainWindow.Show()
     $script:channels = @((New-UiChannelRecord -Id 460997 -Kind private -Slot 2))
@@ -452,11 +489,20 @@ try {
     $script:testRootMainWindow = $script:mainWindow
     Initialize-UiRadioCatController
     Set-UiRadioCatDeviceControls
-    $slider = Get-SettingsControl 'CatPowerSlider'
-    Assert-RadioUi ([int]$slider.Value -eq 40) '主窗没有载入隔离 config.json 中的 40 W。'
+    $powerBox = Get-SettingsControl 'CatPowerBox'
+    Assert-RadioUi ((Get-UiRadioCatPowerSelection) -eq 25) '主窗初始功率没有默认为25 W。'
+    Assert-RadioUi ((Get-SettingsControl 'SerialConnectButton') -is [System.Windows.Controls.Button] -and
+        $null -eq $script:mainWindow.FindName('SerialDisconnectButton') -and
+        $null -eq $script:mainWindow.FindName('CatPowerSlider') -and
+        $null -eq $script:mainWindow.FindName('CatDesiredPowerText') -and
+        $null -eq $script:mainWindow.FindName('CatOperationStatusText') -and
+        $null -eq $script:mainWindow.FindName('CatSessionStatusText')) 'XAML仍依赖已移除的连接或CAT旧控件。'
+    Assert-RadioUi ($powerBox -is [System.Windows.Controls.ComboBox] -and
+        (@($powerBox.Items | ForEach-Object { [string]$_.Tag }) -join ',') -ceq '5,10,15,25,50' -and
+        (Get-SettingsControl 'CatMainFrequencyMHzBox').IsEditable) '主窗没有真实功率预设ComboBox或可编辑MAIN频率ComboBox。'
     Assert-RadioUi ($script:radioControlPreferencesPath -ceq '' -and -not [System.IO.File]::Exists((Join-Path $script:testRoot 'radio-control-preferences.json'))) `
         'CAT 设置仍不得创建独立偏好文件。'
-    Assert-RadioUi (-not $script:radioCatPowerPreferenceDirty -and [int]$script:radioControlPreferences.desired_power_watts -eq 40) '打开设置窗时回填滑块错误标记了用户修改。'
+    Assert-RadioUi (-not $script:radioCatPowerPreferenceDirty -and [int]$script:radioControlPreferences.desired_power_watts -eq 40) '打开设置窗时误改了已保存功率偏好。'
 
     $script:deviceDiscoveryState = 'ready'
     $script:deviceCatalog = [pscustomobject]@{
@@ -466,6 +512,44 @@ try {
     }
     Set-UiRadioCatDeviceControls
     Assert-RadioUi ((Get-UiRadioCatSelectedPort) -ceq 'COM11') 'CAT 候选端口未使用已枚举的 COM11。'
+    Update-UiSerialConnectButton
+    $serialToggle = Get-SettingsControl 'SerialConnectButton'
+    Assert-RadioUi ([string]$serialToggle.Content -ceq '连接串口' -and $serialToggle.IsEnabled) '断开状态的单一串口按钮没有显示可用的连接操作。'
+    $originalSerialConnect = (Get-Command -Name Connect-UiSerialCombo -CommandType Function).ScriptBlock
+    $originalSerialDisconnect = (Get-Command -Name Disconnect-UiSerialCombo -CommandType Function).ScriptBlock
+    $script:testSerialToggleConnectCalls = 0
+    $script:testSerialToggleDisconnectCalls = 0
+    $script:testSerialToggleConnectResult = $true
+    Set-Item -Path Function:\Connect-UiSerialCombo -Value { $script:testSerialToggleConnectCalls++; return [bool]$script:testSerialToggleConnectResult }
+    Set-Item -Path Function:\Disconnect-UiSerialCombo -Value { $script:testSerialToggleDisconnectCalls++; return $true }
+    $serialToggle.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent,$serialToggle)))
+    Assert-RadioUi ($script:testSerialToggleConnectCalls -eq 1 -and $script:testSerialToggleDisconnectCalls -eq 0) '串口按钮在真实断开状态没有走既有连接流程。'
+    $script:testSerialToggleConnectResult = $false
+    $serialToggle.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent,$serialToggle)))
+    Assert-RadioUi ($script:testSerialToggleConnectCalls -eq 2 -and [string]$serialToggle.Content -ceq '连接串口') '连接失败后按钮没有保持真实断开状态并允许重试。'
+    $script:testSerialToggleConnectResult = $true
+    $script:radioCatSessionRequested = $true
+    Update-UiSerialConnectButton
+    Assert-RadioUi ([string]$serialToggle.Content -ceq '断开串口' -and $serialToggle.IsEnabled) 'CAT会话请求后单一按钮没有切换到断开流程。'
+    $serialToggle.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent,$serialToggle)))
+    Assert-RadioUi ($script:testSerialToggleDisconnectCalls -eq 1) '串口按钮在会话活动状态没有走既有断开流程。'
+    $script:radioCatSessionRequested = $false
+    $script:supervisor = New-TestRadioSupervisor
+    Update-UiSerialConnectButton
+    Assert-RadioUi ([string]$serialToggle.Content -ceq '断开串口') 'HRI supervisor实际运行时单一按钮没有显示断开操作。'
+    $serialToggle.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent,$serialToggle)))
+    Assert-RadioUi ($script:testSerialToggleDisconnectCalls -eq 2) 'HRI运行时按钮没有走既有HRI/BM/CAT断开流程。'
+    $script:supervisor = $null
+    Update-UiSerialConnectButton
+    Assert-RadioUi ([string]$serialToggle.Content -ceq '连接串口' -and $serialToggle.IsEnabled) '断开完成后串口按钮没有回到可连接状态。'
+    $script:preparationStarted = $true
+    Update-UiSerialConnectButton
+    Assert-RadioUi ([string]$serialToggle.Content -ceq '取消连接' -and $serialToggle.IsEnabled) '串口连接准备中没有保留既有取消流程。'
+    $serialToggle.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent,$serialToggle)))
+    Assert-RadioUi ($script:testSerialToggleDisconnectCalls -eq 3) '串口准备中按按钮没有请求既有取消流程。'
+    $script:preparationStarted = $false
+    Set-Item -Path Function:\Connect-UiSerialCombo -Value $originalSerialConnect
+    Set-Item -Path Function:\Disconnect-UiSerialCombo -Value $originalSerialDisconnect
     $script:latestStatus = [pscustomobject]@{
         ptt_gate_ready=$true; ptt_gate_tx_active=$false; ptt_last_state='released'; current_call_valid=$false
         receive_media_state='idle'; rx_queue_bursts=[uint64]0; rx_queue_playback_frames=[uint64]0
@@ -485,17 +569,45 @@ try {
     Remove-Item Env:\WIREX_R116_UI_CAT_DELAY -ErrorAction SilentlyContinue
     Remove-Item Env:\WIREX_R116_UI_CAT_DELAY_MS -ErrorAction SilentlyContinue
     Assert-RadioUi ($script:radioCatLastOperationStatus -ceq 'confirmed') 'fake CAT query 没有通过 UI 完成流程。'
-    Assert-RadioUi ([int]$slider.Maximum -eq 10 -and [double]$slider.Value -ge 5 -and [double]$slider.Value -le 10 -and
+    Assert-RadioUi ((Get-UiRadioCatPowerSelection) -eq 25 -and
+        -not (@($powerBox.Items | Where-Object { [string]$_.Tag -ceq '25' })[0].IsEnabled) -and
+        -not (@($powerBox.Items | Where-Object { [string]$_.Tag -ceq '15' })[0].IsEnabled) -and
+        (@($powerBox.Items | Where-Object { [string]$_.Tag -ceq '10' })[0].IsEnabled) -and
         [int]$script:radioControlPreferences.desired_power_watts -eq 40 -and -not $script:radioCatPowerPreferenceDirty -and
         $script:radioCatPowerNeedsUserChoice -and $null -eq $script:radioCatEditDraft.power) ('FieldHead 首读应显示实测值、保留超出上限的 40 W 偏好，并要求用户明确选择有效功率。 max={0}, value={1}, target={2}, dirty={3}, needsChoice={4}, draft={5}' -f
-        $slider.Maximum,$slider.Value,$script:radioControlPreferences.desired_power_watts,$script:radioCatPowerPreferenceDirty,$script:radioCatPowerNeedsUserChoice,$script:radioCatEditDraft.power)
+        10,(Get-UiRadioCatPowerSelection),$script:radioControlPreferences.desired_power_watts,$script:radioCatPowerPreferenceDirty,$script:radioCatPowerNeedsUserChoice,$script:radioCatEditDraft.power)
     Assert-RadioUi ([int]$script:radioControlPreferences.desired_power_watts -eq 40 -and -not $script:radioCatPowerPreferenceDirty -and
         $null -eq $script:radioCatEditDraft.power -and $null -ne (Get-SettingsControl 'ApplyCatSettingsButton')) '首读不得覆盖 40 W 偏好或伪造功率草稿；界面只提供统一 Apply。'
+    $frequencyBox = Get-SettingsControl 'CatMainFrequencyMHzBox'
+    $currentFrequencyOption = @($frequencyBox.Items | Where-Object { [string]$_.Tag -ceq '__radio_cat_current_frequency__' } | Select-Object -First 1)
+    Assert-RadioUi ($currentFrequencyOption.Count -eq 1) 'CAT读到的MAIN频率没有成为可选的当前值项。'
+    $frequencyBox.SelectedItem = $currentFrequencyOption[0]
+    Assert-RadioUi ([string]$script:radioCatEditDraft.frequency -ceq [string]$frequencyBox.Text) '用户从可编辑频率Combo选择当前值没有形成频率草稿。'
+    Set-UiRadioCatDraft -Field frequency -Value $null
+    [void](Update-UiRadioCatObservationDisplay)
+
+    $setPowerBeforeNonPresetRead = ([regex]::Matches((Get-TestRadioCatLog),'BEGIN\|setPower')).Count
+    $env:WIREX_R116_UI_CAT_PATH = 'Spa1'
+    $env:WIREX_R116_UI_CAT_FORCE_POWER = '9'
+    Start-UiRadioCatOperation -Operation query
+    [void](Complete-TestCatRunspace -TimeoutMs 3000)
+    $nineWattItem = @($powerBox.Items | Where-Object { [string]$_.Tag -ceq '9' } | Select-Object -First 1)
+    $nonPresetWasObserved = ($nineWattItem.Count -eq 1 -and $nineWattItem[0].IsEnabled -and
+        (Get-UiRadioCatPowerSelection) -eq 9 -and $null -eq $script:radioCatEditDraft.power -and
+        ([regex]::Matches((Get-TestRadioCatLog),'BEGIN\|setPower')).Count -eq $setPowerBeforeNonPresetRead)
+    Assert-RadioUi $nonPresetWasObserved 'SPA-1读到9 W后应自动新增并选中9 W当前值项，且首读不发送功率写入。'
+    Assert-RadioUi (Set-TestRadioCatPowerSelection -Watts 9) '用户不能从真实功率Combo中选择当前9 W值项。'
+    Assert-RadioUi ([int]$script:radioCatEditDraft.power -eq 9) ('真实选择9 W当前值没有生成独立功率草稿。draft={0},selected={1},programmatic={2},tag={3}' -f $script:radioCatEditDraft.power,(Get-UiRadioCatPowerSelection),[bool]$script:radioCatProgrammaticControlUpdate,[string]$powerBox.Tag)
+    Set-UiRadioCatDraft -Field power -Value $null
+    $env:WIREX_R116_UI_CAT_PATH = 'FieldHead'
+    Remove-Item Env:\WIREX_R116_UI_CAT_FORCE_POWER -ErrorAction SilentlyContinue
+    Start-UiRadioCatOperation -Operation query
+    [void](Complete-TestCatRunspace -TimeoutMs 3000)
 
     # A connected CAT session keeps its controls and values stable across completed poll cycles.
     $modeControl = Get-SettingsControl 'CatMainModeBox'
     $frequencyControl = Get-SettingsControl 'CatMainFrequencyMHzBox'
-    $slider = Get-SettingsControl 'CatPowerSlider'
+    $powerBox = Get-SettingsControl 'CatPowerBox'
     $observedPanel = Get-SettingsControl 'CatObservedPanel'
     $operatingPanel = Get-SettingsControl 'CatOperatingPanel'
     $powerButton = Get-SettingsControl 'ApplyCatSettingsButton'
@@ -505,12 +617,12 @@ try {
     }
     $modeControl.Add_IsEnabledChanged({ $script:testModeEnableChanges++ })
     $frequencyControl.Add_IsEnabledChanged({ $script:testFrequencyEnableChanges++ })
-    $slider.Add_IsEnabledChanged({ $script:testSliderEnableChanges++ })
-    $slider.Add_ValueChanged({ $script:testSliderValueChanges++ })
+    $powerBox.Add_IsEnabledChanged({ $script:testPowerSelectionEnableChanges++ })
+    $powerBox.Add_SelectionChanged({ $script:testPowerSelectionChanges++ })
     $script:testModeEnableChanges = 0
     $script:testFrequencyEnableChanges = 0
-    $script:testSliderEnableChanges = 0
-    $script:testSliderValueChanges = 0
+    $script:testPowerSelectionEnableChanges = 0
+    $script:testPowerSelectionChanges = 0
     $script:actionEnableChanged = 0
     $script:radioCatSessionRequested = $false
     $script:radioCatPollingActive = $false
@@ -525,22 +637,21 @@ try {
         -not (Test-UiRadioCatPortConflictWithHri -HriPortName 'COM5')) 'HRI冲突检查没有区分CAT会话实际占用的COM11与不同COM5。'
     [void](Set-UiRadioCatDraft -Field mode -Value 'C4FM-DN')
     $modeControl.SelectedItem = @($modeControl.Items | Where-Object { [string]$_.Tag -ceq 'C4FM-DN' })[0]
-    $frequencyControl.Text = '145.600'
-    $slider.Value = 6
-    $script:testSliderValueChanges = 0
-    $script:radioCatEditDraft.power = 6
+    Assert-RadioUi (Set-TestRadioCatFrequencyText -Text '145.600') '真实EditableTextBox不能录入合法MAIN频率草稿。'
+    Assert-RadioUi (Set-TestRadioCatPowerSelection -Watts 10) 'FieldHead中10 W预设没有作为合法功率目标供用户选择。'
+    $script:testPowerSelectionChanges = 0
     Update-UiRadioCatControls
     $actionEnableChanged = 0
     $script:testReadoutTextChanges = 0
-    $script:testSliderRangeChanges = 0
+    $script:testPowerSelectionChanges = 0
     $script:testModeSelectionChanges = 0
     $script:testFrequencyTextChanges = 0
     $script:testModeEnableChanges = 0
     $script:testFrequencyEnableChanges = 0
-    $script:testSliderEnableChanges = 0
-    $script:testSliderValueChanges = 0
-    $snapshotNames = @('RadioCatPanel','CatOperatingPanel','CatObservedPanel','CatSessionStatusText','CatPortBox','CatBaudRateBox','CatMainModeBox',
-        'CatMainFrequencyMHzBox','CatPowerSlider','ApplyCatSettingsButton')
+    $script:testPowerSelectionEnableChanges = 0
+    $script:testPowerSelectionChanges = 0
+    $snapshotNames = @('RadioCatPanel','CatOperatingPanel','CatObservedPanel','CatPortBox','CatBaudRateBox','CatMainModeBox',
+        'CatMainFrequencyMHzBox','CatPowerBox','ApplyCatSettingsButton')
     function Get-TestRadioCatSnapshot {
         $parts = New-Object 'System.Collections.Generic.List[string]'
         foreach ($name in $snapshotNames) {
@@ -549,11 +660,15 @@ try {
             if ($control -is [System.Windows.Controls.TextBlock] -or $control -is [System.Windows.Controls.TextBox]) { $parts.Add([string]$control.Text) }
             if ($control -is [System.Windows.Controls.Button]) { $parts.Add([string]$control.Content) }
             if ($control -is [System.Windows.Controls.ComboBox]) {
-                $selectedValue = if ($control.SelectedItem -is [System.Windows.Controls.ComboBoxItem]) { [string]$control.SelectedItem.Tag } else { '' }
-                $parts.Add(('selected={0};text={1}' -f $selectedValue,[string]$control.Text))
-            }
-            if ($control -is [System.Windows.Controls.Primitives.RangeBase]) {
-                $parts.Add(('min={0};max={1};value={2}' -f [double]$control.Minimum,[double]$control.Maximum,[double]$control.Value))
+                if ([string]$control.Name -ceq 'CatMainFrequencyMHzBox') {
+                    $parts.Add(('text={0}' -f [string]$control.Text))
+                } else {
+                    $selectedValue = if ($control.SelectedItem -is [System.Windows.Controls.ComboBoxItem]) { [string]$control.SelectedItem.Tag } else { '' }
+                    $parts.Add(('selected={0};text={1}' -f $selectedValue,[string]$control.Text))
+                }
+                if ([string]$control.Name -ceq 'CatPowerBox') {
+                    $parts.Add(('items=' + (@($control.Items | ForEach-Object { '{0}:{1}' -f [string]$_.Tag,[bool]$_.IsEnabled }) -join ',')))
+                }
             }
         }
         $parts.Add(('draft={0}|{1}|{2};session={3};generation={4}' -f $script:radioCatEditDraft.mode,$script:radioCatEditDraft.frequency,
@@ -564,13 +679,14 @@ try {
     $script:testReadoutTextChanges = 0
     $textDescriptor = [System.ComponentModel.DependencyPropertyDescriptor]::FromProperty([System.Windows.Controls.TextBlock]::TextProperty,[System.Windows.Controls.TextBlock])
     foreach ($readout in $readoutControls) { $textDescriptor.AddValueChanged($readout,[System.EventHandler]{ $script:testReadoutTextChanges++ }) }
-    $script:testSliderRangeChanges = 0
-    $rangeDescriptor = [System.ComponentModel.DependencyPropertyDescriptor]::FromProperty([System.Windows.Controls.Primitives.RangeBase]::MaximumProperty,[System.Windows.Controls.Primitives.RangeBase])
-    $rangeDescriptor.AddValueChanged($slider,[System.EventHandler]{ $script:testSliderRangeChanges++ })
     $script:testModeSelectionChanges = 0
     $modeControl.Add_SelectionChanged({ $script:testModeSelectionChanges++ })
     $script:testFrequencyTextChanges = 0
-    $frequencyControl.Add_TextChanged({ $script:testFrequencyTextChanges++ })
+    [void]$frequencyControl.ApplyTemplate()
+    $frequencyEditBox = $frequencyControl.Template.FindName('PART_EditableTextBox',$frequencyControl)
+    Assert-RadioUi ($frequencyEditBox -is [System.Windows.Controls.TextBox]) 'Editable frequency ComboBox没有实际WPF PART_EditableTextBox。'
+    Register-UiRadioCatFrequencyTextInput
+    $frequencyEditBox.Add_TextChanged({ $script:testFrequencyTextChanges++ })
     $baselineSnapshot = Get-TestRadioCatSnapshot
     $expectedReadoutChangeTotal = 0
     $env:WIREX_R116_UI_CAT_DELAY = 'query'
@@ -583,10 +699,11 @@ try {
         $readoutChangeCountBefore = [int]$script:testReadoutTextChanges
         $startedPoll = Invoke-UiRadioCatPollTick -Force
         Assert-RadioUi ($startedPoll -and $script:radioCatOperationPowerShell -and $script:radioCatOperationKind -ceq 'query') ('第{0}轮CAT query没有保持为唯一在途操作。' -f ($pollCycle + 1))
-        Assert-RadioUi ((Get-TestRadioCatSnapshot) -ceq $baselineSnapshot) ('第{0}轮CAT query在途时读值、编辑器、滑块或action按钮发生变化。' -f ($pollCycle + 1))
+        Assert-RadioUi ((Get-TestRadioCatSnapshot) -ceq $baselineSnapshot) ('第{0}轮CAT query在途时读数、编辑器、功率组合框或Apply按钮发生变化。' -f ($pollCycle + 1))
         [void](Update-UiRadioCatControls)
         [void](Update-UiRadioCatObservationDisplay)
-        Assert-RadioUi ((Get-TestRadioCatSnapshot) -ceq $baselineSnapshot) ('第{0}轮重复dispatcher刷新改变了CAT控件属性。' -f ($pollCycle + 1))
+        $dispatcherSnapshot = Get-TestRadioCatSnapshot
+        Assert-RadioUi ($dispatcherSnapshot -ceq $baselineSnapshot) ('第{0}轮重复dispatcher刷新改变了CAT控件属性。 baseline={1};current={2}' -f ($pollCycle + 1),$baselineSnapshot,$dispatcherSnapshot)
         [void](Complete-TestCatRunspace -TimeoutMs 3000)
         $expectedSample = switch ($sampleNumber) {
             1 { [pscustomobject]@{ mode='C4FM-DN'; frequency_hz=[long]145100000 } }
@@ -603,27 +720,27 @@ try {
         $pollSnapshotMatches = ($pollSnapshotAfter -ceq $baselineSnapshot -and
             [string](Get-SettingsControl 'CatObservedMainModeText').Text -ceq [string]$expectedSample.mode -and
             [string](Get-SettingsControl 'CatObservedFrequencyText').Text -ceq $expectedFrequencyReadout -and
-            [string](Get-SettingsControl 'CatObservedPowerText').Text -ceq '25 W' -and
+            [string](Get-SettingsControl 'CatObservedPowerText').Text -ceq '9 W' -and
             $readoutChangeCountDelta -eq $readoutChangesExpected)
-        $pollAssertMessage = '第{0}轮CAT worker完成后应只把新观测写到读数一次，并保持编辑器、滑块、状态文案、range和action按钮稳定。 readoutDelta={1}/{2}, mode={3}, frequency={4}' -f `
+        $pollAssertMessage = '第{0}轮CAT worker完成后应只把新观测写到读数一次，并保持编辑器、功率组合框、状态消息、功率选项和Apply按钮稳定。 readoutDelta={1}/{2}, mode={3}, frequency={4}' -f `
             $sampleNumber,$readoutChangeCountDelta,$readoutChangesExpected,[string](Get-SettingsControl 'CatObservedMainModeText').Text,
             [string](Get-SettingsControl 'CatObservedFrequencyText').Text
-        $pollAssertMessage += (' power={0}, expectedPower=25 W' -f [string](Get-SettingsControl 'CatObservedPowerText').Text)
+        $pollAssertMessage += (' power={0}, expectedPower=9 W' -f [string](Get-SettingsControl 'CatObservedPowerText').Text)
         if (-not $pollSnapshotMatches -and $pollSnapshotAfter -cne $baselineSnapshot) {
             $pollAssertMessage += ' snapshotDiff=' + ((Compare-Object ($baselineSnapshot -split "`n") ($pollSnapshotAfter -split "`n") | ForEach-Object { [string]$_.SideIndicator + $_.InputObject }) -join '|')
         }
         Assert-RadioUi $pollSnapshotMatches $pollAssertMessage
         $baselineSnapshot = Get-TestRadioCatSnapshot
     }
-    Assert-RadioUi ($script:actionEnableChanged -eq 0 -and $script:testReadoutTextChanges -eq $expectedReadoutChangeTotal -and $script:testSliderRangeChanges -eq 0 -and
+    Assert-RadioUi ($script:actionEnableChanged -eq 0 -and $script:testReadoutTextChanges -eq $expectedReadoutChangeTotal -and
         $script:testModeSelectionChanges -eq 0 -and $script:testFrequencyTextChanges -eq 0 -and
         $script:testModeEnableChanges -eq 0 -and $script:testFrequencyEnableChanges -eq 0 -and
-        $script:testSliderEnableChanges -eq 0 -and $script:testSliderValueChanges -eq 0) `
-        '多轮CAT query重复写入了观测文字、滑块range/value、editor选中项或action按钮状态。'
+        $script:testPowerSelectionEnableChanges -eq 0 -and $script:testPowerSelectionChanges -eq 0) `
+        ('多轮CAT query重复写入了观测文字、功率选择、编辑频率或Apply按钮状态。 readout={0}/{1}, modeSel={2}, freqText={3}, modeEnable={4}, freqEnable={5}, powerEnable={6}, powerSelection={7}, apply={8}' -f $script:testReadoutTextChanges,$expectedReadoutChangeTotal,$script:testModeSelectionChanges,$script:testFrequencyTextChanges,$script:testModeEnableChanges,$script:testFrequencyEnableChanges,$script:testPowerSelectionEnableChanges,$script:testPowerSelectionChanges,$script:actionEnableChanged)
     Remove-Item Env:\WIREX_R116_UI_CAT_DELAY -ErrorAction SilentlyContinue
     Remove-Item Env:\WIREX_R116_UI_CAT_DELAY_MS -ErrorAction SilentlyContinue
     Assert-RadioUi ($script:radioCatLastOperationStatus -ceq 'confirmed' -and
-        [int]$slider.Value -eq 6 -and [int]$script:radioCatEditDraft.power -eq 6 -and $powerButton.IsEnabled) `
+        (Get-UiRadioCatPowerSelection) -eq 10 -and [int]$script:radioCatEditDraft.power -eq 10 -and $powerButton.IsEnabled) `
         '周期 query 完成后没有刷新确认状态，或覆盖用户保留的功率草稿。'
 
     # The one Apply action freezes all three targets while a query is already in flight.
@@ -641,7 +758,7 @@ try {
     $settingsButton.RaiseEvent($settingsClick)
     Assert-RadioUi ($script:radioCatQueuedAction -and [string]$script:radioCatQueuedAction.operation -ceq 'setSettings' -and
         [string]$script:radioCatQueuedAction.mode -ceq 'C4FM-DN' -and [long]$script:radioCatQueuedAction.frequency_hz -eq 145600000 -and
-        [int]$script:radioCatQueuedAction.power_watts -eq 6 -and [string]$script:radioCatQueuedAction.port_name -ceq 'COM11' -and
+        [int]$script:radioCatQueuedAction.power_watts -eq 10 -and [string]$script:radioCatQueuedAction.port_name -ceq 'COM11' -and
         [int]$script:radioCatQueuedAction.generation -eq [int]$script:radioCatSessionGeneration -and
         ([regex]::Matches((Get-TestRadioCatLog),'WRITE\|set(?:Mode|Frequency|Power)')).Count -eq
             ($setModeBeforeApply + $setFrequencyBeforeApply + $setPowerBeforeApply)) `
@@ -655,10 +772,10 @@ try {
         ([regex]::Matches($queuedLog,'BEGIN\|setPower')).Count -eq ($setPowerBeforeApply + 1) -and
         $queuedLog -match 'ARGS\|setMode\|Port=COM11\|Role=CAT-1\|HRI=\|Baud=38400\|StopBits=Two\|Side=Main\|Mode=C4FM-DN' -and
         $queuedLog -match 'ARGS\|setFrequency\|Port=COM11\|Role=CAT-1\|HRI=\|Baud=38400\|StopBits=Two\|Side=Main\|.*FrequencyHz=145600000' -and
-        $queuedLog -match 'ARGS\|setPower\|Port=COM11\|Role=CAT-1\|HRI=\|Baud=38400\|StopBits=Two\|.*PowerWatts=6' -and
+        $queuedLog -match 'ARGS\|setPower\|Port=COM11\|Role=CAT-1\|HRI=\|Baud=38400\|StopBits=Two\|.*PowerWatts=10' -and
         $script:radioCatObserved.main_mode.value.mode -ceq 'C4FM-DN' -and
         [long]$script:radioCatObserved.main_frequency_hz.value -eq 145600000 -and
-        [int]$script:radioCatObserved.power.value.watts -eq 6)
+        [int]$script:radioCatObserved.power.value.watts -eq 10)
     if (-not $queuedApplyConfirmed) {
         $batchDebug = [ordered]@{
             values = @($script:radioCatObserved.main_mode.value.mode,$script:radioCatObserved.main_frequency_hz.value,$script:radioCatObserved.power.value.watts)
@@ -667,7 +784,7 @@ try {
             expected = @(($setModeBeforeApply + 1),($setFrequencyBeforeApply + 1),($setPowerBeforeApply + 1))
             args = @(($queuedLog -match 'ARGS\|setMode\|Port=COM11\|Role=CAT-1\|HRI=\|Baud=38400\|StopBits=Two\|Side=Main\|Mode=C4FM-DN'),
                 ($queuedLog -match 'ARGS\|setFrequency\|Port=COM11\|Role=CAT-1\|HRI=\|Baud=38400\|StopBits=Two\|Side=Main\|.*FrequencyHz=145600000'),
-                ($queuedLog -match 'ARGS\|setPower\|Port=COM11\|Role=CAT-1\|HRI=\|Baud=38400\|StopBits=Two\|.*PowerWatts=6'))
+                ($queuedLog -match 'ARGS\|setPower\|Port=COM11\|Role=CAT-1\|HRI=\|Baud=38400\|StopBits=Two\|.*PowerWatts=10'))
             done = $queuedSequenceCompleted
             tail = (($queuedLog -split "`n" | Select-Object -Last 24) -join ';')
         }
@@ -675,7 +792,7 @@ try {
     }
     Assert-RadioUi $queuedApplyConfirmed '统一 Apply 没有按顺序对三个冻结目标逐字段读回。'
     Assert-RadioUi ($queuedLog -match 'READBACK\|setMode\|C4FM-DN' -and $queuedLog -match 'READBACK\|setFrequency\|145600000' -and
-        $queuedLog -match 'READBACK\|setPower\|6' -and [string](Get-SettingsControl 'CatOperationStatusText').Text -match '逐项读取') `
+        $queuedLog -match 'READBACK\|setPower\|10' -and (Get-TestTransientStatus) -match '逐项读取') `
         'fake CAT transport 没有记录三个字段的精确读回或统一状态没有给出逐步结果。'
     Remove-Item Env:\WIREX_R116_UI_CAT_DELAY -ErrorAction SilentlyContinue
     Remove-Item Env:\WIREX_R116_UI_CAT_DELAY_MS -ErrorAction SilentlyContinue
@@ -690,11 +807,11 @@ try {
     $env:WIREX_R116_UI_CAT_DELAY_MS = '1200'
     Assert-RadioUi ([bool](Invoke-UiRadioCatPollTick -Force) -and $script:radioCatOperationPowerShell) 'CAT disconnect test did not start its in-flight query.'
     Assert-RadioUi (Test-UiRadioCatPortConflictWithHri -HriPortName 'COM11') 'CAT in-flight session did not expose its port to the HRI conflict check.'
-    $script:radioCatEditDraft.power = 6
+    $script:radioCatEditDraft.power = 10
     Invoke-UiRadioCatAction -Operation setSettings
     Assert-RadioUi ($script:radioCatQueuedAction -and [string]$script:radioCatQueuedAction.operation -ceq 'setSettings' -and
         [string]$script:radioCatQueuedAction.mode -ceq [string](Get-UiRadioCatProperty -InputObject (Get-SettingsControl 'CatMainModeBox').SelectedItem -Name 'Tag') -and
-        [int]$script:radioCatQueuedAction.power_watts -eq 6) 'CAT disconnect test did not freeze the complete settings action behind its in-flight query.'
+        [int]$script:radioCatQueuedAction.power_watts -eq 10) 'CAT disconnect test did not freeze the complete settings action behind its in-flight query.'
     [void](Disconnect-UiRadioCatSession -Reason user_disconnect)
     Assert-RadioUi (-not $script:radioCatSessionRequested -and -not $script:radioCatPollingActive -and
         $script:radioCatManualDisconnect -and $script:radioCatOperationCancelled -and $script:radioCatOperationStopAsync -and
@@ -777,8 +894,8 @@ try {
         '自动启动重新加载已保存配置时，没有沿用与手动保存相同的COM和音频稳定值。'
     $initialSaveSucceeded = [bool](Save-SettingsFromWindow)
     $savedPreference = Get-WirexPortableConfig -Path $script:portableConfigPath
-    Assert-RadioUi ($initialSaveSucceeded -and [int]$savedPreference.devices.desired_power_watts -eq 6) `
-        ('保存设置没有成功，或没有保留先前明确应用并确认的 6 W 目标。 saved={0}, power={1}, path={2}' -f $initialSaveSucceeded,$savedPreference.devices.desired_power_watts,$script:portableConfigPath)
+    Assert-RadioUi ($initialSaveSucceeded -and [int]$savedPreference.devices.desired_power_watts -eq 10) `
+        ('保存设置没有成功，或没有保留先前明确应用并确认的10 W目标。 saved={0}, power={1}, path={2}' -f $initialSaveSucceeded,$savedPreference.devices.desired_power_watts,$script:portableConfigPath)
     $masterBox = Get-UiControl 'MasterBox'
     $apiBox = Get-UiControl 'BmApiKeyBox'
     $savedMaster = [string]$savedPreference.connection.master
@@ -789,7 +906,7 @@ try {
     $apiSentinel = 'R121_FAKE_API_SECRET_MUST_NOT_APPEAR'
     $apiBox.Password = $apiSentinel
     $invalidSaveSucceeded = [bool](Save-SettingsFromWindow)
-    $saveErrorText = [string](Get-UiControl 'SettingsErrorText').Text
+    $saveErrorText = Get-TestTransientStatus
     $savedAfterRejectedSave = Get-WirexPortableConfig -Path $script:portableConfigPath
     Assert-RadioUi (-not $invalidSaveSucceeded -and $saveErrorText -match 'BM 服务器或认证字段格式无效' -and
         $saveErrorText -cnotlike ('*' + $apiSentinel + '*') -and
@@ -799,20 +916,21 @@ try {
         $script:portableConfig.connection.api_key -ceq $savedApiKey -and
         [object]::ReferenceEquals($script:storedProfile,$storedProfileBeforeRejectedSave) -and
         [string]$script:bmServerSelectionPreferenceId -ceq $serverSelectionBeforeRejectedSave) `
-        '无效的 BM 主机没有显示具体但不含密钥的安全错误，或失败保存改动了磁盘/内存设置。'
+        '无效的BM主机没有显示不含密钥的临时安全错误，或失败保存改动了磁盘/内存设置。'
     $masterBox.Text = $savedMaster
     $apiBox.Password = $savedApiKey
-    Assert-RadioUi ([bool](Save-SettingsFromWindow)) '修正 BM 主机后设置未能保存，或错误提示没有清除。'
-    Assert-RadioUi ((Get-UiControl 'SettingsErrorText').Visibility -eq [System.Windows.Visibility]::Collapsed) '保存恢复成功后仍显示旧错误。'
+    $recoveredSaveSucceeded = [bool](Save-SettingsFromWindow)
+    $recoveredConfig = Get-WirexPortableConfig -Path $script:portableConfigPath
+    Assert-RadioUi ($recoveredSaveSucceeded -and $recoveredConfig.connection.master -ceq $savedMaster) '修正BM主机后设置未能保存到统一配置。'
     Assert-RadioUi ([object]::ReferenceEquals($script:mainWindow,$script:testRootMainWindow) -and -not $script:testRootMainWindow.Closed) `
         '保存统一配置不应关闭主窗口或改变其所有权。'
 
-    # A real slider edit creates a write draft without changing the saved preference.
-    $slider.Value = 9
-    Assert-RadioUi ([int]$script:radioCatEditDraft.power -eq 9 -and
-        [int]$script:radioControlPreferences.desired_power_watts -eq 6 -and -not $script:radioCatPowerNeedsUserChoice) `
-        'MainWindow 功率滑块明确改到 9 W 后应形成独立草稿并保留先前确认的 6 W 偏好。'
-    Assert-RadioUi ((Get-SettingsControl 'ApplyCatSettingsButton').IsEnabled) '合法的 9 W 草稿形成后应用按钮应可用。'
+    # A real WPF ComboBox selection creates a write draft without changing the saved preference.
+    Assert-RadioUi (Set-TestRadioCatPowerSelection -Watts 5) 'FieldHead 5 W预设没有通过真实ComboBox选择。'
+    Assert-RadioUi ([int]$script:radioCatEditDraft.power -eq 5 -and
+        [int]$script:radioControlPreferences.desired_power_watts -eq 10 -and -not $script:radioCatPowerNeedsUserChoice) `
+        'MainWindow功率Combo选择5 W后应形成独立草稿并保留先前确认的10 W偏好。'
+    Assert-RadioUi ((Get-SettingsControl 'ApplyCatSettingsButton').IsEnabled) '合法的5 W草稿形成后应用按钮应可用。'
     Set-UiRadioCatDraft -Field power -Value $null
     [void](Update-UiRadioCatControls)
 
@@ -824,30 +942,31 @@ try {
         wave_inputs=@(); wave_outputs=@()
     }
     Set-UiRadioCatDeviceControls
-    $slider = Get-SettingsControl 'CatPowerSlider'
+    $powerBox = Get-SettingsControl 'CatPowerBox'
     Assert-RadioUi ((Get-UiRadioCatSelectedPort) -ceq 'COM11') ('重开设置窗后 CAT 端口选择无效：port={0}, discovery={1}, pref={2}' -f (Get-UiRadioCatSelectedPort),$script:deviceDiscoveryState,$script:radioControlPreferences.cat_port)
     $env:WIREX_R116_UI_CAT_SAMPLE = 'matched'
     $env:WIREX_R116_UI_CAT_PATH = 'FieldHead'
     $env:WIREX_R116_UI_CAT_POWER = '5'
+    $env:WIREX_R116_UI_CAT_FORCE_POWER = '5'
     $modeControl.SelectedItem = @($modeControl.Items | Where-Object { [string]$_.Tag -ceq 'C4FM-DN' })[0]
-    $frequencyControl.Text = '145.600'
+    Assert-RadioUi (Set-TestRadioCatFrequencyText -Text '145.600') '重开设置窗后频率PART文本框没有接受用户输入。'
     $setPowerBeginsBeforeRefresh = ([regex]::Matches((Get-TestRadioCatLog),'BEGIN\|setPower')).Count
     Start-UiRadioCatOperation -Operation query
     [void](Complete-TestCatRunspace -TimeoutMs 3000)
-    Assert-RadioUi ([int]$script:radioControlPreferences.desired_power_watts -eq 6 -and
+    Assert-RadioUi ([int]$script:radioControlPreferences.desired_power_watts -eq 10 -and
         $null -eq $script:radioCatEditDraft.power -and -not $script:radioCatPowerNeedsUserChoice -and
         ([regex]::Matches((Get-TestRadioCatLog),'BEGIN\|setPower')).Count -eq $setPowerBeginsBeforeRefresh) '重开后 FieldHead 首读应保留偏好且不自动写入功率。'
+    Remove-Item Env:\WIREX_R116_UI_CAT_FORCE_POWER -ErrorAction SilentlyContinue
 
-    # Exercise the actual bound WPF ValueChanged and Apply Button handlers after explicit selection.
-    $slider.Value = 7
-    $slider.Value = 6
-    Assert-RadioUi ($null -ne $script:radioCatEditDraft.power -and [int]$script:radioCatEditDraft.power -eq 6 -and
-        [int]$script:radioControlPreferences.desired_power_watts -eq 6 -and -not $script:radioCatPowerNeedsUserChoice) `
-        ('真实 WPF 滑块操作没有创建 6 W 草稿或保留已确认偏好。 draft={0}, pref={1}, needsChoice={2}, slider={3}' -f `
+    # Exercise the actual bound WPF SelectionChanged and Apply Button handlers.
+    Assert-RadioUi (Set-TestRadioCatPowerSelection -Watts 5) 'FieldHead当前读值5 W没有形成真实功率选择。'
+    Assert-RadioUi ($null -ne $script:radioCatEditDraft.power -and [int]$script:radioCatEditDraft.power -eq 5 -and
+        [int]$script:radioControlPreferences.desired_power_watts -eq 10 -and -not $script:radioCatPowerNeedsUserChoice) `
+        ('真实WPF功率选择没有创建5 W草稿或保留已确认偏好。 draft={0}, pref={1}, needsChoice={2}, selected={3}' -f `
             [string]$script:radioCatEditDraft.power,[int]$script:radioControlPreferences.desired_power_watts,
-            [bool]$script:radioCatPowerNeedsUserChoice,[double]$slider.Value)
+            [bool]$script:radioCatPowerNeedsUserChoice,(Get-UiRadioCatPowerSelection))
     $setPowerButton = Get-SettingsControl 'ApplyCatSettingsButton'
-    Assert-RadioUi $setPowerButton.IsEnabled '用户选择 6 W、并有明确模式/频率目标后统一 Apply 应启用。'
+    Assert-RadioUi $setPowerButton.IsEnabled '用户选择5 W、并有明确模式/频率目标后统一Apply应启用。'
     $script:lastStatusUtc = [DateTime]::UtcNow
     $explicitSetPowerBeginsBefore = ([regex]::Matches((Get-TestRadioCatLog),'BEGIN\|setPower')).Count
     $clickArgs = New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent,$setPowerButton)
@@ -856,9 +975,9 @@ try {
     $explicitSetPowerLog = (Get-TestRadioCatLog)
     Assert-RadioUi ($setPowerSequenceReady -and
         ([regex]::Matches($explicitSetPowerLog,'BEGIN\|setPower')).Count -eq $explicitSetPowerBeginsBefore -and
-        $script:radioCatLastOperationStatus -ceq 'confirmed' -and [int]$script:radioCatObserved.power.value.watts -eq 6 -and
-        $null -eq $script:radioCatEditDraft.power -and [string](Get-SettingsControl 'CatOperationStatusText').Text -match '没有发送设置帧') `
-        ('当前已是6 W时，统一Apply应通过query确认并跳过功率写入。 status={0}, operation={1}, result={2}, cancelled={3}, cleanup={4}, begin={5}/{6}' -f `
+        $script:radioCatLastOperationStatus -ceq 'confirmed' -and [int]$script:radioCatObserved.power.value.watts -eq 5 -and
+        $null -eq $script:radioCatEditDraft.power -and (Get-TestTransientStatus) -match '没有发送设置帧') `
+        ('当前已是5 W时，统一Apply应通过query确认并跳过功率写入。 status={0}, operation={1}, result={2}, cancelled={3}, cleanup={4}, begin={5}/{6}' -f `
             [string]$script:radioCatLastOperationStatus,[string]$script:radioCatOperationKind,
             [string]$script:radioCatResult.status,[bool]$script:radioCatOperationCancelled,
             [string]$script:radioCatResult.cleanup_status,([regex]::Matches($explicitSetPowerLog,'BEGIN\|setPower')).Count,$explicitSetPowerBeginsBefore)
@@ -867,7 +986,7 @@ try {
     $env:WIREX_R116_UI_CAT_PATH = 'Spa1'
     Start-UiRadioCatOperation -Operation query
     [void](Complete-TestCatRunspace -TimeoutMs 3000)
-    Assert-RadioUi ([int]$slider.Maximum -eq 50) 'SPA-1 readback没有刷新功率范围。'
+    Assert-RadioUi ((@($powerBox.Items | Where-Object { [string]$_.Tag -ceq '50' })[0].IsEnabled)) 'SPA-1 readback没有刷新功率选项上限。'
     $env:WIREX_R116_UI_CAT_PATH = 'FieldHead'
     Start-UiRadioCatOperation -Operation setPower -PowerWatts 25
     [void](Complete-TestCatRunspace -TimeoutMs 3000)
@@ -878,11 +997,12 @@ try {
             [string]$script:radioCatRejectedPowerReadbackInput.error_code,[string]$script:radioCatRejectedPowerReadbackInput.cleanup_status,
             $script:radioCatRejectedPowerReadbackValid,
             (ConvertTo-Json -InputObject $script:radioCatRejectedPowerReadbackInput -Depth 5 -Compress))
-    Assert-RadioUi ([int]$slider.Maximum -eq 10 -and -not (Get-SettingsControl 'ApplyCatSettingsButton').IsEnabled) '拒绝结果没有刷新 FieldHead 上限或仍允许继续写入。'
-    Assert-RadioUi (([string](Get-SettingsControl 'CatObservedPowerText').Text) -match '6 W') '拒绝结果中的 PC 当前读值没有显示。'
+    Assert-RadioUi (-not (@($powerBox.Items | Where-Object { [string]$_.Tag -ceq '15' })[0].IsEnabled) -and
+        -not (Get-SettingsControl 'ApplyCatSettingsButton').IsEnabled) '拒绝结果没有刷新FieldHead上限，或仍允许继续写入。'
+    Assert-RadioUi (([string](Get-SettingsControl 'CatObservedPowerText').Text) -match '5 W') '拒绝结果中的 PC 当前读值没有显示。'
     Assert-RadioUi ($script:radioCatResult.cleanup_status -ceq 'closed' -and $script:radioCatResult.source -ceq 'CAT test transport' -and
         $script:radioCatResult.port_name -ceq 'COM11' -and $script:radioCatObserved.radio_id.value -ceq '0840' -and
-        $script:radioCatObserved.power.value.path -ceq 'FieldHead' -and $script:radioCatObserved.power.value.watts -eq 6 -and
+        $script:radioCatObserved.power.value.path -ceq 'FieldHead' -and $script:radioCatObserved.power.value.watts -eq 5 -and
         $script:radioCatResult.capabilities.set_power.maximum_watts -eq 10) 'rejected 结果应保留 closed/ID0840/FieldHead 的新鲜 PC 读值及 10 W 上限。'
     $env:WIREX_R116_UI_CAT_BAD_ID = '1'
     Start-UiRadioCatOperation -Operation setPower -PowerWatts 25
@@ -902,25 +1022,36 @@ try {
         desired_power_watts=[int]$script:portableConfig.devices.desired_power_watts
     }
     $script:radioCatObserved = $null
+    $script:radioCatResult = $null
     $script:radioCatEditDraft.power = $null
     $script:radioCatPowerPreferenceDirty = $false
-    Set-UiRadioCatPowerSliderRange -Maximum 50
+    Set-UiRadioCatPowerChoices -Maximum 50
     Set-UiRadioCatDeviceControls
-    Assert-RadioUi ([int]$slider.Value -eq 25 -and [int]$script:radioControlPreferences.desired_power_watts -eq 25 -and -not $script:radioCatPowerPreferenceDirty) '第二种偏好用例没有从 25 W 干净回填。'
-    $slider.Value = 40
+    Assert-RadioUi ((Get-UiRadioCatPowerSelection) -eq 25 -and [int]$script:radioControlPreferences.desired_power_watts -eq 25 -and -not $script:radioCatPowerPreferenceDirty) '第二种偏好用例没有从 25 W 干净回填。'
+    $env:WIREX_R116_UI_CAT_PATH = 'Spa1'
+    $env:WIREX_R116_UI_CAT_FORCE_POWER = '40'
+    Start-UiRadioCatOperation -Operation query
+    [void](Complete-TestCatRunspace -TimeoutMs 3000)
+    Assert-RadioUi (@($powerBox.Items | Where-Object { [string]$_.Tag -ceq '40' }).Count -eq 1 -and
+        (Get-UiRadioCatPowerSelection) -eq 40) 'CAT讀到合法非預設SPA-1 40 W後沒有添加当前值项。'
+    Assert-RadioUi (Set-TestRadioCatPowerSelection -Watts 40) '读到的SPA-1 40 W当前值项不能被用户选择。'
     Assert-RadioUi ([int]$script:radioCatEditDraft.power -eq 40 -and
         [int]$script:radioControlPreferences.desired_power_watts -eq 25 -and -not $script:radioCatPowerPreferenceDirty) '用户从 SPA-1 范围明确选 40 W 后应只创建草稿，不提前改写已保存偏好。'
     $env:WIREX_R116_UI_CAT_PATH = 'Spa1'
     Start-UiRadioCatOperation -Operation query
     [void](Complete-TestCatRunspace -TimeoutMs 3000)
-    Assert-RadioUi ([int]$slider.Maximum -eq 50 -and [int]$script:radioCatEditDraft.power -eq 40 -and
+    Assert-RadioUi ((@($powerBox.Items | Where-Object { [string]$_.Tag -ceq '50' })[0].IsEnabled) -and [int]$script:radioCatEditDraft.power -eq 40 -and
         [int]$script:radioControlPreferences.desired_power_watts -eq 25) 'SPA-1 读回应保留用户 40 W 草稿和独立 25 W 偏好。'
     $env:WIREX_R116_UI_CAT_PATH = 'FieldHead'
+    $env:WIREX_R116_UI_CAT_FORCE_POWER = '5'
     Start-UiRadioCatOperation -Operation query
     [void](Complete-TestCatRunspace -TimeoutMs 3000)
-    Assert-RadioUi ([int]$slider.Maximum -eq 10 -and [int]$script:radioControlPreferences.desired_power_watts -eq 25 -and
+    Assert-RadioUi (-not (@($powerBox.Items | Where-Object { [string]$_.Tag -ceq '40' })[0].IsEnabled) -and [int]$script:radioControlPreferences.desired_power_watts -eq 25 -and
         [int]$script:radioCatEditDraft.power -eq 40 -and $script:radioCatPowerNeedsUserChoice -and
         -not (Get-SettingsControl 'ApplyCatSettingsButton').IsEnabled) 'FieldHead cap 降低后应保留 dirty 40 W 并要求重新选择、禁用应用。'
+    Assert-RadioUi (Set-TestRadioCatPowerSelection -Watts 10) 'FieldHead拒绝40 W草稿后，用户不能重新选择合法10 W。'
+    Assert-RadioUi ([int]$script:radioCatEditDraft.power -eq 10 -and -not $script:radioCatPowerNeedsUserChoice) '用户重新选10 W后没有替换过期40 W草稿。'
+    Remove-Item Env:\WIREX_R116_UI_CAT_FORCE_POWER -ErrorAction SilentlyContinue
     $savedPowerWriteCount = ([regex]::Matches((Get-TestRadioCatLog),'ARGS\|setPower')).Count
     $script:profileEditable = $false
     $script:profileWriteAllowed = $false
@@ -929,7 +1060,7 @@ try {
     $savedDirtyPreference = Get-WirexPortableConfig -Path $script:portableConfigPath
     Assert-RadioUi ([int]$savedDirtyPreference.devices.desired_power_watts -eq 25 -and
         ([regex]::Matches((Get-TestRadioCatLog),'ARGS\|setPower')).Count -eq $savedPowerWriteCount -and
-        $dirtySaveSucceeded) ('FieldHead 保存未成功或把未应用草稿写进偏好/发起CAT操作：saved={0}, args={1}/{2}, pref={3}, draft={4}, value={5}, needsChoice={6}' -f $savedDirtyPreference.devices.desired_power_watts,([regex]::Matches((Get-TestRadioCatLog),'ARGS\|setPower')).Count,$savedPowerWriteCount,$script:radioControlPreferences.desired_power_watts,$script:radioCatEditDraft.power,$slider.Value,$script:radioCatPowerNeedsUserChoice)
+        $dirtySaveSucceeded) ('FieldHead 保存未成功或把未应用草稿写进偏好/发起CAT操作：saved={0}, args={1}/{2}, pref={3}, draft={4}, selected={5}, needsChoice={6}' -f $savedDirtyPreference.devices.desired_power_watts,([regex]::Matches((Get-TestRadioCatLog),'ARGS\|setPower')).Count,$savedPowerWriteCount,$script:radioControlPreferences.desired_power_watts,$script:radioCatEditDraft.power,(Get-UiRadioCatPowerSelection),$script:radioCatPowerNeedsUserChoice)
     [void](Initialize-SettingsWindow)
     $script:deviceDiscoveryState = 'ready'
     $script:deviceCatalog = [pscustomobject]@{ serial_ports=@([pscustomobject]@{ PortName='COM11'; FriendlyName='Synthetic CAT'; CatMatchRank=100; IsHri=$false }); hri_ports=@([pscustomobject]@{ PortName='COM5'; FriendlyName='Synthetic HRI' }); wave_inputs=@(); wave_outputs=@() }
@@ -939,9 +1070,8 @@ try {
         param([string]$Mode,[string]$FrequencyMHz,[int]$PowerWatts)
         $box = Get-SettingsControl 'CatMainModeBox'
         $box.SelectedItem = @($box.Items | Where-Object { [string]$_.Tag -ceq $Mode })[0]
-        (Get-SettingsControl 'CatMainFrequencyMHzBox').Text = $FrequencyMHz
-        (Get-SettingsControl 'CatPowerSlider').Value = $PowerWatts
-        $script:radioCatPowerNeedsUserChoice = $false
+        if (-not (Set-TestRadioCatFrequencyText -Text $FrequencyMHz)) { throw 'Editable frequency PART_TextBox did not accept the requested test text.' }
+        if (-not (Set-TestRadioCatPowerSelection -Watts $PowerWatts)) { throw "功率Combo没有可用的 $PowerWatts W 当前项或预设项。" }
         Update-UiRadioCatControls
     }
 
@@ -950,7 +1080,7 @@ try {
     $env:WIREX_R116_UI_CAT_POWER = '25'
     $env:WIREX_R116_UI_CAT_FORCE_POWER = '25'
     $env:WIREX_R116_UI_CAT_SAMPLE = '2'
-    Set-R122TestCatTarget -Mode 'C4FM-DN' -FrequencyMHz '145.600' -PowerWatts 6
+    Set-R122TestCatTarget -Mode 'C4FM-DN' -FrequencyMHz '145.600' -PowerWatts 10
     $liveApplySupervisor = New-TestRadioSupervisor
     $script:supervisor = $liveApplySupervisor
     $beforeLiveMode = ([regex]::Matches((Get-TestRadioCatLog),'BEGIN\|setMode')).Count
@@ -961,7 +1091,7 @@ try {
     $settingsButton.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent,$settingsButton)))
     Assert-RadioUi ($script:radioCatQueuedAction -and [string]$script:radioCatQueuedAction.operation -ceq 'setSettings' -and
         [string]$script:radioCatQueuedAction.mode -ceq 'C4FM-DN' -and [long]$script:radioCatQueuedAction.frequency_hz -eq 145600000 -and
-        [int]$script:radioCatQueuedAction.power_watts -eq 6 -and $liveApplySupervisor.StopCallCount -eq 0) `
+        [int]$script:radioCatQueuedAction.power_watts -eq 10 -and $liveApplySupervisor.StopCallCount -eq 0) `
         '统一 Apply 没有冻结模式/频率/功率，或请求了 HRI 停止。'
     Assert-RadioUi (Complete-TestCatActionSequence -TimeoutMs 7000) 'live-core CAT 单次应用的 fake worker 没有逐步完成。'
     $liveApplyLog = Get-TestRadioCatLog
@@ -972,13 +1102,13 @@ try {
         ([regex]::Matches($liveApplyLog,'BEGIN\|setPower')).Count -eq ($beforeLivePower + 1) -and
         $script:radioCatObserved.main_mode.value.mode -ceq 'C4FM-DN' -and
         [long]$script:radioCatObserved.main_frequency_hz.value -eq 145600000 -and
-        [int]$script:radioCatObserved.power.value.watts -eq 6) `
+        [int]$script:radioCatObserved.power.value.watts -eq 10) `
         'live-core Apply 未逐字段读回三个冻结目标，或调用了 StopAsync。'
     Assert-RadioUi ($liveApplyLog -match 'READBACK\|setMode\|C4FM-DN' -and
-        $liveApplyLog -match 'READBACK\|setFrequency\|145600000' -and $liveApplyLog -match 'READBACK\|setPower\|6') `
+        $liveApplyLog -match 'READBACK\|setFrequency\|145600000' -and $liveApplyLog -match 'READBACK\|setPower\|10') `
         'fake CAT worker 没有记录模式、频率、功率的实际读回值。'
-    Assert-RadioUi ([string](Get-SettingsControl 'CatOperationStatusText').Text -match '逐项读取' -and
-        [string](Get-SettingsControl 'CatOperationStatusText').Text -match '已读回目标值') '统一状态没有逐字段报告读回确认。'
+    Assert-RadioUi ((Get-TestTransientStatus) -match '逐项读取' -and
+        (Get-TestTransientStatus) -match '已读回目标值') '统一状态没有逐字段报告读回确认。'
     Remove-Item Env:\WIREX_R116_UI_CAT_FORCE_POWER -ErrorAction SilentlyContinue
     $liveApplySupervisor.HasExited = $true
     $liveApplySupervisor.Dispose()
@@ -986,8 +1116,8 @@ try {
 
     # CAT-only is available; fields already equal to the fresh query are read and skipped without writes.
     $env:WIREX_R116_UI_CAT_SAMPLE = 'matched'
-    $env:WIREX_R116_UI_CAT_POWER = '6'
-    Set-R122TestCatTarget -Mode 'C4FM-DN' -FrequencyMHz '145.600' -PowerWatts 6
+    $env:WIREX_R116_UI_CAT_POWER = '10'
+    Set-R122TestCatTarget -Mode 'C4FM-DN' -FrequencyMHz '145.600' -PowerWatts 10
     $beforeUnchangedMode = ([regex]::Matches((Get-TestRadioCatLog),'BEGIN\|setMode')).Count
     $beforeUnchangedFrequency = ([regex]::Matches((Get-TestRadioCatLog),'BEGIN\|setFrequency')).Count
     $beforeUnchangedPower = ([regex]::Matches((Get-TestRadioCatLog),'BEGIN\|setPower')).Count
@@ -997,9 +1127,9 @@ try {
     Assert-RadioUi (([regex]::Matches((Get-TestRadioCatLog),'BEGIN\|setMode')).Count -eq $beforeUnchangedMode -and
         ([regex]::Matches((Get-TestRadioCatLog),'BEGIN\|setFrequency')).Count -eq $beforeUnchangedFrequency -and
         ([regex]::Matches((Get-TestRadioCatLog),'BEGIN\|setPower')).Count -eq $beforeUnchangedPower -and
-        [string](Get-SettingsControl 'CatOperationStatusText').Text -match '没有发送设置帧' -and -not $script:supervisor) `
+        (Get-TestTransientStatus) -match '没有发送设置帧' -and -not $script:supervisor) `
         'CAT-only Apply 没有读取当前设置并跳过三个相同目标。'
-    Set-R122TestCatTarget -Mode 'C4FM-DN' -FrequencyMHz '145.600' -PowerWatts 9
+    Set-R122TestCatTarget -Mode 'C4FM-DN' -FrequencyMHz '145.600' -PowerWatts 15
     $beforePowerOnlyMode = ([regex]::Matches((Get-TestRadioCatLog),'BEGIN\|setMode')).Count
     $beforePowerOnlyFrequency = ([regex]::Matches((Get-TestRadioCatLog),'BEGIN\|setFrequency')).Count
     $beforePowerOnlyPower = ([regex]::Matches((Get-TestRadioCatLog),'BEGIN\|setPower')).Count
@@ -1009,7 +1139,7 @@ try {
     Assert-RadioUi (([regex]::Matches((Get-TestRadioCatLog),'BEGIN\|setMode')).Count -eq $beforePowerOnlyMode -and
         ([regex]::Matches((Get-TestRadioCatLog),'BEGIN\|setFrequency')).Count -eq $beforePowerOnlyFrequency -and
         ([regex]::Matches((Get-TestRadioCatLog),'BEGIN\|setPower')).Count -eq ($beforePowerOnlyPower + 1) -and
-        [int]$script:radioCatObserved.power.value.watts -eq 9) `
+        [int]$script:radioCatObserved.power.value.watts -eq 15) `
         'MAIN模式和频率一致时应跳过两项写入，继续单独设置并读回功率。'
     $savedSettingsApplyState = $script:radioCatSettingsApply
     $script:radioCatSettingsApply = [pscustomobject]@{ steps=@() }
@@ -1022,14 +1152,14 @@ try {
     $env:WIREX_R116_UI_CAT_SAMPLE = '2'
     $env:WIREX_R116_UI_CAT_POWER = '25'
     $env:WIREX_R116_UI_CAT_FAIL = 'setFrequency'
-    Set-R122TestCatTarget -Mode 'C4FM-DN' -FrequencyMHz '145.600' -PowerWatts 6
+    Set-R122TestCatTarget -Mode 'C4FM-DN' -FrequencyMHz '145.600' -PowerWatts 10
     $beforeFailureMode = ([regex]::Matches((Get-TestRadioCatLog),'BEGIN\|setMode')).Count
     $beforeFailureFrequency = ([regex]::Matches((Get-TestRadioCatLog),'BEGIN\|setFrequency')).Count
     $beforeFailurePower = ([regex]::Matches((Get-TestRadioCatLog),'BEGIN\|setPower')).Count
     $settingsButton = Get-SettingsControl 'ApplyCatSettingsButton'
     $settingsButton.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent,$settingsButton)))
     Assert-RadioUi (Complete-TestCatActionSequence -TimeoutMs 6000) 'frequency readback mismatch did not close its fake worker.'
-    $failureNotice = [string](Get-SettingsControl 'CatOperationStatusText').Text
+    $failureNotice = (Get-TestTransientStatus)
     Assert-RadioUi (([regex]::Matches((Get-TestRadioCatLog),'BEGIN\|setMode')).Count -eq ($beforeFailureMode + 1) -and
         ([regex]::Matches((Get-TestRadioCatLog),'BEGIN\|setFrequency')).Count -eq ($beforeFailureFrequency + 1) -and
         ([regex]::Matches((Get-TestRadioCatLog),'BEGIN\|setPower')).Count -eq $beforeFailurePower -and
@@ -1042,7 +1172,7 @@ try {
     $env:WIREX_R116_UI_CAT_SAMPLE = '2'
     Start-UiRadioCatOperation -Operation query
     [void](Complete-TestCatRunspace -TimeoutMs 3000)
-    Set-R122TestCatTarget -Mode 'C4FM-DN' -FrequencyMHz '145.600' -PowerWatts 6
+    Set-R122TestCatTarget -Mode 'C4FM-DN' -FrequencyMHz '145.600' -PowerWatts 10
     $staleApplySupervisor = New-TestRadioSupervisor
     $script:supervisor = $staleApplySupervisor
     $script:lastStatusUtc = [DateTime]::UtcNow.AddSeconds(-4)
@@ -1114,9 +1244,9 @@ try {
     Assert-RadioUi ($script:radioCatOperationPowerShell -and $script:radioCatOperationKind -ceq 'setMode' -and
         ([regex]::Matches((Get-TestRadioCatLog),'BEGIN\|setMode')).Count -eq ($beforeDisconnectMode + 1)) `
         ('CAT disconnect test did not start its current mode worker. op={0},apply={1},notice={2},target={3}/{4}/{5}, observed={6}/{7}/{8}, idle={9}, count={10}/{11}' -f `
-            [string]$script:radioCatOperationKind,[bool]$script:radioCatSettingsApply,[string](Get-SettingsControl 'CatOperationStatusText').Text,
+            [string]$script:radioCatOperationKind,[bool]$script:radioCatSettingsApply,(Get-TestTransientStatus),
             [string](Get-SettingsControl 'CatMainModeBox').SelectedItem.Tag,[string](Get-SettingsControl 'CatMainFrequencyMHzBox').Text,
-            [int](Get-SettingsControl 'CatPowerSlider').Value,[string]$script:radioCatObserved.main_mode.value.mode,
+            (Get-UiRadioCatPowerSelection),[string]$script:radioCatObserved.main_mode.value.mode,
             [long]$script:radioCatObserved.main_frequency_hz.value,[int]$script:radioCatObserved.power.value.watts,
             (Test-UiRadioCatRunIdle -RequireFreshStatus),([regex]::Matches((Get-TestRadioCatLog),'BEGIN\|setMode')).Count,($beforeDisconnectMode + 1))
     [void](Disconnect-UiRadioCatSession -Reason user_disconnect)
@@ -1140,7 +1270,7 @@ try {
     $script:supervisor = $exitBatchSupervisor
     Assert-RadioUi ([bool](Connect-UiRadioCatSession)) 'exit cancellation test could not explicitly reconnect CAT after the prior disconnect test.'
     [void](Complete-TestCatRunspace -TimeoutMs 3000)
-    Set-R122TestCatTarget -Mode 'C4FM-DN' -FrequencyMHz '145.600' -PowerWatts 6
+    Set-R122TestCatTarget -Mode 'C4FM-DN' -FrequencyMHz '145.600' -PowerWatts 10
     $env:WIREX_R116_UI_CAT_DELAY = 'query'
     $env:WIREX_R116_UI_CAT_DELAY_MS = '1200'
     $beforeExitMode = ([regex]::Matches((Get-TestRadioCatLog),'BEGIN\|setMode')).Count
@@ -1152,9 +1282,9 @@ try {
         [string]$script:radioCatOperationKind -ceq 'query') `
         ('exit cancellation test did not queue Apply behind its query. queued={0}, op={1}, enabled={2}, session={3}, idle={4}, notice={5}, targets={6}/{7}/{8}' -f `
             [string]$script:radioCatQueuedAction.operation,[string]$script:radioCatOperationKind,[bool]$settingsButton.IsEnabled,
-            (Get-UiRadioCatSessionState).state,(Test-UiRadioCatRunIdle -RequireFreshStatus),[string](Get-SettingsControl 'CatOperationStatusText').Text,
+            (Get-UiRadioCatSessionState).state,(Test-UiRadioCatRunIdle -RequireFreshStatus),(Get-TestTransientStatus),
             [string](Get-SettingsControl 'CatMainModeBox').SelectedItem.Tag,[string](Get-SettingsControl 'CatMainFrequencyMHzBox').Text,
-            [int](Get-SettingsControl 'CatPowerSlider').Value)
+            (Get-UiRadioCatPowerSelection))
     $script:mainWindow = New-TestMainWindow
     Request-StopAndExit
     Assert-RadioUi (-not $script:radioCatQueuedAction -and -not $script:radioCatSettingsApply -and
@@ -1267,13 +1397,13 @@ try {
     $script:latestStatus=$pausedCoreIdleStatus.PSObject.Copy(); $script:latestStatus.rx_queue_playback_frames=[uint64]1
     Assert-RadioUi (-not (Test-UiRadioCatRunIdle -RequireFreshStatus)) 'BM paused 状态不能绕过未清空的接收媒体队列。'
     $script:latestStatus=$pausedCoreIdleStatus
-    $slider = Get-SettingsControl 'CatPowerSlider'
-    $slider.Value = 6
-    Assert-RadioUi ([int]$script:radioCatEditDraft.power -eq 6 -and
-        [int]$script:radioControlPreferences.desired_power_watts -eq 9 -and
-        (Get-SettingsControl 'ApplyCatSettingsButton').IsEnabled) ((('过期测试应先通过真实滑块建立合法 6 W 草稿并保留此前已确认的 9 W 偏好。 draft={0}, pref={1}, enabled={2}, max={3}, result={4}, key={5}/{6}, core={7}, statusAge={8}' -f `
+    $powerBox = Get-SettingsControl 'CatPowerBox'
+    Assert-RadioUi (Set-TestRadioCatPowerSelection -Watts 10) '过期状态用例无法通过真实功率Combo选择10 W。'
+    Assert-RadioUi ([int]$script:radioCatEditDraft.power -eq 10 -and
+        [int]$script:radioControlPreferences.desired_power_watts -eq 15 -and
+        (Get-SettingsControl 'ApplyCatSettingsButton').IsEnabled) ((('过期测试应先通过功率组合框建立10 W草稿并保留15 W偏好。 draft={0}, pref={1}, enabled={2}, selection={3}, result={4}, key={5}/{6}, core={7}, statusAge={8}' -f `
             $script:radioCatEditDraft.power,$script:radioControlPreferences.desired_power_watts,
-            [bool](Get-SettingsControl 'ApplyCatSettingsButton').IsEnabled,[double]$slider.Maximum,
+            [bool](Get-SettingsControl 'ApplyCatSettingsButton').IsEnabled,(Get-UiRadioCatPowerSelection),
             $(if($script:radioCatResult){[string]$script:radioCatResult.status}else{'<null>'}),
             [string]$script:radioCatObservedConnectionKey,(Get-UiRadioCatConnectionKey),[bool]$script:supervisor,
             [int]([DateTime]::UtcNow - $script:lastStatusUtc).TotalMilliseconds) +
@@ -1301,15 +1431,19 @@ try {
     $staleClickArgs = New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent,$stalePowerButton)
     $stalePowerButton.RaiseEvent($staleClickArgs)
     Assert-RadioUi ($script:radioCatQueuedAction -and [string]$script:radioCatQueuedAction.operation -ceq 'setSettings' -and
-        [int]$script:radioCatQueuedAction.power_watts -eq 6) `
-        '过期状态取消测试没有先冻结统一 Apply 的 6 W 目标。'
+        [int]$script:radioCatQueuedAction.power_watts -eq 10) `
+        '过期状态取消测试没有先冻结统一 Apply 的10 W功率目标。'
     $stalePowerPreparationSteps = 0
     while ($script:radioCatOperationPowerShell -and [string]$script:radioCatOperationKind -cne 'setPower' -and $stalePowerPreparationSteps -lt 3) {
-        [void](Complete-TestCatRunspace -TimeoutMs 3000)
+        [void](Complete-TestCatRunspace -TimeoutMs 3000 -RefreshStatusHeartbeat)
         $stalePowerPreparationSteps++
     }
     $observedSnapshotBeforeStale = ConvertTo-Json -InputObject $script:radioCatObserved -Depth 8 -Compress
-    Assert-RadioUi (Wait-TestRadioCatLogCount -Pattern 'BEGIN\|setPower' -MinimumCount ($beginCountBeforeStale + 1) -TimeoutMs 1000) '状态过期测试没有启动真实 WPF Apply 按钮创建的 fake CAT worker。'
+    $stalePowerWorkerStarted = Wait-TestRadioCatLogCount -Pattern 'BEGIN\|setPower' -MinimumCount ($beginCountBeforeStale + 1) -TimeoutMs 1000
+    Assert-RadioUi $stalePowerWorkerStarted (('状态过期测试没有启动真实 WPF Apply 按钮创建的 fake CAT worker。 enabled={0}, selectedWatts={1}, statusAgeMs={2}, statusKeys={3}, queued={4}, operation={5}/{6}, log={7}' -f `
+        [bool]$stalePowerButton.IsEnabled,(Get-UiRadioCatPowerSelection),[int]([DateTime]::UtcNow - $script:lastStatusUtc).TotalMilliseconds,
+        (@($script:latestStatus.PSObject.Properties.Name) -join ','),[bool]$script:radioCatQueuedAction,
+        [bool]$script:radioCatOperationPowerShell,[string]$script:radioCatOperationKind,(Get-TestRadioCatLog)))
     Start-Sleep -Milliseconds 100
     Assert-RadioUi (([regex]::Matches((Get-TestRadioCatLog),'BEGIN\|setPower')).Count -gt $beginCountBeforeStale) '状态过期测试没有观察到新启动的功率操作。'
     $script:lastStatusUtc = [DateTime]::UtcNow.AddSeconds(-4)
@@ -1350,6 +1484,11 @@ try {
     Assert-RadioUi ($null -eq $script:radioCatOperationPowerShell -and (Get-UiRadioCatSessionState).shutdown -and
         -not (Connect-UiRadioCatSession)) 'app shutdown left a CAT worker or allowed a new session.'
 
+    if ($CatOnly) {
+        Write-Output ('PASS: {0} CAT UI WPF fake assertions (Windows PowerShell 5.1; no physical serial ports).' -f $script:radioUiAssertionCount)
+        return
+    }
+
     # RenderOnly call-history coverage uses the production model and WPF pager with synthetic status only.
     $script:radioCatSessionShutdown=$false
     $script:callHistoryModel=New-Object 'System.Collections.Generic.List[object]'
@@ -1365,7 +1504,7 @@ try {
     $script:identityNativeCallRefreshKeys=@{}
     $historyWindow=$script:testRootMainWindow
     $script:mainWindow=$historyWindow
-    for ($historyGeneration=1; $historyGeneration -le 5; $historyGeneration++) {
+    for ($historyGeneration=1; $historyGeneration -le 7; $historyGeneration++) {
         $script:identityNativeCallRefreshKeys[('history-test|{0}|460997' -f $historyGeneration)]=$true
         $historyRecord=[pscustomobject][ordered]@{
             run_id='history-test';current_call_valid=$true;current_call_generation=[uint64]$historyGeneration
@@ -1375,14 +1514,14 @@ try {
         Add-UiCallHistoryRecord -Record $historyRecord
     }
     $historyList=$historyWindow.FindName('CallHistoryList')
-    Assert-RadioUi ($script:callHistoryModel.Count -eq 5 -and $historyList.Items.Count -eq 2 -and
+    Assert-RadioUi ($script:callHistoryModel.Count -eq 7 -and $historyList.Items.Count -eq 2 -and
         $script:callHistoryPageIndex -eq 1 -and $historyWindow.FindName('CallHistoryPageText').Text -ceq '2 / 2') `
-        '超过三条来话后，完整模型、保留选中记录的第二页和页码未正确建立。'
+        '超过五条来话后，完整模型、第二页可见记录和页码未正确建立。'
     [void](Set-UiCallHistoryPage -Delta -1)
     $historyList.SelectedIndex=0
     $selectedHistoryKey=Get-UiCallHistorySelectedKey
     $selectedHistoryTarget=New-UiCallTargetFromHistoryEntry -Entry $historyList.SelectedItem
-    Assert-RadioUi ($selectedHistoryKey -ceq 'history-test|5' -and $selectedHistoryTarget.destination_id -eq 460997 -and
+    Assert-RadioUi ($selectedHistoryKey -ceq 'history-test|7' -and $selectedHistoryTarget.destination_id -eq 460997 -and
         $selectedHistoryTarget.kind -ceq 'private' -and $selectedHistoryTarget.slot -eq 2) `
         '当前页选中的记录没有按其呼叫 key 生成 PTT 目标。'
     $offPageKey='history-test|1'
@@ -1390,23 +1529,23 @@ try {
     Assert-RadioUi (Update-UiIdentityHistoryEntry -HistoryKey $offPageKey -Identity $script:callIdentityCache['460997']) `
         '身份查询没有按历史 record key 找到完整模型中的离页记录。'
     $offPageRecord=@($script:callHistoryModel | Where-Object { $_.key -ceq $offPageKey })[0]
-    Assert-RadioUi ($offPageRecord.source_label -match 'N1PAGE' -and $historyList.Items.Count -eq 3 -and
+    Assert-RadioUi ($offPageRecord.source_label -match 'N1PAGE' -and $historyList.Items.Count -eq 5 -and
         (Get-UiCallHistorySelectedKey) -ceq $selectedHistoryKey) ('离页身份回写丢失呼号、改变当前页或改写选中 key。 label={0}, count={1}, selected={2}/{3}' -f `
             $offPageRecord.source_label,$historyList.Items.Count,(Get-UiCallHistorySelectedKey),$selectedHistoryKey)
     $historyIncoming=[pscustomobject][ordered]@{
-        run_id='history-test';current_call_valid=$true;current_call_generation=[uint64]6
+        run_id='history-test';current_call_valid=$true;current_call_generation=[uint64]8
         current_call_source_id=[uint64]460997;current_call_destination_id=[uint64]3149882
         current_call_slot=[uint64]2;current_call_kind='P';timestamp_utc_ms=[int64]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
     }
-    $script:identityNativeCallRefreshKeys['history-test|6|460997']=$true
+    $script:identityNativeCallRefreshKeys['history-test|8|460997']=$true
     Add-UiCallHistoryRecord -Record $historyIncoming
-    Assert-RadioUi ($script:callHistoryModel.Count -eq 6 -and
+    Assert-RadioUi ($script:callHistoryModel.Count -eq 8 -and
         (Get-UiCallHistorySelectedKey) -ceq $selectedHistoryKey -and
         [string]$historyList.SelectedItem.key -ceq $selectedHistoryKey) `
         '新来话插入后，列表没有保留用户选中的历史记录 key。'
     Add-UiCallHistoryRecord -Record $historyIncoming
-    Assert-RadioUi ($script:callHistoryModel.Count -eq 6) '相同 run/generation 的来话重复进入完整模型。'
-    for ($historyGeneration=7; $historyGeneration -le 55; $historyGeneration++) {
+    Assert-RadioUi ($script:callHistoryModel.Count -eq 8) '相同 run/generation 的来话重复进入完整模型。'
+    for ($historyGeneration=9; $historyGeneration -le 55; $historyGeneration++) {
         $script:identityNativeCallRefreshKeys[('history-test|{0}|460997' -f $historyGeneration)]=$true
         $boundedHistoryRecord=[pscustomobject][ordered]@{
             run_id='history-test';current_call_valid=$true;current_call_generation=[uint64]$historyGeneration
@@ -1416,7 +1555,7 @@ try {
         Add-UiCallHistoryRecord -Record $boundedHistoryRecord
     }
     Assert-RadioUi ($script:callHistoryModel.Count -eq 50 -and $script:callHistoryModel[0].key -ceq 'history-test|55' -and
-        $script:callHistoryModel[49].key -ceq 'history-test|6' -and $historyList.Items.Count -eq 3) `
+        $script:callHistoryModel[49].key -ceq 'history-test|6' -and $historyList.Items.Count -eq 5) `
         '完整历史模型没有按呼叫 key 去重并保留最近五十条记录。'
 
     # 真实 Start-BridgeRun 参数准备走临时 fake launcher，不经过 UiTestFixture 的 supervisor factory。
@@ -1509,7 +1648,7 @@ $record=[ordered]@{schema_version=1;executable='fake-native.exe';arguments=[stri
         $script:testUiEvents.Count -gt 0 -and $script:testUiEvents[$script:testUiEvents.Count-1] -ceq 'BM 密码未填写，未发起连接。') `
         ('BM 密码为空时连接按钮没有显示字段错误并阻止启动或发送连接请求。 result={0}, calls={1}, bmAfter={2}, catAfter={3}, passwordEmpty={4}, footer=[{5}]' -f `
             $blankPasswordBmResult,$script:testStartBridgeRunCalls,$script:bmConnectAfterCoreReady,$script:serialConnectCatAfterCoreReady,
-            [string]::IsNullOrWhiteSpace([string]$script:portableConfig.connection.password),[string](Get-UiControl 'FooterText').Text),
+            [string]::IsNullOrWhiteSpace([string]$script:portableConfig.connection.password),(Get-TestTransientStatus)),
             (' action={0}, prep={1}, stopTask={2}, disconnect={3}' -f (Get-UiRadioCatSessionState).user_action_busy,$script:preparationStarted,[bool]$script:stopTask,$script:serialDisconnectPending)
     $passwordBoxForLifecycle.Password='ui-test-fixture-only'
     Assert-RadioUi (Connect-UiBmFromButton) '没有核心时，BM连接按钮没有复用串口准备流程。'
@@ -1636,7 +1775,9 @@ $record=[ordered]@{schema_version=1;executable='fake-native.exe';arguments=[stri
     Assert-RadioUi ([bool](Invoke-UiRadioCatPollTick -Force) -and $script:radioCatOperationPowerShell) `
         '组合串口断开测试没有先启动fake CAT query。'
     $serialDisconnectGeneration=[int]$script:radioCatSessionGeneration
-    $serialDisconnectButton=$script:mainWindow.FindName('SerialDisconnectButton')
+    Update-UiSerialConnectButton
+    $serialDisconnectButton=$script:mainWindow.FindName('SerialConnectButton')
+    Assert-RadioUi ([string]$serialDisconnectButton.Content -ceq '断开串口') 'BM/CAT活动时唯一串口toggle未显示断开操作。'
     $serialDisconnectButton.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent,$serialDisconnectButton)))
     $serialBmDisableCommand=$bmSupervisor.SentCommands[$bmSupervisor.SentCommands.Count - 1]
     $serialBmDisable=ConvertFrom-Json -InputObject ([string]$serialBmDisableCommand.parameters)
@@ -1686,7 +1827,9 @@ $record=[ordered]@{schema_version=1;executable='fake-native.exe';arguments=[stri
     $script:radioCatSessionRequested=$false; $script:radioCatSessionConnected=$false
     $script:radioCatPollingActive=$false; $script:radioCatOperationPowerShell=$null
     $script:radioCatSessionState='disconnected'
-    $serialDisconnectButton=$script:mainWindow.FindName('SerialDisconnectButton')
+    Update-UiSerialConnectButton
+    $serialDisconnectButton=$script:mainWindow.FindName('SerialConnectButton')
+    Assert-RadioUi ([string]$serialDisconnectButton.Content -ceq '断开串口') 'HRI核心活动时唯一串口toggle未显示断开操作。'
     $serialDisconnectButton.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent,$serialDisconnectButton)))
     Assert-RadioUi ($script:serialDisconnectPending -and -not $script:bmConnectionSnapshot -and
         $closedErrorSupervisor.SentCommands.Count -eq 1 -and
@@ -1770,7 +1913,7 @@ $record=[ordered]@{schema_version=1;executable='fake-native.exe';arguments=[stri
         $script:testUiEvents.Count -gt 0 -and $script:testUiEvents[$script:testUiEvents.Count-1] -ceq '串口断开等待超时；HRI 和 CAT 仍保持连接') `
         ('断串口等待超过期限时没有失败退出并如实显示当前解析/连接状态。 pending={0}, stop={1}, deadline={2}, footer=[{3}]' -f `
             [bool]$script:serialDisconnectPending,$deadlineSupervisor.StopCallCount,$script:serialDisconnectDeadlineUtc,
-            [string]$script:mainWindow.FindName('FooterText').Text)
+            (Get-TestTransientStatus))
     $deadlineSupervisor.HasExited=$true; $script:supervisor=$null; $script:stopTask=$null
 
     Write-Output ('通过：四轮fake CAT轮询/写入及复核、COM和音频选值保存、无副作用安全失败、串口/BM暂停连接路线、旧错误与异步收尾快照下双口关闭及等待超时、50条呼号模型去重/分页/离页身份回写、CAT取消和退出清理均已验证。断言数：{0}' -f $script:radioUiAssertionCount)

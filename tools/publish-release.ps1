@@ -309,7 +309,15 @@ function Set-PublishProfile {
             $script:expectedDirectories = @($alpha17.Directories)
             $script:expectedTestNames = $script:alpha18TestNames
         }
-        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.18 release profiles are supported.' }
+        'v0.1.0-alpha.19' {
+            $alpha18 = Set-PublishProfile -Tag 'v0.1.0-alpha.18'
+            $script:publishTag = $Tag
+            $script:assetPathMap = [ordered]@{}
+            foreach ($path in $alpha18.AssetPathMap.Keys) { $script:assetPathMap[$path] = $alpha18.AssetPathMap[$path] }
+            $script:expectedDirectories = @($alpha18.Directories)
+            $script:expectedTestNames = $script:alpha18TestNames
+        }
+        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.19 release profiles are supported.' }
     }
     return [pscustomobject]@{
         Tag = $script:publishTag
@@ -443,7 +451,7 @@ function Assert-PublishPackage {
             }
         }
     }
-    if ($Tag -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17', 'v0.1.0-alpha.18')) {
+    if ($Tag -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17', 'v0.1.0-alpha.18', 'v0.1.0-alpha.19')) {
         $excludedPrivateFiles = @($manifest.excluded_private_files | ForEach-Object { [string]$_ })
         foreach ($requiredPath in @(
             'config.json',

@@ -1,5 +1,13 @@
 ﻿# WIREX Bridge 交接入口
 
+## R123 源码阶段（2026-11-02）
+
+- R123 固定布局、CAT 单一 Apply、串口切换、顶部 transient 和静态组 API 覆盖层已完成集成。Alpha 19 launcher、README 与 release profile 已准备；profile 保持 41 项资产、37 个源码映射、9 个目录、40 个 Native 测试名。
+- 离线回归通过：RenderOnly 1,919、CAT fake 197、console 121、channels 117、audio 85、R123 交互 54、BM 管理 80 项；status 状态记录回归通过。
+- package 672、download 2,987 项通过。Publish fake 源阶段 137 项通过时跳过仓库 Git 检查；源码提交后需再跑完整 Git 身份检查版本。Root review 提出的重复非法静态组 ID transient P2 已修复并复验通过。
+- 源码提交前，完整 publisher fake、clean Native full40、Alpha 19 generic package 仍待执行；package 状态按授权设为 `awaiting_root_audit`。R122 / Alpha 18 仍是最近审计通过的本机候选。
+- R123 没有做真实 COM/CAT、HRI、音频、BM API、PTT 或 RF 验收。
+
 ## R122 / Alpha 18 root 审计通过的本机目录（2026-11-02）
 
 产品源码提交 `ae886f582e2c9dee7839de5ef7a78208a92a2f75` 已推送到 `origin/main`。`dec6f7e` 只修正包启动测试 XPath；`ae886f5` 修复既有 PTT 目标诊断并区分新版和旧版测试合同，包测试执行器来自包含该 test-only 修复的 ae886f5 源树。

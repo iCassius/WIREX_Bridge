@@ -20,9 +20,10 @@ $wantedFunctions = @('Test-UiSourceIdentityRecord', 'Get-UiSourceIdentityDisplay
     'Test-UiRunRecordAcceptance', 'Get-VisibleUiEventText', 'Apply-StatusRecord', 'Set-StaleDisplay',
     'Reset-UiControlState',
     'Format-UiGainMilli', 'Update-UiPlaybackGainDisplay', 'Update-UiReceiveMetricsDisplay',
+    'Set-UiTransientStatus', 'Clear-UiTransientStatus', 'Update-UiTransientStatusExpiry',
     'Format-ProfileTarget', 'Format-ProfileReceiveTarget', 'Set-MainTargetSummary', 'On-UiTimerTick',
     'Get-UiChannelKey', 'Get-UiChannelByKey', 'Get-UiChannelCurrentCall', 'Get-UiChannelCallerLabel',
-    'Get-UiChannelCallerDetails', 'New-UiDmIdLinkTextBlock',
+    'Get-UiChannelCallerDetails', 'Get-UiChannelCardPresentation', 'New-UiDmIdLinkTextBlock',
     'New-UiChannelActionButton', 'Update-UiChannelDisplays', 'Update-CallTargetChoices', 'Set-OfflineDisplay')
 $found = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wantedFunctions -ccontains $node.Name }, $true))
 Assert-UiStatus ($found.Count -eq $wantedFunctions.Count) '没有找到状态记录验证函数。'
@@ -267,16 +268,14 @@ function New-TestChannelWindow {
     $window.Content = $root
     [System.Windows.NameScope]::SetNameScope($window,(New-Object System.Windows.NameScope))
     foreach ($item in @(
-        @{ name='ChannelListPanel'; type='panel' },
         @{ name='ChannelCardsPanel'; type='panel' },
-        @{ name='ControlStatusButton'; type='button' },
-        @{ name='ControlProtocolValue'; type='text' },
-        @{ name='PlaybackGainStatusValue'; type='text' },
+        @{ name='TransientStatusText'; type='text' },
+        @{ name='PlaybackGainValueText'; type='text' },
+        @{ name='TransmitGainValueText'; type='text' },
         @{ name='BmRttMetric'; type='panel' },
         @{ name='BmRttValue'; type='text' },
-        @{ name='RxNetworkMetric'; type='panel' },
-        @{ name='RxCallLossValue'; type='text' },
-        @{ name='RxSessionLossValue'; type='text' }
+        @{ name='BmLossMetric'; type='panel' },
+        @{ name='BmLossValue'; type='text' }
     )) {
         $control = switch ($item.type) {
             'panel' { New-Object System.Windows.Controls.WrapPanel }
@@ -434,22 +433,19 @@ Assert-UiStatus ([string]::IsNullOrEmpty([string]$script:mockUiFields['HriSource
     $script:mockIdentityRows['recent'] -ceq 'Collapsed') ('过期身份状态应清空可见来话行并隐藏屏显区域：recent={0}, current={1}, display={2}' -f `
         $script:mockIdentityRows['recent'],$script:mockIdentityRows['current'],$script:mockUiFields['RadioDisplayValue'])
 
-$gainStatusControl = $script:mainWindow.FindName('PlaybackGainStatusValue')
+$removedGainStatusControl = $script:mainWindow.FindName('PlaybackGainStatusValue')
 $script:audioGainNativeCapability = $false
 $script:audioGainActual = $null
 Update-UiPlaybackGainDisplay -Record $script:latestStatus
-Assert-UiStatus ($null -eq $script:reportedPlaybackGainMilli -and
-    $gainStatusControl.Visibility -eq [System.Windows.Visibility]::Collapsed) `
-    '旧 Native 状态没有音量回读时，运行增益显示应保持折叠。'
+Assert-UiStatus ($null -eq $script:reportedPlaybackGainMilli -and $null -eq $removedGainStatusControl) `
+    '旧 Native 状态没有音量回读时，不应创建固定的增益状态行。'
 $script:audioGainNativeCapability = $true
 $script:audioGainActual = [pscustomobject][ordered]@{
     radio_playback_gain_milli=[uint32]1250; mic_transmit_gain_milli=[uint32]750
 }
 Update-UiPlaybackGainDisplay -Record $script:latestStatus
-Assert-UiStatus ($script:reportedPlaybackGainMilli -eq 1250 -and
-    $gainStatusControl.Text -ceq '播放 1.25x · 发送 0.75x' -and
-    $gainStatusControl.Visibility -eq [System.Windows.Visibility]::Visible) `
-    '带 audio.gains.set 的运行状态应从实际增益回读更新主界面状态。'
+Assert-UiStatus ($script:reportedPlaybackGainMilli -eq 1250 -and $null -eq $removedGainStatusControl) `
+    '带 audio.gains.set 的运行状态应保留实际播放增益读回值，且不创建固定状态行。'
 
 function Complete-PreparationStop {}
 function Complete-UiDeviceDiscovery {}

@@ -1,5 +1,5 @@
 ﻿[CmdletBinding()]
-param()
+param([switch]$SkipRepositoryGitChecks)
 
 $ErrorActionPreference = 'Stop'
 $assertions = 0
@@ -948,18 +948,55 @@ try {
     Assert-Throws { Assert-PublishPackage -PackageRoot $alpha18Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.18' } `
         'alpha.18 publisher rejects a manifest that omits the package-root config exclusion'
 
+    $alpha19Root = Join-Path $testRoot 'package-alpha19'
+    Copy-Item -LiteralPath $alpha18Root -Destination $alpha19Root -Recurse
+    $alpha19Profile = Set-PublishProfile -Tag 'v0.1.0-alpha.19'
+    Write-Utf8NoBom -Path (Join-Path $alpha19Root 'README.md') -Text 'synthetic alpha.19 package README'
+    $alpha19LauncherPath = Join-Path $alpha19Root 'tools\start-wirex-bridge.ps1'
+    Write-Utf8NoBom -Path $alpha19LauncherPath -Text 'synthetic alpha.19 launcher'
+    $alpha19ManifestPath = Join-Path $alpha19Root 'manifest.json'
+    $alpha19Manifest = [System.IO.File]::ReadAllText($alpha19ManifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    foreach ($relativePath in @('README.md', 'tools/start-wirex-bridge.ps1')) {
+        $fullPath = Join-Path $alpha19Root $relativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+        $record = @($alpha19Manifest.files | Where-Object { [string]$_.path -ceq $relativePath })
+        if ($record.Count -ne 1) { throw ('alpha.19 test fixture lacks a unique manifest record for ' + $relativePath) }
+        $record[0].length_bytes = [long](Get-Item -LiteralPath $fullPath).Length
+        $record[0].sha256 = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $record[0].source = 'synthetic alpha.19 test content'
+    }
+    $alpha19Manifest.version = 'v0.1.0-alpha.19'
+    $alpha19Manifest.tag_candidate = 'v0.1.0-alpha.19'
+    $alpha19Manifest.release_scope = 'R123 DIRECT: fixed WPF console layout and one-line status'
+    $alpha19Manifest.excluded_private_files = @($alpha18Manifest.excluded_private_files + 'config.json' | Select-Object -Unique)
+    $alpha19Manifest.build.passed_test_count = $alpha19Profile.TestNames.Count
+    $alpha19Manifest.build.passed_tests = @($alpha19Profile.TestNames)
+    Write-Utf8NoBom -Path $alpha19ManifestPath -Text ((ConvertTo-Json -InputObject $alpha19Manifest -Depth 12) + [Environment]::NewLine)
+    $alpha19Package = Assert-PublishPackage -PackageRoot $alpha19Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.19'
+    Assert-True ($alpha19Package.Assets.Count -eq $alpha18Package.Assets.Count -and
+        $alpha19Profile.AssetPathMap.Count -eq 41 -and $alpha19Profile.TestNames.Count -eq 40 -and
+        [string]::Join('|', $alpha19Profile.TestNames) -ceq [string]::Join('|', $alpha18Profile.TestNames)) `
+        'alpha.19 publisher accepts the unchanged 41-asset inventory and ordered 40-test sequence'
+    Assert-True (@($alpha19Package.Manifest.excluded_private_files | Where-Object { [string]$_ -ceq 'config.json' }).Count -eq 1 -and
+        @($alpha19Package.Manifest.excluded_private_files | Where-Object { [string]$_ -ceq 'credentials/' }).Count -eq 1) `
+        'alpha.19 manifest retains package-root configuration and credential exclusions'
+    $alpha19Manifest.excluded_private_files = @($alpha19Manifest.excluded_private_files | Where-Object { [string]$_ -cne 'config.json' })
+    Write-Utf8NoBom -Path $alpha19ManifestPath -Text ((ConvertTo-Json -InputObject $alpha19Manifest -Depth 12) + [Environment]::NewLine)
+    Assert-Throws { Assert-PublishPackage -PackageRoot $alpha19Root -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.19' } `
+        'alpha.19 publisher rejects a manifest that omits the package-root config exclusion'
+
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.9')
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.1')
     [void](Set-PublishProfile -Tag 'v0.1.0-alpha.1')
     $manifest = [System.IO.File]::ReadAllText($manifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
 
-    $realTagObject = 'refs/tags/v0.1.0-alpha.1^{commit}'
-    $realTagCommit = Get-GitText -RepositoryRoot $repositoryRoot -Arguments @('rev-parse', '--verify', $realTagObject)
-    $realNotesPath = Join-Path $repositoryRoot 'docs/releases/v0.1.0-alpha.1.md'
-    $realNotes = Get-PublishNotes -Path $realNotesPath -RepositoryRoot $repositoryRoot -ExpectedCommit $realTagCommit
-    Assert-True (-not [string]::IsNullOrWhiteSpace($realNotes)) 'fixed release notes match both the real tag commit and current HEAD'
-    Assert-Throws { Get-PublishNotes -Path (Join-Path $repositoryRoot 'README.md') -RepositoryRoot $repositoryRoot -ExpectedCommit $realTagCommit } 'non-release notes path is rejected'
-
+    if (-not $SkipRepositoryGitChecks) {
+        $realTagObject = 'refs/tags/v0.1.0-alpha.1^{commit}'
+        $realTagCommit = Get-GitText -RepositoryRoot $repositoryRoot -Arguments @('rev-parse', '--verify', $realTagObject)
+        $realNotesPath = Join-Path $repositoryRoot 'docs/releases/v0.1.0-alpha.1.md'
+        $realNotes = Get-PublishNotes -Path $realNotesPath -RepositoryRoot $repositoryRoot -ExpectedCommit $realTagCommit
+        Assert-True (-not [string]::IsNullOrWhiteSpace($realNotes)) 'fixed release notes match both the real tag commit and current HEAD'
+        Assert-Throws { Get-PublishNotes -Path (Join-Path $repositoryRoot 'README.md') -RepositoryRoot $repositoryRoot -ExpectedCommit $realTagCommit } 'non-release notes path is rejected'
+    }
     $manifest.package_status = 'awaiting_root_audit'
     Write-Utf8NoBom -Path $manifestPath -Text ((ConvertTo-Json -InputObject $manifest -Depth 12) + "`n")
     Assert-Throws { Assert-PublishPackage -PackageRoot $packageRoot -ExpectedCommit $fakeCommit } 'unapproved package status'
@@ -1167,7 +1204,8 @@ try {
     Assert-True (-not $script:credentialAttempted -and $script:mockCalls.Count -eq 8) 'clean dry preflights stop before credentials and API requests'
     Assert-True ($helperTempAfter -eq $helperTempBefore) 'temporary byte-exact helper blobs are removed after the offline boundary stop'
 
-    Write-Output ('Publisher offline assertions passed: ' + $script:assertions + '; no network requests or credentials were used.')
+    $gitEvidence = if ($SkipRepositoryGitChecks) { 'repository Git checks skipped' } else { 'repository Git checks passed' }
+    Write-Output ('Publisher offline assertions passed: ' + $script:assertions + '; ' + $gitEvidence + '; no network requests or credentials were used.')
 } finally {
     if ((Test-Path -LiteralPath $testRoot -PathType Container) -and
         (Test-PublishPathWithin -Path $testRoot -Directory (Join-Path $repositoryRoot 'build/_work')) -and

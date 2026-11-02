@@ -49,13 +49,13 @@ function Get-UiRadioCatBaudRate {
 
 function Set-UiRadioCatNotice {
     param([AllowEmptyString()][string]$Text='')
-    $control = Find-UiRadioCatControl -Name 'CatOperationStatusText'
-    if (-not $control) { return }
-    if ($control -is [System.Windows.Controls.TextBlock] -or $control -is [System.Windows.Controls.TextBox]) {
-        if ([string]$control.Text -cne $Text) { $control.Text = $Text }
+    if ([string]::IsNullOrWhiteSpace($Text)) { return }
+    $failed = ($Text -match '(?i)(失败|拒绝|未获确认|无法|取消|结果未知|不允许|无效|错误|没有执行|没有发送)')
+    if (Get-Command -Name 'Set-UiTransientStatus' -ErrorAction SilentlyContinue) {
+        Set-UiTransientStatus -Message $Text -Failed:$failed
+        return
     }
-    $visibility = if ($Text) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
-    if ($control.Visibility -ne $visibility) { $control.Visibility = $visibility }
+    if (Get-Command -Name 'Add-UiEvent' -ErrorAction SilentlyContinue) { Add-UiEvent $Text }
 }
 
 function Get-UiRadioCatSessionState {
@@ -89,38 +89,50 @@ function Update-UiRadioCatCoreActionGate {
 function Set-UiRadioCatSessionState {
     param([Parameter(Mandatory=$true)][ValidateSet('disconnected','connecting','connected','polling','error','disconnecting','shutdown')][string]$State)
     $script:radioCatSessionState = $State
-    $text = switch ($State) {
-        'disconnected' { '未连接' }
-        'connecting' { '正在连接' }
-        'connected' { '已连接' }
-        'polling' { '正在读取' }
-        'error' { if ($script:radioCatSessionError) { '读取失败：' + [string]$script:radioCatSessionError } else { '读取失败' } }
-        'disconnecting' { '正在断开' }
-        'shutdown' { '正在退出' }
+    Update-UiSerialConnectButton
+}
+
+function Update-UiSerialConnectButton {
+    $button = Find-UiRadioCatControl -Name 'SerialConnectButton'
+    if (-not $button) { return }
+    $coreActive = [bool]($script:supervisor -and -not $script:supervisor.HasExited)
+    $catRequested = [bool]$script:radioCatSessionRequested
+    $disconnectPending = [bool]$script:serialDisconnectPending
+    $preparing = [bool]($script:preparationStarted -or $script:prepareStopAsync -or $script:serialConnectCatAfterCoreReady)
+    $stopping = [bool]($script:stopTask -or $script:nativeExitCleanupPending -or $script:channelMutationSafetyStopPending)
+    $operationBusy = [bool]($preparing -or $stopping -or $disconnectPending)
+
+    if ($disconnectPending -or $stopping) {
+        $button.Content = '正在断开串口'
+        $button.IsEnabled = $false
+        return
     }
-    Set-UiRadioCatText -Name 'CatSessionStatusText' -Text $text
+    if ($preparing -and -not $coreActive -and -not $catRequested) {
+        $button.Content = '取消连接'
+        $button.IsEnabled = $true
+        return
+    }
+    if ($coreActive -or $catRequested) {
+        $button.Content = '断开串口'
+        $button.IsEnabled = (-not $operationBusy)
+        return
+    }
+
+    $button.Content = '连接串口'
+    $portReady = $true
+    if (Get-Command -Name 'Get-UiRadioCatSelectedPort' -ErrorAction SilentlyContinue) {
+        $portReady = [bool](Get-UiRadioCatSelectedPort)
+    }
+    $portConflict = $false
+    if (Get-Command -Name 'Test-UiRadioCatSelectedPortConflict' -ErrorAction SilentlyContinue) {
+        $portConflict = [bool](Test-UiRadioCatSelectedPortConflict)
+    }
+    $button.IsEnabled = (-not $operationBusy -and $portReady -and -not $portConflict -and
+        -not (Get-UiRadioCatSessionState).user_action_busy)
 }
 
 function Update-UiRadioCatSessionControls {
-    $state = Get-UiRadioCatSessionState
-    if (Get-Command -Name 'Set-ConnectionButtonState' -ErrorAction SilentlyContinue) {
-        Set-ConnectionButtonState
-    } else {
-        $connectButton = Find-UiRadioCatControl -Name 'SerialConnectButton'
-        $disconnectButton = Find-UiRadioCatControl -Name 'SerialDisconnectButton'
-        if ($connectButton) {
-            $enabled = (-not $state.requested -and -not $state.shutdown -and -not $script:radioCatOperationPowerShell -and
-                (Get-UiRadioCatSelectedPort) -and -not (Test-UiRadioCatSelectedPortConflict))
-            $connectButton.IsEnabled = [bool]$enabled
-        }
-        if ($disconnectButton) { $disconnectButton.IsEnabled = ($state.requested -and -not $state.shutdown) }
-    }
-    if ($state.state -eq 'polling' -or $state.state -eq 'connected' -or $state.state -eq 'error' -or
-        $state.state -eq 'connecting' -or $state.state -eq 'disconnecting' -or $state.state -eq 'shutdown') {
-        Set-UiRadioCatSessionState -State $state.state
-    } else {
-        Set-UiRadioCatSessionState -State 'disconnected'
-    }
+    Update-UiSerialConnectButton
 }
 
 function Set-UiRadioCatLinkState {
@@ -167,11 +179,18 @@ function Initialize-UiRadioCatController {
         }
         Update-UiRadioCatControls
     })
-    (Get-SettingsControl 'CatMainFrequencyMHzBox').Add_TextChanged({
+    $frequencyControl = Get-SettingsControl 'CatMainFrequencyMHzBox'
+    $frequencyControl.Add_SelectionChanged({
         if ($script:radioCatProgrammaticControlUpdate -or $script:loadingSettings -or $script:loadingRadioCatSettings) { return }
-        $script:radioCatEditDraft.frequency = [string](Get-SettingsControl 'CatMainFrequencyMHzBox').Text
-        Update-UiRadioCatControls
+        $changedFrequencyControl = Get-SettingsControl 'CatMainFrequencyMHzBox'
+        if ($changedFrequencyControl.SelectedItem -is [System.Windows.Controls.ComboBoxItem]) {
+            $script:radioCatEditDraft.frequency = [string]$changedFrequencyControl.Text
+            Update-UiRadioCatControls
+        }
     })
+    $frequencyControl.Add_Loaded({ Register-UiRadioCatFrequencyTextInput })
+    [void]$frequencyControl.ApplyTemplate()
+    Register-UiRadioCatFrequencyTextInput
     $catPortControl = Get-SettingsControl 'CatPortBox'
     $catPortControl.Add_SelectionChanged({
         if (-not $script:radioCatProgrammaticControlUpdate -and -not $script:loadingSettings -and -not $script:loadingRadioCatSettings) {
@@ -186,14 +205,22 @@ function Initialize-UiRadioCatController {
     $stopBitsControl = Find-UiRadioCatControl -Name 'CatStopBitsBox'
     if ($stopBitsControl) { $stopBitsControl.Add_SelectionChanged({ Update-UiRadioCatControls }) }
     $connectButton = Find-UiRadioCatControl -Name 'SerialConnectButton'
-    if ($connectButton) { $connectButton.Add_Click({ [void](Connect-UiSerialCombo) }) }
-    $disconnectButton = Find-UiRadioCatControl -Name 'SerialDisconnectButton'
-    if ($disconnectButton) { $disconnectButton.Add_Click({ [void](Disconnect-UiSerialCombo) }) }
+    if ($connectButton) {
+        $connectButton.Add_Click({
+            $coreActive = [bool]($script:supervisor -and -not $script:supervisor.HasExited)
+            $catRequested = [bool]$script:radioCatSessionRequested
+            $preparing = [bool]($script:preparationStarted -or $script:prepareStopAsync -or $script:serialConnectCatAfterCoreReady)
+            if ($coreActive -or $catRequested -or $preparing) { [void](Disconnect-UiSerialCombo) }
+            else { [void](Connect-UiSerialCombo) }
+            Update-UiSerialConnectButton
+        })
+    }
     (Get-SettingsControl 'ApplyCatSettingsButton').Add_Click({ Invoke-UiRadioCatAction -Operation 'setSettings' })
-    (Get-SettingsControl 'CatPowerSlider').Add_ValueChanged({
-        $slider = Get-SettingsControl 'CatPowerSlider'
-        if ($script:radioCatProgrammaticControlUpdate -or $script:loadingRadioCatSettings -or [string]$slider.Tag -ceq '__radio_cat_programmatic__') { return }
-        $script:radioCatEditDraft.power = [int][Math]::Round([double]$slider.Value,[MidpointRounding]::AwayFromZero)
+    (Get-SettingsControl 'CatPowerBox').Add_SelectionChanged({
+        $powerBox = Get-SettingsControl 'CatPowerBox'
+        if ($script:radioCatProgrammaticControlUpdate -or $script:loadingRadioCatSettings -or [string]$powerBox.Tag -ceq '__radio_cat_programmatic__') { return }
+        $watts = Get-UiRadioCatPowerItemWatts -Item $powerBox.SelectedItem
+        if ($null -ne $watts) { $script:radioCatEditDraft.power = [int]$watts }
         Update-UiRadioCatControls
     })
     Update-UiRadioCatObservationDisplay
@@ -214,6 +241,21 @@ function Register-UiRadioCatPortTextInput {
         if (-not $sender.IsKeyboardFocusWithin -and -not $sender.IsFocused) { return }
         $script:radioCatPortSelectionExplicit = $true
         $script:radioCatPortTextEditExplicit = $true
+        Update-UiRadioCatControls
+    })
+}
+
+function Register-UiRadioCatFrequencyTextInput {
+    if (-not $script:mainWindow) { return }
+    $combo = Get-SettingsControl 'CatMainFrequencyMHzBox'
+    if (-not $combo -or -not $combo.IsEditable -or -not $combo.Template) { return }
+    $textBox = $combo.Template.FindName('PART_EditableTextBox',$combo)
+    if ($textBox -isnot [System.Windows.Controls.TextBox]) { return }
+    if ([string]$textBox.Tag -ceq '__radio_cat_frequency_input_bound__') { return }
+    $textBox.Tag = '__radio_cat_frequency_input_bound__'
+    $textBox.Add_TextChanged({ param($sender,$eventArgs)
+        if ($script:radioCatProgrammaticControlUpdate -or $script:loadingSettings -or $script:loadingRadioCatSettings) { return }
+        $script:radioCatEditDraft.frequency = [string]$sender.Text
         Update-UiRadioCatControls
     })
 }
@@ -650,54 +692,135 @@ function Format-UiFrequencyMHz {
     return ([decimal]$FrequencyHz / [decimal]1000000).ToString('0.######',[Globalization.CultureInfo]::InvariantCulture)
 }
 
-function Set-UiRadioCatPowerSliderRange {
+function Get-UiRadioCatPowerItemWatts {
+    param([AllowNull()][object]$Item)
+    if ($Item -isnot [System.Windows.Controls.ComboBoxItem]) { return $null }
+    $watts = 0
+    if ([int]::TryParse([string]$Item.Tag,[Globalization.NumberStyles]::Integer,
+            [Globalization.CultureInfo]::InvariantCulture,[ref]$watts)) { return $watts }
+    return $null
+}
+
+function Get-UiRadioCatPowerSelection {
+    $box = Find-UiRadioCatControl -Name 'CatPowerBox'
+    if (-not $box) { return $null }
+    return Get-UiRadioCatPowerItemWatts -Item $box.SelectedItem
+}
+
+function Set-UiRadioCatPowerChoices {
     param([Parameter(Mandatory=$true)][ValidateRange(5,50)][int]$Maximum)
-    if (-not $script:radioControlPreferences) { return }
-    $slider = Find-UiRadioCatControl -Name 'CatPowerSlider'
-    if (-not $slider) { return }
-    $targetWatts = [int]$script:radioControlPreferences.desired_power_watts
+    $box = Find-UiRadioCatControl -Name 'CatPowerBox'
+    if (-not $box -or $box -isnot [System.Windows.Controls.ComboBox]) { return }
+    if (-not $script:radioCatEditDraft) { $script:radioCatEditDraft = @{ mode=$null; frequency=$null; power=$null } }
+
     $observedPower = Get-UiRadioCatObservedValue -Observed $script:radioCatObserved -Name 'power'
-    if ($null -eq $script:radioCatEditDraft.power -and $observedPower -and $observedPower.value -and
-        [int]$observedPower.value.watts -ge 5 -and [int]$observedPower.value.watts -le $Maximum) {
-        $targetWatts = [int]$observedPower.value.watts
+    $currentWatts = $null
+    if ($observedPower -and $observedPower.value -and $null -ne $observedPower.value.watts) {
+        $currentWatts = [int]$observedPower.value.watts
     }
-    $needsChoice = ($targetWatts -gt $Maximum)
     $draftWatts = $null
-    if ($script:radioCatEditDraft -and $null -ne $script:radioCatEditDraft.power) {
-        $draftWatts = [int]$script:radioCatEditDraft.power
-        $needsChoice = ($draftWatts -gt $Maximum -or $draftWatts -lt 5)
-    }
-    $sliderWatts = if ($null -ne $draftWatts) { $draftWatts } else { $targetWatts }
-    $targetValue = if ($needsChoice) { 5.0 } else { [double]$sliderWatts }
-    $rangeChanged = ([double]$slider.Minimum -ne 5.0 -or [double]$slider.Maximum -ne [double]$Maximum -or
-        [double]$slider.Value -ne $targetValue)
-    $script:radioCatPowerNeedsUserChoice = $needsChoice
-    if (-not $rangeChanged) {
-        $text = if ($needsChoice) {
-            '目标功率 {0} W；当前范围 5–{1} W，请选定合法值后应用' -f $sliderWatts,$Maximum
-        } else { '目标功率 {0} W' -f $sliderWatts }
-        Set-UiRadioCatText -Name 'CatDesiredPowerText' -Text $text
-        return
-    }
+    if ($null -ne $script:radioCatEditDraft.power) { $draftWatts = [int]$script:radioCatEditDraft.power }
+
+    $values = New-Object 'System.Collections.Generic.SortedSet[int]'
+    foreach ($watts in @(5,10,15,25,50)) { [void]$values.Add([int]$watts) }
+    if ($null -ne $currentWatts -and $currentWatts -ge 5 -and $currentWatts -le 50) { [void]$values.Add($currentWatts) }
+    if ($null -ne $draftWatts -and $draftWatts -ge 5 -and $draftWatts -le 50) { [void]$values.Add($draftWatts) }
+
+    $selectedWatts = if ($null -ne $draftWatts) { $draftWatts } elseif ($null -ne $currentWatts -and $currentWatts -ge 5 -and $currentWatts -le 50) { $currentWatts } else { 25 }
+    $needsChoice = if ($null -ne $draftWatts) {
+        ($draftWatts -lt 5 -or $draftWatts -gt $Maximum)
+    } elseif ($null -ne $currentWatts) {
+        ($currentWatts -lt 5 -or $currentWatts -gt $Maximum)
+    } else { $false }
+    $script:radioCatPowerNeedsUserChoice = [bool]$needsChoice
+
     $wasLoading = [bool]$script:loadingRadioCatSettings
     $wasUpdating = [bool]$script:radioCatProgrammaticControlUpdate
-    $oldTag = $slider.Tag
+    $oldTag = $box.Tag
     try {
         $script:loadingRadioCatSettings = $true
         $script:radioCatProgrammaticControlUpdate = $true
-        $slider.Tag = '__radio_cat_programmatic__'
-        if ([double]$slider.Minimum -ne 5.0) { $slider.Minimum = 5.0 }
-        if ([double]$slider.Maximum -ne [double]$Maximum) { $slider.Maximum = [double]$Maximum }
-        if ([double]$slider.Value -ne $targetValue) { $slider.Value = $targetValue }
+        $box.Tag = '__radio_cat_programmatic__'
+        $existingValues = @($box.Items | ForEach-Object { Get-UiRadioCatPowerItemWatts -Item $_ } | Where-Object { $null -ne $_ })
+        $desiredValues = @($values)
+        $sameItems = (($existingValues -join ',') -ceq ($desiredValues -join ','))
+        if (-not $sameItems) {
+            $box.Items.Clear()
+            foreach ($watts in $values) {
+                $item = New-Object System.Windows.Controls.ComboBoxItem
+                $item.Tag = [string]$watts
+                $item.Content = ('{0} W' -f $watts)
+                [void]$box.Items.Add($item)
+            }
+        }
+        foreach ($item in @($box.Items)) {
+            $watts = Get-UiRadioCatPowerItemWatts -Item $item
+            if ($null -eq $watts) { continue }
+            $itemEnabled = ([int]$watts -le $Maximum)
+            if ([bool]$item.IsEnabled -ne $itemEnabled) { $item.IsEnabled = $itemEnabled }
+            $itemToolTip = $null
+            if ($watts -gt $Maximum) {
+                $itemToolTip = if ($null -ne $currentWatts -and $watts -eq $currentWatts) {
+                    '当前CAT读值；超出当前功率路径上限 {0} W' -f $Maximum
+                } else { '超出当前功率路径上限 {0} W' -f $Maximum }
+            }
+            elseif ($null -ne $currentWatts -and $watts -eq $currentWatts) { $itemToolTip = '当前CAT读值' }
+            if ([string]$item.ToolTip -cne [string]$itemToolTip) { $item.ToolTip = $itemToolTip }
+        }
+        $selectedNow = Get-UiRadioCatPowerSelection
+        if ($null -eq $selectedNow -or [int]$selectedNow -ne [int]$selectedWatts) {
+            $targetItem = @($box.Items | Where-Object { (Get-UiRadioCatPowerItemWatts -Item $_) -eq $selectedWatts } | Select-Object -First 1)
+            if ($targetItem.Count -gt 0) { $box.SelectedItem = $targetItem[0] }
+        }
+        if ($needsChoice) {
+            $boxToolTip = '目标功率 {0} W 超出当前路径上限 {1} W；请重新选择有效功率。' -f $selectedWatts,$Maximum
+        } else {
+            $boxToolTip = $null
+        }
+        if ([string]$box.ToolTip -cne [string]$boxToolTip) { $box.ToolTip = $boxToolTip }
     } finally {
         $script:radioCatProgrammaticControlUpdate = $wasUpdating
-        $slider.Tag = $oldTag
+        $box.Tag = $oldTag
         $script:loadingRadioCatSettings = $wasLoading
     }
-    $text = if ($needsChoice) {
-        '目标功率 {0} W；当前范围 5–{1} W，请选定合法值后应用' -f $sliderWatts,$Maximum
-    } else { '目标功率 {0} W' -f $sliderWatts }
-    Set-UiRadioCatText -Name 'CatDesiredPowerText' -Text $text
+}
+
+function Set-UiRadioCatCurrentFrequencyChoice {
+    param([Parameter(Mandatory=$true)][long]$FrequencyHz)
+    $combo = Find-UiRadioCatControl -Name 'CatMainFrequencyMHzBox'
+    if (-not $combo -or $combo -isnot [System.Windows.Controls.ComboBox]) { return }
+    $frequencyMHz = Format-UiFrequencyMHz -FrequencyHz $FrequencyHz
+    $wasLoading = [bool]$script:loadingRadioCatSettings
+    $wasUpdating = [bool]$script:radioCatProgrammaticControlUpdate
+    try {
+        $script:loadingRadioCatSettings = $true
+        $script:radioCatProgrammaticControlUpdate = $true
+        $item = @($combo.Items | Where-Object { $_ -is [System.Windows.Controls.ComboBoxItem] -and [string]$_.Tag -ceq '__radio_cat_current_frequency__' } | Select-Object -First 1)
+        $currentItem = if ($item.Count -gt 0) { $item[0] } else { $null }
+        if (-not $currentItem -or [string]$currentItem.Content -cne $frequencyMHz) {
+            if ($currentItem) { [void]$combo.Items.Remove($currentItem) }
+            $currentItem = New-Object System.Windows.Controls.ComboBoxItem
+            $currentItem.Content = $frequencyMHz
+            $currentItem.Tag = '__radio_cat_current_frequency__'
+            $currentItem.ToolTip = '当前CAT读值'
+            [void]$combo.Items.Add($currentItem)
+        }
+        if (-not $script:radioCatEditDraft -or $null -eq $script:radioCatEditDraft.frequency) {
+            if ($combo.SelectedItem -is [System.Windows.Controls.ComboBoxItem] -and
+                [string]$combo.SelectedItem.Tag -ceq '__radio_cat_current_frequency__') { $combo.SelectedItem = $null }
+            if ([string]$combo.Text -cne $frequencyMHz) { $combo.Text = $frequencyMHz }
+        } else {
+            $draftText = [string]$script:radioCatEditDraft.frequency
+            if ($null -ne $combo.SelectedItem -and [string]$combo.SelectedItem.Tag -ceq '__radio_cat_current_frequency__' -and
+                [string]$combo.SelectedItem.Content -cne $draftText) {
+                $combo.SelectedItem = $null
+            }
+            if ([string]$combo.Text -cne $draftText) { $combo.Text = $draftText }
+        }
+    } finally {
+        $script:radioCatProgrammaticControlUpdate = $wasUpdating
+        $script:loadingRadioCatSettings = $wasLoading
+    }
 }
 
 function ConvertFrom-UiFrequencyMHz {
@@ -745,14 +868,7 @@ function Update-UiRadioCatObservationDisplay {
     if ($mainFrequency) {
         $frequencyMHz = Format-UiFrequencyMHz -FrequencyHz ([long]$mainFrequency.value)
         Set-UiRadioCatText -Name 'CatObservedFrequencyText' -Text ($frequencyMHz + ' MHz')
-        if (-not $script:radioCatEditDraft -or $null -eq $script:radioCatEditDraft.frequency) {
-            $script:radioCatProgrammaticControlUpdate = $true
-            try {
-                $frequencyBox = Find-UiRadioCatControl -Name 'CatMainFrequencyMHzBox'
-                if ($frequencyBox -and [string]$frequencyBox.Text -cne $frequencyMHz) { $frequencyBox.Text = $frequencyMHz }
-            }
-            finally { $script:radioCatProgrammaticControlUpdate = $false }
-        }
+        Set-UiRadioCatCurrentFrequencyChoice -FrequencyHz ([long]$mainFrequency.value)
     }
     if ($power) {
         $value = $power.value
@@ -761,10 +877,10 @@ function Update-UiRadioCatObservationDisplay {
         $powerCapability = Get-UiRadioCatProperty -InputObject $capabilities -Name 'set_power'
         $maximum = Get-UiRadioCatProperty -InputObject $powerCapability -Name 'maximum_watts'
         if ($maximum -is [int] -or $maximum -is [long]) {
-            Set-UiRadioCatPowerSliderRange -Maximum ([int]$maximum)
+            Set-UiRadioCatPowerChoices -Maximum ([int]$maximum)
         } else {
             $actualMaximum = if ([string]$value.path -ceq 'FieldHead') { 10 } else { 50 }
-            Set-UiRadioCatPowerSliderRange -Maximum $actualMaximum
+            Set-UiRadioCatPowerChoices -Maximum $actualMaximum
         }
     }
 }
@@ -775,16 +891,15 @@ function Update-UiRadioCatControls {
     Set-UiRadioCatControlVisibility -Name 'CatOperatingPanel' -Visibility ([System.Windows.Visibility]::Visible)
     if (-not $script:radioCatModuleAvailable) {
         foreach ($name in @('CatPortBox','CatBaudRateBox','CatMainModeBox','CatMainFrequencyMHzBox',
-                'CatPowerSlider','ApplyCatSettingsButton')) {
+                'CatPowerBox','ApplyCatSettingsButton')) {
             Set-UiRadioCatControlEnabled -Name $name -Enabled $false
         }
-        Set-UiRadioCatText -Name 'CatSessionStatusText' -Text 'CAT 模块不可用'
         if (Get-Command -Name 'Set-ConnectionButtonState' -ErrorAction SilentlyContinue) { Set-ConnectionButtonState }
         return
     }
     if ($script:radioControlPreferencesError) {
         foreach ($name in @('CatPortBox','CatBaudRateBox','CatMainModeBox','CatMainFrequencyMHzBox',
-                'CatPowerSlider','ApplyCatSettingsButton')) {
+                'CatPowerBox','ApplyCatSettingsButton')) {
             Set-UiRadioCatControlEnabled -Name $name -Enabled $false
         }
         return
@@ -798,7 +913,7 @@ function Update-UiRadioCatControls {
         Set-UiRadioCatControlEnabled -Name $name -Enabled (-not $coreActive -and -not $script:radioCatSessionRequested -and
             -not $script:radioCatOperationPowerShell -and -not $script:radioCatSessionShutdown)
     }
-    foreach ($name in @('CatMainModeBox','CatMainFrequencyMHzBox','CatPowerSlider')) {
+    foreach ($name in @('CatMainModeBox','CatMainFrequencyMHzBox','CatPowerBox')) {
         Set-UiRadioCatControlEnabled -Name $name -Enabled (-not $editBusy)
     }
     $port = Get-UiRadioCatSelectedPort
@@ -831,25 +946,24 @@ function Update-UiRadioCatControls {
     if ($currentPower -and $currentPower.value -and -not $script:radioCatResult) {
         $powerMaximum = if ([string]$currentPower.value.path -ceq 'FieldHead') { 10 } else { 50 }
     }
-    Set-UiRadioCatPowerSliderRange -Maximum $powerMaximum
+    Set-UiRadioCatPowerChoices -Maximum $powerMaximum
     if ($script:radioCatResult) {
         $maximum = Get-UiRadioCatProperty -InputObject $powerCapability -Name 'maximum_watts'
         if ([string]$script:radioCatResult.status -ceq 'confirmed' -and
             $powerCapability -and [bool]$powerCapability.available -and $currentPower -and $observationMatchesConnection -and ($maximum -is [int] -or $maximum -is [long])) {
             $powerMaximum = [int]$maximum
-            $powerAllowed = ([int](Get-SettingsControl 'CatPowerSlider').Value -ge 5 -and
-                [int](Get-SettingsControl 'CatPowerSlider').Value -le $powerMaximum -and
+            $selectedPower = Get-UiRadioCatPowerSelection
+            $powerAllowed = ($null -ne $selectedPower -and [int]$selectedPower -ge 5 -and
+                [int]$selectedPower -le $powerMaximum -and
                 (-not ($script:supervisor -and -not $script:supervisor.HasExited) -or $idle))
         }
     }
-        Set-UiRadioCatControlEnabled -Name 'CatPowerSlider' -Enabled (-not $editBusy)
     $powerTarget = [int]0
     $powerTargetValid = $false
     try {
-        $sliderValue = [double](Get-SettingsControl 'CatPowerSlider').Value
-        if (-not [double]::IsNaN($sliderValue) -and -not [double]::IsInfinity($sliderValue) -and
-            $sliderValue -eq [Math]::Truncate($sliderValue)) {
-            $powerTarget = [int]$sliderValue
+        $selectedPower = Get-UiRadioCatPowerSelection
+        if ($null -ne $selectedPower) {
+            $powerTarget = [int]$selectedPower
             $powerTargetValid = ($powerTarget -ge 5 -and $powerTarget -le $powerMaximum)
         }
     } catch { }
@@ -954,7 +1068,7 @@ function New-UiRadioCatActionRequest {
         created_at_utc=[DateTimeOffset]::UtcNow
     }
     if ($Operation -ceq 'setPower') {
-        if (-not $script:radioCatEditDraft -or $null -eq $script:radioCatEditDraft.power) { throw '请先调整功率滑块，再明确应用该草稿值。' }
+        if (-not $script:radioCatEditDraft -or $null -eq $script:radioCatEditDraft.power) { throw '请先选择功率，再明确应用该草稿值。' }
         if ($script:radioCatPowerNeedsUserChoice) { throw '目标功率超出电台当前范围；请先明确选择合法值。' }
         $request.power_watts = [int]$script:radioCatEditDraft.power
     } elseif ($Operation -ceq 'setSettings') {
@@ -965,13 +1079,10 @@ function New-UiRadioCatActionRequest {
         $request.side = 'Main'
         $request.mode = [string]$selected.Tag
         $request.frequency_hz = [long](ConvertFrom-UiFrequencyMHz -Text (Get-SettingsControl 'CatMainFrequencyMHzBox').Text)
-        $slider = Get-SettingsControl 'CatPowerSlider'
-        $sliderValue = [double]$slider.Value
-        if ([double]::IsNaN($sliderValue) -or [double]::IsInfinity($sliderValue) -or $sliderValue -ne [Math]::Truncate($sliderValue)) {
-            throw '请选择整数瓦数后再应用。'
-        }
+        $powerValue = Get-UiRadioCatPowerSelection
+        if ($null -eq $powerValue) { throw '请选择一个功率值后再应用。' }
         if ($script:radioCatPowerNeedsUserChoice) { throw '目标功率范围已变化；请先在当前范围内重新选择功率。' }
-        $request.power_watts = [int]$sliderValue
+        $request.power_watts = [int]$powerValue
     } elseif ($Operation -ceq 'setMode') {
         $selected = (Get-SettingsControl 'CatMainModeBox').SelectedItem
         if ($selected -isnot [System.Windows.Controls.ComboBoxItem] -or [string]$selected.Tag -cnotin @('FM','FM-N','C4FM-DN','C4FM-VW')) {

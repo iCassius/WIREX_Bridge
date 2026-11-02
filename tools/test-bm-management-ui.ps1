@@ -27,6 +27,9 @@ function New-BmManagementUiTestWindow {
     $controls = [ordered]@{
         BmApiKeyBox = (New-Object System.Windows.Controls.PasswordBox)
         BmStaticGroupPanel = (New-Object System.Windows.Controls.Border)
+        StaticApiRequiredOverlay = (New-Object System.Windows.Controls.Grid)
+        StaticApiRequiredText = (New-Object System.Windows.Controls.TextBlock)
+        TransientStatusText = (New-Object System.Windows.Controls.TextBlock)
         BmStaticGroupSourceValue = (New-Object System.Windows.Controls.TextBlock)
         BmStaticGroupsList = (New-Object System.Windows.Controls.ListBox)
         BmStaticGroupPagePreviousButton = (New-Object System.Windows.Controls.Button)
@@ -36,12 +39,12 @@ function New-BmManagementUiTestWindow {
         AddBmStaticGroupButton = (New-Object System.Windows.Controls.Button)
         RemoveBmStaticGroupButton = (New-Object System.Windows.Controls.Button)
         RefreshBmStaticGroupsButton = (New-Object System.Windows.Controls.Button)
-        BmStaticGroupStatus = (New-Object System.Windows.Controls.TextBlock)
     }
     foreach ($entry in $controls.GetEnumerator()) {
         $window.RegisterName([string]$entry.Key, $entry.Value)
         [void]$rootPanel.Children.Add($entry.Value)
     }
+    $controls['StaticApiRequiredText'].Text = '需启用BM API key'
     return $window
 }
 
@@ -95,6 +98,40 @@ Assert-BmManagementUiUtf8Bom -Path $PSCommandPath
 Assert-BmManagementUiUtf8Bom -Path $adapterPath
 $window = New-BmManagementUiTestWindow
 $script:mainWindow = $window
+$script:transientStatusText = ''
+$script:transientStatusLastMessage = ''
+$script:transientStatusDeadlineUtc = [DateTime]::MinValue
+$script:transientStatusRestartCount = 0
+function Set-UiTransientStatus {
+    param([Parameter(Mandatory=$true)][AllowEmptyString()][string]$Message,[bool]$Failed=$false,[switch]$Restart)
+    $value = ([string]$Message).Trim()
+    if (-not $value) { [void](Clear-UiTransientStatus); return }
+    $now = [DateTime]::UtcNow
+    $isNewMessage = ($value -cne [string]$script:transientStatusLastMessage)
+    if (-not $isNewMessage -and -not $Restart -and [string]$script:transientStatusText -cne $value) { return }
+    if ($isNewMessage -or $Restart) {
+        $script:transientStatusLastMessage = $value
+        $script:transientStatusDeadlineUtc = $now.AddSeconds(5)
+    }
+    if ($Restart) { $script:transientStatusRestartCount++ }
+    $script:transientStatusText = $value
+    $control = $window.FindName('TransientStatusText')
+    $control.Text = $value
+    $control.Visibility = [System.Windows.Visibility]::Visible
+}
+function Clear-UiTransientStatus {
+    $script:transientStatusText = ''
+    $script:transientStatusDeadlineUtc = [DateTime]::MinValue
+    $control = $window.FindName('TransientStatusText')
+    $control.Text = ''
+    $control.Visibility = [System.Windows.Visibility]::Collapsed
+    return $true
+}
+function Update-UiTransientStatusExpiry {
+    if ($script:transientStatusText -and [DateTime]::UtcNow -ge $script:transientStatusDeadlineUtc) {
+        [void](Clear-UiTransientStatus)
+    }
+}
 $script:storedProfile = [pscustomobject]@{
     connection = [pscustomobject]@{ gateway_id = [uint64]461135501 }
 }
@@ -143,9 +180,10 @@ $fakeToken = ('a' * 100) + '.' + ('b' * 100) + '.' + ('c' * 100)
 try {
     . $adapterPath
     Initialize-BmManagementUi -Window $window
-    Assert-BmManagementUi ($window.FindName('BmStaticGroupPanel').Visibility -eq [System.Windows.Visibility]::Collapsed) 'empty API-key preference must keep the static panel hidden'
-    Assert-BmManagementUi ($window.FindName('BmStaticGroupsList').Visibility -eq [System.Windows.Visibility]::Collapsed) 'no-key initialization must hide the static list'
-    Assert-BmManagementUi ($window.FindName('AddBmStaticGroupButton').Visibility -eq [System.Windows.Visibility]::Collapsed) 'no-key initialization must hide write controls'
+    Assert-BmManagementUi ($window.FindName('BmStaticGroupPanel').Visibility -eq [System.Windows.Visibility]::Visible) 'empty API-key preference must keep the static panel fixed and visible'
+    Assert-BmManagementUi ($window.FindName('BmStaticGroupsList').Visibility -eq [System.Windows.Visibility]::Visible -and -not $window.FindName('BmStaticGroupsList').IsEnabled -and $window.FindName('BmStaticGroupsList').Items.Count -eq 0) 'no-key initialization must show an empty, disabled list'
+    Assert-BmManagementUi ($window.FindName('StaticApiRequiredOverlay').Visibility -eq [System.Windows.Visibility]::Visible -and $window.FindName('StaticApiRequiredText').Text -ceq '需启用BM API key') 'no-key initialization must show the fixed API-key overlay'
+    Assert-BmManagementUi (-not $window.FindName('BmStaticGroupIdBox').IsEnabled -and -not $window.FindName('AddBmStaticGroupButton').IsEnabled -and -not $window.FindName('RemoveBmStaticGroupButton').IsEnabled -and -not $window.FindName('RefreshBmStaticGroupsButton').IsEnabled) 'no-key initialization must disable all static-group editing and refresh controls'
     Assert-BmManagementUi ($state.requests.Count -eq 0) 'no-key initialization must make no API request'
 
     $window.FindName('BmApiKeyBox').Password = $fakeToken
@@ -160,7 +198,7 @@ try {
     Assert-BmManagementUi ($state.requests[1].uri -ceq 'https://api.brandmeister.network/v2/device/461135501') 'UI metadata GET should use the device endpoint'
     $authObserved = [string]$state.seen_auths[0]
     Assert-BmManagementUi ($authObserved -ceq ('Bearer ' + $fakeToken)) ("fake auth header should be exact (length={0}, bearer={1}, exact={2})" -f $authObserved.Length, $authObserved.StartsWith('Bearer '), ($authObserved -ceq ('Bearer ' + $fakeToken)))
-    Assert-BmManagementUi ($window.FindName('BmStaticGroupPanel').Visibility -eq [System.Windows.Visibility]::Visible) 'a successful GET should expose the BM static panel'
+    Assert-BmManagementUi ($window.FindName('BmStaticGroupPanel').Visibility -eq [System.Windows.Visibility]::Visible -and $window.FindName('StaticApiRequiredOverlay').Visibility -eq [System.Windows.Visibility]::Collapsed) 'a successful GET should keep the panel fixed and hide the API overlay'
     Assert-BmManagementUi ($window.FindName('BmStaticGroupsList').Visibility -eq [System.Windows.Visibility]::Visible) 'an empty successful GET should show an empty list'
     Assert-BmManagementUi ($window.FindName('BmStaticGroupsList').Items.Count -eq 0) 'an empty GET should remain a real empty list'
     Assert-BmManagementUi ($window.FindName('BmStaticGroupPageText').Text -ceq '1 / 1' -and
@@ -168,8 +206,41 @@ try {
         -not $window.FindName('BmStaticGroupPageNextButton').IsEnabled) 'an empty list should show one disabled page'
     Assert-BmManagementUi ($window.FindName('AddBmStaticGroupButton').Visibility -eq [System.Windows.Visibility]::Visible -and $window.FindName('AddBmStaticGroupButton').IsEnabled) 'a valid simplex status should enable Add'
     Assert-BmManagementUi ($script:bmManagementStatus -ceq 'loaded' -and $script:bmManagementGroups.Count -eq 0 -and $script:bmManagementAddContext.add_slot -eq 0) 'empty list and status 4 should load with API slot 0'
+
+    $invalidAddId = 'not-a-number'
+    $window.FindName('BmStaticGroupIdBox').Text = $invalidAddId
+    $invalidAddButton = $window.FindName('AddBmStaticGroupButton')
+    $invalidAddRequestCount = $state.requests.Count
+    $invalidAddRestartCount = $script:transientStatusRestartCount
+    Assert-BmManagementUi $invalidAddButton.IsEnabled 'loaded test API key and device context should allow the Add button before ID validation'
+    Invoke-BmManagementUiButtonClick -Name 'AddBmStaticGroupButton'
+    $invalidAddMessage = '请输入 1 至 16777215 的静态组 ID。'
+    Assert-BmManagementUi ($window.FindName('TransientStatusText').Text -ceq $invalidAddMessage -and
+        $window.FindName('TransientStatusText').Visibility -eq [System.Windows.Visibility]::Visible -and
+        $script:transientStatusDeadlineUtc -gt [DateTime]::UtcNow -and
+        $script:transientStatusRestartCount -eq ($invalidAddRestartCount + 1)) 'the first invalid Add click should display and start the five-second validation notice'
+    Assert-BmManagementUi ($state.requests.Count -eq $invalidAddRequestCount -and $null -eq $script:bmManagementOperationPowerShell) 'invalid Add ID must make no API request and create no worker'
+    $script:transientStatusDeadlineUtc = [DateTime]::UtcNow.AddMilliseconds(-1)
+    Update-UiTransientStatusExpiry
+    Assert-BmManagementUi ($window.FindName('TransientStatusText').Visibility -eq [System.Windows.Visibility]::Collapsed -and
+        [string]::IsNullOrEmpty([string]$window.FindName('TransientStatusText').Text) -and
+        $script:transientStatusLastMessage -ceq $invalidAddMessage) 'simulated TTL expiry should hide the notice while retaining its deduplication key'
+    Invoke-BmManagementUiButtonClick -Name 'AddBmStaticGroupButton'
+    Assert-BmManagementUi ($window.FindName('TransientStatusText').Text -ceq $invalidAddMessage -and
+        $window.FindName('TransientStatusText').Visibility -eq [System.Windows.Visibility]::Visible -and
+        $script:transientStatusDeadlineUtc -gt [DateTime]::UtcNow -and
+        $script:transientStatusRestartCount -eq ($invalidAddRestartCount + 2)) 'a second identical invalid Add click should restart and redisplay the expired notice'
+    Assert-BmManagementUi ($state.requests.Count -eq $invalidAddRequestCount -and $null -eq $script:bmManagementOperationPowerShell) 'repeated invalid Add ID must still make no API request and create no worker'
+    $invalidAddDeadlineAfterClick = $script:transientStatusDeadlineUtc
+    $invalidAddRestartCountAfterClick = $script:transientStatusRestartCount
+    Set-BmManagementUiControlState
+    [void](Poll-BmManagementUi)
+    Assert-BmManagementUi ($script:transientStatusDeadlineUtc -eq $invalidAddDeadlineAfterClick -and
+        $script:transientStatusRestartCount -eq $invalidAddRestartCountAfterClick -and
+        $state.requests.Count -eq $invalidAddRequestCount) 'control-state and poll refreshes must not restart the validation notice TTL or send requests'
+
     $configJson = ConvertTo-Json -InputObject $script:portableConfig -Compress
-    Assert-BmManagementUi (-not $configJson.Contains($fakeToken) -and -not $window.FindName('BmStaticGroupStatus').Text.Contains($fakeToken)) 'the synthetic token must not enter saved config or UI status'
+    Assert-BmManagementUi (-not $configJson.Contains($fakeToken) -and -not $window.FindName('TransientStatusText').Text.Contains($fakeToken)) 'the synthetic token must not enter saved config or UI status'
 
     $window.FindName('BmStaticGroupIdBox').Text = '12345'
     Set-BmFakeResponses @(
@@ -210,7 +281,7 @@ try {
         Assert-BmManagementUi ($script:bmManagementStatus -ceq 'loaded' -and $window.FindName('BmStaticGroupsList').Visibility -eq [System.Windows.Visibility]::Visible) 'device status errors should leave the static list readable'
         Assert-BmManagementUi (-not $window.FindName('AddBmStaticGroupButton').IsEnabled -and $null -eq $script:bmManagementAddContext) 'missing, invalid, or mismatched device status must disable Add'
         if ($invalidStatusBody -ceq '{"id":461135501,"status":5}') {
-            Assert-BmManagementUi ($window.FindName('BmStaticGroupStatus').Text.Contains('5')) 'a numeric unknown status should be shown as a short current value'
+            Assert-BmManagementUi ($window.FindName('TransientStatusText').Text.Contains('5')) 'a numeric unknown status should be shown as a short transient current value'
         }
         $requestCount = $state.requests.Count
         Assert-BmManagementUi (-not (Start-BmManagementUiRequest -Operation Add)) 'Add should reject unknown device context before creating a worker'
@@ -244,7 +315,7 @@ try {
     Wait-BmManagementUiIdle
     Assert-BmManagementUi ($state.requests.Count -eq 2 -and $state.requests[0].method -ceq 'POST') 'an unconfirmed Add must not retry its POST'
     Assert-BmManagementUi ($script:bmManagementLastWriteAccepted -and $script:bmManagementLastReadbackStatus -ceq 'unavailable') 'accepted but unreadable Add must retain the unconfirmed state'
-    Assert-BmManagementUi ($script:bmManagementGroups.Count -eq 0 -and $window.FindName('BmStaticGroupsList').Visibility -eq [System.Windows.Visibility]::Collapsed) 'unconfirmed readback must not create a fictional list row'
+    Assert-BmManagementUi ($script:bmManagementGroups.Count -eq 0 -and $window.FindName('BmStaticGroupsList').Visibility -eq [System.Windows.Visibility]::Visible -and -not $window.FindName('BmStaticGroupsList').IsEnabled -and $window.FindName('BmStaticGroupsList').Items.Count -eq 0) 'unconfirmed readback must leave a fixed empty, disabled list'
 
     $newFakeToken = ('d' * 100) + '.' + ('e' * 100) + '.' + ('f' * 100)
     $window.FindName('BmApiKeyBox').Password = $newFakeToken

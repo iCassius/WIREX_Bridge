@@ -1171,9 +1171,10 @@ Assert-True ($alpha17PackageReadme.Contains('WIREX Bridge v0.1.0-alpha.17') -and
     -not $alpha17PackageReadme.Contains('实机验收结果')) 'alpha.17 README documents implemented UI behavior without hardware claims'
 Assert-True ($startupTestText.Contains("'v0.1.0-alpha.17'") -and
     $startupTestText.Contains("'v0.1.0-alpha.18'") -and
+    $startupTestText.Contains("'v0.1.0-alpha.19'") -and
     $startupTestText.Contains('Test-BmConnectionCapabilityCompatibility -PackageRoot $packageCopy -PackageLabel $packageLabel') -and
     $startupTestText.Contains('bm.connection.set')) `
-    'package-startup test accepts alpha.17 and alpha.18 and checks optional BM capability compatibility'
+    'package-startup test accepts alpha.17-alpha.19 and checks optional BM capability compatibility'
 $alpha18Profile = Get-ReleaseProfile -Version 'v0.1.0-alpha.18'
 [void](Set-ReleaseVersion -Version 'v0.1.0-alpha.18')
 $alpha18Files = @(Get-ExpectedReleasePackageFiles)
@@ -1223,6 +1224,56 @@ Assert-True ($alpha18PackageReadme.Contains('WIREX Bridge v0.1.0-alpha.18') -and
 Assert-True ($startupTestText.Contains("'v0.1.0-alpha.18'") -and
     $startupTestText.Contains('Test-Alpha18UiLayoutContract -PackageRoot $packageCopy')) `
     'package-startup test accepts alpha.18 and checks the packaged R122 UI contract'
+$alpha19Profile = Get-ReleaseProfile -Version 'v0.1.0-alpha.19'
+[void](Set-ReleaseVersion -Version 'v0.1.0-alpha.19')
+$alpha19Files = @(Get-ExpectedReleasePackageFiles)
+$alpha19Tests = @(Get-ExpectedReleaseTests)
+Assert-True ([string]$alpha19Profile.ReleaseScope -like 'R123 DIRECT:*') 'alpha.19 release metadata identifies the R123 fixed-layout scope'
+Assert-True ($alpha19Profile.AssetMap.Count -eq 41 -and $alpha19Profile.SourceFiles.Count -eq 37 -and
+    $alpha19Profile.Directories.Count -eq 9 -and $alpha19Profile.TestNames.Count -eq 40) `
+    'alpha.19 keeps 41 mapped assets, 37 source mappings, 9 runtime directories and 40 Native test names'
+Assert-True ([string]::Join('|', $alpha19Files) -ceq [string]::Join('|', $alpha18Files) -and
+    [string]::Join('|', $alpha19Tests) -ceq [string]::Join('|', $alpha18Tests) -and
+    [string]::Join('|', @($alpha19Profile.AssetMap.Keys)) -ceq [string]::Join('|', @($alpha18Profile.AssetMap.Keys))) `
+    'alpha.19 inherits the exact alpha.18 runtime assets, asset paths and ordered Native tests'
+Assert-True (@($alpha19Profile.SourceFiles | Where-Object {
+    [string]$_.Source -ceq 'tools\start-wirex-bridge-alpha19.cmd' -and [string]$_.Destination -ceq 'start-wirex-bridge.cmd'
+}).Count -eq 1 -and @($alpha19Profile.SourceFiles | Where-Object {
+    [string]$_.Source -ceq 'tools\start-wirex-bridge-alpha19.ps1' -and [string]$_.Destination -ceq 'tools/start-wirex-bridge.ps1'
+}).Count -eq 1 -and [string]$alpha19Profile.PackageReadme -ceq 'docs\releases\v0.1.0-alpha.19-package-README.md') `
+    'alpha.19 maps only its versioned launchers and README to canonical package paths'
+$alpha19Excluded = @(Get-ReleaseExcludedPrivateFiles -Version 'v0.1.0-alpha.19')
+foreach ($requiredExcludedPath in @('config.json', 'config.*.backup*', 'credentials/', 'tempSecrets/')) {
+    Assert-True ($alpha19Excluded -ccontains $requiredExcludedPath) "alpha.19 generic package excludes $requiredExcludedPath"
+}
+$alpha19LauncherPath = Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha19.ps1'
+$alpha19LauncherBytes = [System.IO.File]::ReadAllBytes($alpha19LauncherPath)
+Assert-True ($alpha19LauncherBytes.Length -ge 3 -and $alpha19LauncherBytes[0] -eq 0xEF -and
+    $alpha19LauncherBytes[1] -eq 0xBB -and $alpha19LauncherBytes[2] -eq 0xBF) 'alpha.19 PowerShell launcher has a UTF-8 BOM for Windows PowerShell 5.1'
+$alpha19LauncherTokens = $null
+$alpha19LauncherErrors = $null
+[System.Management.Automation.Language.Parser]::ParseFile($alpha19LauncherPath, [ref]$alpha19LauncherTokens, [ref]$alpha19LauncherErrors) | Out-Null
+Assert-True ($alpha19LauncherErrors.Count -eq 0) ('alpha.19 launcher parses; parse errors={0}' -f $alpha19LauncherErrors.Count)
+$alpha19LauncherText = [System.IO.File]::ReadAllText($alpha19LauncherPath, [System.Text.Encoding]::UTF8)
+Assert-True ($alpha19LauncherText.Contains('. $uiLauncher -PackageDirectory $packageRoot') -and
+    $alpha19LauncherText.Contains('alpha.19') -and -not $alpha19LauncherText.Contains('alpha.18') -and
+    -not $alpha19LauncherText.Contains('user-config-directory.txt') -and
+    -not $alpha19LauncherText.Contains('Resolve-PackageUserConfigDirectory')) `
+    'alpha.19 normal startup uses packageRoot and identifies the correct release version'
+$alpha19CmdPath = Join-Path $repositoryRoot 'tools\start-wirex-bridge-alpha19.cmd'
+$alpha19CmdBytes = [System.IO.File]::ReadAllBytes($alpha19CmdPath)
+Assert-True (@($alpha19CmdBytes | Where-Object { $_ -gt 127 }).Count -eq 0) 'alpha.19 root CMD source contains ASCII only'
+$alpha19PackageReadme = [System.IO.File]::ReadAllText((Join-Path $repositoryRoot $alpha19Profile.PackageReadme), [System.Text.Encoding]::UTF8)
+Assert-True ($alpha19PackageReadme.Contains('WIREX Bridge v0.1.0-alpha.19') -and
+    $alpha19PackageReadme.Contains('1360×900') -and
+    $alpha19PackageReadme.Contains('来话历史固定显示 5 行并分页。') -and
+    $alpha19PackageReadme.Contains('功率预设为 5、10、15、25、50 W') -and
+    $alpha19PackageReadme.Contains('需启用BM API key') -and
+    -not $alpha19PackageReadme.Contains('实机验收结果')) 'alpha.19 README documents R123 layout and avoids hardware claims'
+Assert-True ($startupTestText.Contains("'v0.1.0-alpha.19'") -and
+    $startupTestText.Contains('Test-Alpha19UiLayoutContract -PackageRoot $packageCopy') -and
+    $startupTestText.Contains("'package-ui-contract.psm1'")) `
+    'package-startup test routes alpha.19 through the new reusable R123 UI contract helper'
 $alpha15PackageReadme = [System.IO.File]::ReadAllText((Join-Path $repositoryRoot $alpha15Profile.PackageReadme), [System.Text.Encoding]::UTF8)
 Assert-True ($alpha15PackageReadme.Contains('WIREX Bridge v0.1.0-alpha.15') -and
     $alpha15PackageReadme.Contains('audio.gains.set') -and
@@ -1854,6 +1905,21 @@ try {
     Assert-Throws { Assert-ReleasePackageInventory -PackageRoot $alpha18InventoryRoot -Version 'v0.1.0-alpha.18' } `
         'alpha.18 package inventory rejects a package-root user config file'
     Remove-Item -LiteralPath (Join-Path $alpha18InventoryRoot 'config.json') -Force -ErrorAction Stop
+
+    $alpha19InventoryRoot = Join-Path $testRoot 'package-inventory-alpha19'
+    Copy-Item -LiteralPath $alpha18InventoryRoot -Destination $alpha19InventoryRoot -Recurse
+    $alpha19InventoryManifestPath = Join-Path $alpha19InventoryRoot 'manifest.json'
+    $alpha19InventoryManifest = [System.IO.File]::ReadAllText($alpha19InventoryManifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $alpha19InventoryManifest.version = 'v0.1.0-alpha.19'
+    $alpha19InventoryManifest.tag_candidate = 'v0.1.0-alpha.19'
+    $alpha19InventoryManifest.excluded_private_files = @(Get-ReleaseExcludedPrivateFiles -Version 'v0.1.0-alpha.19')
+    Write-Utf8NoBom -Path $alpha19InventoryManifestPath -Text ((ConvertTo-Json -InputObject $alpha19InventoryManifest -Depth 8) + [Environment]::NewLine)
+    Assert-True ((Assert-ReleasePackageInventory -PackageRoot $alpha19InventoryRoot -Version 'v0.1.0-alpha.19') -eq $null) `
+        'alpha.19 synthetic inventory accepts the exact inherited alpha.18 asset list without adding runtime files'
+    Write-Utf8NoBom -Path (Join-Path $alpha19InventoryRoot 'config.json') -Text '{"synthetic":"user config"}'
+    Assert-Throws { Assert-ReleasePackageInventory -PackageRoot $alpha19InventoryRoot -Version 'v0.1.0-alpha.19' } `
+        'alpha.19 package inventory rejects a package-root user config file'
+    Remove-Item -LiteralPath (Join-Path $alpha19InventoryRoot 'config.json') -Force -ErrorAction Stop
 
     $alpha2PackageRoot = Join-Path $testRoot 'package-alpha2'
     Copy-Item -LiteralPath $packageRoot -Destination $alpha2PackageRoot -Recurse

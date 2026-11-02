@@ -164,9 +164,10 @@ foreach ($name in @('Import-UiPortableConfig','Set-ConnectionButtonState','Set-C
 $allDefinitions = @($mainDefinitions) + @($catAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] },$true))
 $functionNames = @(
     'Import-WpfWindow','Get-UiControl','Get-SettingsControl','Get-UiChannelKey','Get-UiChannelTarget','Get-UiChannelByKey',
-    'New-UiChannelRecord','Get-UiNativeRxPolicyForChannels','Get-UiChannelCurrentCall','Get-UiChannelCallerLabel',
+    'New-UiChannelRecord','Get-UiNativeRxPolicyForChannels','Get-UiChannelCurrentCall','Get-UiChannelCardPresentation','Get-UiChannelCallerLabel',
     'ConvertFrom-UiPortableConfigToProfile','Save-UiPortableConfig','Fit-WpfWindowToWorkArea',
-    'Set-MainText','Set-UiChannelStatus','New-UiChannelActionButton','Update-UiChannelDisplays','Set-UiChannelPage','Start-UiChannelMutation',
+    'Set-MainText','Set-UiTransientStatus','Clear-UiTransientStatus','Update-UiTransientStatusExpiry',
+    'Set-UiChannelStatus','New-UiChannelActionButton','Update-UiChannelDisplays','Set-UiChannelPage','Start-UiChannelMutation',
     'Get-UiChannelCallerDetails','New-UiDmIdLinkTextBlock','Open-UiDmIdProfile','Get-UiNativeIdentityCallsign',
     'Get-UiChannelTargetFromRouting','Complete-UiChannelMutation','Add-UiChannelFromInputs','Remove-UiChannel','Set-UiChannelMuted',
     'Save-SettingsFromWindow','Get-UiSafeSettingsSaveErrorText','Copy-UiPortableConfigValue','ConvertTo-UiOptionalUnsigned',
@@ -217,7 +218,11 @@ Assert-UiChannels ($mainXaml -notmatch 'x:Name="GatewayBox"|x:Name="ColorCodeBox
     $bridgeSource -notmatch 'GatewayBox|ColorCodeBox|MakeChannelTxTargetCheckBox') '旧Gateway/色码/自动PTT编辑控件仍被保留或脚本仍引用。'
 Assert-UiChannels ($mainXaml -notmatch 'x:Name="ChannelListPanel"') 'MainWindow.xaml 仍有重复频道清单。'
 Assert-UiChannels ($mainXaml -notmatch 'ReadRadioButton|读取电台' -and
-    $mainXaml -match 'Content="连接串口"' -and $mainXaml -match 'Content="断开串口"') '电台控制仍显示读取按钮，或串口连接/断开标签错误。'
+    @([regex]::Matches($mainXaml,'x:Name="SerialConnectButton"')).Count -eq 1 -and
+    $mainXaml -match 'x:Name="SerialConnectButton"[^>]*Content="连接串口"' -and
+    $radioCatSource -match '\$button\.Content = ''断开串口''' -and
+    $radioCatSource -match '\$button\.Content = ''取消连接''' -and
+    $radioCatSource -match 'function Update-UiSerialConnectButton') '电台串口连接未使用单个真实状态 toggle，或仍显示单独读取按钮。'
 Assert-UiChannels ($mainXaml -match 'Rows="2" Columns="3"' -and
     $mainXaml -notmatch 'ChannelAdvancedButton|Content="TS1"|Content="TS2"' -and
     $settingsXaml -notmatch 'ChannelSlotBox|TS1|TS2|时隙') '主界面或频道说明窗口仍暴露时隙入口。'
@@ -399,18 +404,21 @@ try {
         (Get-WirexPortableConfig -Path $script:portableConfigPath).tx_channel_id -ceq 'group:91:2') '频道顺序或 91 PTT 目标未保存。'
     Update-UiChannelDisplays
     $targetCard = @($script:mainWindow.FindName('ChannelCardsPanel').Children | Where-Object { [string]$_.Tag.channel_key -ceq 'group:46001:2' }) | Select-Object -First 1
-    $targetButton = @($targetCard.Child.Children[1].Children | Where-Object { $_ -is [System.Windows.Controls.Button] -and [string]$_.Tag.action -ceq 'tx' }) | Select-Object -First 1
-    Assert-UiChannels ($targetButton -and $targetButton.Content -ceq '设为呼叫' -and $targetButton.IsEnabled) '频道卡没有给未选频道显示可用的“设为呼叫”按钮。'
+    $targetButton = @($targetCard.Child.Children[2].Children | Where-Object { $_ -is [System.Windows.Controls.Button] -and [string]$_.Tag.action -ceq 'tx' }) | Select-Object -First 1
+    Assert-UiChannels ($targetButton -and $targetButton.Content -ceq '设为呼叫' -and $targetButton.IsEnabled) `
+        ('频道卡没有给未选频道显示可用的“设为呼叫”按钮。 button={0}/{1}, cards={2}, pending={3}/{4}/{5}/{6}, core={7}' -f `
+            [string]$targetButton.Content,[bool]$targetButton.IsEnabled,$script:mainWindow.FindName('ChannelCardsPanel').Children.Count,
+            [bool]$script:pendingRoutingMutation,[bool]$script:pendingChannelMutation,[bool]$script:pendingChannelStopMutation,[bool]$script:routingMutationFence,[bool]$script:supervisor)
     $targetClick = [System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)
     $targetButton.RaiseEvent($targetClick)
     Assert-UiChannels ($script:txChannelKey -ceq 'group:46001:2' -and
         (Get-WirexPortableConfig -Path $script:portableConfigPath).tx_channel_id -ceq 'group:46001:2' -and
         $null -eq $script:pendingQuickCall -and -not $script:supervisor) '卡片按钮没有只选择下次呼叫目标，或误发了核心/呼叫命令。'
     $selectedCard = @($script:mainWindow.FindName('ChannelCardsPanel').Children | Where-Object { [string]$_.Tag.channel_key -ceq 'group:46001:2' }) | Select-Object -First 1
-    $selectedTargetButton = @($selectedCard.Child.Children[1].Children | Where-Object { $_ -is [System.Windows.Controls.Button] -and [string]$_.Tag.action -ceq 'tx' }) | Select-Object -First 1
+    $selectedTargetButton = @($selectedCard.Child.Children[2].Children | Where-Object { $_ -is [System.Windows.Controls.Button] -and [string]$_.Tag.action -ceq 'tx' }) | Select-Object -First 1
     Assert-UiChannels ($selectedTargetButton.Content -ceq '呼叫目标' -and -not $selectedTargetButton.IsEnabled) '选中频道卡没有显示已选呼叫目标状态。'
     $restoreTargetCard = @($script:mainWindow.FindName('ChannelCardsPanel').Children | Where-Object { [string]$_.Tag.channel_key -ceq 'group:91:2' }) | Select-Object -First 1
-    $restoreTargetButton = @($restoreTargetCard.Child.Children[1].Children | Where-Object { $_ -is [System.Windows.Controls.Button] -and [string]$_.Tag.action -ceq 'tx' }) | Select-Object -First 1
+    $restoreTargetButton = @($restoreTargetCard.Child.Children[2].Children | Where-Object { $_ -is [System.Windows.Controls.Button] -and [string]$_.Tag.action -ceq 'tx' }) | Select-Object -First 1
     $restoreTargetButton.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))
     Assert-UiChannels ($script:txChannelKey -ceq 'group:91:2') '卡片按钮不能在频道之间切换下次呼叫目标。'
 
@@ -437,14 +445,14 @@ try {
     Update-UiChannelDisplays
     $commandCountBeforeQuickCall = $script:supervisor.Commands.Count
     $groupCard = @($script:mainWindow.FindName('ChannelCardsPanel').Children | Where-Object { [string]$_.Tag.channel_key -ceq 'group:91:2' }) | Select-Object -First 1
-    $quickCallButton = @($groupCard.Child.Children[1].Children | Where-Object { $_ -is [System.Windows.Controls.Button] -and [string]$_.Tag.action -ceq 'quick_call' }) | Select-Object -First 1
+    $quickCallButton = @($groupCard.Child.Children[2].Children | Where-Object { $_ -is [System.Windows.Controls.Button] -and [string]$_.Tag.action -ceq 'quick_call' }) | Select-Object -First 1
     Assert-UiChannels ($quickCallButton -and $quickCallButton.Content -ceq '激活组' -and $quickCallButton.IsEnabled) '组呼频道没有直接显示可用的激活组按钮。'
     $quickCallButton.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))
     Assert-UiChannels ($script:supervisor.Commands.Count -eq ($commandCountBeforeQuickCall + 1) -and
         $script:supervisor.Commands[-1].command -ceq 'network_subscription.quick_call_join' -and
         $script:pendingQuickCall -and $script:txChannelKey -ceq 'group:91:2') '组呼卡的直接按钮没有通过真实事件触发动态组激活。'
     $privateCard = @($script:mainWindow.FindName('ChannelCardsPanel').Children | Where-Object { [string]$_.Tag.channel_key -ceq 'private:12345:1' }) | Select-Object -First 1
-    $privateActions = $privateCard.Child.Children[1]
+    $privateActions = $privateCard.Child.Children[2]
     Assert-UiChannels ($privateActions.Children.Count -eq 4 -and
         @($privateActions.Children | Where-Object { $_ -is [System.Windows.Controls.Button] }).Count -eq 3) '私呼卡第四个操作格没有留空。'
     $script:pendingQuickCall = $null
@@ -455,7 +463,7 @@ try {
         $script:pendingChannelMutation -and $script:channels.Count -eq 5 -and $script:txChannelKey -ceq 'group:91:2') `
         ('RX 活跃时屏蔽频道未提交 RX 更新，或提前更改列表/PTT。 pending={0}, channelPending={1}, count={2}, tx={3}, status={4}' -f `
             $(if ($script:pendingRoutingMutation) { $script:pendingRoutingMutation.command } else { '<null>' }),[bool]$script:pendingChannelMutation,
-            $script:channels.Count,$script:txChannelKey,(Get-TestUiControl 'ChannelStatusText').Text)
+            $script:channels.Count,$script:txChannelKey,(Get-TestUiControl 'TransientStatusText').Text)
     Assert-UiChannels ([System.IO.File]::ReadAllText($script:portableConfigPath,[System.Text.Encoding]::UTF8) -ceq $beforeMute) '收到核心确认前就把屏蔽状态写入 config.json。'
     $muteCommand = $script:supervisor.Commands[$script:supervisor.Commands.Count - 1]
     Assert-UiChannels ($muteCommand.command -ceq 'rx_policy.replace' -and $muteCommand.parameters_json -notmatch 'synthetic-password|synthetic-api-key') '屏蔽命令不是 RX 更新或把合成凭据送入核心命令。'
@@ -704,7 +712,8 @@ try {
     $script:callIdentityCache['460997'] = [pscustomobject]@{source_id=[uint32]460997;id=[uint32]460997;callsign='N0TEST';name='Sample Operator';status='found';display_name='N0TEST'}
     Update-UiChannelDisplays
     $callerCard = @($script:mainWindow.FindName('ChannelCardsPanel').Children | Where-Object { [string]$_.Tag.channel_key -ceq 'private:460997:2' }) | Select-Object -First 1
-    $callerArea = @($callerCard.Child.Children[0].Children | Where-Object { $_ -is [System.Windows.Controls.Border] -and [string]$_.Tag -ceq 'ChannelCallArea' }) | Select-Object -First 1
+    $callerArea = $callerCard.Child.Children[1]
+    Assert-UiChannels ($callerArea -is [System.Windows.Controls.Border] -and [string]$callerArea.Tag -ceq 'ChannelCallArea') '来话显示区域没有保留在卡片主体的第二项。'
     $callerVisualText = @(Get-UiVisualTextValues -Root $callerArea)
     Assert-UiChannels ($callerVisualText -contains 'N0TEST · Sample Operator' -and $callerVisualText -contains 'DMR ID 460997') '来话卡没有放大显示呼号/姓名并在下一行显示 DMR ID。'
     $callerIdText = @($callerArea.Child.Children | Where-Object { $_ -is [System.Windows.Controls.TextBlock] }) | Select-Object -Last 1
@@ -721,7 +730,8 @@ try {
     [void]$script:callIdentityCache.Remove('460997')
     Update-UiChannelDisplays
     $unknownCallerCard = @($script:mainWindow.FindName('ChannelCardsPanel').Children | Where-Object { [string]$_.Tag.channel_key -ceq 'private:460997:2' }) | Select-Object -First 1
-    $unknownCallerArea = @($unknownCallerCard.Child.Children[0].Children | Where-Object { $_ -is [System.Windows.Controls.Border] -and [string]$_.Tag -ceq 'ChannelCallArea' }) | Select-Object -First 1
+    $unknownCallerArea = $unknownCallerCard.Child.Children[1]
+    Assert-UiChannels ($unknownCallerArea -is [System.Windows.Controls.Border] -and [string]$unknownCallerArea.Tag -ceq 'ChannelCallArea') '未知来话显示区域没有保留在卡片主体的第二项。'
     $unknownText = @(Get-UiVisualTextValues -Root $unknownCallerArea)
     Assert-UiChannels ($unknownText -contains 'DMR ID 460997' -and $unknownText.Count -eq 1 -and
         @($unknownCallerArea.Child.Children[0].Inlines | Where-Object { $_ -is [System.Windows.Documents.Hyperlink] }).Count -eq 0) '未知呼号没有以单一 DMR ID 回退显示，或打开了未经验证的链接。'
@@ -777,7 +787,7 @@ try {
     Assert-UiChannels ($saveDuringQuery -and [object]::ReferenceEquals($script:radioCatOperationPowerShell,$fakeCatQuery) -and
         -not $script:radioCatOperationCancelled) ('普通 CAT 查询期间保存设置失败，或保存操作取消了 CAT worker。 result={0}, busy={1}, workerSame={2}, cancelled={3}, footer={4}' -f `
             $saveDuringQuery,[bool](Test-UiRadioCatUserActionBusy),[object]::ReferenceEquals($script:radioCatOperationPowerShell,$fakeCatQuery),
-            [bool]$script:radioCatOperationCancelled,[string](Get-TestUiControl 'FooterText').Text)
+            [bool]$script:radioCatOperationCancelled,[string](Get-TestUiControl 'TransientStatusText').Text)
     Request-Reconnect
     Assert-UiChannels ($script:testBridgeRunRequests -eq 1 -and [object]::ReferenceEquals($script:radioCatOperationPowerShell,$fakeCatQuery) -and
         -not $script:radioCatOperationCancelled) '普通 CAT 查询期间启动 Wires-X 被阻止，或连接流程取消了 CAT worker。'
@@ -867,7 +877,7 @@ return [pscustomobject]@{ operation='query'; status='cancelled'; port_name=[stri
     }
     Set-Item -Path Function:\Start-BridgeRun -Value $script:actualStartBridgeRun
     Start-BridgeRun
-    $samePortFooter = [string](Get-TestUiControl 'FooterText').Text
+    $samePortFooter = [string](Get-TestUiControl 'TransientStatusText').Text
     Assert-UiChannels ($script:portGateNativeFactoryCalls -eq 0 -and $null -eq $script:supervisor -and
         [object]::ReferenceEquals($script:radioCatOperationPowerShell,$portGateCatWorker) -and
         $script:radioCatOperationPortName -ceq 'COM5' -and $samePortFooter -match 'COM5' -and $samePortFooter -match '断开 CAT') `
@@ -884,7 +894,7 @@ return [pscustomobject]@{ operation='query'; status='cancelled'; port_name=[stri
     Start-BridgeRun
     Assert-UiChannels ($script:portGateNativeFactoryCalls -eq 0 -and $null -eq $script:supervisor -and
         $script:radioCatOperationPowerShell -and $script:radioCatOperationPortName -ceq 'COM5' -and
-        ([string](Get-TestUiControl 'FooterText').Text) -match 'COM5') `
+        ([string](Get-TestUiControl 'TransientStatusText').Text) -match 'COM5') `
         'CAT 已断开但 worker 仍释放期间，Wires-X 未检查冻结的 COM5。'
 
     $script:storedProfile.devices.serial_port = 'COM6'
@@ -922,8 +932,10 @@ return [pscustomobject]@{ operation='query'; status='cancelled'; port_name=[stri
     Complete-BridgePreparation
     Assert-UiChannels ($null -eq $script:supervisor -and -not $script:preparationStarted -and
         [object]::ReferenceEquals($script:radioCatOperationPowerShell,$portGateCatWorker) -and $script:radioCatOperationPortName -ceq 'COM5' -and
-        ([string](Get-TestUiControl 'FooterText').Text) -match 'COM5') `
-        '设备预检最终 --port 与仍释放中的 CAT COM5 冲突时仍构造了 supervisor 或清除了 CAT worker。'
+        ([string](Get-TestUiControl 'TransientStatusText').Text) -match 'CAT/HRI 串口冲突取消') `
+        ('设备预检最终 --port 与仍释放中的 CAT COM5 冲突时未显示短暂错误或改变 worker。 text={0}, core={1}, prepare={2}, workerSame={3}, catPort={4}' -f `
+            [string](Get-TestUiControl 'TransientStatusText').Text,[bool]$script:supervisor,[bool]$script:preparationStarted,
+            [object]::ReferenceEquals($script:radioCatOperationPowerShell,$portGateCatWorker),[string]$script:radioCatOperationPortName)
 
     # The fake worker uses no production CAT module; end it before closing WPF.
     if ($script:radioCatOperationPowerShell) {

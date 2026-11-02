@@ -769,7 +769,33 @@ function Get-ReleaseProfile {
                 NotIncluded = $alpha18NotIncluded
             }
         }
-        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.18 release profiles are supported.' }
+        'v0.1.0-alpha.19' {
+            $alpha18 = Get-ReleaseProfile -Version 'v0.1.0-alpha.18'
+            $alpha19SourceFiles = @($alpha18.SourceFiles | Where-Object {
+                [string]$_.Destination -cne 'README.md' -and
+                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha18.cmd' -and
+                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha18.ps1'
+            }) + @(
+                @{ Source='docs\releases\v0.1.0-alpha.19-package-README.md'; Destination='README.md' },
+                @{ Source='tools\start-wirex-bridge-alpha19.cmd'; Destination='start-wirex-bridge.cmd' },
+                @{ Source='tools\start-wirex-bridge-alpha19.ps1'; Destination='tools/start-wirex-bridge.ps1' }
+            )
+            $alpha19NotIncluded = @($alpha18.NotIncluded | ForEach-Object {
+                ([string]$_).Replace('alpha.18', 'alpha.19')
+            })
+            return [pscustomobject]@{
+                Version = 'v0.1.0-alpha.19'
+                TestNames = $script:alpha18TestNames
+                SourceFiles = $alpha19SourceFiles
+                PackageFiles = @($alpha18.PackageFiles)
+                Directories = @($alpha18.Directories)
+                AssetMap = $alpha18.AssetMap
+                PackageReadme = 'docs\releases\v0.1.0-alpha.19-package-README.md'
+                ReleaseScope = 'R123 DIRECT: fixed WPF console layout, one-line status and transient events, equal-height connection rows, and refreshed channel/history presentation; inherit alpha.18 runtime asset inventory and Native test sequence'
+                NotIncluded = $alpha19NotIncluded
+            }
+        }
+        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.19 release profiles are supported.' }
     }
 }
 
@@ -1004,7 +1030,7 @@ function Get-ReleaseExcludedPrivateFiles {
             'private/user-config/bm-server-preferences.json'
         )
     }
-    if ($Version -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17', 'v0.1.0-alpha.18')) {
+if ($Version -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17', 'v0.1.0-alpha.18', 'v0.1.0-alpha.19')) {
         $excluded += @(
             'config.json',
             'config.*.backup*',

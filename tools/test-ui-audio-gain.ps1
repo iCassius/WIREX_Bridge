@@ -106,6 +106,7 @@ $functionNames = @(
     'Test-UiControlSnapshot','Test-UiRoutingCapabilityList','Test-UiRxPolicy','Test-UiRoutingSnapshot','ConvertFrom-UiControlFrame',
     'Format-UiGainMilli','Convert-UiGainSliderToMilli','Update-UiPlaybackGainDisplay','Update-UiAudioGainValueLabels',
     'Set-UiAudioGainStatus','Set-UiAudioGainSliders','Update-UiAudioGainControls','Reset-UiAudioGainRun',
+    'Set-UiTransientStatus','Clear-UiTransientStatus','Update-UiTransientStatusExpiry',
     'Save-UiAudioGainsFromReadback','Apply-UiAudioGainReadback','Start-UiAudioGainDebounce','Get-UiAudioGainDraft',
     'Start-UiAudioGainSet','On-UiAudioGainValueChanged','Complete-UiAudioGainResult','Complete-UiAudioGainFailure',
     'Complete-UiAudioGainStatus','Consume-UiAudioGainExpiredResult','Remember-UiAudioGainExpiredRequest',

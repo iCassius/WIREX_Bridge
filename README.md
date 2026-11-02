@@ -1,6 +1,18 @@
 ﻿# WIREX Bridge：FTX-1 DIRECT 与 BrandMeister 语音桥接
 
-## 当前交付：R122 / Alpha 18 本机候选（root 审计通过）
+## 当前源码阶段：R123 / Alpha 19 集成回归通过（源码待提交）
+
+R123 固定 WPF 控制台布局、CAT 单一 Apply、串口连接切换、顶部短暂状态和静态组 API 覆盖层已完成集成。Alpha 19 的 profile、启动器和包内 README 已准备，R122 / Alpha 18 仍是最近审计通过的本机候选。
+
+- RenderOnly 实际布局和边界检查通过 1,919 项；CAT fake 回归通过 197 项。
+- 集成 UI 回归通过：console 121、channels 117、audio 85、R123 交互 54、BM 管理 80 项；status 状态记录回归通过。
+- 离线 package / publish / download 检查通过 672 / 137 / 2,987 项。137 项 publish fake 当时跳过仓库 Git 检查；源码提交后还要运行完整 Git 身份检查 fake。
+- Root review 指出“同一非法静态组 ID 的错误提示过期后不再显示”已修复；集成回归复验通过。Alpha 19 profile 保持 41 项资产、37 个源码映射、9 个目录和 40 个 Native 测试名。
+- 源码尚未提交。clean Native full40、正式 package fake 和 Alpha 19 generic package 仍待完成；包状态按授权先保持 awaiting_root_audit。
+
+本阶段没有连接真实 CAT/COM、HRI、音频设备或 BrandMeister API，没有操作 PTT/RF；硬件行为仍待现场验收。细节见 [R123 UI](docs/R123_UI.md)、[R123 CAT](docs/R123_CAT.md) 和 [R123 runtime](docs/R123_RUNTIME.md)。
+
+## 最近审计通过的本机候选：R122 / Alpha 18
 
 R122 源码提交为 `ae886f582e2c9dee7839de5ef7a78208a92a2f75`，已推送到 `origin/main`。本版调整固定 1360×900 WPF 控制台、CAT 单一“应用”批次、DMR ID/两位设备编号、音频设备布局和加入频道只收听流程。首个 R122 UI 源提交为 `0153fcbc6c94128f5861a56ace31f399c4596d85`；`dec6f7e` 仅修正包启动测试 XPath，不更改运行文件；`ae886f5` 修复 Native 尚未启用既有 PTT 目标时的诊断握手，并区分 alpha18 与 alpha14–17 的旧诊断断言。实现细节见 [R122 UI](docs/R122_UI.md)、[R122 Runtime](docs/R122_RUNTIME.md) 和 [R122 CAT](docs/R122_CAT.md)。
 

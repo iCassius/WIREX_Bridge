@@ -77,12 +77,22 @@ function Save-BmManagementUiApiKey {
 }
 
 function Set-BmManagementUiStatus {
-    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text)
-    $status = Get-BmManagementUiControl -Name 'BmStaticGroupStatus'
-    $status.Text = $Text
-    $status.Visibility = if ([string]::IsNullOrWhiteSpace($Text)) {
-        [System.Windows.Visibility]::Collapsed
-    } else { [System.Windows.Visibility]::Visible }
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text,[switch]$Restart)
+    $previous = [string]$script:bmManagementTransientStatusText
+    $script:bmManagementTransientStatusText = $Text
+    if ($Text) {
+        $failed = ($Text -match '失败|错误|超时|拒绝|未能|不可用')
+        if (Get-Command -Name Set-UiTransientStatus -ErrorAction SilentlyContinue) {
+            if ($Restart) {
+                Set-UiTransientStatus -Message $Text -Failed $failed -Restart
+            } else {
+                Set-UiTransientStatus -Message $Text -Failed $failed
+            }
+        }
+    } elseif ($previous -and [string]$script:transientStatusText -ceq $previous -and
+            (Get-Command -Name Clear-UiTransientStatus -ErrorAction SilentlyContinue)) {
+        [void](Clear-UiTransientStatus)
+    }
 }
 
 function Set-BmManagementUiControlState {
@@ -91,7 +101,7 @@ function Set-BmManagementUiControlState {
     $hasApiKey = Test-BmManagementUiApiKey -ApiKey $apiKey
     $deviceId = Get-BmManagementUiDeviceId
     $busy = [bool]$script:bmManagementOperationPowerShell
-    $loaded = ($script:bmManagementStatus -ceq 'loaded' -and
+    $loaded = ($hasApiKey -and $script:bmManagementStatus -ceq 'loaded' -and
         -not [string]::IsNullOrWhiteSpace([string]$script:bmManagementObservedDeviceId) -and
         [string]$script:bmManagementObservedDeviceId -ceq $deviceId -and
         [string]$script:bmManagementObservedApiKey -ceq $apiKey)
@@ -105,15 +115,22 @@ function Set-BmManagementUiControlState {
     }
 
     $panel = Get-BmManagementUiControl -Name 'BmStaticGroupPanel'
-    $panel.Visibility = if ($hasApiKey -and $script:bmManagementModuleAvailable) {
-        [System.Windows.Visibility]::Visible
-    } else { [System.Windows.Visibility]::Collapsed }
+    $panel.Visibility = [System.Windows.Visibility]::Visible
+    $apiOverlay = Get-BmManagementUiControl -Name 'StaticApiRequiredOverlay'
+    $apiOverlay.Visibility = if ($hasApiKey) { [System.Windows.Visibility]::Collapsed } else { [System.Windows.Visibility]::Visible }
+    $apiPrompt = Get-BmManagementUiControl -Name 'StaticApiRequiredText'
+    $apiPrompt.Visibility = [System.Windows.Visibility]::Visible
     $refresh = Get-BmManagementUiControl -Name 'RefreshBmStaticGroupsButton'
-    $refresh.IsEnabled = ($hasApiKey -and -not [string]::IsNullOrWhiteSpace($deviceId) -and -not $busy -and
+    $refresh.IsEnabled = ($hasApiKey -and $script:bmManagementModuleAvailable -and -not [string]::IsNullOrWhiteSpace($deviceId) -and -not $busy -and
         -not $script:bmManagementDisposeRequested)
     $list = Get-BmManagementUiControl -Name 'BmStaticGroupsList'
-    $list.Visibility = if ($loaded) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
-    $pageVisibility = if ($loaded) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+    $list.Visibility = [System.Windows.Visibility]::Visible
+    $list.IsEnabled = ($hasApiKey -and $script:bmManagementModuleAvailable -and $loaded -and -not $busy)
+    if (-not $loaded) {
+        $list.ItemsSource = $null
+        $list.Items.Clear()
+    }
+    $pageVisibility = [System.Windows.Visibility]::Visible
     foreach ($name in @('BmStaticGroupPagePreviousButton','BmStaticGroupPageText','BmStaticGroupPageNextButton')) {
         (Get-BmManagementUiControl -Name $name).Visibility = $pageVisibility
     }
@@ -124,16 +141,16 @@ function Set-BmManagementUiControlState {
     (Get-BmManagementUiControl -Name 'BmStaticGroupPagePreviousButton').IsEnabled = ($loaded -and $pageIndex -gt 0)
     (Get-BmManagementUiControl -Name 'BmStaticGroupPageNextButton').IsEnabled = ($loaded -and $pageIndex -lt ($pageCount - 1))
     $remove = Get-BmManagementUiControl -Name 'RemoveBmStaticGroupButton'
-    $remove.Visibility = if ($loaded) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+    $remove.Visibility = [System.Windows.Visibility]::Visible
     $selected = $list.SelectedItem
-    $remove.IsEnabled = ($loaded -and -not $busy -and $null -ne $selected -and
+    $remove.IsEnabled = ($hasApiKey -and $script:bmManagementModuleAvailable -and $loaded -and -not $busy -and $null -ne $selected -and
         [string]$selected.type -ceq 'static' -and [string]$selected.device_id -ceq $deviceId -and
         -not $script:bmManagementDisposeRequested)
     $groupId = Get-BmManagementUiControl -Name 'BmStaticGroupIdBox'
-    $groupId.Visibility = if ($loaded) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
-    $groupId.IsEnabled = ($loaded -and -not $busy -and -not $script:bmManagementDisposeRequested)
+    $groupId.Visibility = [System.Windows.Visibility]::Visible
+    $groupId.IsEnabled = ($hasApiKey -and $script:bmManagementModuleAvailable -and $loaded -and -not $busy -and -not $script:bmManagementDisposeRequested)
     $add = Get-BmManagementUiControl -Name 'AddBmStaticGroupButton'
-    $add.Visibility = if ($loaded) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+    $add.Visibility = [System.Windows.Visibility]::Visible
     $context = $script:bmManagementAddContext
     $contextReady = ($loaded -and $null -ne $context -and [bool]$context.success -and
         [string]$context.device_id -ceq $deviceId -and $null -ne $context.add_slot -and
@@ -153,7 +170,7 @@ function Set-BmManagementUiControlState {
 }
 
 function Set-BmManagementUiGroupRows {
-    param([Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Groups)
+    param([Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Groups,[switch]$DeferDisplay)
     $rows = @(
         foreach ($group in $Groups) {
             $slot = [int]$group.slot
@@ -167,9 +184,11 @@ function Set-BmManagementUiGroupRows {
         }
     )
     $script:bmManagementGroups = @($rows)
-    $script:bmManagementUiPageIndex = 0
-    Update-BmManagementUiVisiblePage
-    Set-BmManagementUiControlState
+    if (-not $DeferDisplay) {
+        $script:bmManagementUiPageIndex = 0
+        Update-BmManagementUiVisiblePage
+        Set-BmManagementUiControlState
+    }
 }
 
 function Get-BmManagementUiWorkerScript {
@@ -232,31 +251,32 @@ function Start-BmManagementUiRequest {
     param(
         [Parameter(Mandatory = $true)][ValidateSet('Get','Add','Remove')][string]$Operation,
         [Parameter()][uint64]$Talkgroup = 0,
-        [Parameter()][int]$Slot = 0
+        [Parameter()][int]$Slot = 0,
+        [switch]$RestartValidationStatus
     )
 
     if ($script:bmManagementDisposeRequested -or $script:bmManagementUiDisposed) { return $false }
     if ($script:bmManagementOperationPowerShell) {
-        Set-BmManagementUiStatus -Text 'BM 静态组操作正在进行。'
+        Set-BmManagementUiStatus -Text 'BM 静态组操作正在进行。' -Restart:$RestartValidationStatus
         return $false
     }
     $apiKey = Get-BmManagementUiApiKey
     if (-not (Test-BmManagementUiApiKey -ApiKey $apiKey)) {
         $script:bmManagementStatus = 'unavailable'
-        Set-BmManagementUiStatus -Text '请输入 BM API Key。'
+        Set-BmManagementUiStatus -Text '请输入 BM API Key。' -Restart:$RestartValidationStatus
         Set-BmManagementUiControlState
         return $false
     }
     if (-not $script:bmManagementModuleAvailable -or -not [System.IO.File]::Exists($script:bmManagementModulePath)) {
         $script:bmManagementStatus = 'unavailable'
-        Set-BmManagementUiStatus -Text 'BM 静态组模块不可用。'
+        Set-BmManagementUiStatus -Text 'BM 静态组模块不可用。' -Restart:$RestartValidationStatus
         Set-BmManagementUiControlState
         return $false
     }
     $deviceId = Get-BmManagementUiDeviceId
     if ([string]::IsNullOrWhiteSpace($deviceId)) {
         $script:bmManagementStatus = 'unavailable'
-        Set-BmManagementUiStatus -Text '请先保存有效的 BM 设备 ID。'
+        Set-BmManagementUiStatus -Text '请先保存有效的 BM 设备 ID。' -Restart:$RestartValidationStatus
         Set-BmManagementUiControlState
         return $false
     }
@@ -265,39 +285,39 @@ function Start-BmManagementUiRequest {
         $idText = [string](Get-BmManagementUiControl -Name 'BmStaticGroupIdBox').Text
         $parsedTalkgroup = [uint64]0
         if ($idText -notmatch '^[0-9]{1,8}$' -or -not [uint64]::TryParse($idText, [ref]$parsedTalkgroup) -or $parsedTalkgroup -lt 1 -or $parsedTalkgroup -gt 16777215) {
-            Set-BmManagementUiStatus -Text '请输入 1 至 16777215 的静态组 ID。'
+            Set-BmManagementUiStatus -Text '请输入 1 至 16777215 的静态组 ID。' -Restart:$RestartValidationStatus
             return $false
         }
         if ($script:bmManagementStatus -cne 'loaded' -or [string]$script:bmManagementObservedDeviceId -cne $deviceId -or
             [string]$script:bmManagementObservedApiKey -cne $apiKey) {
-            Set-BmManagementUiStatus -Text '请先读取当前设备的 BM 静态组。'
+            Set-BmManagementUiStatus -Text '请先读取当前设备的 BM 静态组。' -Restart:$RestartValidationStatus
             return $false
         }
         $addContext = $script:bmManagementAddContext
         if ($null -eq $addContext -or -not [bool]$addContext.success -or
             [string]$addContext.device_id -cne $deviceId -or $null -eq $addContext.add_slot -or
             [string]$addContext.add_slot -notin @('0','1','2')) {
-            Set-BmManagementUiStatus -Text '设备状态不可用；添加已禁用。'
+            Set-BmManagementUiStatus -Text '设备状态不可用；添加已禁用。' -Restart:$RestartValidationStatus
             return $false
         }
         $Talkgroup = $parsedTalkgroup
         $Slot = [int]$addContext.add_slot
         if (@($script:bmManagementGroups | Where-Object { [uint64]$_.talkgroup -eq $Talkgroup -and [int]$_.slot -eq $Slot }).Count -gt 0) {
-            Set-BmManagementUiStatus -Text '该静态组已存在。'
+            Set-BmManagementUiStatus -Text '该静态组已存在。' -Restart:$RestartValidationStatus
             return $false
         }
     }
     if ($Operation -ceq 'Remove') {
         $selected = (Get-BmManagementUiControl -Name 'BmStaticGroupsList').SelectedItem
         if ($null -eq $selected -or [string]$selected.type -cne 'static' -or [string]$selected.device_id -cne $deviceId) {
-            Set-BmManagementUiStatus -Text '请先选择当前设备的一条 BM 静态组。'
+            Set-BmManagementUiStatus -Text '请先选择当前设备的一条 BM 静态组。' -Restart:$RestartValidationStatus
             return $false
         }
         $Talkgroup = [uint64]$selected.talkgroup
         $Slot = [int]$selected.slot
         if ($script:bmManagementStatus -cne 'loaded' -or [string]$script:bmManagementObservedDeviceId -cne $deviceId -or
             [string]$script:bmManagementObservedApiKey -cne $apiKey) {
-            Set-BmManagementUiStatus -Text '请先读取当前设备的 BM 静态组。'
+            Set-BmManagementUiStatus -Text '请先读取当前设备的 BM 静态组。' -Restart:$RestartValidationStatus
             return $false
         }
     }
@@ -361,13 +381,15 @@ function Start-BmManagementUiRequest {
         'Remove' { '正在向 BM 移除静态组。' }
     }
     Set-BmManagementUiStatus -Text $statusText
+    $script:bmManagementUiPageIndex = 0
+    Update-BmManagementUiVisiblePage
     Set-BmManagementUiControlState
     return $true
 }
 
 function Request-BmManagementUiRefresh {
     [CmdletBinding()]
-    param()
+    param([switch]$RestartValidationStatus)
     if ($script:bmManagementOperationPowerShell) {
         $currentApiKey = Get-BmManagementUiApiKey
         $currentDeviceId = Get-BmManagementUiDeviceId
@@ -377,7 +399,7 @@ function Request-BmManagementUiRefresh {
         }
         return $false
     }
-    return [bool](Start-BmManagementUiRequest -Operation Get)
+    return [bool](Start-BmManagementUiRequest -Operation Get -RestartValidationStatus:$RestartValidationStatus)
 }
 
 function Sync-BmManagementUiIdentity {
@@ -484,7 +506,7 @@ function Complete-BmManagementUiOperation {
             Set-BmManagementUiControlState
             return $true
         }
-        Set-BmManagementUiGroupRows -Groups @($result.groups)
+        Set-BmManagementUiGroupRows -Groups @($result.groups) -DeferDisplay
         $script:bmManagementObservedDeviceId = $deviceId
         $script:bmManagementObservedApiKey = [string]$script:bmManagementOperationApiKey
         $script:bmManagementStatus = 'loaded'
@@ -513,13 +535,13 @@ function Complete-BmManagementUiOperation {
         $sameCurrentContext = ($currentDeviceId -ceq $deviceId -and
             [string](Get-BmManagementUiApiKey) -ceq [string]$script:bmManagementOperationApiKey)
         if ([string]$result.readback_status -ceq 'confirmed' -and $sameCurrentContext) {
-            Set-BmManagementUiGroupRows -Groups @($result.groups)
+            Set-BmManagementUiGroupRows -Groups @($result.groups) -DeferDisplay
             $script:bmManagementObservedDeviceId = $deviceId
             $script:bmManagementObservedApiKey = [string]$script:bmManagementOperationApiKey
             $script:bmManagementStatus = 'loaded'
             Set-BmManagementUiStatus -Text 'BM 已接受静态组更改，读取列表已确认。'
         } elseif ([string]$result.readback_status -ceq 'not_confirmed' -and $sameCurrentContext) {
-            Set-BmManagementUiGroupRows -Groups @($result.groups)
+            Set-BmManagementUiGroupRows -Groups @($result.groups) -DeferDisplay
             $script:bmManagementObservedDeviceId = $deviceId
             $script:bmManagementObservedApiKey = [string]$script:bmManagementOperationApiKey
             $script:bmManagementStatus = 'loaded'
@@ -534,6 +556,8 @@ function Complete-BmManagementUiOperation {
             Set-BmManagementUiStatus -Text 'BM 已接受静态组更改，但回查未完成；请刷新确认。'
         }
     }
+    $script:bmManagementUiPageIndex = 0
+    Update-BmManagementUiVisiblePage
     Set-BmManagementUiControlState
     return $true
 }
@@ -603,7 +627,7 @@ function Initialize-BmManagementUi {
     $script:bmManagementUiPageIndex = 0
     foreach ($name in @('BmApiKeyBox','BmStaticGroupPanel','BmStaticGroupSourceValue',
             'BmStaticGroupsList','BmStaticGroupPagePreviousButton','BmStaticGroupPageText','BmStaticGroupPageNextButton','BmStaticGroupIdBox',
-            'AddBmStaticGroupButton','RemoveBmStaticGroupButton','RefreshBmStaticGroupsButton','BmStaticGroupStatus')) {
+            'AddBmStaticGroupButton','RemoveBmStaticGroupButton','RefreshBmStaticGroupsButton','StaticApiRequiredOverlay','StaticApiRequiredText')) {
         $script:bmManagementUiControls[$name] = $Window.FindName($name)
         if ($null -eq $script:bmManagementUiControls[$name]) { throw "BM 静态组界面缺少控件 $name。" }
     }
@@ -615,11 +639,11 @@ function Initialize-BmManagementUi {
         Set-BmManagementUiControlState
         if (Test-BmManagementUiApiKey -ApiKey $currentApiKey) { [void](Request-BmManagementUiRefresh) }
     })
-    $script:bmManagementUiControls['RefreshBmStaticGroupsButton'].Add_Click({ [void](Request-BmManagementUiRefresh) })
+    $script:bmManagementUiControls['RefreshBmStaticGroupsButton'].Add_Click({ [void](Request-BmManagementUiRefresh -RestartValidationStatus) })
     $script:bmManagementUiControls['BmStaticGroupPagePreviousButton'].Add_Click({ [void](Set-BmManagementUiPage -PageIndex ($script:bmManagementUiPageIndex - 1)) })
     $script:bmManagementUiControls['BmStaticGroupPageNextButton'].Add_Click({ [void](Set-BmManagementUiPage -PageIndex ($script:bmManagementUiPageIndex + 1)) })
-    $script:bmManagementUiControls['AddBmStaticGroupButton'].Add_Click({ [void](Start-BmManagementUiRequest -Operation Add) })
-    $script:bmManagementUiControls['RemoveBmStaticGroupButton'].Add_Click({ [void](Start-BmManagementUiRequest -Operation Remove) })
+    $script:bmManagementUiControls['AddBmStaticGroupButton'].Add_Click({ [void](Start-BmManagementUiRequest -Operation Add -RestartValidationStatus) })
+    $script:bmManagementUiControls['RemoveBmStaticGroupButton'].Add_Click({ [void](Start-BmManagementUiRequest -Operation Remove -RestartValidationStatus) })
     $script:bmManagementUiControls['BmStaticGroupsList'].Add_SelectionChanged({ Set-BmManagementUiControlState })
     $script:bmManagementUiControls['BmStaticGroupIdBox'].Add_TextChanged({ Set-BmManagementUiControlState })
     $unusedLabelInput = $Window.FindName('BmStaticGroupLabelBox')

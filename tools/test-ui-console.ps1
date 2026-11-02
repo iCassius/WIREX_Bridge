@@ -148,6 +148,15 @@ function Select-UiConsoleCatPortOption {
     $combo.Text = [string]$item.Content
 }
 
+function Set-UiConsoleCatPower {
+    param([Parameter(Mandatory=$true)][ValidateRange(5,50)][int]$Watts)
+    $combo = Get-UiConsoleControl 'CatPowerBox'
+    $item = @($combo.Items | Where-Object { [string]$_.Tag -ceq [string]$Watts } | Select-Object -First 1)
+    if ($item.Count -eq 0 -or -not $item[0].IsEnabled) { throw "CAT power choice $Watts W is absent or disabled." }
+    $combo.SelectedItem = $item[0]
+    [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{},[System.Windows.Threading.DispatcherPriority]::Background)
+}
+
 function New-UiConsoleSerialCatalog {
     $serialRecords = @(
         [pscustomobject]@{ PortName='COM5'; FriendlyName='USB Serial Device (COM5)'; InstanceId='USB\VID_26AA&PID_0030\FAKE-HRI'; HardwareIds=@(); DeviceSource='synthetic' },
@@ -385,12 +394,13 @@ try {
         & $script:originalAddUiEvent -Text $Text
     }
     $requiredControls = @(
-        'RadioCatPanel','CatPortBox','CatBaudRateBox','SerialConnectButton','SerialDisconnectButton','CatSessionStatusText','CatOperatingPanel',
+        'RadioCatPanel','CatPortBox','CatBaudRateBox','SerialConnectButton','ConnectButton','CatOperatingPanel',
         'CatObservedPanel','CatObservedMainModeText',
         'CatObservedFrequencyText','CatObservedPowerText','CatMainModeBox','CatMainFrequencyMHzBox',
-        'CatPowerSlider','CatDesiredPowerText','ApplyCatSettingsButton','SerialBox',
-        'DeviceDiscoveryText','RefreshDevicesButton','RadioDetailsExpander','MasterPresetBox','MasterBox','MasterPortBox',
-        'BmApiKeyBox','BmStaticGroupPanel','RefreshBmStaticGroupsButton','AddBmStaticGroupButton'
+        'CatPowerBox','CatModeCaptionText','CatFrequencyCaptionText','CatPowerCaptionText','ApplyCatSettingsButton','SerialBox',
+        'RefreshDevicesButton','RadioDetailsExpander','MasterPresetBox','MasterBox','MasterPortBox',
+        'BmApiKeyBox','BmStaticGroupPanel','BmStaticGroupsList','StaticApiRequiredOverlay','StaticApiRequiredText',
+        'RefreshBmStaticGroupsButton','AddBmStaticGroupButton','TransientStatusText'
     )
     $missingControls = @($requiredControls | Where-Object { $null -eq $script:mainWindow.FindName($_) })
     Assert-UiConsole ($missingControls.Count -eq 0) ('实际 WPF MainWindow 缺少稳定控件：{0}' -f ($missingControls -join ', '))
@@ -532,7 +542,12 @@ try {
 
     Assert-UiConsole ([string]::IsNullOrEmpty([string]$script:portableConfig.connection.api_key) -and
         [string]::IsNullOrEmpty([string](Get-UiConsoleControl 'BmApiKeyBox').Password)) 'API-empty fixture is not isolated from any stored API key.'
-    Assert-UiConsole ((Get-UiConsoleControl 'BmStaticGroupPanel').Visibility -eq [System.Windows.Visibility]::Collapsed -and
+    Assert-UiConsole ((Get-UiConsoleControl 'BmStaticGroupPanel').Visibility -eq [System.Windows.Visibility]::Visible -and
+        (Get-UiConsoleControl 'StaticApiRequiredOverlay').Visibility -eq [System.Windows.Visibility]::Visible -and
+        (Get-UiConsoleControl 'StaticApiRequiredText').Text -ceq '需启用BM API key' -and
+        (Get-UiConsoleControl 'BmStaticGroupsList').Visibility -eq [System.Windows.Visibility]::Visible -and
+        (Get-UiConsoleControl 'BmStaticGroupsList').Items.Count -eq 0 -and
+        -not (Get-UiConsoleControl 'BmStaticGroupsList').IsEnabled -and
         -not (Get-UiConsoleControl 'RefreshBmStaticGroupsButton').IsEnabled -and
         -not (Get-UiConsoleControl 'AddBmStaticGroupButton').IsEnabled) 'API-empty state did not hide/disable only BM static-group management.'
     $script:radioControlPreferences.desired_power_watts = 40
@@ -540,7 +555,7 @@ try {
     $connected = Invoke-UiConsoleDispatcherUntil -TimeoutMs 4000 -Condition { $script:supervisor -and -not $script:supervisor.HasExited }
     $settingsError = if ($script:mainWindow.FindName('SettingsErrorText')) { [string]$script:mainWindow.FindName('SettingsErrorText').Text } else { '' }
     Assert-UiConsole $connected ("real ConnectButton did not pass through the fake native supervisor seam; profileEditable={0}, startupNeedsSettings={1}, storedProfile={2}, footer={3}, settingsError={4}" -f `
-        [bool]$script:profileEditable,[bool]$script:startupNeedsSettings,[bool]$script:storedProfile,[string]$script:mainWindow.FindName('FooterText').Text,$settingsError)
+        [bool]$script:profileEditable,[bool]$script:startupNeedsSettings,[bool]$script:storedProfile,[string]$script:mainWindow.FindName('TransientStatusText').Text,$settingsError)
     Assert-UiConsole (-not (Get-UiRadioCatSessionState).requested -and -not $script:radioCatOperationPowerShell -and
         -not (Get-UiConsoleControl 'CatPortBox').IsEnabled -and (Get-UiConsoleControl 'CatOperatingPanel').IsEnabled) `
         '隔离UiTestFixture在核心连接后触发了CAT物理自动连接，或核心占用时仍开放串口选择。'
@@ -577,10 +592,12 @@ try {
     Apply-StatusRecord -Record $fakeReadyStatus
     $script:uiConsoleFakeIdleHeartbeatEnabled = $true
     Assert-UiConsole ([string](Get-UiConsoleControl 'BmValue').Text -ceq '已连接' -and
-        [string](Get-UiConsoleControl 'RadioValue').Text -ceq 'HRI 就绪' -and
         [string]$script:latestStatus.bm_state -ceq 'ready' -and [bool]$script:latestStatus.hri_ready) `
         'API-empty fake Connect did not progress to the synthetic BM/HRI-ready UI state.'
-    Assert-UiConsole ((Get-UiConsoleControl 'BmStaticGroupPanel').Visibility -eq [System.Windows.Visibility]::Collapsed -and
+    Assert-UiConsole ((Get-UiConsoleControl 'BmStaticGroupPanel').Visibility -eq [System.Windows.Visibility]::Visible -and
+        (Get-UiConsoleControl 'StaticApiRequiredOverlay').Visibility -eq [System.Windows.Visibility]::Visible -and
+        (Get-UiConsoleControl 'BmStaticGroupsList').Items.Count -eq 0 -and
+        -not (Get-UiConsoleControl 'BmStaticGroupsList').IsEnabled -and
         -not (Get-UiConsoleControl 'RefreshBmStaticGroupsButton').IsEnabled -and
         -not (Get-UiConsoleControl 'AddBmStaticGroupButton').IsEnabled) 'BM/HRI-ready connection state incorrectly enabled API-dependent static-group management without an API key.'
     Assert-UiConsole (-not (Get-UiRadioCatSessionState).requested -and -not (Get-UiRadioCatSessionState).connected -and
@@ -604,8 +621,8 @@ try {
     }
     $script:lastStatusUtc = [DateTime]::UtcNow
 
-    (Get-UiConsoleControl 'CatPowerSlider').Value = 24
-    Assert-UiConsole ([int]$script:radioCatEditDraft.power -eq 24) 'real slider event did not retain a 24 W draft.'
+    Set-UiConsoleCatPower -Watts 15
+    Assert-UiConsole ([int]$script:radioCatEditDraft.power -eq 15) 'real power-combo selection did not retain a 15 W draft.'
     (Get-UiConsoleControl 'CatMainModeBox').SelectedItem = @((Get-UiConsoleControl 'CatMainModeBox').Items | Where-Object { [string]$_.Tag -ceq 'FM-N' })[0]
     (Get-UiConsoleControl 'CatMainFrequencyMHzBox').Text = '145.600'
     Assert-UiConsole ([string]$script:radioCatEditDraft.mode -ceq 'FM-N' -and [string]$script:radioCatEditDraft.frequency -ceq '145.600') `
@@ -616,7 +633,7 @@ try {
     $pollReady = Invoke-UiConsoleDispatcherUntil -TimeoutMs 4000 -Condition { -not $script:radioCatOperationPowerShell }
     Assert-UiConsole $pollReady 'bounded CAT poll did not complete.'
     Assert-UiConsole ([int]$script:radioCatObserved.power.value.watts -eq 30) 'poll did not update actual hardware state from 25 W to 30 W.'
-    Assert-UiConsole ([int](Get-UiConsoleControl 'CatPowerSlider').Value -eq 24 -and [int]$script:radioCatEditDraft.power -eq 24) 'poll overwrote the user 24 W draft with actual 30 W.'
+    Assert-UiConsole ([int](Get-UiConsoleControl 'CatPowerBox').SelectedItem.Tag -eq 15 -and [int]$script:radioCatEditDraft.power -eq 15) 'poll overwrote the user 15 W draft with actual 30 W.'
     Assert-UiConsole ((Get-UiConsoleControl 'CatObservedPowerText').Text -match '30 W') 'actual power display did not follow the poll result.'
 
     Invoke-UiRadioCatAction -Operation 'query'
@@ -636,7 +653,7 @@ try {
             [string]$script:radioCatQueuedAction.operation,[string]$script:radioCatOperationKind,
             [int]$script:radioCatOperationOrdinal)
     $setReady = Invoke-UiConsoleDispatcherUntil -TimeoutMs 5000 -Condition {
-        [int]$script:radioCatObserved.power.value.watts -eq 24 -and
+        [int]$script:radioCatObserved.power.value.watts -eq 15 -and
             [string]$script:radioCatObserved.main_mode.value.mode -ceq 'FM-N' -and
             [long]$script:radioCatObserved.main_frequency_hz.value -eq 145600000 -and
             -not $script:radioCatOperationPowerShell -and -not $script:radioCatSettingsApply -and -not $script:radioCatQueuedAction
@@ -648,25 +665,25 @@ try {
         [bool](Get-UiRadioCatSessionState).connected,[int](Get-UiRadioCatSessionState).generation,[string]$script:radioCatObservedConnectionKey,
         [string](Get-UiRadioCatConnectionKey),[string](Get-UiRadioCatSessionState).error,$catOperationHistory)
     $powerReadbackReady = Invoke-UiConsoleDispatcherUntil -TimeoutMs 3000 -Condition {
-        [int]$script:radioCatObserved.power.value.watts -eq 24 -and $null -eq $script:radioCatEditDraft.power
+        [int]$script:radioCatObserved.power.value.watts -eq 15 -and $null -eq $script:radioCatEditDraft.power
     }
     $appliedWatts = [int]$script:radioCatObserved.power.value.watts
     $confirmedPowerWriteCount = ([regex]::Matches([System.IO.File]::ReadAllText((Join-Path $script:testRoot 'cat-operations.log')),'(?m)^[0-9]+\|complete\|setPower\|confirmed\r?$')).Count
     $settingsLogNow = @([System.IO.File]::ReadAllLines($settingsLogPath))
     $settingsOperations = @($settingsLogNow | Select-Object -Skip $settingsLogStart | Where-Object { $_ -match '^\d+\|(query|setMode|setFrequency|setPower)$' } | ForEach-Object { ($_ -split '\|')[1] })
-    Assert-UiConsole ($powerReadbackReady -and $appliedWatts -eq 24 -and $confirmedPowerWriteCount -eq 1 -and
+    Assert-UiConsole ($powerReadbackReady -and $appliedWatts -eq 15 -and $confirmedPowerWriteCount -eq 1 -and
         $settingsOperations.Count -eq 4 -and ($settingsOperations -join ',') -ceq 'query,setMode,setFrequency,setPower' -and
         [int]$settingsSupervisor.StopCallCount -eq $settingsStopCount -and -not $settingsSupervisor.HasExited) `
         ("single Apply did not complete query→mode→frequency→power readbacks while HRI stayed live; result={0}, status={1}, operations={2}, writes={3}, stop_calls={4}/{5}, supervisor={6}" -f `
             $appliedWatts,$script:radioCatLastOperationStatus,($settingsOperations -join ','),$confirmedPowerWriteCount,
             [int]$settingsSupervisor.StopCallCount,$settingsStopCount,[bool]$settingsSupervisor.HasExited)
-    Assert-UiConsole ([int]$script:radioCatObserved.power.value.watts -eq 24 -and
+    Assert-UiConsole ([int]$script:radioCatObserved.power.value.watts -eq 15 -and
         [string]$script:radioCatObserved.main_mode.value.mode -ceq 'FM-N' -and
         [long]$script:radioCatObserved.main_frequency_hz.value -eq 145600000 -and
         $null -eq $script:radioCatEditDraft.power -and $null -eq $script:radioCatEditDraft.mode -and $null -eq $script:radioCatEditDraft.frequency) `
         'shared Apply readback did not update mode, frequency, and power or clear their drafts.'
 
-    (Get-UiConsoleControl 'CatPowerSlider').Value = 25
+    Set-UiConsoleCatPower -Watts 25
     Assert-UiConsole ((Get-UiConsoleControl 'ApplyCatSettingsButton').IsEnabled) 'confirmed SPA-1 state did not enable the explicit 25 W candidate before the changed path was known.'
     Invoke-UiConsoleClick -Name 'ApplyCatSettingsButton'
     $rejectedPowerReady = Invoke-UiConsoleDispatcherUntil -TimeoutMs 5000 -Condition {
@@ -676,10 +693,14 @@ try {
     $rejectedPowerReadbackReady = $rejectedPowerReady
     $rejectedPowerWriteCount = ([regex]::Matches([System.IO.File]::ReadAllText((Join-Path $script:testRoot 'cat-operations.log')),'(?m)^[0-9]+\|complete\|setPower\|rejected\r?$')).Count
     Assert-UiConsole ($rejectedPowerReadbackReady -and $rejectedPowerWriteCount -eq 1) 'rejected power request was not executed once or its verified FieldHead 5 W readback was lost.'
-    Assert-UiConsole ([double](Get-UiConsoleControl 'CatPowerSlider').Maximum -eq 10 -and
+    $catPowerBoxAfterLimit = Get-UiConsoleControl 'CatPowerBox'
+    $fieldHeadTenWatts = @($catPowerBoxAfterLimit.Items | Where-Object { [string]$_.Tag -ceq '10' } | Select-Object -First 1)
+    $fieldHeadTwentyFiveWatts = @($catPowerBoxAfterLimit.Items | Where-Object { [string]$_.Tag -ceq '25' } | Select-Object -First 1)
+    Assert-UiConsole ($fieldHeadTenWatts.Count -eq 1 -and $fieldHeadTenWatts[0].IsEnabled -and
+        $fieldHeadTwentyFiveWatts.Count -eq 1 -and -not $fieldHeadTwentyFiveWatts[0].IsEnabled -and
         (Get-UiConsoleControl 'CatObservedPowerText').Text -ceq '5 W' -and
         -not (Get-UiConsoleControl 'ApplyCatSettingsButton').IsEnabled) 'rejected FieldHead readback did not update the 10 W limit while removing write permission.'
-    Assert-UiConsole ([int]$script:radioControlPreferences.desired_power_watts -eq 24) 'rejected power request overwrote the last confirmed power preference.'
+    Assert-UiConsole ([int]$script:radioControlPreferences.desired_power_watts -eq 15) 'rejected power request overwrote the last confirmed power preference.'
 
     Invoke-UiRadioCatAction -Operation 'query'
     $fieldHeadQueryReady = Invoke-UiConsoleDispatcherUntil -TimeoutMs 4000 -Condition { -not $script:radioCatOperationPowerShell }
@@ -687,12 +708,12 @@ try {
     Assert-UiConsole ([int]$script:radioCatObserved.power.value.watts -eq 5 -and [string]$script:radioCatObserved.power.value.path -ceq 'FieldHead') 'confirmed FieldHead query did not retain the actual path and 5 W value.'
     (Get-UiConsoleControl 'CatMainModeBox').SelectedItem = @((Get-UiConsoleControl 'CatMainModeBox').Items | Where-Object { [string]$_.Tag -ceq 'FM-N' })[0]
     (Get-UiConsoleControl 'CatMainFrequencyMHzBox').Text = '145.600'
-    (Get-UiConsoleControl 'CatPowerSlider').Value = 9
+    Set-UiConsoleCatPower -Watts 10
     Update-UiRadioCatControls
-    Assert-UiConsole ([int]$script:radioCatEditDraft.power -eq 9 -and (Get-UiConsoleControl 'ApplyCatSettingsButton').IsEnabled) 'real slider change did not immediately enable a legal 9 W FieldHead draft.'
+    Assert-UiConsole ([int]$script:radioCatEditDraft.power -eq 10 -and (Get-UiConsoleControl 'ApplyCatSettingsButton').IsEnabled) 'real power-combo selection did not immediately enable a legal 10 W FieldHead draft.'
     Invoke-UiConsoleClick -Name 'ApplyCatSettingsButton'
     $fieldHeadSetReady = Invoke-UiConsoleDispatcherUntil -TimeoutMs 5000 -Condition {
-        [int]$script:radioCatObserved.power.value.watts -eq 9 -and $null -eq $script:radioCatEditDraft.power
+        [int]$script:radioCatObserved.power.value.watts -eq 10 -and $null -eq $script:radioCatEditDraft.power
     }
     $fieldHeadLog = if (Test-Path -LiteralPath (Join-Path $script:testRoot 'cat-operations.log')) { [string](Get-Content -LiteralPath (Join-Path $script:testRoot 'cat-operations.log') -Raw) } else { '' }
     Assert-UiConsole $fieldHeadSetReady ("legal FieldHead power operation did not finish; kind={0}, status={1}, result={2}/{3}, apply={4}, queued={5}, notice={6}, power={7}, draft={8}, logs={9}" -f `
@@ -700,11 +721,11 @@ try {
         [string]$script:radioCatResult.status,[bool]$script:radioCatSettingsApply,[string]$script:radioCatQueuedAction.operation,
         [string](Get-UiRadioCatSessionState).error,[string]$script:radioCatObserved.power.value.watts,[string]$script:radioCatEditDraft.power,$fieldHeadLog)
     $fieldHeadPowerReadbackReady = Invoke-UiConsoleDispatcherUntil -TimeoutMs 3000 -Condition {
-        [int]$script:radioCatObserved.power.value.watts -eq 9 -and $null -eq $script:radioCatEditDraft.power -and
+        [int]$script:radioCatObserved.power.value.watts -eq 10 -and $null -eq $script:radioCatEditDraft.power -and
             -not $script:radioCatOperationPowerShell -and -not $script:radioCatSettingsApply
     }
-    Assert-UiConsole ($fieldHeadPowerReadbackReady -and [int]$script:radioCatObserved.power.value.watts -eq 9 -and $null -eq $script:radioCatEditDraft.power -and
-        [int]$script:radioControlPreferences.desired_power_watts -eq 9) 'confirmed 9 W FieldHead readback did not update actual and saved-preference state.'
+    Assert-UiConsole ($fieldHeadPowerReadbackReady -and [int]$script:radioCatObserved.power.value.watts -eq 10 -and $null -eq $script:radioCatEditDraft.power -and
+        [int]$script:radioControlPreferences.desired_power_watts -eq 10) 'confirmed 10 W FieldHead readback did not update actual and saved-preference state.'
 
     $powerStampBeforeTimeout = [string]$script:radioCatObserved.power.updated_at_utc
     $powerTextBeforeTimeout = [string](Get-UiConsoleControl 'CatObservedPowerText').Text
@@ -723,12 +744,12 @@ try {
     Assert-UiConsole (-not $script:radioCatOperationPowerShell -and [int]$script:radioCatOperationOrdinal -eq $detachedPollOrdinal -and
         $script:radioCatPollingActive -and -not $script:radioCatPollingConnectionKey) ("detached COM11 kept creating CAT workers instead of waiting for re-enumeration; active={0}, key='{1}', operation={2}, ordinal={3}/{4}, selected='{5}', serialState={6}, ports={7}" -f `
             [bool]$script:radioCatPollingActive,[string]$script:radioCatPollingConnectionKey,[string]$script:radioCatOperationKind,[int]$script:radioCatOperationOrdinal,$detachedPollOrdinal,(Get-UiRadioCatSelectedPort),[string]$script:deviceSerialState,(@($script:deviceCatalog.serial_ports | ForEach-Object { [string]$_.PortName }) -join ','))
-    Assert-UiConsole ($script:radioCatResult -eq $null -and [int]$script:radioCatObserved.power.value.watts -eq 9 -and
+    Assert-UiConsole ($script:radioCatResult -eq $null -and [int]$script:radioCatObserved.power.value.watts -eq 10 -and
         [string]$script:radioCatObserved.power.updated_at_utc -ceq $powerStampBeforeTimeout -and
         [string](Get-UiConsoleControl 'CatObservedPowerText').Text -ceq $powerTextBeforeTimeout -and
         (Get-UiConsoleControl 'CatObservedPanel').Visibility -eq [System.Windows.Visibility]::Visible) 'detach invalidated write permission or erased the last actual CAT display.'
     Assert-UiConsole (@($script:capturedUiEvents | Where-Object { [string]$_ -match 'CAT串口从设备列表消失' }).Count -eq ($disconnectEventCountBefore + 1)) 'CAT detach event was not recorded exactly once while repeated polls waited.'
-    Assert-UiConsole ([string](Get-UiConsoleControl 'FooterText').Text -match 'CAT串口从设备列表消失') 'CAT detach transition did not reach the MainWindow event fallback.'
+    Assert-UiConsole ([string](Get-UiConsoleControl 'TransientStatusText').Text -match 'CAT串口从设备列表消失') 'CAT detach transition did not reach the transient MainWindow event display.'
     Assert-UiConsole ((Get-UiRadioCatSelectedPort) -ceq 'COM11') 'detached explicit CAT port was lost before a re-enumeration could restore it.'
     $failedQueryOrdinal = [int]$script:radioCatOperationOrdinal
     $script:uiTestHooks.CatOperation = New-UiConsoleCatOperationHook -UnknownQueryOrdinal ($failedQueryOrdinal + 1)
@@ -739,12 +760,14 @@ try {
     Assert-UiConsole $failedQueryReady 'synthetic timeout query did not complete.'
     Assert-UiConsole ($null -eq $script:radioCatResult -and -not (Get-UiConsoleControl 'ApplyCatSettingsButton').IsEnabled) ("query timeout left an old write permit enabled; ordinal={0}, status={1}, result={2}/{3}, button={4}" -f $script:radioCatOperationOrdinal,$script:radioCatLastOperationStatus,[string]$script:radioCatResult.operation,[string]$script:radioCatResult.status,(Get-UiConsoleControl 'ApplyCatSettingsButton').IsEnabled)
     Assert-UiConsole (@($script:capturedUiEvents | Where-Object { [string]$_ -match 'CAT状态读取失败' }).Count -eq 1) 'CAT query failure did not create a single transition event.'
-    Assert-UiConsole ([string](Get-UiConsoleControl 'FooterText').Text -match 'CAT状态读取失败') 'CAT query failure transition did not reach the MainWindow event fallback.'
+    Assert-UiConsole ((Get-UiConsoleControl 'TransientStatusText').Visibility -eq [System.Windows.Visibility]::Visible -and
+        [string](Get-UiConsoleControl 'TransientStatusText').Text -match '读取电台状态|CAT状态读取失败') `
+        ('CAT query failure did not leave a transient failure notice; text={0}' -f [string](Get-UiConsoleControl 'TransientStatusText').Text)
     Assert-UiConsole (-not (Get-UiConsoleControl 'ApplyCatSettingsButton').IsEnabled) 'query timeout left the unified CAT settings write enabled.'
-    Assert-UiConsole ([int]$script:radioCatObserved.power.value.watts -eq 9 -and
+    Assert-UiConsole ([int]$script:radioCatObserved.power.value.watts -eq 10 -and
         [string]$script:radioCatObserved.power.updated_at_utc -ceq $powerStampBeforeTimeout) 'query timeout replaced the last actual value or its original timestamp.'
     Assert-UiConsole ((Get-UiConsoleControl 'CatObservedPanel').Visibility -eq [System.Windows.Visibility]::Visible -and
-        [string](Get-UiConsoleControl 'CatObservedPowerText').Text -ceq '9 W' -and
+        [string](Get-UiConsoleControl 'CatObservedPowerText').Text -ceq '10 W' -and
         (Get-UiRadioCatSessionState).requested) 'query timeout hid the last value or ended the independent CAT polling session.'
     $script:uiTestHooks.CatOperation = New-UiConsoleCatOperationHook -UnknownQueryOrdinal -2
     $script:radioCatEditDraft.mode = 'FM-N'
@@ -779,7 +802,7 @@ try {
     for ($updateAttempt = 0; $updateAttempt -lt 3; $updateAttempt++) { Update-UiRadioCatControls }
     $duplicateQueryRejected = $false
     try { Start-UiRadioCatOperation -Operation 'query' } catch { $duplicateQueryRejected = $_.Exception.Message -match '另一项|尚未结束' }
-    $busyNotice = if ($script:mainWindow.FindName('CatOperationStatusText')) { [string]$script:mainWindow.FindName('CatOperationStatusText').Text } else { '' }
+    $busyNotice = [string](Get-UiConsoleControl 'TransientStatusText').Text
     Assert-UiConsole ($duplicateQueryRejected -and [int]$script:radioCatOperationOrdinal -eq $reattachOrdinal -and
         $script:radioCatOperationPowerShell -and $busyCatSessionRequested -and (Get-UiRadioCatSessionState).requested -and
         (Get-UiConsoleControl 'CatObservedPanel').Visibility -eq $busyPanelVisibility -and
@@ -789,13 +812,13 @@ try {
     Assert-UiConsole $reattachReady 'CAT read did not recover after the detached port was re-enumerated.'
     Assert-UiConsole ($script:radioCatPollingActive -and $script:radioCatResult -and
         [string]$script:radioCatResult.operation -ceq 'query' -and [string]$script:radioCatResult.status -ceq 'confirmed' -and
-        [int]$script:radioCatObserved.power.value.watts -eq 9 -and
+        [int]$script:radioCatObserved.power.value.watts -eq 10 -and
         [string]$script:radioCatObserved.power.updated_at_utc -cne $powerStampBeforeTimeout -and
-        [int]$script:radioControlPreferences.desired_power_watts -eq 9 -and
+        [int]$script:radioControlPreferences.desired_power_watts -eq 10 -and
         $null -eq $script:radioCatEditDraft.power) 'reconnected read did not update only observed state while retaining the desired power setting.'
     Write-UiConsoleTestProgress 'detach, timeout, and COM11 recovery passed'
     Assert-UiConsole (@($script:capturedUiEvents | Where-Object { [string]$_ -match 'CAT状态读取已恢复' }).Count -eq 1) 'CAT recovery did not create one transition event.'
-    Assert-UiConsole ([string](Get-UiConsoleControl 'FooterText').Text -match 'CAT状态读取已恢复') 'CAT recovery transition did not reach the MainWindow event fallback.'
+    Assert-UiConsole ([string](Get-UiConsoleControl 'TransientStatusText').Text -match 'CAT状态读取已恢复') 'CAT recovery transition did not reach the transient MainWindow event display.'
     $script:latestStatus = [pscustomobject]@{
         ptt_gate_ready=$true; ptt_gate_tx_active=$false; ptt_last_state='released'; current_call_valid=$false
         receive_media_state='idle'; rx_queue_bursts=[uint64]0; rx_queue_playback_frames=[uint64]0
@@ -803,7 +826,7 @@ try {
     }
     $script:lastStatusUtc = [DateTime]::UtcNow
     Assert-UiConsole ((Get-UiConsoleControl 'CatObservedPanel').Visibility -eq [System.Windows.Visibility]::Visible -and
-        (Get-UiConsoleControl 'CatObservedPowerText').Text -ceq '9 W' -and $script:radioCatResult -and
+        (Get-UiConsoleControl 'CatObservedPowerText').Text -ceq '10 W' -and $script:radioCatResult -and
         [string]$script:radioCatResult.operation -ceq 'query' -and [string]$script:radioCatResult.status -ceq 'confirmed') `
         'successful reconnect did not preserve the CAT view and confirmed readback; write controls remain gated until the user creates a valid draft.'
     $permitRefreshReady = Invoke-UiConsoleDispatcherUntil -TimeoutMs 4000 -Condition { -not $script:radioCatOperationPowerShell }
@@ -839,14 +862,14 @@ try {
     Assert-UiConsole ($nativeExitCleanupReady -and (Get-UiRadioCatSessionState).requested -and
         (Get-UiRadioCatSessionState).polling -and [int]$script:radioCatOperationOrdinal -eq $exitQueryOrdinalExpected) `
         'native core exit canceled or restarted the independent CAT session instead of draining its in-flight query.'
-    $nativeExitCoreText = [string](Get-UiConsoleControl 'CoreValue').Text
+    $nativeExitConnectContent = [string](Get-UiConsoleControl 'ConnectButton').Content
     $nativeExitOrdinal = [int]$script:radioCatOperationOrdinal
     for ($tickAttempt = 0; $tickAttempt -lt 3; $tickAttempt++) { On-UiTimerTick }
     Assert-UiConsole ($oldSupervisor.HasExited -and $script:radioCatPollingActive -and
         [int]$script:radioCatOperationOrdinal -eq $nativeExitOrdinal -and
-        [string](Get-UiConsoleControl 'CoreValue').Text -ceq $nativeExitCoreText -and
+        [string](Get-UiConsoleControl 'ConnectButton').Content -ceq $nativeExitConnectContent -and
         (Get-UiConsoleControl 'ConnectButton').IsEnabled) 'native self-exit handling repeated cleanup, restarted CAT polling, or blocked reconnect.'
-    Assert-UiConsole ([int]$script:radioCatObserved.power.value.watts -eq 9 -and
+    Assert-UiConsole ([int]$script:radioCatObserved.power.value.watts -eq 10 -and
         [string](Get-UiConsoleControl 'CatObservedPowerText').Text -ceq $exitPowerText -and
         (Get-UiConsoleControl 'RadioCatPanel').Visibility -eq [System.Windows.Visibility]::Visible -and
         (Get-UiRadioCatSessionState).requested) 'native HRI exit erased the last CAT values, hid the CAT panel, or ended the independent CAT session.'
@@ -881,7 +904,7 @@ try {
     $reconnectReadReady = Invoke-UiConsoleDispatcherUntil -TimeoutMs 5000 -Condition { $script:supervisor -and -not $script:supervisor.HasExited }
     Assert-UiConsole $reconnectReadReady 're-enumerated COM12 and a new ConnectButton action did not complete the next CAT first read.'
     Assert-UiConsole ($script:radioCatPollingActive -and [string]$script:radioCatObservedPortName -ceq 'COM12' -and
-        [int]$script:radioCatObserved.power.value.watts -eq 9 -and
+        [int]$script:radioCatObserved.power.value.watts -eq 10 -and
         (Get-UiConsoleControl 'CatObservedPanel').Visibility -eq [System.Windows.Visibility]::Visible) 'new native session did not restore the read-only CAT snapshot on the changed COM port.'
     Write-UiConsoleTestProgress 'COM12 reconnect and first CAT read passed'
 
@@ -923,7 +946,7 @@ try {
     $script:radioCatPollNextUtc = [DateTime]::UtcNow.AddMinutes(10)
     (Get-UiConsoleControl 'CatMainModeBox').SelectedItem = @((Get-UiConsoleControl 'CatMainModeBox').Items | Where-Object { [string]$_.Tag -ceq 'C4FM-DN' })[0]
     (Get-UiConsoleControl 'CatMainFrequencyMHzBox').Text = '145.700'
-    (Get-UiConsoleControl 'CatPowerSlider').Value = 8
+    Set-UiConsoleCatPower -Watts 10
     Update-UiConsoleFakeCoreHeartbeat
     Update-UiRadioCatControls
     $cancelLogPath = Join-Path $script:testRoot 'cat-operations.log'
