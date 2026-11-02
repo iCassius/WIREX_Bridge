@@ -473,7 +473,7 @@ function Test-Alpha15AudioControlCompatibility {
     $parseErrors = $null
     $uiAst = [System.Management.Automation.Language.Parser]::ParseFile($uiPath, [ref]$tokens, [ref]$parseErrors)
     if ($parseErrors.Count -gt 0) { throw ($packageLabel + ' bridge-ui.ps1 cannot be parsed by Windows PowerShell 5.1.') }
-    foreach ($functionName in @('Test-UiRoutingCapabilityList','Test-UiAudioGainCapability')) {
+    foreach ($functionName in @('Test-UiRoutingCapabilityList','Test-UiHasCapability','Test-UiAudioGainCapability')) {
         $functionAst = $uiAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $functionName }, $true)
         if ($null -eq $functionAst) { throw ('{0} package UI is missing capability validator {1}.' -f $packageLabel, $functionName) }
         Invoke-Expression $functionAst.Extent.Text

@@ -214,6 +214,38 @@ $diagnosticReady=[pscustomobject][ordered]@{
 }
 Assert-UiControlFrameRejected { ConvertFrom-UiControlFrame -Json (ConvertTo-Json -InputObject $diagnosticReady -Compress -Depth 6) -ExpectedProcessId ([System.Diagnostics.Process]::GetCurrentProcess().Id) } `
     '诊断核心不得声明BM独立连接命令。'
+$legacyDiagnosticReady=$diagnosticReady.PSObject.Copy()
+$legacyDiagnosticReady.supported_commands=[string[]]@('hello','status','shutdown')
+$parsedLegacyDiagnosticReady=ConvertFrom-UiControlFrame -Json (ConvertTo-Json -InputObject $legacyDiagnosticReady -Compress -Depth 6) `
+    -ExpectedProcessId ([System.Diagnostics.Process]::GetCurrentProcess().Id)
+Assert-UiControl ($parsedLegacyDiagnosticReady.diagnostic -and
+    -not ($parsedLegacyDiagnosticReady.supported_commands -contains 'bm.connection.set')) `
+    '无BM handler 的旧版 control diagnostic 必须保持 BM capability 缺席。'
+$script:controlCapabilities=@($parsedLegacyDiagnosticReady.supported_commands) -join ','
+$legacyDiagnosticSnapshot=[pscustomobject][ordered]@{
+    mode='diagnostic';status='running';phase='protocol_diagnostic';media_seq=[uint64]0;diagnostic=$true
+    bm_state='not_started';hri_phase='not_started';hri_ready=$false;serial_open=$false
+    wavein_open=$false;waveout_open=$false;radio_state='unknown'
+}
+Assert-UiControl (Test-UiControlSnapshot -Snapshot $legacyDiagnosticSnapshot) `
+    '无BM handler 的 diagnostic status 必须接受 legacy bm_state=not_started。'
+$legacyDiagnosticSnapshot.bm_state='stopped'
+Assert-UiControl (-not (Test-UiControlSnapshot -Snapshot $legacyDiagnosticSnapshot)) `
+    '无BM handler 的 diagnostic status 必须拒绝 stopped，因为诊断核心从未启动 BM Session。'
+$legacyDiagnosticSnapshot.bm_state='ready'
+Assert-UiControl (-not (Test-UiControlSnapshot -Snapshot $legacyDiagnosticSnapshot)) `
+    '无BM handler 的 diagnostic status 不得把真实 BM Session 状态当作可用连接。'
+$script:controlCapabilities='hello,status,shutdown,bm.connection.set'
+$bmCapDiagnosticSnapshot=$legacyDiagnosticSnapshot.PSObject.Copy()
+$bmCapDiagnosticSnapshot.bm_state='stopped'
+$bmCapDiagnosticSnapshot | Add-Member -NotePropertyName bm_connection -NotePropertyValue ([pscustomobject][ordered]@{
+    requested_enabled=$false;revision=[uint64]0;transport_open=$false
+})
+$bmCapDiagnosticSnapshot | Add-Member -NotePropertyName bm_resolving -NotePropertyValue $false
+$bmCapDiagnosticSnapshot | Add-Member -NotePropertyName bm_connection_error -NotePropertyValue 'none'
+Assert-UiControl (-not (Test-UiControlSnapshot -Snapshot $bmCapDiagnosticSnapshot)) `
+    '即使快照字段齐全，diagnostic run 也不得启用 BM handler capability。'
+$script:controlCapabilities='bm.connection.set'
 if ($ParserOnly) {
     Write-Output ('通过：BM 控制帧 parser 覆盖异步状态、revision=0 拒绝、安全错误码与 capability 隔离。真实 Dispatcher 帧：{0} 行。' -f `
         $(if ($BmProtocolFramesPath) { $lines.Count } else { 0 }))
@@ -511,6 +543,7 @@ try {
     $noGainReadyLine = Wait-UiControlEvent -Supervisor $noGainSupervisor -Type 'control_ready' -Command '' -RequestId '' -TimeoutMilliseconds 10000
     $noGainReady = ConvertFrom-UiControlFrame -Json $noGainReadyLine -ExpectedProcessId $noGainSupervisor.ProcessId
     Assert-UiControl (-not ($noGainReady.supported_commands -contains 'audio.gains.set')) '没有 gain handler 的 Native control diagnostic 不得广告音量命令。'
+    Assert-UiControl (-not ($noGainReady.supported_commands -contains 'bm.connection.set')) '没有 BM handler 的 Native control diagnostic 不得广告 BM 命令。'
     $script:controlCapabilities = @($noGainReady.supported_commands) -join ','
     Assert-UiControl $noGainSupervisor.SetControlRunId([string]$noGainReady.run_id) '基础诊断 Supervisor 必须锁定本次进程的 run_id。'
     $noGainHelloId = [guid]::NewGuid().ToString('D')
@@ -518,10 +551,20 @@ try {
     $noGainHelloLine = Wait-UiControlEvent -Supervisor $noGainSupervisor -Type 'control_result' -Command 'hello' -RequestId $noGainHelloId
     $noGainHello = ConvertFrom-UiControlFrame -Json $noGainHelloLine -LockedRunId $noGainReady.run_id -LastControlSequence ([uint64]$noGainReady.control_seq)
     Assert-UiControl ($noGainHello.result -ceq 'ok' -and -not ($noGainHello.supported_commands -contains 'audio.gains.set')) 'hello 必须保持旧版无音量能力命令集。'
+    $noGainStatusId=[guid]::NewGuid().ToString('D')
+    Assert-UiControl ($noGainSupervisor.SendControlCommand($noGainStatusId,'status')) '无BM handler 的诊断核心必须允许读取状态。'
+    $noGainStatusLine=Wait-UiControlEvent -Supervisor $noGainSupervisor -Type 'control_result' -Command 'status' -RequestId $noGainStatusId
+    $noGainStatus=ConvertFrom-UiControlFrame -Json $noGainStatusLine -LockedRunId $noGainReady.run_id `
+        -LastControlSequence ([uint64]$noGainHello.control_seq)
+    Assert-UiControl ($noGainStatus.result -ceq 'ok' -and $noGainStatus.snapshot.diagnostic -and
+        $noGainStatus.snapshot.bm_state -ceq 'not_started' -and
+        $null -eq $noGainStatus.snapshot.PSObject.Properties['bm_connection'] -and
+        $null -eq $noGainStatus.snapshot.PSObject.Properties['bm_resolving']) `
+        '无BM handler 的生产 diagnostic status 必须保留 not_started 且不附加 BM handler 状态。'
     Assert-UiControl ($noGainSupervisor.SendControlCommand('audio-gains-1','audio.gains.set',
         '{"revision":1,"radio_playback_gain_milli":1000,"mic_transmit_gain_milli":1000}')) '白名单允许的音量命令应送达无handler Native，由其回报 unsupported。'
     $noGainLine = Wait-UiControlEvent -Supervisor $noGainSupervisor -Type 'control_result' -Command 'audio.gains.set' -RequestId 'audio-gains-1'
-    $noGain = ConvertFrom-UiControlFrame -Json $noGainLine -LockedRunId $noGainReady.run_id -LastControlSequence ([uint64]$noGainHello.control_seq)
+    $noGain = ConvertFrom-UiControlFrame -Json $noGainLine -LockedRunId $noGainReady.run_id -LastControlSequence ([uint64]$noGainStatus.control_seq)
     Assert-UiControl ($noGain.result -ceq 'unsupported' -and $noGain.error -ceq 'command_not_supported') '无 handler 的 Native 必须返回明确 unsupported。'
     $noGainShutdownId = [guid]::NewGuid().ToString('D')
     Assert-UiControl ($noGainSupervisor.SendControlCommand($noGainShutdownId,'shutdown')) '基础诊断 shutdown 必须可发送。'

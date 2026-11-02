@@ -4909,7 +4909,8 @@ int run_control_diagnostic(bool routing_diagnostic)
     snapshot.mode = "diagnostic";
     snapshot.status = "running";
     snapshot.phase = "protocol_diagnostic";
-    snapshot.bm_state = "stopped";
+    // 纯协议诊断从未创建 BM Session，保留既有的“未启动”状态。
+    snapshot.bm_state = "not_started";
     snapshot.hri_phase = "not_started";
     snapshot.radio_state = "unknown";
     snapshot.diagnostic = true;

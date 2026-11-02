@@ -8,7 +8,7 @@
 ## R121 Native 合同
 
 - UI v2 命令：`bm.connection.set`，参数只含 `{enabled:boolean, revision:uint64正数}`。不从管道接收密码或 Master 地址。
-- 状态与命令应答都包含 `bm_connection:{requested_enabled,revision,transport_open}`、`bm_resolving:boolean`、`bm_connection_error:string` 及顶层 `bm_state`。
+- 有 BM handler 的 status snapshot 包含 `bm_connection:{requested_enabled,revision,transport_open}`、`bm_resolving:boolean`、`bm_connection_error:string` 及顶层 `bm_state`。`bm.connection.set` 专属应答也带这些 BM 字段，并将 `bm_state` 限定为规范 Session 枚举；无 handler 的 unsupported 应答回报 `stopped` 与全关闭的默认 BM 快照。
 - 顶层 `bm_state` 始终序列化真实 `bm::Session` 状态：`idle`、`waiting_login_ack`、`waiting_auth_ack`、`waiting_config_ack`、`waiting_options_ack`、`ready`、`backoff`、`stopped`。DNS 等待时由 `requested_enabled=true`、`bm_resolving=true`、`transport_open=false`、`bm_state=stopped` 表示。
 - 安全 `bm_connection_error`：`none`、`password_required`、`master_resolution_failed`、`master_resolution_timeout`、`resolver_cancel_timeout`、`profile_invalid`、`transport_open_failed`、`media_cleanup_timeout`。旧 `bm_failure` 保留原含义。
 - `bm_resolving=true` 不只表示启用中的DNS查询；disable取消旧查询时也会保持为true，直到系统resolver上下文真正回收。两类合法快照分别为：启用解析 `{requested_enabled=true, transport_open=false, bm_state=stopped, error=none}`；取消解析 `{requested_enabled=false, transport_open=false, bm_state=stopped, error=none|master_resolution_timeout|resolver_cancel_timeout}`。
@@ -27,12 +27,15 @@
 
 - 实现并接入完成。`ConnectionControl` 管理生产 `bm::Session` 与 `bm::UdpTransport`，支持 IPv4 字面量、异步 DNS、取消回收、revision 冲突/重放和 on/off/on 重启。
 - BM session 在 `stopped` 后可安全重新启动；每轮启动会清除上一轮应用包、认证状态和计时状态。
-- UI v2 协议支持 `bm.connection.set`，并输出真实 Session `bm_state`、BM 连接快照和受限安全错误码。
+- UI v2 协议支持 `bm.connection.set`，并输出真实 Session `bm_state`、BM 连接快照和受限安全错误码。有 BM handler 时，status 保留真实 Session 枚举并附加 BM 连接字段；无 handler 的普通 status 保留旧字段集合和原始 `bm_state`，诊断会继续报告 `not_started`。BM 专属的 unsupported ACK 使用规范 `stopped`，并报告未请求、revision 为0、传输关闭的默认快照。
+- 回归检查发现诊断初始化曾从原有 `not_started` 改成 `stopped`。现已恢复 `run_control_diagnostic` 的未启动状态；这只影响纯诊断快照，不影响生产 `bm::Session::stopped`。
 - `probe_main.cpp` 已接入 `--bm-start-disconnected`、v2 BM 命令回调、非阻塞 resolver 轮询和有界断连媒体屏障。paused 模式跳过初启 DNS，但会读取有效的本地 password-file；密码缺失时 HRI 仍可启动，用户点击 BM 连接后收到 `password_required`。
 - paused 进程退出时，用户若从未发起 BM 连接，不会被记录成 BM 登录故障。取消中的 DNS 会保持 `bm_resolving=true` 直到 resolver 上下文回收；断连媒体超时会先如实报告 `media_cleanup_timeout` 和当前 Session/UDP 状态，再执行有界关闭。
-- 最新 `probe_main.cpp`、`bm_connection_control.cpp`、`ui_control_protocol.cpp` 均由 MSVC 2019 以 `/W4 /permissive- /utf-8 /std:c++17` 单独编译通过。loopback 与协议测试源码也编译通过。
+- R121 基础实现的 `probe_main.cpp`、`bm_connection_control.cpp`、`ui_control_protocol.cpp` 均由 MSVC 2019 以 `/W4 /permissive- /utf-8 /std:c++17` 单独编译通过；Native manager 与协议离线测试均通过。
+- 本轮兼容修复的 UI v2 协议测试重新编译运行通过，覆盖无 handler 的普通 status 原样输出 `not_started` 且不含 BM 扩展字段、BM 专属 unsupported ACK 规范输出 `stopped` 与关闭状态，以及有 BM handler 的实际 `stopped` / `waiting_auth_ack` 状态。Root 独立运行 Windows PowerShell 5.1 `tools/test-control.ps1`，Native 匿名管道诊断 exit 0；未打开串口、音频或网络。
+- Root 也独立运行了 source `tools/test-ui-control-v2.ps1` 的 WPF `BridgeSupervisor`→Native 匿名管道联测，使用临时诊断可执行文件且 exit 0。先前 alpha17 候选包中的 parser 仍未包含这些兼容修复，不作为本轮验收结果；临时诊断 exe 仅替换两个改动对象并复用已有编译对象，不能代替本轮 clean build 或重新包装。
 - Native 测试 owner 报告 `bm_bridge_loopback_test` 与 `ui_control_protocol_v2_test` 当前源码构建后均 exit 0。交接入口：[BM loopback / manager lifecycle tests](../tests/bm_bridge_loopback_test.cpp)、[UI v2 protocol tests](../tests/ui_control_protocol_v2_test.cpp)、[CMake test/source registration](../CMakeLists.txt)、[MSVC build registration](../tools/build-bm-bridge.ps1)。
-- 全套40项测试尚未运行；没有运行真实 HRI/CAT 串口、音频设备、BM 外网或 RF 验收。
+- R121 基础候选此前 clean build 与40项测试通过；本轮兼容修复还未做 clean build 或完整40项测试。没有运行真实 HRI/CAT 串口、音频设备、BM 外网或 RF 验收。
 - `git diff --check` 通过；本次Native源文件、头文件与文档均为 UTF-8 无 BOM。Save 失败的合成复现已完成，没有读取真实配置或凭据。
 
 ## 后续集成边界

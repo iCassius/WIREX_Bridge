@@ -3052,9 +3052,10 @@ function Test-UiControlSnapshot {
             -Resolving ([bool]$Snapshot.bm_resolving) -Error ([string]$Snapshot.bm_connection_error)
         if (-not $validBmConnection) { return $false }
     }
+    if ($Snapshot.diagnostic -and $bmConnectionAdvertised) { return $false }
     if ($Snapshot.diagnostic -and ($Snapshot.mode -cne 'diagnostic' -or $Snapshot.status -cne 'running' -or
             $Snapshot.phase -cne 'protocol_diagnostic' -or [uint64]$Snapshot.media_seq -ne 0 -or
-            $Snapshot.bm_state -cne 'stopped' -or $Snapshot.hri_phase -cne 'not_started' -or
+            $Snapshot.bm_state -cne 'not_started' -or $Snapshot.hri_phase -cne 'not_started' -or
             $Snapshot.hri_ready -or $Snapshot.serial_open -or $Snapshot.wavein_open -or
             $Snapshot.waveout_open -or $Snapshot.radio_state -cne 'unknown')) { return $false }
     return $true

@@ -174,6 +174,13 @@ const char* safe_bm_state(std::string_view state) noexcept
     return "stopped";
 }
 
+std::string bm_state_json(const StatusSnapshot& snapshot, bool bm_connection_enabled)
+{
+    // 有BM管理器时，状态来自真实Session枚举并受白名单约束；诊断运行没有Session，
+    // 必须原样保留既有诊断状态（例如 not_started）。
+    return json_escape(bm_connection_enabled ? safe_bm_state(snapshot.bm_state) : snapshot.bm_state);
+}
+
 std::string bm_connection_fields_json(const StatusSnapshot& snapshot)
 {
     return "\"bm_connection\":" + bm_connection_json(snapshot) +
@@ -199,23 +206,36 @@ const char* bm_connection_request_error(RoutingCallbacks::BmConnectionResult res
     return "bm_invalid_request";
 }
 
-std::string snapshot_json(const StatusSnapshot& snapshot, bool include_audio_gains)
+std::string snapshot_json(const StatusSnapshot& snapshot,
+                          bool include_audio_gains,
+                          bool bm_connection_enabled)
 {
     std::string output = "{\"mode\":" + json_escape(snapshot.mode) +
         ",\"status\":" + json_escape(snapshot.status) +
         ",\"phase\":" + json_escape(snapshot.phase) +
         ",\"media_seq\":" + std::to_string(snapshot.media_seq) +
         ",\"diagnostic\":" + (snapshot.diagnostic ? "true" : "false") +
-        ",\"bm_state\":" + json_escape(safe_bm_state(snapshot.bm_state)) +
-        ",\"bm_connection\":" + bm_connection_json(snapshot) +
-        ",\"bm_resolving\":" + (snapshot.bm_resolving ? "true" : "false") +
-        ",\"bm_connection_error\":" + json_escape(safe_bm_connection_error(snapshot.bm_connection_error)) +
-        ",\"hri_phase\":" + json_escape(snapshot.hri_phase) +
-        ",\"hri_ready\":" + (snapshot.hri_ready ? "true" : "false") +
-        ",\"serial_open\":" + (snapshot.serial_open ? "true" : "false") +
-        ",\"wavein_open\":" + (snapshot.wavein_open ? "true" : "false") +
-        ",\"waveout_open\":" + (snapshot.waveout_open ? "true" : "false") +
-        ",\"radio_state\":" + json_escape(snapshot.radio_state);
+        ",\"bm_state\":" + bm_state_json(snapshot, bm_connection_enabled);
+    if (bm_connection_enabled) {
+        output.append(",\"bm_connection\":");
+        output.append(bm_connection_json(snapshot));
+        output.append(",\"bm_resolving\":");
+        output.append(snapshot.bm_resolving ? "true" : "false");
+        output.append(",\"bm_connection_error\":");
+        output.append(json_escape(safe_bm_connection_error(snapshot.bm_connection_error)));
+    }
+    output.append(",\"hri_phase\":");
+    output.append(json_escape(snapshot.hri_phase));
+    output.append(",\"hri_ready\":");
+    output.append(snapshot.hri_ready ? "true" : "false");
+    output.append(",\"serial_open\":");
+    output.append(snapshot.serial_open ? "true" : "false");
+    output.append(",\"wavein_open\":");
+    output.append(snapshot.wavein_open ? "true" : "false");
+    output.append(",\"waveout_open\":");
+    output.append(snapshot.waveout_open ? "true" : "false");
+    output.append(",\"radio_state\":");
+    output.append(json_escape(snapshot.radio_state));
     if (include_audio_gains && snapshot.audio_gains.has_value()) {
         output.append(",\"audio_gains\":");
         output.append(audio_gains_json(*snapshot.audio_gains));
@@ -617,7 +637,8 @@ DispatchResult Dispatcher::handle(std::string_view json_line, const StatusSnapsh
                 cached.extra_json = "\"error\":\"hello_required\"";
             } else {
                 cached.result = "ok";
-                cached.extra_json = "\"snapshot\":" + snapshot_json(snapshot, audio_gains_enabled_);
+                cached.extra_json = "\"snapshot\":" + snapshot_json(
+                    snapshot, audio_gains_enabled_, bm_connection_enabled_);
             }
         } else if (request.command == "routing.status") {
             if (!hello_seen_) {
@@ -734,10 +755,12 @@ DispatchResult Dispatcher::handle(std::string_view json_line, const StatusSnapsh
         } else if (request.command == "bm.connection.set") {
             if (!hello_seen_) {
                 cached.result = "rejected";
-                cached.extra_json = "\"error\":\"hello_required\"," + bm_connection_fields_json(snapshot);
+                cached.extra_json = "\"error\":\"hello_required\"," +
+                    bm_connection_fields_json(snapshot);
             } else if (!bm_connection_enabled_) {
                 cached.result = "unsupported";
-                cached.extra_json = "\"error\":\"command_not_supported\"," + bm_connection_fields_json(snapshot);
+                cached.extra_json = "\"error\":\"command_not_supported\"," +
+                    bm_connection_fields_json(snapshot);
             } else {
                 const auto* params = request.parameters;
                 const auto* enabled = params != nullptr ? params->find("enabled") : nullptr;

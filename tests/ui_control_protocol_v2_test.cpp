@@ -196,7 +196,7 @@ void test_ready_and_handshake()
     snapshot.mode = "diagnostic";
     snapshot.phase = "protocol_diagnostic";
     snapshot.diagnostic = true;
-    snapshot.bm_state = "stopped";
+    snapshot.bm_state = "not_started";
     snapshot.hri_ready = false;
     snapshot.radio_state = "unknown";
     const auto before_hello = dispatcher.handle(request("run-1", "pre", "status"), snapshot);
@@ -220,10 +220,14 @@ void test_ready_and_handshake()
     const auto status = dispatcher.handle(request("run-1", "status-1", "status"), snapshot);
     check(status.json_line.find("\"result\":\"ok\"") != std::string::npos &&
           status.json_line.find("\"mode\":\"diagnostic\"") != std::string::npos &&
-          status.json_line.find("\"bm_state\":\"stopped\"") != std::string::npos &&
+          status.json_line.find("\"bm_state\":\"not_started\"") != std::string::npos &&
           status.json_line.find("\"hri_ready\":false") != std::string::npos &&
           status.json_line.find("\"radio_state\":\"unknown\"") != std::string::npos,
-          "diagnostic status explicitly reports no BM, HRI, or radio readiness");
+          "diagnostic status preserves the original not_started BM state without a BM handler");
+    check(status.json_line.find("\"bm_connection\"") == std::string::npos &&
+              status.json_line.find("\"bm_resolving\"") == std::string::npos &&
+              status.json_line.find("\"bm_connection_error\"") == std::string::npos,
+          "status without a BM handler keeps the legacy snapshot field set");
 }
 
 void test_dispatch_isolation_and_replay()
@@ -959,6 +963,25 @@ void test_bm_connection_requires_handler_and_serializes_live_transitions()
     check(hello.json_line.find("\"bm.connection.set\"") != std::string::npos,
           "hello confirms that this native run supports BM connection control");
 
+    auto actual_session = live;
+    actual_session.bm_state = "stopped";
+    actual_session.bm_connection = {false, 16U, false};
+    const auto stopped_status = dispatcher.handle(
+        request("run-bm-connection", "bm-status-stopped-session", "status"), actual_session);
+    check(stopped_status.json_line.find("\"bm_state\":\"stopped\"") != std::string::npos &&
+              stopped_status.json_line.find("\"bm_connection\":{\"requested_enabled\":false,\"revision\":16,\"transport_open\":false}") != std::string::npos &&
+              stopped_status.json_line.find("\"bm_resolving\":false") != std::string::npos &&
+              stopped_status.json_line.find("\"bm_connection_error\":\"none\"") != std::string::npos,
+          "BM-capable status preserves the real Session stopped enum without diagnostic rewriting");
+
+    actual_session.bm_state = "waiting_auth_ack";
+    actual_session.bm_connection = {true, 17U, true};
+    const auto actual_status = dispatcher.handle(
+        request("run-bm-connection", "bm-status-actual-session", "status"), actual_session);
+    check(actual_status.json_line.find("\"bm_state\":\"waiting_auth_ack\"") != std::string::npos &&
+              actual_status.json_line.find("\"bm_connection\":{\"requested_enabled\":true,\"revision\":17,\"transport_open\":true}") != std::string::npos,
+          "BM-capable status preserves the actual Session enum and manager snapshot");
+
     next_outcome.result = RoutingCallbacks::BmConnectionResult::accepted;
     next_outcome.actual = live;
     next_outcome.actual.bm_connection = {true, 1U, false};
@@ -1058,12 +1081,17 @@ void test_bm_connection_requires_handler_and_serializes_live_transitions()
               legacy_ready.find("bm.connection.set") == std::string::npos,
           "legacy or diagnostic runs without a manager handler do not advertise BM toggle support");
     (void)without_handler.handle(request("run-no-bm-handler", "hello", "hello"), {});
+    StatusSnapshot no_bm_snapshot{};
+    no_bm_snapshot.bm_state = "not_started";
     const auto unsupported = without_handler.handle(
-        bm_connection_request("run-no-bm-handler", "bm-no-handler", true, 1U), {});
+        bm_connection_request("run-no-bm-handler", "bm-no-handler", true, 1U), no_bm_snapshot);
     check(unsupported.json_line.find("\"result\":\"unsupported\"") != std::string::npos &&
               unsupported.json_line.find("\"error\":\"command_not_supported\"") != std::string::npos &&
-              unsupported.json_line.find("\"bm_state\":\"stopped\"") != std::string::npos,
-          "a legacy run without a handler keeps BM stopped and rejects toggles as unsupported");
+              unsupported.json_line.find("\"bm_state\":\"stopped\"") != std::string::npos &&
+              unsupported.json_line.find("\"bm_connection\":{\"requested_enabled\":false,\"revision\":0,\"transport_open\":false}") != std::string::npos &&
+              unsupported.json_line.find("\"bm_resolving\":false") != std::string::npos &&
+              unsupported.json_line.find("\"bm_connection_error\":\"none\"") != std::string::npos,
+          "a BM-specific unsupported ACK keeps canonical stopped state and a fully disabled snapshot");
 }
 
 int emit_r121_bm_protocol_frames(const std::string& output_path)
