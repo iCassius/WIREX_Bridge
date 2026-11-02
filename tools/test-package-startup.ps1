@@ -570,7 +570,7 @@ function Test-Alpha18UiLayoutContract {
         $settingsText = [System.IO.File]::ReadAllText($settingsXamlPath,[System.Text.Encoding]::UTF8)
     } catch { throw ($packageLabel + ' 窗口XAML无法解析：' + $_.Exception.Message) }
     $dashboard = $mainDocument.SelectSingleNode("//*[@*[local-name()='Name']='DashboardPanel']")
-    $columns = @($dashboard.SelectNodes("./*[local-name()='ColumnDefinitions']/*[local-name()='ColumnDefinition']"))
+    $columns = @($dashboard.SelectNodes("./*[local-name()='Grid.ColumnDefinitions']/*[local-name()='ColumnDefinition']"))
     if (-not $dashboard -or $columns.Count -ne 2 -or
         [string]$columns[0].GetAttribute('Width') -cne '1*' -or [string]$columns[1].GetAttribute('Width') -cne '1*') {
         throw ($packageLabel + ' 主窗口下方左右分区没有固定为等宽两列。')
