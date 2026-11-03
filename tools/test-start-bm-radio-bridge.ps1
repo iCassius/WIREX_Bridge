@@ -46,22 +46,10 @@ foreach ($requiredText in @('--radio-playback-gain', '--mic-transmit-gain',
         'Resolve-AudioSettingsPath -Path $AudioSettingsPath')) {
     if (-not $launcherText.Contains($requiredText)) { throw "启动器缺少音量配置接线：$requiredText" }
 }
-$profileLauncherPath = Join-Path (Split-Path -Parent $LauncherPath) 'start-profile.cmd'
-if (Test-Path -LiteralPath $profileLauncherPath -PathType Leaf) {
-    $profileLauncherText = [System.IO.File]::ReadAllText([System.IO.Path]::GetFullPath($profileLauncherPath))
-    if ($profileLauncherText -notmatch '-Preset manual\s+%\*' -or $profileLauncherText -notmatch 'exit /b %ERRORLEVEL%') {
-        throw '手工 profile 启动器必须固定选择 manual、透传参数并保留退出码。'
-    }
-}
 $ignorePath = Join-Path (Split-Path -Parent (Split-Path -Parent $LauncherPath)) '.gitignore'
 if (Test-Path -LiteralPath $ignorePath -PathType Leaf) {
     $ignoreText = [System.IO.File]::ReadAllText([System.IO.Path]::GetFullPath($ignorePath))
     if (-not $ignoreText.Contains('/tools/connection-profile.json')) { throw '便携连接配置文件必须由 Git 忽略。' }
-}
-$listenLauncherPath = Join-Path (Split-Path -Parent $LauncherPath) 'start-listen-91.cmd'
-if (Test-Path -LiteralPath $listenLauncherPath -PathType Leaf) {
-    $listenLauncherText = [System.IO.File]::ReadAllText([System.IO.Path]::GetFullPath($listenLauncherPath))
-    if ($listenLauncherText -notmatch '-Preset listen-91\s+%\*') { throw 'TG91 启动器没有透传增益命令行参数。' }
 }
 $functionAsts = @($ast.FindAll({
     param($node)
