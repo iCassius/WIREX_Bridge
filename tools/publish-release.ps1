@@ -19,48 +19,17 @@ Add-Type -AssemblyName System.Net.Http -ErrorAction Stop
 $script:repositoryFullName = 'iCassius/WIREX_Bridge'
 $script:repositoryUrl = 'https://github.com/iCassius/WIREX_Bridge.git'
 $script:approvedFixtureSha256 = '82e0085ccaccb769a83362c5b335ce6b9a0e3ae93afdf2ad4f46eb81f908577f'
-$script:publishTag = 'v0.1.0-alpha.1'
-$script:alpha1TestNames = @(
-    'dmrd_test','direct_frame_test','hri_t_payload_test','direct_stream_test','hri_session_test','hri_ptt_gate_test',
-    'hri_downlink_session_test','hri_radio_protocol_test','operation_audio_cleanup_test','audio_input_cleanup_test',
-    'wave_output_open_test','session_timing_test','wave_file_test','pcm_gain_test','bounded_pipe_writer_test',
-    'console_lifecycle_test','session_report_test','dmr_call_test','bm_session_test','bm_udp_test','dmr_vocoder_test',
-    'pcm_resampler_test','bm_voice_pipeline_test','bm_test_profile_test','bm_connection_config_test',
-    'hri_stream_session_test','bm_bridge_loopback_test'
-)
-$script:alpha2TestNames = @(
-    $script:alpha1TestNames[0..14] + 'ui_pipe_test' +
-    $script:alpha1TestNames[15..($script:alpha1TestNames.Count - 1)]
-)
-$script:alpha3TestNames = @(
+$script:publishTag = 'v0.1.0'
+$script:v010TestNames = @(
     'dmrd_test', 'direct_frame_test', 'hri_t_payload_test', 'hri_call_header_test', 'hri_t_record_test',
-    'hri_lcd_identity_candidate_test', 'direct_stream_test', 'hri_session_test', 'hri_ptt_gate_test',
-    'hri_p_status_test', 'hri_downlink_session_test', 'hri_radio_protocol_test',
-    'operation_audio_cleanup_test', 'audio_input_cleanup_test', 'wave_output_open_test', 'session_timing_test',
-    'wave_file_test', 'pcm_gain_test', 'bounded_pipe_writer_test', 'ui_pipe_test', 'console_lifecycle_test',
-    'session_report_test', 'dmr_call_test', 'bm_session_test', 'bm_udp_test', 'dmr_vocoder_test',
-    'ambe_dmr72_test', 'ysf_vd2_vch_test', 'voice_transcode_buffer_test', 'pcm_resampler_test',
-    'bm_voice_pipeline_test', 'bm_test_profile_test', 'bm_connection_config_test', 'hri_stream_session_test',
-    'bm_bridge_loopback_test'
+    'hri_lcd_identity_candidate_test', 'radio_identity_cache_test', 'direct_stream_test', 'hri_session_test', 'hri_ptt_gate_test',
+    'hri_p_status_test', 'hri_downlink_session_test', 'hri_radio_protocol_test', 'operation_audio_cleanup_test', 'audio_input_cleanup_test',
+    'wave_output_open_test', 'session_timing_test', 'wave_file_test', 'pcm_gain_test', 'bounded_pipe_writer_test',
+    'ui_pipe_test', 'console_lifecycle_test', 'session_report_test', 'dmr_call_test', 'bm_session_test',
+    'bm_udp_test', 'dmr_vocoder_test', 'ambe_dmr72_test', 'ysf_vd2_vch_test', 'voice_transcode_buffer_test',
+    'pcm_resampler_test', 'bm_voice_pipeline_test', 'bm_test_profile_test', 'bm_connection_config_test', 'hri_stream_session_test',
+    'bm_bridge_loopback_test', 'ui_control_protocol_v2_test', 'talkgroup_routing_test', 'bm_routing_lifecycle_test', 'routing_state_test'
 )
-$script:alpha5TestNames = @($script:alpha3TestNames + 'ui_control_protocol_v2_test')
-$script:alpha6TestNames = @($script:alpha5TestNames + 'talkgroup_routing_test' + 'bm_routing_lifecycle_test' + 'routing_state_test')
-$script:alpha7TestNames = @($script:alpha6TestNames)
-$script:alpha8TestNames = @($script:alpha7TestNames)
-$script:alpha9TestNames = @($script:alpha8TestNames)
-$script:alpha10TestNames = @($script:alpha9TestNames)
-$script:alpha11TestNames = @(
-    $script:alpha10TestNames[0..5] + 'radio_identity_cache_test' +
-    $script:alpha10TestNames[6..($script:alpha10TestNames.Count - 1)]
-)
-$script:alpha12TestNames = @($script:alpha11TestNames)
-$script:alpha13TestNames = @($script:alpha12TestNames)
-$script:alpha14TestNames = @($script:alpha13TestNames)
-$script:alpha15TestNames = @($script:alpha14TestNames)
-$script:alpha16TestNames = @($script:alpha15TestNames)
-$script:alpha17TestNames = @($script:alpha16TestNames)
-$script:alpha18TestNames = @($script:alpha17TestNames)
-$script:alpha19TestNames = @($script:alpha18TestNames)
 $script:publishIsPrerelease = $true
 
 function Set-PublishProfile {
@@ -76,7 +45,7 @@ function Set-PublishProfile {
             }
             $script:expectedDirectories = @('runtime','runtime/docs','runtime/licenses','runtime/licenses/dmr_signal',
                 'runtime/licenses/droidstar_mbe','runtime/private','runtime/ui','runtime/ui/windows')
-            $script:expectedTestNames = $script:alpha19TestNames
+            $script:expectedTestNames = $script:v010TestNames
         }
         'v0.1.1-test.2' {
             $zip = Get-WirexZipOnlyReleaseProfile -Version $Tag
@@ -85,7 +54,7 @@ function Set-PublishProfile {
             $script:assetPathMap = [ordered]@{}
             $script:assetPathMap[$zip.ArchiveName] = $zip.ArchiveName
             $script:expectedDirectories = @($zip.Directories)
-            $script:expectedTestNames = $script:alpha19TestNames
+            $script:expectedTestNames = $script:v010TestNames
         }
         'v0.1.1' {
             $zip = Get-WirexZipOnlyReleaseProfile -Version $Tag
@@ -94,269 +63,9 @@ function Set-PublishProfile {
             $script:assetPathMap = [ordered]@{}
             $script:assetPathMap[$zip.ArchiveName] = $zip.ArchiveName
             $script:expectedDirectories = @($zip.Directories)
-            $script:expectedTestNames = $script:alpha19TestNames
+            $script:expectedTestNames = $script:v010TestNames
         }
-        'v0.1.0-alpha.1' {
-            $script:publishIsPrerelease = $true
-            $assetMap = [ordered]@{
-                'wirex_bridge.exe'='wirex_bridge.exe'
-                'build-provenance.json'='build-provenance.json'
-                'start-bm-radio-bridge.cmd'='start-bm-radio-bridge.cmd'
-                'start-bm-radio-bridge.ps1'='start-bm-radio-bridge.ps1'
-                'start-listen-91.cmd'='start-listen-91.cmd'
-                'start-profile.cmd'='start-profile.cmd'
-                'README.md'='README.md'
-                'SOURCE.txt'='SOURCE.txt'
-                'docs/连接配置.md'='docs__connection-profile.md'
-                'docs/音量调节.md'='docs__audio-gain.md'
-                'licenses/dmr_signal/COPYING.GPL-3.0.txt'='licenses__dmr-signal__COPYING.GPL-3.0.txt'
-                'licenses/dmr_signal/NOTICE.md'='licenses__dmr-signal__NOTICE.md'
-                'licenses/droidstar_mbe/COPYING.GPL-3.0.txt'='licenses__droidstar-mbe__COPYING.GPL-3.0.txt'
-                'licenses/droidstar_mbe/ISC-NOTICE.txt'='licenses__droidstar-mbe__ISC-NOTICE.txt'
-                'licenses/droidstar_mbe/source-manifest.json'='licenses__droidstar-mbe__source-manifest.json'
-                'private/device-y.bin'='private__device-y.bin'
-            }
-            $script:publishTag = $Tag
-            $script:assetPathMap = $assetMap
-            $script:expectedDirectories = @('docs', 'licenses', 'licenses/dmr_signal', 'licenses/droidstar_mbe', 'logs', 'private')
-            $script:expectedTestNames = $script:alpha1TestNames
-        }
-        'v0.1.0-alpha.2' {
-            $assetMap = [ordered]@{
-                'wirex_bridge.exe'='wirex_bridge.exe'
-                'build-provenance.json'='build-provenance.json'
-                'start-bm-radio-bridge.cmd'='start-bm-radio-bridge.cmd'
-                'start-bm-radio-bridge.ps1'='start-bm-radio-bridge.ps1'
-                'start-listen-91.cmd'='start-listen-91.cmd'
-                'start-profile.cmd'='start-profile.cmd'
-                'start-ui.cmd'='start-ui.cmd'
-                'start-ui.ps1'='start-ui.ps1'
-                'start-user-config.cmd'='start-user-config.cmd'
-                'start-user-config.ps1'='start-user-config.ps1'
-                'bridge-user-config.psm1'='bridge-user-config.psm1'
-                'README.md'='README.md'
-                'SOURCE.txt'='SOURCE.txt'
-                'docs/配置与桌面操作.md'='docs__desktop-user-config.md'
-                'docs/连接配置.md'='docs__connection-profile.md'
-                'docs/音量调节.md'='docs__audio-gain.md'
-                'ui/windows/bridge-ui.ps1'='ui__windows__bridge-ui.ps1'
-                'ui/windows/BridgeSupervisor.cs'='ui__windows__BridgeSupervisor.cs'
-                'ui/windows/MainWindow.xaml'='ui__windows__MainWindow.xaml'
-                'ui/windows/SettingsWindow.xaml'='ui__windows__SettingsWindow.xaml'
-                'licenses/dmr_signal/COPYING.GPL-3.0.txt'='licenses__dmr-signal__COPYING.GPL-3.0.txt'
-                'licenses/dmr_signal/NOTICE.md'='licenses__dmr-signal__NOTICE.md'
-                'licenses/droidstar_mbe/COPYING.GPL-3.0.txt'='licenses__droidstar-mbe__COPYING.GPL-3.0.txt'
-                'licenses/droidstar_mbe/ISC-NOTICE.txt'='licenses__droidstar-mbe__ISC-NOTICE.txt'
-                'licenses/droidstar_mbe/source-manifest.json'='licenses__droidstar-mbe__source-manifest.json'
-                'private/device-y.bin'='private__device-y.bin'
-            }
-            $script:publishTag = $Tag
-            $script:assetPathMap = $assetMap
-            $script:expectedDirectories = @('docs', 'licenses', 'licenses/dmr_signal', 'licenses/droidstar_mbe', 'logs', 'private', 'ui', 'ui/windows')
-            $script:expectedTestNames = $script:alpha2TestNames
-        }
-        'v0.1.0-alpha.3' {
-            $alpha2 = Set-PublishProfile -Tag 'v0.1.0-alpha.2'
-            $assetMap = [ordered]@{}
-            foreach ($path in $alpha2.AssetPathMap.Keys) { $assetMap[$path] = $alpha2.AssetPathMap[$path] }
-            $assetMap['docs/BM来话身份显示.md'] = 'docs__bm-call-identity.md'
-            $script:publishTag = $Tag
-            $script:assetPathMap = $assetMap
-            $script:expectedDirectories = @($alpha2.Directories)
-            $script:expectedTestNames = $script:alpha3TestNames
-        }
-        'v0.1.0-alpha.4' {
-            $alpha3 = Set-PublishProfile -Tag 'v0.1.0-alpha.3'
-            $script:publishTag = $Tag
-            $script:assetPathMap = [ordered]@{}
-            foreach ($path in $alpha3.AssetPathMap.Keys) { $script:assetPathMap[$path] = $alpha3.AssetPathMap[$path] }
-            $script:expectedDirectories = @($alpha3.Directories)
-            $script:expectedTestNames = @($alpha3.TestNames)
-        }
-        'v0.1.0-alpha.5' {
-            $alpha4 = Set-PublishProfile -Tag 'v0.1.0-alpha.4'
-            $assetMap = [ordered]@{}
-            foreach ($path in $alpha4.AssetPathMap.Keys) { $assetMap[$path] = $alpha4.AssetPathMap[$path] }
-            $assetMap['docs/R106_IPC第二版.md'] = 'docs__r106-ipc-v2.md'
-            $assetMap['docs/R106_配置迁移与测试.md'] = 'docs__r106-profile-migration-test.md'
-            $assetMap['start-step1-test.cmd'] = 'start-step1-test.cmd'
-            $assetMap['start-step1-test.ps1'] = 'start-step1-test.ps1'
-            $assetMap['test-control.cmd'] = 'test-control.cmd'
-            $assetMap['test-control.ps1'] = 'test-control.ps1'
-            $script:publishTag = $Tag
-            $script:assetPathMap = $assetMap
-            $script:expectedDirectories = @($alpha4.Directories)
-            $script:expectedTestNames = $script:alpha5TestNames
-        }
-        'v0.1.0-alpha.6' {
-            $alpha5 = Set-PublishProfile -Tag 'v0.1.0-alpha.5'
-            $assetMap = [ordered]@{}
-            foreach ($path in $alpha5.AssetPathMap.Keys) { $assetMap[$path] = $alpha5.AssetPathMap[$path] }
-            $assetMap['docs/R108_收发路由状态与alpha6验收.md'] = 'docs__r108-routing-state-alpha6.md'
-            $assetMap['start-merged-test.cmd'] = 'start-merged-test.cmd'
-            $assetMap['start-merged-test.ps1'] = 'start-merged-test.ps1'
-            $script:publishTag = $Tag
-            $script:assetPathMap = $assetMap
-            $script:expectedDirectories = @($alpha5.Directories)
-            $script:expectedTestNames = $script:alpha6TestNames
-        }
-        'v0.1.0-alpha.7' {
-            $alpha6 = Set-PublishProfile -Tag 'v0.1.0-alpha.6'
-            $assetMap = [ordered]@{}
-            foreach ($path in $alpha6.AssetPathMap.Keys) { $assetMap[$path] = $alpha6.AssetPathMap[$path] }
-            $assetMap['docs/R109_下行状态与动态组修复.md'] = 'docs__r109-downlink-dynamic-groups.md'
-            $assetMap['docs/R109_动态组激活实现.md'] = 'docs__r109-dynamic-group-activation.md'
-            $script:publishTag = $Tag
-            $script:assetPathMap = $assetMap
-            $script:expectedDirectories = @($alpha6.Directories)
-            $script:expectedTestNames = $script:alpha7TestNames
-        }
-        'v0.1.0-alpha.8' {
-            $alpha7 = Set-PublishProfile -Tag 'v0.1.0-alpha.7'
-            $excludedPaths = @(
-                'start-bm-radio-bridge.cmd', 'start-listen-91.cmd', 'start-profile.cmd',
-                'start-ui.cmd', 'start-user-config.cmd', 'start-user-config.ps1',
-                'start-step1-test.cmd', 'start-step1-test.ps1', 'test-control.cmd', 'test-control.ps1',
-                'start-merged-test.cmd', 'start-merged-test.ps1'
-            )
-            $assetMap = [ordered]@{}
-            foreach ($path in $alpha7.AssetPathMap.Keys) {
-                if ($excludedPaths -cnotcontains [string]$path) { $assetMap[$path] = $alpha7.AssetPathMap[$path] }
-            }
-            $assetMap['start-wirex-bridge.cmd'] = 'start-wirex-bridge.cmd'
-            $assetMap['tools/start-wirex-bridge.ps1'] = 'tools__start-wirex-bridge.ps1'
-            $script:publishTag = $Tag
-            $script:assetPathMap = $assetMap
-            $script:expectedDirectories = @($alpha7.Directories) + 'tools'
-            $script:expectedTestNames = $script:alpha8TestNames
-        }
-        'v0.1.0-alpha.9' {
-            $alpha8 = Set-PublishProfile -Tag 'v0.1.0-alpha.8'
-            $assetMap = [ordered]@{}
-            foreach ($path in $alpha8.AssetPathMap.Keys) { $assetMap[$path] = $alpha8.AssetPathMap[$path] }
-            $assetMap['ui/windows/RadioIdentity.psm1'] = 'ui__windows__radio-identity.psm1'
-            $assetMap['docs/R111_UI与音量.md'] = 'docs__r111-ui-audio.md'
-            $assetMap['docs/R111_BM订阅与收听优先级.md'] = 'docs__r111-bm-listening-policy.md'
-            $assetMap['docs/R111_用户资料与电台显示.md'] = 'docs__r111-radio-identity-display.md'
-            $script:publishTag = $Tag
-            $script:assetPathMap = $assetMap
-            $script:expectedDirectories = @($alpha8.Directories)
-            $script:expectedTestNames = $script:alpha9TestNames
-        }
-        'v0.1.0-alpha.10' {
-            $alpha9 = Set-PublishProfile -Tag 'v0.1.0-alpha.9'
-            $assetMap = [ordered]@{}
-            $excludedAlpha9Docs = @(
-                'docs/R111_UI与音量.md',
-                'docs/R111_BM订阅与收听优先级.md',
-                'docs/R111_用户资料与电台显示.md'
-            )
-            foreach ($path in $alpha9.AssetPathMap.Keys) {
-                if ($excludedAlpha9Docs -cnotcontains ([string]$path)) { $assetMap[$path] = $alpha9.AssetPathMap[$path] }
-            }
-            $assetMap['docs/R112_A_身份查询实施.md'] = 'docs__r112-a-identity-lookup.md'
-            $assetMap['docs/R112_A_网络音频指标.md'] = 'docs__r112-a-network-audio-metrics.md'
-            $assetMap['docs/R112_A_UI精简.md'] = 'docs__r112-a-ui-compact.md'
-            $script:publishTag = $Tag
-            $script:assetPathMap = $assetMap
-            $script:expectedDirectories = @($alpha9.Directories)
-            $script:expectedTestNames = $script:alpha10TestNames
-        }
-        'v0.1.0-alpha.11' {
-            $alpha10 = Set-PublishProfile -Tag 'v0.1.0-alpha.10'
-            $assetMap = [ordered]@{}
-            $excludedAlpha10Docs = @(
-                'docs/R112_A_身份查询实施.md',
-                'docs/R112_A_UI精简.md'
-            )
-            foreach ($path in $alpha10.AssetPathMap.Keys) {
-                if ($excludedAlpha10Docs -cnotcontains ([string]$path)) { $assetMap[$path] = $alpha10.AssetPathMap[$path] }
-            }
-            $assetMap['docs/R113_LCD核心实现.md'] = 'docs__r113-lcd-core-implementation.md'
-            $assetMap['docs/R113_身份与LCD接线.md'] = 'docs__r113-identity-lcd-integration.md'
-            $script:publishTag = $Tag
-            $script:assetPathMap = $assetMap
-            $script:expectedDirectories = @($alpha10.Directories)
-            $script:expectedTestNames = $script:alpha11TestNames
-        }
-        'v0.1.0-alpha.12' {
-            $alpha11 = Set-PublishProfile -Tag 'v0.1.0-alpha.11'
-            $assetMap = [ordered]@{}
-            foreach ($path in $alpha11.AssetPathMap.Keys) { $assetMap[$path] = $alpha11.AssetPathMap[$path] }
-            $assetMap['ui/windows/RadioCat.psm1'] = 'ui__windows__radio-cat.psm1'
-            $assetMap['docs/R116_CAT能力与控制实现.md'] = 'docs__r116-cat-controls.md'
-            $assetMap['docs/R116_电台控制界面.md'] = 'docs__r116-radio-controls-ui.md'
-            $script:publishTag = $Tag
-            $script:assetPathMap = $assetMap
-            $script:expectedDirectories = @($alpha11.Directories)
-            $script:expectedTestNames = $script:alpha12TestNames
-        }
-        'v0.1.0-alpha.13' {
-            $alpha12 = Set-PublishProfile -Tag 'v0.1.0-alpha.12'
-            $assetMap = [ordered]@{}
-            foreach ($path in $alpha12.AssetPathMap.Keys) { $assetMap[$path] = $alpha12.AssetPathMap[$path] }
-            $assetMap['ui/windows/RadioCatUi.ps1'] = 'ui__windows__radio-cat-ui.ps1'
-            $assetMap['ui/windows/RadioDevices.psm1'] = 'ui__windows__radio-devices.psm1'
-            $assetMap['ui/windows/BmServers.psm1'] = 'ui__windows__bm-servers.psm1'
-            $assetMap['ui/windows/BmManagement.psm1'] = 'ui__windows__bm-management.psm1'
-            $assetMap['ui/windows/BmManagementUi.ps1'] = 'ui__windows__bm-management-ui.ps1'
-            $script:publishTag = $Tag
-            $script:assetPathMap = $assetMap
-            $script:expectedDirectories = @($alpha12.Directories)
-            $script:expectedTestNames = $script:alpha13TestNames
-        }
-        'v0.1.0-alpha.14' {
-            $alpha13 = Set-PublishProfile -Tag 'v0.1.0-alpha.13'
-            $assetMap = [ordered]@{}
-            foreach ($path in $alpha13.AssetPathMap.Keys) { $assetMap[$path] = $alpha13.AssetPathMap[$path] }
-            $assetMap['ui/windows/PortableConfig.psm1'] = 'ui__windows__portable-config.psm1'
-            $script:publishTag = $Tag
-            $script:assetPathMap = $assetMap
-            $script:expectedDirectories = @($alpha13.Directories)
-            $script:expectedTestNames = $script:alpha14TestNames
-        }
-        'v0.1.0-alpha.15' {
-            $alpha14 = Set-PublishProfile -Tag 'v0.1.0-alpha.14'
-            $assetMap = [ordered]@{}
-            foreach ($path in $alpha14.AssetPathMap.Keys) { $assetMap[$path] = $alpha14.AssetPathMap[$path] }
-            $script:publishTag = $Tag
-            $script:assetPathMap = $assetMap
-            $script:expectedDirectories = @($alpha14.Directories)
-            $script:expectedTestNames = $script:alpha15TestNames
-        }
-        'v0.1.0-alpha.16' {
-            $alpha15 = Set-PublishProfile -Tag 'v0.1.0-alpha.15'
-            $script:publishTag = $Tag
-            $script:assetPathMap = [ordered]@{}
-            foreach ($path in $alpha15.AssetPathMap.Keys) { $script:assetPathMap[$path] = $alpha15.AssetPathMap[$path] }
-            $script:expectedDirectories = @($alpha15.Directories)
-            $script:expectedTestNames = $script:alpha16TestNames
-        }
-        'v0.1.0-alpha.17' {
-            $alpha16 = Set-PublishProfile -Tag 'v0.1.0-alpha.16'
-            $script:publishTag = $Tag
-            $script:assetPathMap = [ordered]@{}
-            foreach ($path in $alpha16.AssetPathMap.Keys) { $script:assetPathMap[$path] = $alpha16.AssetPathMap[$path] }
-            $script:expectedDirectories = @($alpha16.Directories)
-            $script:expectedTestNames = $script:alpha17TestNames
-        }
-        'v0.1.0-alpha.18' {
-            $alpha17 = Set-PublishProfile -Tag 'v0.1.0-alpha.17'
-            $script:publishTag = $Tag
-            $script:assetPathMap = [ordered]@{}
-            foreach ($path in $alpha17.AssetPathMap.Keys) { $script:assetPathMap[$path] = $alpha17.AssetPathMap[$path] }
-            $script:expectedDirectories = @($alpha17.Directories)
-            $script:expectedTestNames = $script:alpha18TestNames
-        }
-        'v0.1.0-alpha.19' {
-            $alpha18 = Set-PublishProfile -Tag 'v0.1.0-alpha.18'
-            $script:publishTag = $Tag
-            $script:assetPathMap = [ordered]@{}
-            foreach ($path in $alpha18.AssetPathMap.Keys) { $script:assetPathMap[$path] = $alpha18.AssetPathMap[$path] }
-            $script:expectedDirectories = @($alpha18.Directories)
-            $script:expectedTestNames = $script:alpha18TestNames
-        }
-        default { throw 'Only registered v0.1.0, v0.1.0-alpha, v0.1.1-test.2, and v0.1.1 profiles are supported.' }
+        default { throw 'Only registered v0.1.0, v0.1.1-test.2, and v0.1.1 profiles are supported.' }
     }
     return [pscustomobject]@{
         Tag = $script:publishTag
@@ -373,14 +82,6 @@ function Test-PublishPathWithin {
     $fullPath = [System.IO.Path]::GetFullPath($Path)
     $fullDirectory = [System.IO.Path]::GetFullPath($Directory).TrimEnd([System.IO.Path]::DirectorySeparatorChar)
     return $fullPath.StartsWith(($fullDirectory + [System.IO.Path]::DirectorySeparatorChar), [System.StringComparison]::OrdinalIgnoreCase)
-}
-
-function Get-PublishAssetName {
-    param([string]$RelativePath)
-    if (@($script:assetPathMap.Keys | Where-Object { [string]$_ -ceq $RelativePath }).Count -ne 1) {
-        throw 'Package contains a path outside the fixed release allowlist.'
-    }
-    return [string]$script:assetPathMap[$RelativePath]
 }
 
 function Get-ExpectedStablePackageRecords {
@@ -739,174 +440,7 @@ function Assert-PublishPackage {
         return (Assert-ZipOnlyPublishPackage -PackageRoot $root -ExpectedCommit $ExpectedCommit -Tag $Tag -RepositoryRoot (Join-Path $root '..\..\..'))
     }
     if ($Tag -ceq 'v0.1.0') { return (Assert-StablePublishPackage -PackageRoot $root -ExpectedCommit $ExpectedCommit -DistributionDirectory $DistributionDirectory) }
-    $manifestPath = Join-Path $root 'manifest.json'
-    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw 'Package is missing manifest.json.' }
-    try { $manifest = (Get-StrictUtf8Text -Path $manifestPath) | ConvertFrom-Json -ErrorAction Stop }
-    catch { throw 'manifest.json is invalid JSON.' }
-    if ([int]$manifest.schema_version -ne 1 -or
-        [string]$manifest.manifest_asset_name -cne 'manifest.json' -or
-        [string]$manifest.package_kind -cne 'wirex_bridge_private_alpha_release_green_directory' -or
-        [string]$manifest.package_status -cne 'root_audit_passed' -or
-        [string]$manifest.version -cne $Tag -or
-        [string]$manifest.tag_candidate -cne $Tag -or
-        [string]$manifest.source.repository -cne $script:repositoryUrl -or
-        ([string]$manifest.source.commit).ToLowerInvariant() -cne $ExpectedCommit -or
-        $manifest.source.working_tree_clean -ne $true -or
-        ([string]$manifest.build.source_commit).ToLowerInvariant() -cne $ExpectedCommit -or
-        $manifest.build.source_tree_clean -ne $true -or $manifest.build.compile_only -ne $false -or
-        $manifest.build.build_completed -ne $true -or [string]$manifest.build.result -cne 'passed') {
-        throw 'Package metadata does not attest the audited clean build for the expected commit and tag.'
-    }
-    $manifestTests = @($manifest.build.passed_tests | ForEach-Object { [string]$_ })
-    if ([int]$manifest.build.passed_test_count -ne $script:expectedTestNames.Count -or
-        $manifestTests.Count -ne $script:expectedTestNames.Count) {
-        throw 'Package metadata does not record the exact offline test set for this release tag.'
-    }
-    for ($index = 0; $index -lt $script:expectedTestNames.Count; $index++) {
-        if ($manifestTests[$index] -cne $script:expectedTestNames[$index]) {
-            throw 'Package metadata does not record the exact offline test set for this release tag.'
-        }
-    }
-    if ([string]$manifest.approved_y_fixture.path -cne 'private/device-y.bin' -or
-        [long]$manifest.approved_y_fixture.length_bytes -ne 100 -or
-        ([string]$manifest.approved_y_fixture.sha256).ToLowerInvariant() -cne $script:approvedFixtureSha256) {
-        throw 'Package metadata does not identify the approved 100-byte Y fixture.'
-    }
-    if ($Tag -ceq 'v0.1.0-alpha.13') {
-        $excludedPrivateFiles = @($manifest.excluded_private_files | ForEach-Object { [string]$_ })
-        foreach ($requiredPath in @(
-            'private/user-config/radio-control-preferences.json',
-            'private/user-config/bm-management-preferences.json',
-            'private/user-config/bm-server-preferences.json'
-        )) {
-            if ($excludedPrivateFiles -cnotcontains $requiredPath) {
-                throw 'Alpha 13 manifest must explicitly exclude the local radio and BM preference files.'
-            }
-        }
-    }
-    if ($Tag -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17', 'v0.1.0-alpha.18', 'v0.1.0-alpha.19')) {
-        $excludedPrivateFiles = @($manifest.excluded_private_files | ForEach-Object { [string]$_ })
-        foreach ($requiredPath in @(
-            'config.json',
-            'config.*.backup*',
-            'credentials/',
-            'tempSecrets/',
-            'private/user-config-directory.txt',
-            'private/user-config/radio-identity-cache.json',
-            'private/user-config/channel-favorites.json',
-            'private/user-config/password-file-path.txt',
-            'private/user-config/radio-control-preferences.json',
-            'private/user-config/bm-management-preferences.json',
-            'private/user-config/bm-server-preferences.json'
-        )) {
-            if ($excludedPrivateFiles -cnotcontains $requiredPath) {
-                throw 'Alpha 14–18 manifest must explicitly exclude the package-root configuration, backups, credentials, and legacy local preferences.'
-            }
-        }
-    }
-
-    $actualFiles = [System.Collections.Generic.List[string]]::new()
-    $actualDirectories = [System.Collections.Generic.List[string]]::new()
-    foreach ($item in (Get-ChildItem -LiteralPath $root -Force -Recurse -ErrorAction Stop)) {
-        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Package may not contain reparse points.' }
-        $relative = $item.FullName.Substring($root.TrimEnd([System.IO.Path]::DirectorySeparatorChar).Length + 1).Replace('\', '/')
-        if ($item.PSIsContainer) { $actualDirectories.Add($relative) } else { $actualFiles.Add($relative) }
-    }
-    $expectedFiles = @($script:assetPathMap.Keys) + 'manifest.json'
-    $actualFileText = (@($actualFiles | Sort-Object -CaseSensitive) -join "`n")
-    $expectedFileText = (@($expectedFiles | Sort-Object -CaseSensitive) -join "`n")
-    $actualDirectoryText = (@($actualDirectories | Sort-Object -CaseSensitive) -join "`n")
-    $expectedDirectoryText = (@($script:expectedDirectories | Sort-Object -CaseSensitive) -join "`n")
-    if ($actualFileText -cne $expectedFileText -or $actualDirectoryText -cne $expectedDirectoryText) {
-        throw 'Package contains missing, extra, or misplaced files or directories.'
-    }
-    if (@($manifest.files).Count -ne $script:assetPathMap.Count) { throw 'manifest.files does not match the fixed package inventory.' }
-
-    $seenPaths = @{}
-    $seenAssets = @{}
-    $assetPlan = New-Object System.Collections.ArrayList
-    foreach ($record in @($manifest.files)) {
-        $path = [string]$record.path
-        if (-not $script:assetPathMap.Contains($path) -or $seenPaths.ContainsKey($path)) { throw 'manifest.files contains an unknown or duplicate path.' }
-        $seenPaths[$path] = $true
-        $assetName = [string]$record.asset_name
-        if ($assetName -cne (Get-PublishAssetName -RelativePath $path) -or $assetName -notmatch '^[A-Za-z0-9._-]+$' -or $seenAssets.ContainsKey($assetName)) {
-            throw 'manifest contains an invalid or duplicate asset name.'
-        }
-        $seenAssets[$assetName] = $true
-        $fullPath = Join-Path $root $path.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
-        $item = Get-Item -LiteralPath $fullPath -ErrorAction Stop
-        $hash = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ([long]$record.length_bytes -ne [long]$item.Length -or ([string]$record.sha256).ToLowerInvariant() -cne $hash) {
-            throw 'A package file does not match its manifest length and SHA-256.'
-        }
-        if ($path -ceq 'private/device-y.bin' -and ([long]$item.Length -ne 100 -or $hash -cne $script:approvedFixtureSha256)) {
-            throw 'The package Y fixture does not match the approved length and SHA-256.'
-        }
-        [void]$assetPlan.Add([pscustomobject]@{ Name=$assetName; Path=$fullPath; Length=[long]$item.Length; Sha256=$hash })
-    }
-    $manifestItem = Get-Item -LiteralPath $manifestPath
-    $manifestHash = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    [void]$assetPlan.Add([pscustomobject]@{ Name='manifest.json'; Path=$manifestPath; Length=[long]$manifestItem.Length; Sha256=$manifestHash })
-    return ,([pscustomobject]@{ Manifest=$manifest; Assets=@($assetPlan) })
-}
-
-function Export-CommitHelperBlob {
-    param([string]$RepositoryRoot, [string]$ExpectedCommit)
-    $helperObjectPath = ($ExpectedCommit + ':tools/download-release.ps1')
-    $blobId = Get-GitText -RepositoryRoot $RepositoryRoot -Arguments @('rev-parse', '--verify', $helperObjectPath)
-    if ($blobId -cnotmatch '^[0-9a-f]{40}$') { throw 'The download helper is absent from the expected source commit.' }
-    $workRoot = [System.IO.Path]::GetFullPath((Join-Path $RepositoryRoot 'build/_work'))
-    if (-not (Test-Path -LiteralPath $workRoot -PathType Container)) { throw 'The repository build/_work directory is unavailable.' }
-    $tempPath = Join-Path $workRoot ('publish-helper-' + [guid]::NewGuid().ToString('N') + '.bin')
-    if (-not (Test-PublishPathWithin -Path $tempPath -Directory $workRoot) -or (Test-Path -LiteralPath $tempPath)) {
-        throw 'Could not allocate a safe temporary helper file.'
-    }
-    $process = $null
-    $stderrTask = $null
-    try {
-        $gitCommand = Get-Command git -ErrorAction Stop
-        $start = New-Object System.Diagnostics.ProcessStartInfo
-        $start.FileName = $gitCommand.Source
-        $quotedRoot = '"' + $RepositoryRoot.Replace('"', '\"') + '"'
-        $start.Arguments = '-C ' + $quotedRoot + ' cat-file blob ' + $blobId
-        $start.UseShellExecute = $false
-        $start.CreateNoWindow = $true
-        $start.RedirectStandardOutput = $true
-        $start.RedirectStandardError = $true
-        $process = New-Object System.Diagnostics.Process
-        $process.StartInfo = $start
-        if (-not $process.Start()) { throw 'Could not start local Git.' }
-        $stderrTask = $process.StandardError.ReadToEndAsync()
-        $output = [System.IO.File]::Open($tempPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
-        try {
-            $copyTask = $process.StandardOutput.BaseStream.CopyToAsync($output)
-            if (-not $process.WaitForExit(15000)) {
-                try { $process.Kill() } catch { }
-                $stopped = $false
-                try { $stopped = $process.WaitForExit(5000) } catch { }
-                if (-not $stopped) { throw 'The Git blob process did not stop after timeout; a temporary file may remain under build/_work.' }
-                throw 'Reading the expected helper Git blob timed out.'
-            }
-            [void]$copyTask.GetAwaiter().GetResult()
-        } finally { $output.Dispose() }
-        $null = $stderrTask.GetAwaiter().GetResult()
-        if ($process.ExitCode -ne 0) { throw 'The expected helper Git blob could not be read.' }
-        $item = Get-Item -LiteralPath $tempPath
-        if ($item.Length -le 0) { throw 'The expected helper Git blob is empty.' }
-        $hash = (Get-FileHash -LiteralPath $tempPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        return [pscustomobject]@{ Name='download-release.ps1'; Path=$tempPath; Length=[long]$item.Length; Sha256=$hash; Temporary=$true }
-    } catch {
-        if (Test-Path -LiteralPath $tempPath -PathType Leaf) {
-            try { Remove-Item -LiteralPath $tempPath -Force -ErrorAction Stop }
-            catch { throw 'Could not remove the temporary helper file under build/_work.' }
-        }
-        if ($_.Exception.Message -match 'timed out') { throw 'Reading the expected helper Git blob timed out.' }
-        if ($_.Exception.Message -match 'did not stop') { throw 'The Git blob process did not stop after timeout; a temporary file may remain under build/_work.' }
-        throw 'The expected helper Git blob could not be verified.'
-    } finally {
-        if ($null -ne $process) { $process.Dispose() }
-    }
+    throw 'Only registered v0.1.0, v0.1.1-test.2, and v0.1.1 profiles are supported.'
 }
 
 function Get-GitCredentialToken {
@@ -1296,7 +830,7 @@ function Publish-VerifiedRelease {
 
 function Invoke-ReleasePublisher {
     param([string]$PackagePath, [string]$Commit, [string]$NotesFile, [string]$PublisherMode, [string]$RepositoryRoot,
-        [string]$Tag = 'v0.1.0-alpha.1')
+        [string]$Tag = 'v0.1.0')
     [void](Set-PublishProfile -Tag $Tag)
     if ($PublisherMode -cnotin @('Draft', 'Publish')) { throw 'Mode must be exactly Draft or Publish.' }
     if ($Commit -cnotmatch '^[0-9a-f]{40}$') { throw 'ExpectedCommit must be a full lowercase SHA-1.' }
@@ -1311,19 +845,12 @@ function Invoke-ReleasePublisher {
     if (@($package.Assets | Where-Object { [string]$_.Name -ceq 'download-release.ps1' }).Count -ne 0) {
         throw 'The fixed helper asset name conflicts with a package asset.'
     }
-    $helper = $null
     $script:githubClient = $null
     $script:anonymousClient = $null
     $script:token = $null
     try {
-    if ($Tag -ceq 'v0.1.0' -or (Test-WirexZipOnlyVersion -Version $Tag)) {
-        $assets = @($package.Assets)
-        $expectedRemoteAssetCount = if (Test-WirexZipOnlyVersion -Version $Tag) { 1 } else { 3 }
-    } else {
-        $helper = Export-CommitHelperBlob -RepositoryRoot $root -ExpectedCommit $Commit
-        $assets = @($package.Assets) + @($helper)
-        $expectedRemoteAssetCount = $package.Assets.Count + 1
-    }
+    $assets = @($package.Assets)
+    $expectedRemoteAssetCount = if (Test-WirexZipOnlyVersion -Version $Tag) { 1 } else { 3 }
     if (@($assets | ForEach-Object { [string]$_.Name } | Sort-Object -Unique).Count -ne $expectedRemoteAssetCount) { throw 'Release asset names are not unique.' }
         Initialize-GitHubClient
         Assert-GitHubIdentityAndRepository
@@ -1349,12 +876,6 @@ function Invoke-ReleasePublisher {
         if ($null -ne $script:githubClient) { $script:githubClient.Dispose(); $script:githubClient=$null }
         if ($null -ne $script:anonymousClient) { $script:anonymousClient.Dispose(); $script:anonymousClient=$null }
         $script:token = $null
-        if ($null -ne $helper -and $helper.Temporary -and (Test-Path -LiteralPath $helper.Path -PathType Leaf) -and
-            (Test-PublishPathWithin -Path $helper.Path -Directory (Join-Path $root 'build/_work')) -and
-            [System.IO.Path]::GetFileName($helper.Path) -match '^publish-helper-[0-9a-f]{32}\.bin$') {
-            try { Remove-Item -LiteralPath $helper.Path -Force -ErrorAction Stop }
-            catch { throw 'Could not remove the temporary helper file under build/_work.' }
-        }
     }
 }
 
