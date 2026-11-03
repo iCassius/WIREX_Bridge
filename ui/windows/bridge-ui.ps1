@@ -404,6 +404,7 @@ $script:receiveEditorState = $null
 $script:lastStatusUtc = [DateTime]::MinValue
 $script:latestStatus = $null
 $script:transientStatusText = ''
+$script:transientStatusSource = ''
 $script:transientStatusLastMessage = ''
 $script:identityLookupStatusText = ''
 $script:transientStatusFailed = $false
@@ -874,13 +875,25 @@ function Set-UiTransientStatus {
     $script:transientStatusText = $value
     $script:transientStatusFailed = [bool]$Failed
     if ($isNewMessage -or $Restart) { $script:transientStatusDeadlineUtc = $now.AddSeconds(5) }
+    $script:transientStatusSource = ([string]$Message).Trim()
     $control = if ($script:mainWindow) { $script:mainWindow.FindName('TransientStatusText') } else { $null }
     if ($control) {
-        [void](Set-WirexUiLocalizedElementProperty -Element $control -Property Text -SourceText $value -Language $script:uiLanguage -UpdateSource)
-        [void](Set-WirexUiLocalizedElementProperty -Element $control -Property ToolTip -SourceText $originalMessage -Language $script:uiLanguage -UpdateSource)
+        Set-UiTransientStatusDisplay -Control $control
         $control.Foreground = if ($Failed) { [Windows.Media.Brushes]::IndianRed } else { [Windows.Media.Brushes]::LightGreen }
         $control.Visibility = [System.Windows.Visibility]::Visible
     }
+}
+
+function Set-UiTransientStatusDisplay {
+    param([Parameter(Mandatory=$true)][System.Windows.Controls.TextBlock]$Control)
+    # The canonical source is the untruncated Chinese message; translate it first and truncate only the display.
+    $source = [string]$script:transientStatusSource
+    $fullText = if ($script:uiLanguage -ceq 'en-US') {
+        ConvertTo-WirexUiDisplayText -Text $source -Language 'en-US'
+    } else { $source -replace 'CAT-1','电台控制' }
+    $displayText = if ($fullText.Length -gt 180) { $fullText.Substring(0,177) + '…' } else { $fullText }
+    $Control.Text = $displayText
+    $Control.ToolTip = $fullText
 }
 
 function Update-UiTransientStatusExpiry {
@@ -916,12 +929,14 @@ function Refresh-UiLanguageDisplay {
     if ($toggle) { $toggle.Content = if ($script:uiLanguage -ceq 'zh-CN') { 'English' } else { '中文' } }
     if ($script:transientStatusText) {
         $status = $script:mainWindow.FindName('TransientStatusText')
-        if ($status) {
-            [void](Set-WirexUiLocalizedElementProperty -Element $status -Property Text -SourceText ([string]$script:transientStatusText) -Language $script:uiLanguage -UpdateSource)
-            [void](Set-WirexUiLocalizedElementProperty -Element $status -Property ToolTip -SourceText ([string]$script:transientStatusText) -Language $script:uiLanguage -UpdateSource)
-        }
+        if ($status) { Set-UiTransientStatusDisplay -Control $status }
     }
     Update-UiBmConnectButtonLanguage
+    $bmValue = $script:mainWindow.FindName('BmValue')
+    if ($bmValue) {
+        # Re-render from the cached canonical source written by Set-MainText; never reverse-map displayed English.
+        [void](Set-WirexUiLocalizedElementProperty -Element $bmValue -Property Text -SourceText ([string]$bmValue.Text) -Language $script:uiLanguage)
+    }
     if (Get-Command -Name Get-BmManagementUiDeviceId -ErrorAction SilentlyContinue) {
         $deviceId = [string](Get-BmManagementUiDeviceId)
         $sourceControl = $script:mainWindow.FindName('BmStaticGroupSourceValue')
@@ -1050,6 +1065,7 @@ function Update-UiDeviceOptionLanguage {
                     }
                 } else {
                     $item.Content = $label
+                    Update-WirexUiComboSelectionBox -Item $item
                 }
             }
             if (-not [string]::Equals([string]$item.ToolTip,$label,[System.StringComparison]::Ordinal)) {
@@ -1422,7 +1438,8 @@ function Update-UiCallHistoryActionState {
     $valid = ($entry -and $entry.PSObject.Properties['source_id'] -and $entry.PSObject.Properties['destination_id'] -and $entry.PSObject.Properties['kind'])
     $isListenOnly = $false
     $button.IsEnabled = ($valid -and -not $script:pendingRoutingMutation -and -not $script:routingMutationFence)
-    $button.ToolTip = '仅当该ID和类型已经在频道列表中时，才能设为PTT目标。'
+    [void](Set-WirexUiLocalizedElementProperty -Element $button -Property ToolTip `
+        -SourceText '仅当该ID和类型已经在频道列表中时，才能设为PTT目标。' -Language $script:uiLanguage -UpdateSource)
     $queryButton = $script:mainWindow.FindName('QueryHistoryIdentityButton')
     if ($queryButton) {
         $queryButton.IsEnabled = ($valid -and -not $script:identityQuery -and $script:radioIdentityModuleLoaded)
@@ -2348,8 +2365,10 @@ function Get-UiKnownChannelName {
 function Get-UiChannelDisplayName {
     param([Parameter(Mandatory=$true)][object]$Channel)
     $name = ([string]$Channel.name).Trim()
-    if ($name -and $name -cne [string]$Channel.id) { return $name }
-    return Get-UiKnownChannelName -Id ([uint64]$Channel.id) -Kind ([string]$Channel.kind)
+    $knownName = Get-UiKnownChannelName -Id ([uint64]$Channel.id) -Kind ([string]$Channel.kind)
+    # Built-in preset names are application text; any other channel name is user data and stays verbatim.
+    if ($name -and $name -cne [string]$Channel.id -and $name -cne $knownName) { return $name }
+    return ConvertTo-WirexUiDisplayText -Text $knownName -Language $script:uiLanguage
 }
 
 function Test-UiBmStaticChannelReadback {
@@ -2716,8 +2735,9 @@ function Update-UiChannelDisplays {
             } elseif ($queuedForChannel) {
                 $fourthButton.ToolTip = ConvertTo-WirexUiDisplayText -Text '当前通话结束前暂存的激活请求；点击可取消，最多等待 60 秒。' -Language $script:uiLanguage
             } elseif ($activationPresentation.request_sent) {
-                $fourthButton.ToolTip = ("{0}`n本机上次请求已发送；BM 当前动态组状态未知。点击可再次激活。" -f [string]$activationPresentation.tooltip)
-                if ($script:uiLanguage -ceq 'en-US') { $fourthButton.ToolTip = ([string]$activationPresentation.tooltip + "`nThe previous request was sent locally; BM dynamic group state is unknown. Click to rejoin.") }
+                $fourthButton.ToolTip = if ($script:uiLanguage -ceq 'en-US') {
+                    [string]$activationPresentation.tooltip + "`nThe previous request was sent locally; BM dynamic group state is unknown. Click to rejoin."
+                } else { "{0}`n本机上次请求已发送；BM 当前动态组状态未知。点击可再次激活。" -f [string]$activationPresentation.tooltip }
             } elseif ($quickCallPending) {
                 $fourthButton.ToolTip = ConvertTo-WirexUiDisplayText -Text '一项激活请求正在等待本机结果；结果返回或等待超时后可再次操作。' -Language $script:uiLanguage
             } elseif ($quickCallQueued) {

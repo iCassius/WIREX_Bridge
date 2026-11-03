@@ -710,6 +710,19 @@ function Get-UiRadioCatPowerSelection {
     return Get-UiRadioCatPowerItemWatts -Item $box.SelectedItem
 }
 
+function Set-UiRadioCatLocalizedToolTip {
+    # Stores the canonical Chinese tooltip so language redraws re-render it instead of caching displayed English.
+    param([Parameter(Mandatory=$true)][object]$Element,[AllowNull()][AllowEmptyString()][string]$SourceText)
+    if ([string]::IsNullOrEmpty($SourceText)) {
+        if ($null -ne $Element.ToolTip) { $Element.ToolTip = $null }
+        return
+    }
+    if (Get-Command -Name Set-WirexUiLocalizedElementProperty -ErrorAction SilentlyContinue) {
+        [void](Set-WirexUiLocalizedElementProperty -Element $Element -Property ToolTip -SourceText $SourceText `
+            -Language $script:uiLanguage -UpdateSource)
+    } elseif ([string]$Element.ToolTip -cne $SourceText) { $Element.ToolTip = $SourceText }
+}
+
 function Set-UiRadioCatPowerChoices {
     param([Parameter(Mandatory=$true)][ValidateRange(5,50)][int]$Maximum)
     $box = Find-UiRadioCatControl -Name 'CatPowerBox'
@@ -768,7 +781,7 @@ function Set-UiRadioCatPowerChoices {
                 } else { '超出当前功率路径上限 {0} W' -f $Maximum }
             }
             elseif ($null -ne $currentWatts -and $watts -eq $currentWatts) { $itemToolTip = '当前CAT读值' }
-            if ([string]$item.ToolTip -cne [string]$itemToolTip) { $item.ToolTip = $itemToolTip }
+            Set-UiRadioCatLocalizedToolTip -Element $item -SourceText $itemToolTip
         }
         $selectedNow = Get-UiRadioCatPowerSelection
         if ($null -eq $selectedNow -or [int]$selectedNow -ne [int]$selectedWatts) {
@@ -780,7 +793,7 @@ function Set-UiRadioCatPowerChoices {
         } else {
             $boxToolTip = $null
         }
-        if ([string]$box.ToolTip -cne [string]$boxToolTip) { $box.ToolTip = $boxToolTip }
+        Set-UiRadioCatLocalizedToolTip -Element $box -SourceText $boxToolTip
     } finally {
         $script:radioCatProgrammaticControlUpdate = $wasUpdating
         $box.Tag = $oldTag
@@ -805,9 +818,9 @@ function Set-UiRadioCatCurrentFrequencyChoice {
             $currentItem = New-Object System.Windows.Controls.ComboBoxItem
             $currentItem.Content = $frequencyMHz
             $currentItem.Tag = '__radio_cat_current_frequency__'
-            $currentItem.ToolTip = '当前CAT读值'
             [void]$combo.Items.Add($currentItem)
         }
+        Set-UiRadioCatLocalizedToolTip -Element $currentItem -SourceText '当前CAT读值'
         if (-not $script:radioCatEditDraft -or $null -eq $script:radioCatEditDraft.frequency) {
             if ($combo.SelectedItem -is [System.Windows.Controls.ComboBoxItem] -and
                 [string]$combo.SelectedItem.Tag -ceq '__radio_cat_current_frequency__') { $combo.SelectedItem = $null }

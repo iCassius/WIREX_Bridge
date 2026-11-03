@@ -60,7 +60,7 @@ function Test-WirexR123UiPackageContract {
     $configPanel = Get-WirexR123NamedNode $main 'ConnectionConfigPanel'
     $configGrid = $configPanel.SelectSingleNode("./*[local-name()='Grid']")
     $configRows = @(Get-WirexR123GridRows $configGrid)
-    Assert-WirexR123Ui ($configRows.Count -eq 7 -and $configRows[0].GetAttribute('Height') -ceq '24' -and $configRows[6].GetAttribute('Height') -ceq '36' -and @($configRows[1..5] | Where-Object { $_.GetAttribute('Height') -cne '*' }).Count -eq 0) '连接配置未使用固定标题、五个等高行和底部操作行'
+    Assert-WirexR123Ui ($configRows.Count -eq 7 -and $configRows[0].GetAttribute('Height') -ceq '24' -and $configRows[6].GetAttribute('Height') -ceq '52' -and @($configRows[1..5] | Where-Object { $_.GetAttribute('Height') -cne '*' }).Count -eq 0) '连接配置未使用固定标题、五个等高行和底部操作行'
     $serial = Get-WirexR123NamedNode $main 'ConnectionRowSerial'
     $serialColumns = @(Get-WirexR123GridColumns $serial)
     Assert-WirexR123Ui ($serialColumns.Count -eq 3 -and $serialColumns[0].GetAttribute('Width') -ceq '1*' -and $serialColumns[1].GetAttribute('Width') -ceq '2*' -and $serialColumns[2].GetAttribute('Width') -ceq '1*') '串口设置行列宽不符'
