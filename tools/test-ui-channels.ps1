@@ -214,7 +214,7 @@ $functionNames = @(
     'Import-WpfWindow','Get-UiControl','Get-SettingsControl','Get-UiChannelKey','Get-UiChannelTarget','Get-UiChannelByKey',
     'New-UiChannelRecord','Get-UiNativeRxPolicyForChannels','Get-UiChannelCurrentCall','Get-UiChannelCardPresentation','Get-UiChannelCallerLabel',
     'ConvertFrom-UiPortableConfigToProfile','Save-UiPortableConfig','Fit-WpfWindowToWorkArea',
-    'Set-MainText','Set-UiTransientStatus','Clear-UiTransientStatus','Update-UiTransientStatusExpiry',
+    'Set-MainText','Set-UiTransientStatus','Set-UiTransientStatusDisplay','Clear-UiTransientStatus','Update-UiTransientStatusExpiry',
     'Set-UiChannelStatus','New-UiChannelActionButton','Update-UiChannelDisplays','Set-UiChannelPage','Start-UiChannelMutation',
     'Get-UiChannelCallerDetails','New-UiDmIdLinkTextBlock','Open-UiDmIdProfile','Get-UiNativeIdentityCallsign','Get-UiCallsignProfileUri','Open-UiCallsignProfile',
     'Get-UiChannelTargetFromRouting','Complete-UiChannelMutation','Add-UiChannelFromInputs','Remove-UiChannel','Set-UiChannelMuted',

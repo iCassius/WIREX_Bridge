@@ -36,6 +36,8 @@ Invoke-Expression ((@($definitions) + @($catDefinitions) | ForEach-Object { $_.E
 $script:productionStartBridgeRun = (Get-Command -Name Start-BridgeRun -CommandType Function).ScriptBlock
 Import-Module -Name (Join-Path $repoRoot 'tools\bridge-user-config.psm1') -Force
 Import-Module -Name $portableConfigModulePath -Force
+Import-Module -Name (Join-Path $repoRoot 'ui\windows\UiLocalization.psm1') -Force
+$script:uiLanguage = 'zh-CN'
 $script:productionRejectedReadbackValidator = (Get-Command Test-UiRadioCatRejectedPowerReadback).ScriptBlock
 $script:radioCatRejectedPowerReadbackInput = $null
 $script:radioCatRejectedPowerReadbackValid = $false

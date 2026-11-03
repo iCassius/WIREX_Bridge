@@ -274,7 +274,7 @@ try {
     $localizerPath=Join-Path $repo 'ui\windows\UiLocalization.psm1'
     $samples=[ordered]@{
         '已读取 3 条 BM 静态组；设备状态 4，添加已禁用。'='Read 3 BM static groups; device status 4; adding is disabled.'
-        'CAT 设置已取消，没有发送写入：当前端口不可用。'='CAT settings were cancelled. No write was sent: 当前端口不可用。'
+        'CAT 设置已取消，没有发送写入：当前端口不可用。'='CAT settings were cancelled. No write was sent: The current port is unavailable.'
         'TG 91 TS1 等待当前通话结束超时；没有发送激活请求。'='TG 91 TS1 timed out waiting for the current call to end; no activation request was sent.'
         '已取消 TG 91 TS1 的排队；没有发送激活请求。'='Cancelled the queued request for TG 91 TS1; no activation request was sent.'
         '正在加入频道；等待核心确认当前频道设置。'='Applying add channel; waiting for the core to confirm channel settings.'

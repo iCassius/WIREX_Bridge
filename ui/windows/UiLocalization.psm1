@@ -35,6 +35,7 @@ $script:WirexUiEnglishText = [ordered]@{
     '静态组写入结果未确认；请刷新列表后再操作。'='The static group write is unconfirmed. Refresh the list before continuing.';
     'CAT 状态读取失败或端口已变化；已取消设置，没有写入。'='CAT status read failed or the port changed. The setting was cancelled without writing.';
     'CAT 设置没有执行；无法先完成当前端口读取。'='CAT setting was not applied because the current port could not be read first.';
+    '当前端口不可用。'='The current port is unavailable.';
     'HRI 已停止；没有执行 MAIN 设置。'='HRI stopped. The MAIN setting was not applied.';
     '已冻结模式、频率和功率目标；当前读取完成并确认身份、端口和TX状态后继续。'='Mode, frequency, and power targets are fixed. Continue after the current read confirms radio, port, and TX state.';
     '当前串口操作结束后执行用户请求的读取。'='The requested read will run after the current serial operation.';
