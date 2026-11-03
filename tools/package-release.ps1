@@ -17,820 +17,62 @@ if (-not [System.IO.File]::Exists($script:zipOnlyReleaseContractPath)) { throw '
 Import-Module -Name $script:zipOnlyReleaseContractPath -Force -Scope Global -ErrorAction Stop
 
 $script:approvedYFixtureSha256 = '82e0085ccaccb769a83362c5b335ce6b9a0e3ae93afdf2ad4f46eb81f908577f'
-$script:alpha1TestNames = @(
-    'dmrd_test',
-    'direct_frame_test',
-    'hri_t_payload_test',
-    'direct_stream_test',
-    'hri_session_test',
-    'hri_ptt_gate_test',
-    'hri_downlink_session_test',
-    'hri_radio_protocol_test',
-    'operation_audio_cleanup_test',
-    'audio_input_cleanup_test',
-    'wave_output_open_test',
-    'session_timing_test',
-    'wave_file_test',
-    'pcm_gain_test',
-    'bounded_pipe_writer_test',
-    'console_lifecycle_test',
-    'session_report_test',
-    'dmr_call_test',
-    'bm_session_test',
-    'bm_udp_test',
-    'dmr_vocoder_test',
-    'pcm_resampler_test',
-    'bm_voice_pipeline_test',
-    'bm_test_profile_test',
-    'bm_connection_config_test',
-    'hri_stream_session_test',
-    'bm_bridge_loopback_test'
-)
-$script:alpha2TestNames = @(
-    $script:alpha1TestNames[0..14] + 'ui_pipe_test' +
-    $script:alpha1TestNames[15..($script:alpha1TestNames.Count - 1)]
-)
-$script:alpha3TestNames = @(
+$script:releaseTestNames = @(
     'dmrd_test', 'direct_frame_test', 'hri_t_payload_test', 'hri_call_header_test', 'hri_t_record_test',
-    'hri_lcd_identity_candidate_test', 'direct_stream_test', 'hri_session_test', 'hri_ptt_gate_test',
-    'hri_p_status_test', 'hri_downlink_session_test', 'hri_radio_protocol_test',
-    'operation_audio_cleanup_test', 'audio_input_cleanup_test', 'wave_output_open_test', 'session_timing_test',
-    'wave_file_test', 'pcm_gain_test', 'bounded_pipe_writer_test', 'ui_pipe_test', 'console_lifecycle_test',
-    'session_report_test', 'dmr_call_test', 'bm_session_test', 'bm_udp_test', 'dmr_vocoder_test',
-    'ambe_dmr72_test', 'ysf_vd2_vch_test', 'voice_transcode_buffer_test', 'pcm_resampler_test',
-    'bm_voice_pipeline_test', 'bm_test_profile_test', 'bm_connection_config_test', 'hri_stream_session_test',
-    'bm_bridge_loopback_test'
+    'hri_lcd_identity_candidate_test', 'radio_identity_cache_test', 'direct_stream_test', 'hri_session_test', 'hri_ptt_gate_test',
+    'hri_p_status_test', 'hri_downlink_session_test', 'hri_radio_protocol_test', 'operation_audio_cleanup_test', 'audio_input_cleanup_test',
+    'wave_output_open_test', 'session_timing_test', 'wave_file_test', 'pcm_gain_test', 'bounded_pipe_writer_test',
+    'ui_pipe_test', 'console_lifecycle_test', 'session_report_test', 'dmr_call_test', 'bm_session_test',
+    'bm_udp_test', 'dmr_vocoder_test', 'ambe_dmr72_test', 'ysf_vd2_vch_test', 'voice_transcode_buffer_test',
+    'pcm_resampler_test', 'bm_voice_pipeline_test', 'bm_test_profile_test', 'bm_connection_config_test', 'hri_stream_session_test',
+    'bm_bridge_loopback_test', 'ui_control_protocol_v2_test', 'talkgroup_routing_test', 'bm_routing_lifecycle_test', 'routing_state_test'
 )
-$script:alpha4TestNames = @($script:alpha3TestNames)
-$script:alpha5TestNames = @($script:alpha4TestNames + 'ui_control_protocol_v2_test')
-$script:alpha6TestNames = @($script:alpha5TestNames + 'talkgroup_routing_test' + 'bm_routing_lifecycle_test' + 'routing_state_test')
-$script:alpha7TestNames = @($script:alpha6TestNames)
-$script:alpha8TestNames = @($script:alpha7TestNames)
-$script:alpha9TestNames = @($script:alpha8TestNames)
-$script:alpha10TestNames = @($script:alpha9TestNames)
-$script:alpha11TestNames = @(
-    $script:alpha10TestNames[0..5] + 'radio_identity_cache_test' +
-    $script:alpha10TestNames[6..($script:alpha10TestNames.Count - 1)]
-)
-$script:alpha12TestNames = @($script:alpha11TestNames)
-$script:alpha13TestNames = @($script:alpha12TestNames)
-$script:alpha14TestNames = @($script:alpha13TestNames)
-$script:alpha15TestNames = @($script:alpha14TestNames)
-$script:alpha16TestNames = @($script:alpha15TestNames)
-$script:alpha17TestNames = @($script:alpha16TestNames)
-$script:alpha18TestNames = @($script:alpha17TestNames)
-$script:activeReleaseVersion = 'v0.1.0-alpha.1'
+$script:activeReleaseVersion = 'v0.1.0'
 
 function Get-ReleaseProfile {
     param([Parameter(Mandatory=$true)][string]$Version)
     switch -CaseSensitive ($Version) {
-        'v0.1.0-alpha.1' {
-            return [pscustomobject]@{
-                Version = 'v0.1.0-alpha.1'
-                TestNames = $script:alpha1TestNames
-                SourceFiles = @(
-                    @{ Source='tools\start-bm-radio-bridge.cmd'; Destination='start-bm-radio-bridge.cmd' },
-                    @{ Source='tools\start-bm-radio-bridge.ps1'; Destination='start-bm-radio-bridge.ps1' },
-                    @{ Source='tools\start-listen-91.cmd'; Destination='start-listen-91.cmd' },
-                    @{ Source='tools\start-profile.cmd'; Destination='start-profile.cmd' },
-                    @{ Source='docs\releases\v0.1.0-alpha.1-package-README.md'; Destination='README.md' },
-                    @{ Source='docs\连接配置.md'; Destination='docs\连接配置.md' },
-                    @{ Source='docs\音量调节.md'; Destination='docs\音量调节.md' },
-                    @{ Source='third_party\dmr_signal\COPYING.GPL-3.0.txt'; Destination='licenses\dmr_signal\COPYING.GPL-3.0.txt' },
-                    @{ Source='third_party\dmr_signal\NOTICE.md'; Destination='licenses\dmr_signal\NOTICE.md' },
-                    @{ Source='third_party\droidstar_mbe\COPYING.GPL-3.0.txt'; Destination='licenses\droidstar_mbe\COPYING.GPL-3.0.txt' },
-                    @{ Source='third_party\droidstar_mbe\ISC-NOTICE.txt'; Destination='licenses\droidstar_mbe\ISC-NOTICE.txt' },
-                    @{ Source='third_party\droidstar_mbe\source-manifest.json'; Destination='licenses\droidstar_mbe\source-manifest.json' }
-                )
-                PackageFiles = @(
-                    'wirex_bridge.exe', 'build-provenance.json', 'start-bm-radio-bridge.cmd', 'start-bm-radio-bridge.ps1',
-                    'start-listen-91.cmd', 'start-profile.cmd', 'README.md', 'SOURCE.txt', 'manifest.json',
-                    'docs/连接配置.md', 'docs/音量调节.md',
-                    'licenses/dmr_signal/COPYING.GPL-3.0.txt', 'licenses/dmr_signal/NOTICE.md',
-                    'licenses/droidstar_mbe/COPYING.GPL-3.0.txt', 'licenses/droidstar_mbe/ISC-NOTICE.txt',
-                    'licenses/droidstar_mbe/source-manifest.json', 'private/device-y.bin'
-                )
-                Directories = @('docs', 'licenses', 'licenses/dmr_signal', 'licenses/droidstar_mbe', 'logs', 'private')
-                AssetMap = [ordered]@{
-                    'wirex_bridge.exe'='wirex_bridge.exe'
-                    'build-provenance.json'='build-provenance.json'
-                    'start-bm-radio-bridge.cmd'='start-bm-radio-bridge.cmd'
-                    'start-bm-radio-bridge.ps1'='start-bm-radio-bridge.ps1'
-                    'start-listen-91.cmd'='start-listen-91.cmd'
-                    'start-profile.cmd'='start-profile.cmd'
-                    'README.md'='README.md'
-                    'SOURCE.txt'='SOURCE.txt'
-                    'docs/连接配置.md'='docs__connection-profile.md'
-                    'docs/音量调节.md'='docs__audio-gain.md'
-                    'licenses/dmr_signal/COPYING.GPL-3.0.txt'='licenses__dmr-signal__COPYING.GPL-3.0.txt'
-                    'licenses/dmr_signal/NOTICE.md'='licenses__dmr-signal__NOTICE.md'
-                    'licenses/droidstar_mbe/COPYING.GPL-3.0.txt'='licenses__droidstar-mbe__COPYING.GPL-3.0.txt'
-                    'licenses/droidstar_mbe/ISC-NOTICE.txt'='licenses__droidstar-mbe__ISC-NOTICE.txt'
-                    'licenses/droidstar_mbe/source-manifest.json'='licenses__droidstar-mbe__source-manifest.json'
-                    'private/device-y.bin'='private__device-y.bin'
-                }
-                PackageReadme = 'docs\releases\v0.1.0-alpha.1-package-README.md'
-                ReleaseScope = 'FTX-1 DIRECT personal terminal with BrandMeister voice bridging'
-                NotIncluded = @('LCD text/routing integration', 'RF node operation', 'graphical UI')
-            }
-        }
-        'v0.1.0-alpha.2' {
-            $alpha2SourceFiles = @(
-                @{ Source='tools\start-bm-radio-bridge.cmd'; Destination='start-bm-radio-bridge.cmd' },
-                @{ Source='tools\start-bm-radio-bridge.ps1'; Destination='start-bm-radio-bridge.ps1' },
-                @{ Source='tools\start-listen-91.cmd'; Destination='start-listen-91.cmd' },
-                @{ Source='tools\start-profile.cmd'; Destination='start-profile.cmd' },
-                @{ Source='tools\start-ui.cmd'; Destination='start-ui.cmd' },
-                @{ Source='tools\start-ui.ps1'; Destination='start-ui.ps1' },
-                @{ Source='tools\start-user-config.cmd'; Destination='start-user-config.cmd' },
-                @{ Source='tools\start-user-config.ps1'; Destination='start-user-config.ps1' },
-                @{ Source='tools\bridge-user-config.psm1'; Destination='bridge-user-config.psm1' },
-                @{ Source='ui\windows\bridge-ui.ps1'; Destination='ui\windows\bridge-ui.ps1' },
-                @{ Source='ui\windows\BridgeSupervisor.cs'; Destination='ui\windows\BridgeSupervisor.cs' },
-                @{ Source='ui\windows\MainWindow.xaml'; Destination='ui\windows\MainWindow.xaml' },
-                @{ Source='ui\windows\SettingsWindow.xaml'; Destination='ui\windows\SettingsWindow.xaml' },
-                @{ Source='docs\releases\v0.1.0-alpha.2-package-README.md'; Destination='README.md' },
-                @{ Source='docs\配置与桌面操作.md'; Destination='docs\配置与桌面操作.md' },
-                @{ Source='docs\连接配置.md'; Destination='docs\连接配置.md' },
-                @{ Source='docs\音量调节.md'; Destination='docs\音量调节.md' },
-                @{ Source='third_party\dmr_signal\COPYING.GPL-3.0.txt'; Destination='licenses\dmr_signal\COPYING.GPL-3.0.txt' },
-                @{ Source='third_party\dmr_signal\NOTICE.md'; Destination='licenses\dmr_signal\NOTICE.md' },
-                @{ Source='third_party\droidstar_mbe\COPYING.GPL-3.0.txt'; Destination='licenses\droidstar_mbe\COPYING.GPL-3.0.txt' },
-                @{ Source='third_party\droidstar_mbe\ISC-NOTICE.txt'; Destination='licenses\droidstar_mbe\ISC-NOTICE.txt' },
-                @{ Source='third_party\droidstar_mbe\source-manifest.json'; Destination='licenses\droidstar_mbe\source-manifest.json' }
-            )
-            $alpha2AssetMap = [ordered]@{
-                'wirex_bridge.exe'='wirex_bridge.exe'
-                'build-provenance.json'='build-provenance.json'
-                'start-bm-radio-bridge.cmd'='start-bm-radio-bridge.cmd'
-                'start-bm-radio-bridge.ps1'='start-bm-radio-bridge.ps1'
-                'start-listen-91.cmd'='start-listen-91.cmd'
-                'start-profile.cmd'='start-profile.cmd'
-                'start-ui.cmd'='start-ui.cmd'
-                'start-ui.ps1'='start-ui.ps1'
-                'start-user-config.cmd'='start-user-config.cmd'
-                'start-user-config.ps1'='start-user-config.ps1'
-                'bridge-user-config.psm1'='bridge-user-config.psm1'
-                'README.md'='README.md'
-                'SOURCE.txt'='SOURCE.txt'
-                'docs/配置与桌面操作.md'='docs__desktop-user-config.md'
-                'docs/连接配置.md'='docs__connection-profile.md'
-                'docs/音量调节.md'='docs__audio-gain.md'
-                'ui/windows/bridge-ui.ps1'='ui__windows__bridge-ui.ps1'
-                'ui/windows/BridgeSupervisor.cs'='ui__windows__BridgeSupervisor.cs'
-                'ui/windows/MainWindow.xaml'='ui__windows__MainWindow.xaml'
-                'ui/windows/SettingsWindow.xaml'='ui__windows__SettingsWindow.xaml'
-                'licenses/dmr_signal/COPYING.GPL-3.0.txt'='licenses__dmr-signal__COPYING.GPL-3.0.txt'
-                'licenses/dmr_signal/NOTICE.md'='licenses__dmr-signal__NOTICE.md'
-                'licenses/droidstar_mbe/COPYING.GPL-3.0.txt'='licenses__droidstar-mbe__COPYING.GPL-3.0.txt'
-                'licenses/droidstar_mbe/ISC-NOTICE.txt'='licenses__droidstar-mbe__ISC-NOTICE.txt'
-                'licenses/droidstar_mbe/source-manifest.json'='licenses__droidstar-mbe__source-manifest.json'
-                'private/device-y.bin'='private__device-y.bin'
-            }
-            return [pscustomobject]@{
-                Version = 'v0.1.0-alpha.2'
-                TestNames = $script:alpha2TestNames
-                SourceFiles = $alpha2SourceFiles
-                PackageFiles = @(
-                    'wirex_bridge.exe', 'build-provenance.json', 'start-bm-radio-bridge.cmd', 'start-bm-radio-bridge.ps1',
-                    'start-listen-91.cmd', 'start-profile.cmd', 'start-ui.cmd', 'start-ui.ps1',
-                    'start-user-config.cmd', 'start-user-config.ps1', 'bridge-user-config.psm1',
-                    'README.md', 'SOURCE.txt', 'manifest.json',
-                    'docs/配置与桌面操作.md', 'docs/连接配置.md', 'docs/音量调节.md',
-                    'ui/windows/bridge-ui.ps1', 'ui/windows/BridgeSupervisor.cs',
-                    'ui/windows/MainWindow.xaml', 'ui/windows/SettingsWindow.xaml',
-                    'licenses/dmr_signal/COPYING.GPL-3.0.txt', 'licenses/dmr_signal/NOTICE.md',
-                    'licenses/droidstar_mbe/COPYING.GPL-3.0.txt', 'licenses/droidstar_mbe/ISC-NOTICE.txt',
-                    'licenses/droidstar_mbe/source-manifest.json', 'private/device-y.bin'
-                )
-                Directories = @('docs', 'licenses', 'licenses/dmr_signal', 'licenses/droidstar_mbe', 'logs', 'private', 'ui', 'ui/windows')
-                AssetMap = $alpha2AssetMap
-                PackageReadme = 'docs\releases\v0.1.0-alpha.2-package-README.md'
-                ReleaseScope = 'FTX-1 DIRECT personal terminal and BrandMeister voice bridge with Windows desktop UI and user configuration'
-                NotIncluded = @('LCD text/routing integration', 'RF node operation')
-            }
-        }
-        'v0.1.0-alpha.3' {
-            $alpha2 = Get-ReleaseProfile -Version 'v0.1.0-alpha.2'
-            $alpha3SourceFiles = @($alpha2.SourceFiles | Where-Object { [string]$_.Destination -cne 'README.md' }) + @(
-                @{ Source='docs\releases\v0.1.0-alpha.3-package-README.md'; Destination='README.md' },
-                @{ Source='docs\BM来话身份显示.md'; Destination='docs\BM来话身份显示.md' }
-            )
-            $alpha3AssetMap = [ordered]@{}
-            foreach ($path in $alpha2.AssetMap.Keys) { $alpha3AssetMap[$path] = $alpha2.AssetMap[$path] }
-            $alpha3AssetMap['docs/BM来话身份显示.md'] = 'docs__bm-call-identity.md'
-            return [pscustomobject]@{
-                Version = 'v0.1.0-alpha.3'
-                TestNames = $script:alpha3TestNames
-                SourceFiles = $alpha3SourceFiles
-                PackageFiles = @($alpha2.PackageFiles) + 'docs/BM来话身份显示.md'
-                Directories = $alpha2.Directories
-                AssetMap = $alpha3AssetMap
-                PackageReadme = 'docs\releases\v0.1.0-alpha.3-package-README.md'
-                ReleaseScope = 'FTX-1 DIRECT BrandMeister bridge with Windows desktop controls and a per-accepted-call DMR Source ID label in the HRI start record; LCD display remains unverified'
-                NotIncluded = @('C4FM RF node operation is not implemented', 'FTX-1 LCD display result is not verified')
-            }
-        }
-        'v0.1.0-alpha.4' {
-            $alpha3 = Get-ReleaseProfile -Version 'v0.1.0-alpha.3'
-            $alpha4SourceFiles = @($alpha3.SourceFiles | Where-Object { [string]$_.Destination -cne 'README.md' }) + @(
-                @{ Source='docs\releases\v0.1.0-alpha.4-package-README.md'; Destination='README.md' }
-            )
-            $alpha4AssetMap = [ordered]@{}
-            foreach ($path in $alpha3.AssetMap.Keys) { $alpha4AssetMap[$path] = $alpha3.AssetMap[$path] }
-            return [pscustomobject]@{
-                Version = 'v0.1.0-alpha.4'
-                TestNames = $script:alpha4TestNames
-                SourceFiles = $alpha4SourceFiles
-                PackageFiles = @($alpha3.PackageFiles)
-                Directories = $alpha3.Directories
-                AssetMap = $alpha4AssetMap
-                PackageReadme = 'docs\releases\v0.1.0-alpha.4-package-README.md'
-                ReleaseScope = 'FTX-1 DIRECT BrandMeister bridge with independent receive and transmit targets, a listen-only TG91 profile, a constrained private Echo return rule, and BM China 4602 preset'
-                NotIncluded = @(
-                    'C4FM RF node operation is not implemented',
-                    'FTX-1 LCD display result is not verified',
-                    'Radio PTT behavior during Echo playback still requires alpha.4 device verification'
-                )
-            }
-        }
-        'v0.1.0-alpha.5' {
-            $alpha4 = Get-ReleaseProfile -Version 'v0.1.0-alpha.4'
-            $alpha5SourceFiles = @($alpha4.SourceFiles | Where-Object { [string]$_.Destination -cne 'README.md' }) + @(
-                @{ Source='docs\releases\v0.1.0-alpha.5-package-README.md'; Destination='README.md' },
-                @{ Source='docs\R106_IPC第二版.md'; Destination='docs\R106_IPC第二版.md' },
-                @{ Source='docs\R106_配置迁移与测试.md'; Destination='docs\R106_配置迁移与测试.md' },
-                @{ Source='tools\start-step1-test.cmd'; Destination='start-step1-test.cmd' },
-                @{ Source='tools\start-step1-test.ps1'; Destination='start-step1-test.ps1' },
-                @{ Source='tools\test-control.cmd'; Destination='test-control.cmd' },
-                @{ Source='tools\test-control.ps1'; Destination='test-control.ps1' }
-            )
-            $alpha5AssetMap = [ordered]@{}
-            foreach ($path in $alpha4.AssetMap.Keys) { $alpha5AssetMap[$path] = $alpha4.AssetMap[$path] }
-            $alpha5AssetMap['docs/R106_IPC第二版.md'] = 'docs__r106-ipc-v2.md'
-            $alpha5AssetMap['docs/R106_配置迁移与测试.md'] = 'docs__r106-profile-migration-test.md'
-            $alpha5AssetMap['start-step1-test.cmd'] = 'start-step1-test.cmd'
-            $alpha5AssetMap['start-step1-test.ps1'] = 'start-step1-test.ps1'
-            $alpha5AssetMap['test-control.cmd'] = 'test-control.cmd'
-            $alpha5AssetMap['test-control.ps1'] = 'test-control.ps1'
-            return [pscustomobject]@{
-                Version = 'v0.1.0-alpha.5'
-                TestNames = $script:alpha5TestNames
-                SourceFiles = $alpha5SourceFiles
-                PackageFiles = @($alpha4.PackageFiles) + @(
-                    'docs/R106_IPC第二版.md', 'docs/R106_配置迁移与测试.md', 'start-step1-test.cmd', 'start-step1-test.ps1',
-                    'test-control.cmd', 'test-control.ps1'
-                )
-                Directories = @($alpha4.Directories)
-                AssetMap = $alpha5AssetMap
-                PackageReadme = 'docs\releases\v0.1.0-alpha.5-package-README.md'
-                ReleaseScope = 'R106 Step 1 test build: explicit IPC v2 hello/status/shutdown, schema-2 configuration migration, and lossless projection for legacy single-RX profiles; multi-group runtime is not implemented'
-                NotIncluded = @(
-                    'Multi-group runtime is not implemented; policies that cannot map to one legacy RX target are rejected before core startup',
-                    'No BM subscription API, multi-group delivery, quick-call, or new audio pipeline behavior',
-                    'No new serial, audio, PTT, RF, or BrandMeister hardware validation'
-                )
-            }
-        }
-        'v0.1.0-alpha.6' {
-            $alpha5 = Get-ReleaseProfile -Version 'v0.1.0-alpha.5'
-            $alpha6SourceFiles = @($alpha5.SourceFiles | Where-Object { [string]$_.Destination -cne 'README.md' }) + @(
-                @{ Source='docs\releases\v0.1.0-alpha.6-package-README.md'; Destination='README.md' },
-                @{ Source='docs\R108_收发路由状态与alpha6验收.md'; Destination='docs\R108_收发路由状态与alpha6验收.md' },
-                @{ Source='tools\start-merged-test.cmd'; Destination='start-merged-test.cmd' },
-                @{ Source='tools\start-merged-test.ps1'; Destination='start-merged-test.ps1' }
-            )
-            $alpha6AssetMap = [ordered]@{}
-            foreach ($path in $alpha5.AssetMap.Keys) { $alpha6AssetMap[$path] = $alpha5.AssetMap[$path] }
-            $alpha6AssetMap['docs/R108_收发路由状态与alpha6验收.md'] = 'docs__r108-routing-state-alpha6.md'
-            $alpha6AssetMap['start-merged-test.cmd'] = 'start-merged-test.cmd'
-            $alpha6AssetMap['start-merged-test.ps1'] = 'start-merged-test.ps1'
-            return [pscustomobject]@{
-                Version = 'v0.1.0-alpha.6'
-                TestNames = $script:alpha6TestNames
-                SourceFiles = $alpha6SourceFiles
-                PackageFiles = @($alpha5.PackageFiles) + @(
-                    'docs/R108_收发路由状态与alpha6验收.md', 'start-merged-test.cmd', 'start-merged-test.ps1'
-                )
-                Directories = @($alpha5.Directories)
-                AssetMap = $alpha6AssetMap
-                PackageReadme = 'docs\releases\v0.1.0-alpha.6-package-README.md'
-                ReleaseScope = 'R108 Stage 3: full schema-2 receive-policy runtime routing through a strict per-run routing-state file, with the merged alpha.6 desktop entry'
-                NotIncluded = @(
-                    'Serial, audio, BrandMeister, PTT, and RF behavior has no alpha.6 hardware acceptance record',
-                    'The package IPC diagnostic does not exercise radio, audio, or network operation'
-                )
-            }
-        }
-        'v0.1.0-alpha.7' {
-            $alpha6 = Get-ReleaseProfile -Version 'v0.1.0-alpha.6'
-            $alpha7SourceFiles = @($alpha6.SourceFiles | Where-Object {
-                [string]$_.Destination -cne 'README.md' -and
-                [string]$_.Destination -cne 'start-merged-test.cmd' -and
-                [string]$_.Destination -cne 'start-merged-test.ps1'
-            }) + @(
-                @{ Source='docs\releases\v0.1.0-alpha.7-package-README.md'; Destination='README.md' },
-                @{ Source='docs\R109_下行状态与动态组修复.md'; Destination='docs\R109_下行状态与动态组修复.md' },
-                @{ Source='docs\R109_动态组激活实现.md'; Destination='docs\R109_动态组激活实现.md' },
-                @{ Source='tools\start-merged-test-alpha7.cmd'; Destination='start-merged-test.cmd' },
-                @{ Source='tools\start-merged-test-alpha7.ps1'; Destination='start-merged-test.ps1' }
-            )
-            $alpha7AssetMap = [ordered]@{}
-            foreach ($path in $alpha6.AssetMap.Keys) { $alpha7AssetMap[$path] = $alpha6.AssetMap[$path] }
-            $alpha7AssetMap['docs/R109_下行状态与动态组修复.md'] = 'docs__r109-downlink-dynamic-groups.md'
-            $alpha7AssetMap['docs/R109_动态组激活实现.md'] = 'docs__r109-dynamic-group-activation.md'
-            return [pscustomobject]@{
-                Version = 'v0.1.0-alpha.7'
-                TestNames = $script:alpha7TestNames
-                SourceFiles = $alpha7SourceFiles
-                PackageFiles = @($alpha6.PackageFiles) + @(
-                    'docs/R109_下行状态与动态组修复.md', 'docs/R109_动态组激活实现.md'
-                )
-                Directories = @($alpha6.Directories)
-                AssetMap = $alpha7AssetMap
-                PackageReadme = 'docs\releases\v0.1.0-alpha.7-package-README.md'
-                ReleaseScope = 'R109: dynamic talkgroup input with separate local-listen and one-shot dynamic-group activation controls; wait for accepted voice before HRI T3 and discard empty ended calls without starting HRI playback'
-                NotIncluded = @(
-                    'No alpha.7 hardware acceptance record for serial, audio, BrandMeister, PTT, or RF behavior',
-                    'The red LED reported on this and the older local-hri-downlink-0304eff build is not fixed or explained by this slice',
-                    'TG91 disconnect causes outside the documented empty-call case remain unconfirmed'
-                )
-            }
-        }
-        'v0.1.0-alpha.8' {
-            $alpha7 = Get-ReleaseProfile -Version 'v0.1.0-alpha.7'
-            $alpha8ExcludedPaths = @(
-                'start-bm-radio-bridge.cmd', 'start-listen-91.cmd', 'start-profile.cmd',
-                'start-ui.cmd', 'start-user-config.cmd', 'start-user-config.ps1',
-                'start-step1-test.cmd', 'start-step1-test.ps1', 'test-control.cmd', 'test-control.ps1',
-                'start-merged-test.cmd', 'start-merged-test.ps1'
-            )
-            $alpha8SourceFiles = @($alpha7.SourceFiles | Where-Object {
-                [string]$_.Destination -cne 'README.md' -and
-                $alpha8ExcludedPaths -cnotcontains [string]$_.Destination
-            }) + @(
-                @{ Source='docs\releases\v0.1.0-alpha.8-package-README.md'; Destination='README.md' },
-                @{ Source='tools\start-wirex-bridge-alpha8.cmd'; Destination='start-wirex-bridge.cmd' },
-                @{ Source='tools\start-wirex-bridge-alpha8.ps1'; Destination='tools\start-wirex-bridge.ps1' }
-            )
-            $alpha8PackageFiles = @($alpha7.PackageFiles | Where-Object {
-                $alpha8ExcludedPaths -cnotcontains [string]$_
-            }) + @('start-wirex-bridge.cmd', 'tools/start-wirex-bridge.ps1')
-            $alpha8AssetMap = [ordered]@{}
-            foreach ($path in $alpha7.AssetMap.Keys) {
-                if ($alpha8ExcludedPaths -cnotcontains [string]$path) {
-                    $alpha8AssetMap[$path] = $alpha7.AssetMap[$path]
-                }
-            }
-            $alpha8AssetMap['start-wirex-bridge.cmd'] = 'start-wirex-bridge.cmd'
-            $alpha8AssetMap['tools/start-wirex-bridge.ps1'] = 'tools__start-wirex-bridge.ps1'
-            return [pscustomobject]@{
-                Version = 'v0.1.0-alpha.8'
-                TestNames = $script:alpha8TestNames
-                SourceFiles = $alpha8SourceFiles
-                PackageFiles = $alpha8PackageFiles
-                Directories = @($alpha7.Directories) + 'tools'
-                AssetMap = $alpha8AssetMap
-                PackageReadme = 'docs\releases\v0.1.0-alpha.8-package-README.md'
-                ReleaseScope = 'R110: alpha.7 runtime with a single user-facing command prompt entry and Windows PowerShell 5.1 package parsing and isolated launcher verification'
-                NotIncluded = @(
-                    'No alpha.8 hardware acceptance record for serial, audio, BrandMeister, PTT, FTX-1 physical BUSY/TX LED, or RF behavior',
-                    'The FTX-1 physical BUSY/TX LED reported on this and the older local-hri-downlink-0304eff build is not fixed or explained by this slice',
-                    'TG91 disconnect causes outside the documented empty-call case remain unconfirmed'
-                )
-            }
-        }
-        'v0.1.0-alpha.9' {
-            $alpha8 = Get-ReleaseProfile -Version 'v0.1.0-alpha.8'
-            $alpha9SourceFiles = @($alpha8.SourceFiles | Where-Object {
-                [string]$_.Destination -cne 'README.md' -and
-                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha8.cmd' -and
-                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha8.ps1'
-            }) + @(
-                @{ Source='docs\releases\v0.1.0-alpha.9-package-README.md'; Destination='README.md' },
-                @{ Source='tools\start-wirex-bridge-alpha9.cmd'; Destination='start-wirex-bridge.cmd' },
-                @{ Source='tools\start-wirex-bridge-alpha9.ps1'; Destination='tools\start-wirex-bridge.ps1' },
-                @{ Source='ui\windows\RadioIdentity.psm1'; Destination='ui\windows\RadioIdentity.psm1' },
-                @{ Source='docs\R111_UI与音量.md'; Destination='docs\R111_UI与音量.md' },
-                @{ Source='docs\R111_BM订阅与收听优先级.md'; Destination='docs\R111_BM订阅与收听优先级.md' },
-                @{ Source='docs\R111_用户资料与电台显示.md'; Destination='docs\R111_用户资料与电台显示.md' }
-            )
-            $alpha9PackageFiles = @($alpha8.PackageFiles) + @(
-                'ui/windows/RadioIdentity.psm1',
-                'docs/R111_UI与音量.md',
-                'docs/R111_BM订阅与收听优先级.md',
-                'docs/R111_用户资料与电台显示.md'
-            )
-            $alpha9AssetMap = [ordered]@{}
-            foreach ($path in $alpha8.AssetMap.Keys) { $alpha9AssetMap[$path] = $alpha8.AssetMap[$path] }
-            $alpha9AssetMap['ui/windows/RadioIdentity.psm1'] = 'ui__windows__radio-identity.psm1'
-            $alpha9AssetMap['docs/R111_UI与音量.md'] = 'docs__r111-ui-audio.md'
-            $alpha9AssetMap['docs/R111_BM订阅与收听优先级.md'] = 'docs__r111-bm-listening-policy.md'
-            $alpha9AssetMap['docs/R111_用户资料与电台显示.md'] = 'docs__r111-radio-identity-display.md'
-            return [pscustomobject]@{
-                Version = 'v0.1.0-alpha.9'
-                TestNames = $script:alpha9TestNames
-                SourceFiles = $alpha9SourceFiles
-                PackageFiles = $alpha9PackageFiles
-                Directories = @($alpha8.Directories)
-                AssetMap = $alpha9AssetMap
-                PackageReadme = 'docs\releases\v0.1.0-alpha.9-package-README.md'
-                ReleaseScope = 'R111 DIRECT: separate local listening selection from call target selection; preserve real recent-call history, per-route DMR timeslots, transmit Color Code, explicit single-ID RadioID lookup with local cache, and user-visible volume controls'
-                NotIncluded = @(
-                    'No alpha.9 hardware acceptance for COM, audio, BrandMeister, PTT, LCD display, physical BUSY/TX LED, or RF behavior',
-                    'The FTX-1 LCD display remains unknown; the located Src CallSign field is not a verified radio-screen result',
-                    'bm_session.Profile.slot_flags defaults to 4 (simplex); software TS1/TS2 route fields do not establish FTX-1 dual-slot DMR RF or simultaneous two-slot playback',
-                    'The FTX-1 physical BUSY/TX LED behavior is unchanged; this release does not repair or explain the earlier observation',
-                    'Color Code is a DMR transmit encoding/reporting parameter, not C4FM DG-ID; receive route filters do not compare Color Code',
-                    'Quick Call can appear as an empty call in the BrandMeister Dashboard; no silent dynamic-group API is claimed',
-                    'No BrandMeister static-subscription readback is integrated; the UI does not label local RX allow_groups as server static bindings',
-                    'Multiple local routes do not create playback priority or automatic interruption of an active call'
-                )
-            }
-        }
-        'v0.1.0-alpha.10' {
-            $alpha9 = Get-ReleaseProfile -Version 'v0.1.0-alpha.9'
-            $alpha10R111Paths = @(
-                'docs/R111_UI与音量.md',
-                'docs/R111_BM订阅与收听优先级.md',
-                'docs/R111_用户资料与电台显示.md'
-            )
-            $alpha10SourceFiles = @($alpha9.SourceFiles | Where-Object {
-                [string]$_.Destination -cne 'README.md' -and
-                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha9.cmd' -and
-                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha9.ps1' -and
-                $alpha10R111Paths -cnotcontains ([string]$_.Destination).Replace('\', '/')
-            }) + @(
-                @{ Source='docs\releases\v0.1.0-alpha.10-package-README.md'; Destination='README.md' },
-                @{ Source='tools\start-wirex-bridge-alpha10.cmd'; Destination='start-wirex-bridge.cmd' },
-                @{ Source='tools\start-wirex-bridge-alpha10.ps1'; Destination='tools/start-wirex-bridge.ps1' },
-                @{ Source='docs\R112_A_身份查询实施.md'; Destination='docs\R112_A_身份查询实施.md' },
-                @{ Source='docs\R112_A_网络音频指标.md'; Destination='docs\R112_A_网络音频指标.md' },
-                @{ Source='docs\R112_A_UI精简.md'; Destination='docs\R112_A_UI精简.md' }
-            )
-            $alpha10PackageFiles = @($alpha9.PackageFiles | Where-Object { $alpha10R111Paths -cnotcontains ([string]$_).Replace('\', '/') }) + @(
-                'docs/R112_A_身份查询实施.md',
-                'docs/R112_A_网络音频指标.md',
-                'docs/R112_A_UI精简.md'
-            )
-            $alpha10AssetMap = [ordered]@{}
-            foreach ($path in $alpha9.AssetMap.Keys) {
-                if ($alpha10R111Paths -cnotcontains ([string]$path)) { $alpha10AssetMap[$path] = $alpha9.AssetMap[$path] }
-            }
-            $alpha10AssetMap['docs/R112_A_身份查询实施.md'] = 'docs__r112-a-identity-lookup.md'
-            $alpha10AssetMap['docs/R112_A_网络音频指标.md'] = 'docs__r112-a-network-audio-metrics.md'
-            $alpha10AssetMap['docs/R112_A_UI精简.md'] = 'docs__r112-a-ui-compact.md'
-            $alpha10NotIncluded = @($alpha9.NotIncluded | ForEach-Object { ([string]$_).Replace('alpha.9', 'alpha.10') })
-            $alpha10NotIncluded += @(
-                'BM RTT is a client-measured round-trip estimate; it does not report one-way delay or server CPU load',
-                'DMRD loss is inferred only between accepted sequence numbers; filtered, busy, and post-watchdog traffic is not counted as lost packets',
-                'The new metrics do not change DSP, audio scheduling, or the established voice path',
-                'FTX-1 LCD source-identity display is not implemented',
-                'FM and C4FM RF transmit paths are not implemented'
-            )
-            return [pscustomobject]@{
-                Version = 'v0.1.0-alpha.10'
-                TestNames = $script:alpha10TestNames
-                SourceFiles = $alpha10SourceFiles
-                PackageFiles = $alpha10PackageFiles
-                Directories = @($alpha9.Directories)
-                AssetMap = $alpha10AssetMap
-                PackageReadme = 'docs\releases\v0.1.0-alpha.10-package-README.md'
-                ReleaseScope = 'R112 A: query one incoming DMR ID in the background and display measured BM round-trip, accepted DMRD sequence-loss, receive-queue, and existing PCM clipping data'
-                NotIncluded = $alpha10NotIncluded
-            }
-        }
-        'v0.1.0-alpha.11' {
-            $alpha10 = Get-ReleaseProfile -Version 'v0.1.0-alpha.10'
-            $alpha11R112Paths = @(
-                'docs/R112_A_身份查询实施.md',
-                'docs/R112_A_UI精简.md'
-            )
-            $alpha11SourceFiles = @($alpha10.SourceFiles | Where-Object {
-                [string]$_.Destination -cne 'README.md' -and
-                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha10.cmd' -and
-                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha10.ps1' -and
-                $alpha11R112Paths -cnotcontains ([string]$_.Destination).Replace('\', '/')
-            }) + @(
-                @{ Source='docs\releases\v0.1.0-alpha.11-package-README.md'; Destination='README.md' },
-                @{ Source='tools\start-wirex-bridge-alpha11.cmd'; Destination='start-wirex-bridge.cmd' },
-                @{ Source='tools\start-wirex-bridge-alpha11.ps1'; Destination='tools/start-wirex-bridge.ps1' },
-                @{ Source='docs\R113_LCD核心实现.md'; Destination='docs\R113_LCD核心实现.md' },
-                @{ Source='docs\R113_身份与LCD接线.md'; Destination='docs\R113_身份与LCD接线.md' }
-            )
-            $alpha11PackageFiles = @($alpha10.PackageFiles | Where-Object {
-                $alpha11R112Paths -cnotcontains ([string]$_).Replace('\', '/')
-            }) + @(
-                'docs/R113_LCD核心实现.md',
-                'docs/R113_身份与LCD接线.md'
-            )
-            $alpha11AssetMap = [ordered]@{}
-            foreach ($path in $alpha10.AssetMap.Keys) {
-                if ($alpha11R112Paths -cnotcontains ([string]$path)) { $alpha11AssetMap[$path] = $alpha10.AssetMap[$path] }
-            }
-            $alpha11AssetMap['docs/R113_LCD核心实现.md'] = 'docs__r113-lcd-core-implementation.md'
-            $alpha11AssetMap['docs/R113_身份与LCD接线.md'] = 'docs__r113-identity-lcd-integration.md'
-            $alpha11NotIncluded = @($alpha10.NotIncluded | Where-Object {
-                [string]$_ -cne 'FTX-1 LCD source-identity display is not implemented' -and
-                [string]$_ -cne 'FM and C4FM RF transmit paths are not implemented' -and
-                [string]$_ -cne 'The FTX-1 LCD display remains unknown; the located Src CallSign field is not a verified radio-screen result'
-            } | ForEach-Object { ([string]$_).Replace('alpha.10', 'alpha.11') })
-            $alpha11NotIncluded += @(
-                'The FTX-1 LCD display result remains unknown pending direct visual confirmation; mode-4 LCD semantics are unverified',
-                'Only a later callStart can use the cached callsign in the existing mode-4 T90 SrcCallSign field; active calls receive no second T record or hot update',
-                'FM and C4FM RF transmit paths are not implemented'
-            )
-            return [pscustomobject]@{
-                Version = 'v0.1.0-alpha.11'
-                TestNames = $script:alpha11TestNames
-                SourceFiles = $alpha11SourceFiles
-                PackageFiles = $alpha11PackageFiles
-                Directories = @($alpha10.Directories)
-                AssetMap = $alpha11AssetMap
-                PackageReadme = 'docs\releases\v0.1.0-alpha.11-package-README.md'
-                ReleaseScope = 'R113 DIRECT: asynchronously transfer fresh RadioID mappings into the bounded Native identity cache and use a cached callsign only in the existing mode-4 T90 SrcCallSign field for later callStart records'
-                NotIncluded = $alpha11NotIncluded
-            }
-        }
-        'v0.1.0-alpha.12' {
-            $alpha11 = Get-ReleaseProfile -Version 'v0.1.0-alpha.11'
-            $alpha12SourceFiles = @($alpha11.SourceFiles | Where-Object {
-                [string]$_.Destination -cne 'README.md' -and
-                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha11.cmd' -and
-                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha11.ps1'
-            }) + @(
-                @{ Source='docs\releases\v0.1.0-alpha.12-package-README.md'; Destination='README.md' },
-                @{ Source='tools\start-wirex-bridge-alpha12.cmd'; Destination='start-wirex-bridge.cmd' },
-                @{ Source='tools\start-wirex-bridge-alpha12.ps1'; Destination='tools/start-wirex-bridge.ps1' },
-                @{ Source='ui\windows\RadioCat.psm1'; Destination='ui\windows\RadioCat.psm1' },
-                @{ Source='docs\R116_CAT能力与控制实现.md'; Destination='docs\R116_CAT能力与控制实现.md' },
-                @{ Source='docs\R116_电台控制界面.md'; Destination='docs\R116_电台控制界面.md' }
-            )
-            $alpha12PackageFiles = @($alpha11.PackageFiles) + @(
-                'ui/windows/RadioCat.psm1',
-                'docs/R116_CAT能力与控制实现.md',
-                'docs/R116_电台控制界面.md'
-            )
-            $alpha12AssetMap = [ordered]@{}
-            foreach ($path in $alpha11.AssetMap.Keys) { $alpha12AssetMap[$path] = $alpha11.AssetMap[$path] }
-            $alpha12AssetMap['ui/windows/RadioCat.psm1'] = 'ui__windows__radio-cat.psm1'
-            $alpha12AssetMap['docs/R116_CAT能力与控制实现.md'] = 'docs__r116-cat-controls.md'
-            $alpha12AssetMap['docs/R116_电台控制界面.md'] = 'docs__r116-radio-controls-ui.md'
-            $alpha12NotIncluded = @($alpha11.NotIncluded | ForEach-Object {
-                ([string]$_).Replace('alpha.11', 'alpha.12')
-            })
-            $alpha12NotIncluded += @(
-                'HRI MODE and Node Mode cannot be switched by a documented CAT command; no guessed EX address is exposed',
-                'The FTX-1 LCD remains experimental and is not an alpha.12 product feature; no incoming-call or list contents were observed in the documented DIRECT/HRI checks'
-            )
-            return [pscustomobject]@{
-                Version = 'v0.1.0-alpha.12'
-                TestNames = $script:alpha12TestNames
-                SourceFiles = $alpha12SourceFiles
-                PackageFiles = $alpha12PackageFiles
-                Directories = @($alpha11.Directories)
-                AssetMap = $alpha12AssetMap
-                PackageReadme = 'docs\releases\v0.1.0-alpha.12-package-README.md'
-                ReleaseScope = 'R116 DIRECT: user-triggered CAT queries and readback-checked MAIN frequency, radio mode, and PC power-control settings using documented FTX-1 CAT commands'
-                NotIncluded = $alpha12NotIncluded
-            }
-        }
-        'v0.1.0-alpha.13' {
-            $alpha12 = Get-ReleaseProfile -Version 'v0.1.0-alpha.12'
-            $alpha13SourceFiles = @($alpha12.SourceFiles | Where-Object {
-                [string]$_.Destination -cne 'README.md' -and
-                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha12.cmd' -and
-                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha12.ps1'
-            }) + @(
-                @{ Source='docs\releases\v0.1.0-alpha.13-package-README.md'; Destination='README.md' },
-                @{ Source='tools\start-wirex-bridge-alpha13.cmd'; Destination='start-wirex-bridge.cmd' },
-                @{ Source='tools\start-wirex-bridge-alpha13.ps1'; Destination='tools/start-wirex-bridge.ps1' },
-                @{ Source='ui\windows\RadioCatUi.ps1'; Destination='ui\windows\RadioCatUi.ps1' },
-                @{ Source='ui\windows\RadioDevices.psm1'; Destination='ui\windows\RadioDevices.psm1' },
-                @{ Source='ui\windows\BmServers.psm1'; Destination='ui\windows\BmServers.psm1' },
-                @{ Source='ui\windows\BmManagement.psm1'; Destination='ui\windows\BmManagement.psm1' },
-                @{ Source='ui\windows\BmManagementUi.ps1'; Destination='ui\windows\BmManagementUi.ps1' }
-            )
-            $alpha13PackageFiles = @($alpha12.PackageFiles) + @(
-                'ui/windows/RadioCatUi.ps1',
-                'ui/windows/RadioDevices.psm1',
-                'ui/windows/BmServers.psm1',
-                'ui/windows/BmManagement.psm1',
-                'ui/windows/BmManagementUi.ps1'
-            )
-            $alpha13AssetMap = [ordered]@{}
-            foreach ($path in $alpha12.AssetMap.Keys) { $alpha13AssetMap[$path] = $alpha12.AssetMap[$path] }
-            $alpha13AssetMap['ui/windows/RadioCatUi.ps1'] = 'ui__windows__radio-cat-ui.ps1'
-            $alpha13AssetMap['ui/windows/RadioDevices.psm1'] = 'ui__windows__radio-devices.psm1'
-            $alpha13AssetMap['ui/windows/BmServers.psm1'] = 'ui__windows__bm-servers.psm1'
-            $alpha13AssetMap['ui/windows/BmManagement.psm1'] = 'ui__windows__bm-management.psm1'
-            $alpha13AssetMap['ui/windows/BmManagementUi.ps1'] = 'ui__windows__bm-management-ui.ps1'
-            $alpha13NotIncluded = @($alpha12.NotIncluded | ForEach-Object {
-                ([string]$_).Replace('alpha.12', 'alpha.13')
-            })
-            $alpha13NotIncluded += 'BM API keys and per-user configuration remain outside the generic release package'
-            $alpha13NotIncluded += '本机服务器选择偏好 private/user-config/bm-server-preferences.json 不随通用发行包分发'
-            return [pscustomobject]@{
-                Version = 'v0.1.0-alpha.13'
-                TestNames = $script:alpha13TestNames
-                SourceFiles = $alpha13SourceFiles
-                PackageFiles = $alpha13PackageFiles
-                Directories = @($alpha12.Directories)
-                AssetMap = $alpha13AssetMap
-                PackageReadme = 'docs\releases\v0.1.0-alpha.13-package-README.md'
-                ReleaseScope = 'R117 DIRECT: offline BM master selection, independent radio port discovery and CAT UI synchronization, plus user-triggered BM static talkgroup management'
-                NotIncluded = $alpha13NotIncluded
-            }
-        }
-        'v0.1.0-alpha.14' {
-            $alpha13 = Get-ReleaseProfile -Version 'v0.1.0-alpha.13'
-            $alpha14SourceFiles = @($alpha13.SourceFiles | Where-Object {
-                [string]$_.Destination -cne 'README.md' -and
-                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha13.cmd' -and
-                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha13.ps1'
-            }) + @(
-                @{ Source='docs\releases\v0.1.0-alpha.14-package-README.md'; Destination='README.md' },
-                @{ Source='tools\start-wirex-bridge-alpha14.cmd'; Destination='start-wirex-bridge.cmd' },
-                @{ Source='tools\start-wirex-bridge-alpha14.ps1'; Destination='tools/start-wirex-bridge.ps1' },
-                @{ Source='ui\windows\PortableConfig.psm1'; Destination='ui\windows\PortableConfig.psm1' }
-            )
-            $alpha14AssetMap = [ordered]@{}
-            foreach ($path in $alpha13.AssetMap.Keys) { $alpha14AssetMap[$path] = $alpha13.AssetMap[$path] }
-            $alpha14AssetMap['ui/windows/PortableConfig.psm1'] = 'ui__windows__portable-config.psm1'
-            $alpha14NotIncluded = @($alpha13.NotIncluded | ForEach-Object {
-                ([string]$_).Replace('alpha.13', 'alpha.14')
-            })
-            $alpha14NotIncluded += 'Generic package does not contain the user-created package-root config.json, its backups, or credentials.'
-            return [pscustomobject]@{
-                Version = 'v0.1.0-alpha.14'
-                TestNames = $script:alpha14TestNames
-                SourceFiles = $alpha14SourceFiles
-                PackageFiles = @($alpha13.PackageFiles) + 'ui/windows/PortableConfig.psm1'
-                Directories = @($alpha13.Directories)
-                AssetMap = $alpha14AssetMap
-                PackageReadme = 'docs\releases\v0.1.0-alpha.14-package-README.md'
-                ReleaseScope = 'R118 DIRECT: portable package-root settings, in-window radio credentials, device/audio preferences, and user-managed listen/PTT channel configuration'
-                NotIncluded = $alpha14NotIncluded
-            }
-        }
-        'v0.1.0-alpha.15' {
-            $alpha14 = Get-ReleaseProfile -Version 'v0.1.0-alpha.14'
-            $alpha15SourceFiles = @($alpha14.SourceFiles | Where-Object {
-                [string]$_.Destination -cne 'README.md' -and
-                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha14.cmd' -and
-                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha14.ps1'
-            }) + @(
-                @{ Source='docs\releases\v0.1.0-alpha.15-package-README.md'; Destination='README.md' },
-                @{ Source='tools\start-wirex-bridge-alpha15.cmd'; Destination='start-wirex-bridge.cmd' },
-                @{ Source='tools\start-wirex-bridge-alpha15.ps1'; Destination='tools/start-wirex-bridge.ps1' }
-            )
-            $alpha15NotIncluded = @($alpha14.NotIncluded | ForEach-Object {
-                ([string]$_).Replace('alpha.14', 'alpha.15')
-            })
-            return [pscustomobject]@{
-                Version = 'v0.1.0-alpha.15'
-                TestNames = $script:alpha15TestNames
-                SourceFiles = $alpha15SourceFiles
-                PackageFiles = @($alpha14.PackageFiles)
-                Directories = @($alpha14.Directories)
-                AssetMap = $alpha14.AssetMap
-                PackageReadme = 'docs\releases\v0.1.0-alpha.15-package-README.md'
-                ReleaseScope = 'R119 DIRECT: CAT polling stability and runtime audio gain control with alpha.14 package-root configuration compatibility'
-                NotIncluded = $alpha15NotIncluded
-            }
-        }
-        'v0.1.0-alpha.16' {
-            $alpha15 = Get-ReleaseProfile -Version 'v0.1.0-alpha.15'
-            $alpha16SourceFiles = @($alpha15.SourceFiles | Where-Object {
-                [string]$_.Destination -cne 'README.md' -and
-                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha15.cmd' -and
-                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha15.ps1'
-            }) + @(
-                @{ Source='docs\releases\v0.1.0-alpha.16-package-README.md'; Destination='README.md' },
-                @{ Source='tools\start-wirex-bridge-alpha16.cmd'; Destination='start-wirex-bridge.cmd' },
-                @{ Source='tools\start-wirex-bridge-alpha16.ps1'; Destination='tools/start-wirex-bridge.ps1' }
-            )
-            $alpha16NotIncluded = @($alpha15.NotIncluded | ForEach-Object {
-                ([string]$_).Replace('alpha.15', 'alpha.16')
-            })
-            return [pscustomobject]@{
-                Version = 'v0.1.0-alpha.16'
-                TestNames = $script:alpha16TestNames
-                SourceFiles = $alpha16SourceFiles
-                PackageFiles = @($alpha15.PackageFiles)
-                Directories = @($alpha15.Directories)
-                AssetMap = $alpha15.AssetMap
-                PackageReadme = 'docs\releases\v0.1.0-alpha.16-package-README.md'
-                ReleaseScope = 'R120 DIRECT: refreshed BrandMeister static talkgroup list and device-status-driven add slot selection, inheriting alpha.15 runtime assets and Native test sequence'
-                NotIncluded = $alpha16NotIncluded
-            }
-        }
-        'v0.1.0-alpha.17' {
-            $alpha16 = Get-ReleaseProfile -Version 'v0.1.0-alpha.16'
-            $alpha17SourceFiles = @($alpha16.SourceFiles | Where-Object {
-                [string]$_.Destination -cne 'README.md' -and
-                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha16.cmd' -and
-                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha16.ps1'
-            }) + @(
-                @{ Source='docs\releases\v0.1.0-alpha.17-package-README.md'; Destination='README.md' },
-                @{ Source='tools\start-wirex-bridge-alpha17.cmd'; Destination='start-wirex-bridge.cmd' },
-                @{ Source='tools\start-wirex-bridge-alpha17.ps1'; Destination='tools/start-wirex-bridge.ps1' }
-            )
-            $alpha17NotIncluded = @($alpha16.NotIncluded | ForEach-Object {
-                ([string]$_).Replace('alpha.16', 'alpha.17')
-            })
-            return [pscustomobject]@{
-                Version = 'v0.1.0-alpha.17'
-                TestNames = $script:alpha17TestNames
-                SourceFiles = $alpha17SourceFiles
-                PackageFiles = @($alpha16.PackageFiles)
-                Directories = @($alpha16.Directories)
-                AssetMap = $alpha16.AssetMap
-                PackageReadme = 'docs\releases\v0.1.0-alpha.17-package-README.md'
-                ReleaseScope = 'R121 DIRECT: fixed no-scroll console layout and independent serial/BM connection controls, inheriting alpha.16 runtime assets and Native test sequence'
-                NotIncluded = $alpha17NotIncluded
-            }
-        }
-        'v0.1.0-alpha.18' {
-            $alpha17 = Get-ReleaseProfile -Version 'v0.1.0-alpha.17'
-            $alpha18SourceFiles = @($alpha17.SourceFiles | Where-Object {
-                [string]$_.Destination -cne 'README.md' -and
-                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha17.cmd' -and
-                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha17.ps1'
-            }) + @(
-                @{ Source='docs\releases\v0.1.0-alpha.18-package-README.md'; Destination='README.md' },
-                @{ Source='tools\start-wirex-bridge-alpha18.cmd'; Destination='start-wirex-bridge.cmd' },
-                @{ Source='tools\start-wirex-bridge-alpha18.ps1'; Destination='tools/start-wirex-bridge.ps1' }
-            )
-            $alpha18NotIncluded = @($alpha17.NotIncluded | ForEach-Object {
-                ([string]$_).Replace('alpha.17', 'alpha.18')
-            })
-            return [pscustomobject]@{
-                Version = 'v0.1.0-alpha.18'
-                TestNames = $script:alpha18TestNames
-                SourceFiles = $alpha18SourceFiles
-                PackageFiles = @($alpha17.PackageFiles)
-                Directories = @($alpha17.Directories)
-                AssetMap = $alpha17.AssetMap
-                PackageReadme = 'docs\releases\v0.1.0-alpha.18-package-README.md'
-                ReleaseScope = 'R122 DIRECT: 50:50 fixed console layout, consolidated CAT settings, DMR device number and relocated audio controls; inherit alpha.17 runtime assets and Native test sequence'
-                NotIncluded = $alpha18NotIncluded
-            }
-        }
-        'v0.1.0-alpha.19' {
-            $alpha18 = Get-ReleaseProfile -Version 'v0.1.0-alpha.18'
-            $alpha19SourceFiles = @($alpha18.SourceFiles | Where-Object {
-                [string]$_.Destination -cne 'README.md' -and
-                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha18.cmd' -and
-                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha18.ps1'
-            }) + @(
-                @{ Source='docs\releases\v0.1.0-alpha.19-package-README.md'; Destination='README.md' },
-                @{ Source='tools\start-wirex-bridge-alpha19.cmd'; Destination='start-wirex-bridge.cmd' },
-                @{ Source='tools\start-wirex-bridge-alpha19.ps1'; Destination='tools/start-wirex-bridge.ps1' }
-            )
-            $alpha19NotIncluded = @($alpha18.NotIncluded | ForEach-Object {
-                ([string]$_).Replace('alpha.18', 'alpha.19')
-            })
-            return [pscustomobject]@{
-                Version = 'v0.1.0-alpha.19'
-                TestNames = $script:alpha18TestNames
-                SourceFiles = $alpha19SourceFiles
-                PackageFiles = @($alpha18.PackageFiles)
-                Directories = @($alpha18.Directories)
-                AssetMap = $alpha18.AssetMap
-                PackageReadme = 'docs\releases\v0.1.0-alpha.19-package-README.md'
-                ReleaseScope = 'R123 DIRECT: fixed WPF console layout, one-line status and transient events, equal-height connection rows, and refreshed channel/history presentation; inherit alpha.18 runtime asset inventory and Native test sequence'
-                NotIncluded = $alpha19NotIncluded
-            }
-        }
         'v0.1.0' {
-            $alpha19 = Get-ReleaseProfile -Version 'v0.1.0-alpha.19'
-            $excludedPackageFiles = @(
-                'wirex_bridge.exe', 'build-provenance.json', 'README.md', 'SOURCE.txt', 'manifest.json',
-                'private/device-y.bin', 'start-wirex-bridge.cmd', 'tools/start-wirex-bridge.ps1'
+            # Flattened from the retired alpha.2-alpha.19 profile chain; must stay byte-for-byte equivalent
+            # to the published v0.1.0 manifest (source c12b50a). Order matters for SourceFiles and TestNames.
+            $sourceFiles = @(
+                [pscustomobject]@{ Source='tools\start-bm-radio-bridge.ps1'; Destination='runtime/start-bm-radio-bridge.ps1' },
+                [pscustomobject]@{ Source='tools\start-ui.ps1'; Destination='runtime/start-ui.ps1' },
+                [pscustomobject]@{ Source='tools\bridge-user-config.psm1'; Destination='runtime/bridge-user-config.psm1' },
+                [pscustomobject]@{ Source='ui\windows\bridge-ui.ps1'; Destination='runtime/ui/windows/bridge-ui.ps1' },
+                [pscustomobject]@{ Source='ui\windows\BridgeSupervisor.cs'; Destination='runtime/ui/windows/BridgeSupervisor.cs' },
+                [pscustomobject]@{ Source='ui\windows\MainWindow.xaml'; Destination='runtime/ui/windows/MainWindow.xaml' },
+                [pscustomobject]@{ Source='ui\windows\SettingsWindow.xaml'; Destination='runtime/ui/windows/SettingsWindow.xaml' },
+                [pscustomobject]@{ Source='docs\配置与桌面操作.md'; Destination='runtime/docs/配置与桌面操作.md' },
+                [pscustomobject]@{ Source='docs\连接配置.md'; Destination='runtime/docs/连接配置.md' },
+                [pscustomobject]@{ Source='docs\音量调节.md'; Destination='runtime/docs/音量调节.md' },
+                [pscustomobject]@{ Source='third_party\dmr_signal\COPYING.GPL-3.0.txt'; Destination='runtime/licenses/dmr_signal/COPYING.GPL-3.0.txt' },
+                [pscustomobject]@{ Source='third_party\dmr_signal\NOTICE.md'; Destination='runtime/licenses/dmr_signal/NOTICE.md' },
+                [pscustomobject]@{ Source='third_party\droidstar_mbe\COPYING.GPL-3.0.txt'; Destination='runtime/licenses/droidstar_mbe/COPYING.GPL-3.0.txt' },
+                [pscustomobject]@{ Source='third_party\droidstar_mbe\ISC-NOTICE.txt'; Destination='runtime/licenses/droidstar_mbe/ISC-NOTICE.txt' },
+                [pscustomobject]@{ Source='third_party\droidstar_mbe\source-manifest.json'; Destination='runtime/licenses/droidstar_mbe/source-manifest.json' },
+                [pscustomobject]@{ Source='docs\BM来话身份显示.md'; Destination='runtime/docs/BM来话身份显示.md' },
+                [pscustomobject]@{ Source='docs\R106_IPC第二版.md'; Destination='runtime/docs/R106_IPC第二版.md' },
+                [pscustomobject]@{ Source='docs\R106_配置迁移与测试.md'; Destination='runtime/docs/R106_配置迁移与测试.md' },
+                [pscustomobject]@{ Source='docs\R108_收发路由状态与alpha6验收.md'; Destination='runtime/docs/R108_收发路由状态与alpha6验收.md' },
+                [pscustomobject]@{ Source='docs\R109_下行状态与动态组修复.md'; Destination='runtime/docs/R109_下行状态与动态组修复.md' },
+                [pscustomobject]@{ Source='docs\R109_动态组激活实现.md'; Destination='runtime/docs/R109_动态组激活实现.md' },
+                [pscustomobject]@{ Source='ui\windows\RadioIdentity.psm1'; Destination='runtime/ui/windows/RadioIdentity.psm1' },
+                [pscustomobject]@{ Source='docs\R112_A_网络音频指标.md'; Destination='runtime/docs/R112_A_网络音频指标.md' },
+                [pscustomobject]@{ Source='docs\R113_LCD核心实现.md'; Destination='runtime/docs/R113_LCD核心实现.md' },
+                [pscustomobject]@{ Source='docs\R113_身份与LCD接线.md'; Destination='runtime/docs/R113_身份与LCD接线.md' },
+                [pscustomobject]@{ Source='ui\windows\RadioCat.psm1'; Destination='runtime/ui/windows/RadioCat.psm1' },
+                [pscustomobject]@{ Source='docs\R116_CAT能力与控制实现.md'; Destination='runtime/docs/R116_CAT能力与控制实现.md' },
+                [pscustomobject]@{ Source='docs\R116_电台控制界面.md'; Destination='runtime/docs/R116_电台控制界面.md' },
+                [pscustomobject]@{ Source='ui\windows\RadioCatUi.ps1'; Destination='runtime/ui/windows/RadioCatUi.ps1' },
+                [pscustomobject]@{ Source='ui\windows\RadioDevices.psm1'; Destination='runtime/ui/windows/RadioDevices.psm1' },
+                [pscustomobject]@{ Source='ui\windows\BmServers.psm1'; Destination='runtime/ui/windows/BmServers.psm1' },
+                [pscustomobject]@{ Source='ui\windows\BmManagement.psm1'; Destination='runtime/ui/windows/BmManagement.psm1' },
+                [pscustomobject]@{ Source='ui\windows\BmManagementUi.ps1'; Destination='runtime/ui/windows/BmManagementUi.ps1' },
+                [pscustomobject]@{ Source='ui\windows\PortableConfig.psm1'; Destination='runtime/ui/windows/PortableConfig.psm1' },
+                [pscustomobject]@{ Source='docs\releases\v0.1.0-package-README.md'; Destination='README.md' },
+                [pscustomobject]@{ Source='ui\windows\ChannelActivationState.psm1'; Destination='runtime/ui/windows/ChannelActivationState.psm1' }
             )
-            $runtimePackageFiles = @($alpha19.PackageFiles | Where-Object {
-                $excludedPackageFiles -cnotcontains [string]$_
-            } | ForEach-Object { 'runtime/' + [string]$_ })
-            $runtimePackageFiles += 'runtime/wirex_bridge.exe'
-            $runtimePackageFiles += 'runtime/private/device-y.bin'
-            $runtimePackageFiles += 'runtime/ui/windows/ChannelActivationState.psm1'
-            $sourceFiles = @($alpha19.SourceFiles | Where-Object {
-                [string]$_.Destination -cne 'README.md' -and
-                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha19.cmd' -and
-                [string]$_.Source -cne 'tools\start-wirex-bridge-alpha19.ps1'
-            } | ForEach-Object {
-                [pscustomobject]@{ Source=[string]$_.Source; Destination=('runtime/' + ([string]$_.Destination).Replace('\','/')) }
-            })
-            $sourceFiles += [pscustomobject]@{
-                Source='docs\releases\v0.1.0-package-README.md'; Destination='README.md'
-            }
-            $sourceFiles += [pscustomobject]@{
-                Source='ui\windows\ChannelActivationState.psm1'; Destination='runtime/ui/windows/ChannelActivationState.psm1'
-            }
-            $runtimeDirectories = @($alpha19.Directories | Where-Object {
-                [string]$_ -cne 'logs' -and [string]$_ -cne 'tools'
-            } | ForEach-Object { 'runtime/' + [string]$_ })
             $assetMap = [ordered]@{
                 'WirexBridge.exe'='WirexBridge.exe'
                 'build-provenance.json'='build-provenance.json'
@@ -840,32 +82,122 @@ function Get-ReleaseProfile {
                 'runtime/wirex_bridge.exe'='runtime__wirex_bridge.exe'
                 'runtime/private/device-y.bin'='runtime__private__device-y.bin'
                 'runtime/ui/windows/ChannelActivationState.psm1'='runtime__ui__windows__channel-activation-state.psm1'
-            }
-            foreach ($sourcePath in $alpha19.AssetMap.Keys) {
-                if ($excludedPackageFiles -ccontains [string]$sourcePath) { continue }
-                $runtimePath = 'runtime/' + [string]$sourcePath
-                $assetMap[$runtimePath] = 'runtime__' + [string]$alpha19.AssetMap[$sourcePath]
+                'runtime/start-bm-radio-bridge.ps1'='runtime__start-bm-radio-bridge.ps1'
+                'runtime/start-ui.ps1'='runtime__start-ui.ps1'
+                'runtime/bridge-user-config.psm1'='runtime__bridge-user-config.psm1'
+                'runtime/docs/配置与桌面操作.md'='runtime__docs__desktop-user-config.md'
+                'runtime/docs/连接配置.md'='runtime__docs__connection-profile.md'
+                'runtime/docs/音量调节.md'='runtime__docs__audio-gain.md'
+                'runtime/ui/windows/bridge-ui.ps1'='runtime__ui__windows__bridge-ui.ps1'
+                'runtime/ui/windows/BridgeSupervisor.cs'='runtime__ui__windows__BridgeSupervisor.cs'
+                'runtime/ui/windows/MainWindow.xaml'='runtime__ui__windows__MainWindow.xaml'
+                'runtime/ui/windows/SettingsWindow.xaml'='runtime__ui__windows__SettingsWindow.xaml'
+                'runtime/licenses/dmr_signal/COPYING.GPL-3.0.txt'='runtime__licenses__dmr-signal__COPYING.GPL-3.0.txt'
+                'runtime/licenses/dmr_signal/NOTICE.md'='runtime__licenses__dmr-signal__NOTICE.md'
+                'runtime/licenses/droidstar_mbe/COPYING.GPL-3.0.txt'='runtime__licenses__droidstar-mbe__COPYING.GPL-3.0.txt'
+                'runtime/licenses/droidstar_mbe/ISC-NOTICE.txt'='runtime__licenses__droidstar-mbe__ISC-NOTICE.txt'
+                'runtime/licenses/droidstar_mbe/source-manifest.json'='runtime__licenses__droidstar-mbe__source-manifest.json'
+                'runtime/docs/BM来话身份显示.md'='runtime__docs__bm-call-identity.md'
+                'runtime/docs/R106_IPC第二版.md'='runtime__docs__r106-ipc-v2.md'
+                'runtime/docs/R106_配置迁移与测试.md'='runtime__docs__r106-profile-migration-test.md'
+                'runtime/docs/R108_收发路由状态与alpha6验收.md'='runtime__docs__r108-routing-state-alpha6.md'
+                'runtime/docs/R109_下行状态与动态组修复.md'='runtime__docs__r109-downlink-dynamic-groups.md'
+                'runtime/docs/R109_动态组激活实现.md'='runtime__docs__r109-dynamic-group-activation.md'
+                'runtime/ui/windows/RadioIdentity.psm1'='runtime__ui__windows__radio-identity.psm1'
+                'runtime/docs/R112_A_网络音频指标.md'='runtime__docs__r112-a-network-audio-metrics.md'
+                'runtime/docs/R113_LCD核心实现.md'='runtime__docs__r113-lcd-core-implementation.md'
+                'runtime/docs/R113_身份与LCD接线.md'='runtime__docs__r113-identity-lcd-integration.md'
+                'runtime/ui/windows/RadioCat.psm1'='runtime__ui__windows__radio-cat.psm1'
+                'runtime/docs/R116_CAT能力与控制实现.md'='runtime__docs__r116-cat-controls.md'
+                'runtime/docs/R116_电台控制界面.md'='runtime__docs__r116-radio-controls-ui.md'
+                'runtime/ui/windows/RadioCatUi.ps1'='runtime__ui__windows__radio-cat-ui.ps1'
+                'runtime/ui/windows/RadioDevices.psm1'='runtime__ui__windows__radio-devices.psm1'
+                'runtime/ui/windows/BmServers.psm1'='runtime__ui__windows__bm-servers.psm1'
+                'runtime/ui/windows/BmManagement.psm1'='runtime__ui__windows__bm-management.psm1'
+                'runtime/ui/windows/BmManagementUi.ps1'='runtime__ui__windows__bm-management-ui.ps1'
+                'runtime/ui/windows/PortableConfig.psm1'='runtime__ui__windows__portable-config.psm1'
             }
             return [pscustomobject]@{
                 Version = 'v0.1.0'
-                TestNames = $alpha19.TestNames
+                TestNames = @($script:releaseTestNames)
                 SourceFiles = $sourceFiles
-                PackageFiles = @('WirexBridge.exe','build-provenance.json','launcher-build-provenance.json',
-                    'README.md','SOURCE.txt','manifest.json','runtime/wirex_bridge.exe') +
-                    @($runtimePackageFiles | Where-Object { $_ -cne 'runtime/wirex_bridge.exe' })
-                Directories = @('runtime') + $runtimeDirectories
+                PackageFiles = @(
+                    'WirexBridge.exe',
+                    'build-provenance.json',
+                    'launcher-build-provenance.json',
+                    'README.md',
+                    'SOURCE.txt',
+                    'manifest.json',
+                    'runtime/wirex_bridge.exe',
+                    'runtime/start-bm-radio-bridge.ps1',
+                    'runtime/start-ui.ps1',
+                    'runtime/bridge-user-config.psm1',
+                    'runtime/docs/配置与桌面操作.md',
+                    'runtime/docs/连接配置.md',
+                    'runtime/docs/音量调节.md',
+                    'runtime/ui/windows/bridge-ui.ps1',
+                    'runtime/ui/windows/BridgeSupervisor.cs',
+                    'runtime/ui/windows/MainWindow.xaml',
+                    'runtime/ui/windows/SettingsWindow.xaml',
+                    'runtime/licenses/dmr_signal/COPYING.GPL-3.0.txt',
+                    'runtime/licenses/dmr_signal/NOTICE.md',
+                    'runtime/licenses/droidstar_mbe/COPYING.GPL-3.0.txt',
+                    'runtime/licenses/droidstar_mbe/ISC-NOTICE.txt',
+                    'runtime/licenses/droidstar_mbe/source-manifest.json',
+                    'runtime/docs/BM来话身份显示.md',
+                    'runtime/docs/R106_IPC第二版.md',
+                    'runtime/docs/R106_配置迁移与测试.md',
+                    'runtime/docs/R108_收发路由状态与alpha6验收.md',
+                    'runtime/docs/R109_下行状态与动态组修复.md',
+                    'runtime/docs/R109_动态组激活实现.md',
+                    'runtime/ui/windows/RadioIdentity.psm1',
+                    'runtime/docs/R112_A_网络音频指标.md',
+                    'runtime/docs/R113_LCD核心实现.md',
+                    'runtime/docs/R113_身份与LCD接线.md',
+                    'runtime/ui/windows/RadioCat.psm1',
+                    'runtime/docs/R116_CAT能力与控制实现.md',
+                    'runtime/docs/R116_电台控制界面.md',
+                    'runtime/ui/windows/RadioCatUi.ps1',
+                    'runtime/ui/windows/RadioDevices.psm1',
+                    'runtime/ui/windows/BmServers.psm1',
+                    'runtime/ui/windows/BmManagement.psm1',
+                    'runtime/ui/windows/BmManagementUi.ps1',
+                    'runtime/ui/windows/PortableConfig.psm1',
+                    'runtime/private/device-y.bin',
+                    'runtime/ui/windows/ChannelActivationState.psm1'
+                )
+                Directories = @('runtime', 'runtime/docs', 'runtime/licenses', 'runtime/licenses/dmr_signal', 'runtime/licenses/droidstar_mbe', 'runtime/private', 'runtime/ui', 'runtime/ui/windows')
                 AssetMap = $assetMap
                 PackageReadme = 'docs\releases\v0.1.0-package-README.md'
                 ReleaseScope = 'R124: stable v0.1.0 portable folder with one EXE launch entry, shared portable config initialization, and the R123 WPF runtime in runtime/'
-                NotIncluded = @($alpha19.NotIncluded + 'user callsign, password, BM API key, current-release device/HRI/audio/PTT/RF acceptance')
+                NotIncluded = @(
+                    'No alpha.19 hardware acceptance for COM, audio, BrandMeister, PTT, LCD display, physical BUSY/TX LED, or RF behavior',
+                    'bm_session.Profile.slot_flags defaults to 4 (simplex); software TS1/TS2 route fields do not establish FTX-1 dual-slot DMR RF or simultaneous two-slot playback',
+                    'The FTX-1 physical BUSY/TX LED behavior is unchanged; this release does not repair or explain the earlier observation',
+                    'Color Code is a DMR transmit encoding/reporting parameter, not C4FM DG-ID; receive route filters do not compare Color Code',
+                    'Quick Call can appear as an empty call in the BrandMeister Dashboard; no silent dynamic-group API is claimed',
+                    'No BrandMeister static-subscription readback is integrated; the UI does not label local RX allow_groups as server static bindings',
+                    'Multiple local routes do not create playback priority or automatic interruption of an active call',
+                    'BM RTT is a client-measured round-trip estimate; it does not report one-way delay or server CPU load',
+                    'DMRD loss is inferred only between accepted sequence numbers; filtered, busy, and post-watchdog traffic is not counted as lost packets',
+                    'The new metrics do not change DSP, audio scheduling, or the established voice path',
+                    'The FTX-1 LCD display result remains unknown pending direct visual confirmation; mode-4 LCD semantics are unverified',
+                    'Only a later callStart can use the cached callsign in the existing mode-4 T90 SrcCallSign field; active calls receive no second T record or hot update',
+                    'FM and C4FM RF transmit paths are not implemented',
+                    'HRI MODE and Node Mode cannot be switched by a documented CAT command; no guessed EX address is exposed',
+                    'The FTX-1 LCD remains experimental and is not an alpha.19 product feature; no incoming-call or list contents were observed in the documented DIRECT/HRI checks',
+                    'BM API keys and per-user configuration remain outside the generic release package',
+                    '本机服务器选择偏好 private/user-config/bm-server-preferences.json 不随通用发行包分发',
+                    'Generic package does not contain the user-created package-root config.json, its backups, or credentials.',
+                    'user callsign, password, BM API key, current-release device/HRI/audio/PTT/RF acceptance'
+                )
             }
         }
         'v0.1.1-test.2' {
-            $base = Get-ReleaseProfile -Version 'v0.1.0-alpha.19'
             $zip = Get-WirexZipOnlyReleaseProfile -Version 'v0.1.1-test.2'
             return [pscustomobject]@{
                 Version = 'v0.1.1-test.2'
-                TestNames = @($base.TestNames)
+                TestNames = @($script:releaseTestNames)
                 SourceFiles = @($zip.SourceFiles)
                 PackageFiles = @($zip.PackageFiles)
                 Directories = @($zip.Directories)
@@ -876,11 +208,10 @@ function Get-ReleaseProfile {
             }
         }
         'v0.1.1' {
-            $base = Get-ReleaseProfile -Version 'v0.1.0-alpha.19'
             $zip = Get-WirexZipOnlyReleaseProfile -Version 'v0.1.1'
             return [pscustomobject]@{
                 Version = 'v0.1.1'
-                TestNames = @($base.TestNames)
+                TestNames = @($script:releaseTestNames)
                 SourceFiles = @($zip.SourceFiles)
                 PackageFiles = @($zip.PackageFiles)
                 Directories = @($zip.Directories)
@@ -890,7 +221,7 @@ function Get-ReleaseProfile {
                 NotIncluded = @()
             }
         }
-        default { throw 'Only the registered v0.1.0, v0.1.0-alpha, v0.1.1-test.2, and v0.1.1 profiles are supported.' }
+        default { throw 'Only the registered v0.1.0, v0.1.1-test.2, and v0.1.1 release profiles are supported.' }
     }
 }
 
@@ -1207,64 +538,6 @@ function Get-ReleaseExcludedPrivateFiles {
             'callsign', 'password', 'api_key'
         )
     }
-    if ($Version -ceq 'v0.1.0-alpha.9') {
-        $excluded += @(
-            'private/user-config-directory.txt',
-            'private/user-config/radio-identity-cache.json',
-            'private/user-config/channel-favorites.json'
-        )
-    }
-    if ($Version -ceq 'v0.1.0-alpha.10') {
-        $excluded += @(
-            'private/user-config-directory.txt',
-            'private/user-config/radio-identity-cache.json',
-            'private/user-config/channel-favorites.json',
-            'private/user-config/password-file-path.txt'
-        )
-    }
-    if ($Version -ceq 'v0.1.0-alpha.11') {
-        $excluded += @(
-            'private/user-config-directory.txt',
-            'private/user-config/radio-identity-cache.json',
-            'private/user-config/channel-favorites.json',
-            'private/user-config/password-file-path.txt'
-        )
-    }
-    if ($Version -ceq 'v0.1.0-alpha.12') {
-        $excluded += @(
-            'private/user-config-directory.txt',
-            'private/user-config/radio-identity-cache.json',
-            'private/user-config/channel-favorites.json',
-            'private/user-config/password-file-path.txt',
-            'private/user-config/radio-control-preferences.json'
-        )
-    }
-    if ($Version -ceq 'v0.1.0-alpha.13') {
-        $excluded += @(
-            'private/user-config-directory.txt',
-            'private/user-config/radio-identity-cache.json',
-            'private/user-config/channel-favorites.json',
-            'private/user-config/password-file-path.txt',
-            'private/user-config/radio-control-preferences.json',
-            'private/user-config/bm-management-preferences.json',
-            'private/user-config/bm-server-preferences.json'
-        )
-    }
-if ($Version -cin @('v0.1.0-alpha.14', 'v0.1.0-alpha.15', 'v0.1.0-alpha.16', 'v0.1.0-alpha.17', 'v0.1.0-alpha.18', 'v0.1.0-alpha.19')) {
-        $excluded += @(
-            'config.json',
-            'config.*.backup*',
-            'credentials/',
-            'tempSecrets/',
-            'private/user-config-directory.txt',
-            'private/user-config/radio-identity-cache.json',
-            'private/user-config/channel-favorites.json',
-            'private/user-config/password-file-path.txt',
-            'private/user-config/radio-control-preferences.json',
-            'private/user-config/bm-management-preferences.json',
-            'private/user-config/bm-server-preferences.json'
-        )
-    }
     return @($excluded)
 }
 
@@ -1552,20 +825,12 @@ function Assert-ReleasePackageInventory {
     for ($index = 0; $index -lt $expectedDirectories.Count; $index++) {
         if ($actualDirectories[$index] -cne $expectedDirectories[$index]) { throw "发布目录树不符：$($actualDirectories[$index])" }
     }
-    $isStableRelease = $profile.Version -ceq 'v0.1.0'
-    if (-not $isStableRelease -and @(Get-ChildItem -LiteralPath (Join-Path $PackageRoot 'logs') -Force).Count -ne 0) {
-        throw '发布包 logs 目录必须为空。'
-    }
-    if ($isStableRelease) {
-        $fixturePath = Join-Path $PackageRoot 'runtime\private\device-y.bin'
-        $fixtureHash = Test-ApprovedYFixture -Path $fixturePath
-        if (@($actualFiles | Where-Object { $_ -match '^(private|logs)(/|$)|(^|/)logs/|\.log$' }).Count -gt 0 -or
-            @($actualFiles | Where-Object { $_ -match '^runtime/private/' -and $_ -cne 'runtime/private/device-y.bin' }).Count -gt 0) {
-            throw '稳定版 generic 发布包不能包含用户 private 数据或运行日志；runtime/private 仅允许获批协议模板。'
-        }
-    } else {
-        $fixturePath = Join-Path $PackageRoot 'private\device-y.bin'
-        $fixtureHash = Test-ApprovedYFixture -Path $fixturePath
+    if ($profile.Version -cne 'v0.1.0') { throw "Unsupported folder release inventory version: $($profile.Version)" }
+    $fixturePath = Join-Path $PackageRoot 'runtime\private\device-y.bin'
+    $fixtureHash = Test-ApprovedYFixture -Path $fixturePath
+    if (@($actualFiles | Where-Object { $_ -match '^(private|logs)(/|$)|(^|/)logs/|\.log$' }).Count -gt 0 -or
+        @($actualFiles | Where-Object { $_ -match '^runtime/private/' -and $_ -cne 'runtime/private/device-y.bin' }).Count -gt 0) {
+        throw '稳定版 generic 发布包不能包含用户 private 数据或运行日志；runtime/private 仅允许获批协议模板。'
     }
     $forbidden = @($actualFiles | Where-Object {
         $_ -match '(^|/)(?:bm-device-password\.txt|password-file-path\.txt|connection-profile\.json|audio-settings\.json)$' -or
@@ -1581,7 +846,7 @@ function Assert-ReleasePackageInventory {
     } catch {
         throw "发布 manifest 无法解析：$($_.Exception.Message)"
     }
-    $expectedPackageKind = if ($isStableRelease) { 'wirex_bridge_stable_release_green_directory' } else { 'wirex_bridge_private_alpha_release_green_directory' }
+    $expectedPackageKind = 'wirex_bridge_stable_release_green_directory'
     if ([string]$manifest.version -cne $profile.Version -or
         [string]$manifest.tag_candidate -cne $profile.Version -or $manifest.schema_version -ne 1 -or
         [string]$manifest.package_kind -cne $expectedPackageKind -or
@@ -1589,39 +854,31 @@ function Assert-ReleasePackageInventory {
         throw ('manifest schema_version、package_kind 或 package_status 不受支持：version={0}; kind={1}; status={2}; schema={3}; expectedKind={4}' -f `
             [string]$manifest.version,[string]$manifest.package_kind,[string]$manifest.package_status,[string]$manifest.schema_version,$expectedPackageKind)
     }
-    if (-not $isStableRelease) {
-        if ([string]$manifest.approved_y_fixture.path -cne 'private/device-y.bin' -or
-            [long]$manifest.approved_y_fixture.length_bytes -ne 100 -or
-            ([string]$manifest.approved_y_fixture.sha256).ToLowerInvariant() -cne $fixtureHash) {
-            throw 'manifest 中的 Y 素材记录与获批文件不一致。'
-        }
-    } else {
-        if ([string]$manifest.approved_y_fixture.path -cne 'runtime/private/device-y.bin' -or
-            [long]$manifest.approved_y_fixture.length_bytes -ne 100 -or
-            ([string]$manifest.approved_y_fixture.sha256).ToLowerInvariant() -cne $fixtureHash) {
-            throw 'manifest 中的 runtime HRI 协议模板与获批文件不一致。'
-        }
-        if ($null -eq $manifest.launcher_build -or
-            [string]$manifest.launcher_build.source_commit -cne [string]$manifest.source.commit -or
-            [string]$manifest.launcher_build.source_path -cne 'ui/launcher/WirexBridgeLauncher.cs' -or
-            [string]$manifest.launcher_build.provenance_asset -cne 'launcher-build-provenance.json' -or
-            [string]$manifest.launcher_build.executable_asset -cne 'WirexBridge.exe' -or
-            [string]$manifest.launcher_build.compiler_family -cne 'Microsoft .NET Framework csc.exe' -or
-            [string]$manifest.launcher_build.target -cne 'x64 Windows GUI executable') {
-            throw '稳定版 manifest 缺少 launcher 源码与构建来源记录。'
-        }
-        $launcherExeRecord = @($manifest.files | Where-Object { [string]$_.path -ceq 'WirexBridge.exe' })
-        $launcherProvenanceRecord = @($manifest.files | Where-Object { [string]$_.path -ceq 'launcher-build-provenance.json' })
-        $nativeExeRecord = @($manifest.files | Where-Object { [string]$_.path -ceq 'runtime/wirex_bridge.exe' })
-        $nativeProvenanceRecord = @($manifest.files | Where-Object { [string]$_.path -ceq 'build-provenance.json' })
-        if ($launcherExeRecord.Count -ne 1 -or $launcherProvenanceRecord.Count -ne 1 -or
-            $nativeExeRecord.Count -ne 1 -or $nativeProvenanceRecord.Count -ne 1 -or
-            [string]$manifest.launcher_build.executable_sha256 -cne [string]$launcherExeRecord[0].sha256 -or
-            [string]$manifest.launcher_build.provenance_sha256 -cne [string]$launcherProvenanceRecord[0].sha256 -or
-            [string]$manifest.build.executable_sha256 -cne [string]$nativeExeRecord[0].sha256 -or
-            [string]$manifest.build.provenance_sha256 -cne [string]$nativeProvenanceRecord[0].sha256) {
-            throw '稳定版 manifest 中的两类 EXE 与两份 build provenance hash 未能一一对应。'
-        }
+    if ([string]$manifest.approved_y_fixture.path -cne 'runtime/private/device-y.bin' -or
+        [long]$manifest.approved_y_fixture.length_bytes -ne 100 -or
+        ([string]$manifest.approved_y_fixture.sha256).ToLowerInvariant() -cne $fixtureHash) {
+        throw 'manifest 中的 runtime HRI 协议模板与获批文件不一致。'
+    }
+    if ($null -eq $manifest.launcher_build -or
+        [string]$manifest.launcher_build.source_commit -cne [string]$manifest.source.commit -or
+        [string]$manifest.launcher_build.source_path -cne 'ui/launcher/WirexBridgeLauncher.cs' -or
+        [string]$manifest.launcher_build.provenance_asset -cne 'launcher-build-provenance.json' -or
+        [string]$manifest.launcher_build.executable_asset -cne 'WirexBridge.exe' -or
+        [string]$manifest.launcher_build.compiler_family -cne 'Microsoft .NET Framework csc.exe' -or
+        [string]$manifest.launcher_build.target -cne 'x64 Windows GUI executable') {
+        throw '稳定版 manifest 缺少 launcher 源码与构建来源记录。'
+    }
+    $launcherExeRecord = @($manifest.files | Where-Object { [string]$_.path -ceq 'WirexBridge.exe' })
+    $launcherProvenanceRecord = @($manifest.files | Where-Object { [string]$_.path -ceq 'launcher-build-provenance.json' })
+    $nativeExeRecord = @($manifest.files | Where-Object { [string]$_.path -ceq 'runtime/wirex_bridge.exe' })
+    $nativeProvenanceRecord = @($manifest.files | Where-Object { [string]$_.path -ceq 'build-provenance.json' })
+    if ($launcherExeRecord.Count -ne 1 -or $launcherProvenanceRecord.Count -ne 1 -or
+        $nativeExeRecord.Count -ne 1 -or $nativeProvenanceRecord.Count -ne 1 -or
+        [string]$manifest.launcher_build.executable_sha256 -cne [string]$launcherExeRecord[0].sha256 -or
+        [string]$manifest.launcher_build.provenance_sha256 -cne [string]$launcherProvenanceRecord[0].sha256 -or
+        [string]$manifest.build.executable_sha256 -cne [string]$nativeExeRecord[0].sha256 -or
+        [string]$manifest.build.provenance_sha256 -cne [string]$nativeProvenanceRecord[0].sha256) {
+        throw '稳定版 manifest 中的两类 EXE 与两份 build provenance hash 未能一一对应。'
     }
     $records = @($manifest.files)
     if ($records.Count -ne ($expectedFiles.Count - 1)) { throw 'manifest 记录数与发布文件清单不符。' }
@@ -1751,7 +1008,7 @@ function Invoke-ReleasePackaging {
             -YFixturePath $YFixturePath -LauncherBuildDirectory $LauncherBuildDirectory -RepositoryRoot $RepositoryRoot `
             -NativeBuildRepositoryRoot $NativeBuildRepositoryRoot)
     }
-    $isStableRelease = $profile.Version -ceq 'v0.1.0'
+    if ($profile.Version -cne 'v0.1.0') { throw "Unsupported folder release version: $($profile.Version)" }
     $repo = [System.IO.Path]::GetFullPath($RepositoryRoot)
     $gitRootLines = @(& git -C $repo rev-parse --show-toplevel 2>$null)
     if ($LASTEXITCODE -ne 0 -or $gitRootLines.Count -lt 1 -or
@@ -1772,17 +1029,11 @@ function Invoke-ReleasePackaging {
     $logPath = Resolve-ReleasePath -Path $BuildLogPath -BaseDirectory $repo
     $buildEvidence = Test-ReleaseBuildEvidence -RepositoryRoot $repo -SourceCommit $sourceCommit `
         -BuildDirectory $buildPath -BuildLogPath $logPath
-    $launcherBuildEvidence = $null
-    $fixturePath = $null
-    $fixtureHash = $null
-    if ($isStableRelease) {
-        if ([string]::IsNullOrWhiteSpace($LauncherBuildDirectory)) { throw 'v0.1.0 需要明确的 LauncherBuildDirectory。' }
-        if ([string]::IsNullOrWhiteSpace($YFixturePath)) { throw 'v0.1.0 需要获批的 HRI 协议模板路径。' }
-        $launcherBuildPath = Resolve-ReleasePath -Path $LauncherBuildDirectory -BaseDirectory $repo
-        $launcherBuildEvidence = Test-ReleaseLauncherBuildEvidence -RepositoryRoot $repo -SourceCommit $sourceCommit `
-            -BuildDirectory $launcherBuildPath
-    }
-    if (-not $isStableRelease -and [string]::IsNullOrWhiteSpace($YFixturePath)) { throw 'alpha 发布需要批准的 Y 素材路径。' }
+    if ([string]::IsNullOrWhiteSpace($LauncherBuildDirectory)) { throw 'v0.1.0 需要明确的 LauncherBuildDirectory。' }
+    if ([string]::IsNullOrWhiteSpace($YFixturePath)) { throw 'v0.1.0 需要获批的 HRI 协议模板路径。' }
+    $launcherBuildPath = Resolve-ReleasePath -Path $LauncherBuildDirectory -BaseDirectory $repo
+    $launcherBuildEvidence = Test-ReleaseLauncherBuildEvidence -RepositoryRoot $repo -SourceCommit $sourceCommit `
+        -BuildDirectory $launcherBuildPath
     $fixturePath = Resolve-ReleasePath -Path $YFixturePath -BaseDirectory $repo
     $fixtureHash = Test-ApprovedYFixture -Path $fixturePath
 
@@ -1801,8 +1052,7 @@ function Invoke-ReleasePackaging {
     $createdOutput = $false
     try {
         $exeSource = Join-Path $buildPath 'wirex_bridge.exe'
-        $exeRelativePath = if ($isStableRelease) { 'runtime\wirex_bridge.exe' } else { 'wirex_bridge.exe' }
-        $exeDestination = Join-Path $stagingPath $exeRelativePath
+        $exeDestination = Join-Path $stagingPath 'runtime\wirex_bridge.exe'
         $exeDestinationDirectory = Split-Path -Parent $exeDestination
         if (-not (Test-Path -LiteralPath $exeDestinationDirectory -PathType Container)) {
             New-Item -ItemType Directory -Path $exeDestinationDirectory -Force -ErrorAction Stop | Out-Null
@@ -1810,10 +1060,8 @@ function Invoke-ReleasePackaging {
         Copy-Item -LiteralPath $exeSource -Destination $exeDestination -ErrorAction Stop
         Copy-Item -LiteralPath (Join-Path $buildPath 'build-provenance.json') `
             -Destination (Join-Path $stagingPath 'build-provenance.json') -ErrorAction Stop
-        if ($isStableRelease) {
-            Copy-Item -LiteralPath $launcherBuildEvidence.executable -Destination (Join-Path $stagingPath 'WirexBridge.exe') -ErrorAction Stop
-            Copy-Item -LiteralPath $launcherBuildEvidence.provenance -Destination (Join-Path $stagingPath 'launcher-build-provenance.json') -ErrorAction Stop
-        }
+        Copy-Item -LiteralPath $launcherBuildEvidence.executable -Destination (Join-Path $stagingPath 'WirexBridge.exe') -ErrorAction Stop
+        Copy-Item -LiteralPath $launcherBuildEvidence.provenance -Destination (Join-Path $stagingPath 'launcher-build-provenance.json') -ErrorAction Stop
         foreach ($entry in (Get-ReleaseSourceFiles)) {
             $sourcePath = Join-Path $repo $entry.Source
             if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) { throw "发布源文件不存在：$($entry.Source)" }
@@ -1824,21 +1072,13 @@ function Invoke-ReleasePackaging {
             }
             Copy-Item -LiteralPath $sourcePath -Destination $destinationPath -ErrorAction Stop
         }
-        if ($isStableRelease) {
-            $yDestinationDirectory = Join-Path $stagingPath 'runtime\private'
-        } else {
-            $yDestinationDirectory = Join-Path $stagingPath 'private'
-        }
+        $yDestinationDirectory = Join-Path $stagingPath 'runtime\private'
         New-Item -ItemType Directory -Path $yDestinationDirectory -Force -ErrorAction Stop | Out-Null
         Copy-Item -LiteralPath $fixturePath -Destination (Join-Path $yDestinationDirectory 'device-y.bin') -ErrorAction Stop
-        if (-not $isStableRelease) {
-            New-Item -ItemType Directory -Path (Join-Path $stagingPath 'logs') -ErrorAction Stop | Out-Null
-        }
 
         $notIncludedText = @($profile.NotIncluded) -join '、'
         $excludedPrivateFiles = @(Get-ReleaseExcludedPrivateFiles -Version $Version)
-        if ($isStableRelease) {
-            $sourceText = @"
+        $sourceText = @"
 WIREX Bridge $Version generic portable release candidate
 
 Source commit: $sourceCommit
@@ -1861,42 +1101,17 @@ The generic package contains no user config, callsign, password, API key, machin
 
 No current-release device, HRI, audio, PTT, or RF validation was performed. The UI package and launch checks use synthetic configuration in temporary directories.
 "@
-        } else {
-            $sourceText = @"
-WIREX Bridge $Version alpha 候选
-
-源码提交：$sourceCommit
-构建源码提交：$sourceCommit
-干净正式构建目录：$(Get-RepoRelativePath -RepositoryRoot $repo -Path $buildPath)
-构建日志：$(Get-RepoRelativePath -RepositoryRoot $repo -Path $logPath)
-构建来源记录 SHA-256：$($buildEvidence.build_provenance_sha256)
-离线测试：$($buildEvidence.passed_test_count) 项全部通过；编译警告/错误：0/0
-wirex_bridge.exe SHA-256：$($buildEvidence.executable_sha256)
-批准的 Y 素材：100 字节；SHA-256：$fixtureHash
-Release 标签候选：$Version（打包器不创建标签，也不发布 Release）
-
-功能范围：$($profile.ReleaseScope)。
-未包含：$notIncludedText。
-
-此前用户确认的实机结果分别来自旧源码：005c5e8 的 DIRECT 鹦鹉回声清晰；ab3c5fa 的 TG91 收听正常。这些结果不属于当前源码版本。当前版本尚未实机联测，连接配置和音量设置也尚未在当前版本实机验证。
-
-发布目录不含 BM 密码、连接配置、音量设置或运行日志；创建时 logs 目录为空。程序运行时会在本机创建所需设置和日志。
-"@
-        }
         [System.IO.File]::WriteAllText((Join-Path $stagingPath 'SOURCE.txt'), $sourceText.TrimStart(), (New-Object System.Text.UTF8Encoding($false)))
 
         $records = @()
-        $exeRelative = if ($isStableRelease) { 'runtime/wirex_bridge.exe' } else { 'wirex_bridge.exe' }
-        $records += ,(Get-ReleaseFileRecord -PackageRoot $stagingPath -RelativePath $exeRelative `
+        $records += ,(Get-ReleaseFileRecord -PackageRoot $stagingPath -RelativePath 'runtime/wirex_bridge.exe' `
             -Source ((Get-RepoRelativePath -RepositoryRoot $repo -Path $buildPath) + '/wirex_bridge.exe'))
         $records += ,(Get-ReleaseFileRecord -PackageRoot $stagingPath -RelativePath 'build-provenance.json' `
             -Source ((Get-RepoRelativePath -RepositoryRoot $repo -Path $buildPath) + '/build-provenance.json'))
-        if ($isStableRelease) {
-            $records += ,(Get-ReleaseFileRecord -PackageRoot $stagingPath -RelativePath 'WirexBridge.exe' `
-                -Source ((Get-RepoRelativePath -RepositoryRoot $repo -Path $launcherBuildEvidence.build_directory) + '/WirexBridge.exe'))
-            $records += ,(Get-ReleaseFileRecord -PackageRoot $stagingPath -RelativePath 'launcher-build-provenance.json' `
-                -Source ((Get-RepoRelativePath -RepositoryRoot $repo -Path $launcherBuildEvidence.build_directory) + '/launcher-build-provenance.json'))
-        }
+        $records += ,(Get-ReleaseFileRecord -PackageRoot $stagingPath -RelativePath 'WirexBridge.exe' `
+            -Source ((Get-RepoRelativePath -RepositoryRoot $repo -Path $launcherBuildEvidence.build_directory) + '/WirexBridge.exe'))
+        $records += ,(Get-ReleaseFileRecord -PackageRoot $stagingPath -RelativePath 'launcher-build-provenance.json' `
+            -Source ((Get-RepoRelativePath -RepositoryRoot $repo -Path $launcherBuildEvidence.build_directory) + '/launcher-build-provenance.json'))
         foreach ($entry in (Get-ReleaseSourceFiles)) {
             $destination = $entry.Destination.Replace('\', '/')
             $records += ,(Get-ReleaseFileRecord -PackageRoot $stagingPath -RelativePath $destination `
@@ -1904,19 +1119,14 @@ Release 标签候选：$Version（打包器不创建标签，也不发布 Releas
         }
         $records += ,(Get-ReleaseFileRecord -PackageRoot $stagingPath -RelativePath 'SOURCE.txt' `
             -Source 'generated from verified source and build evidence')
-        if (-not $isStableRelease) {
-            $records += ,(Get-ReleaseFileRecord -PackageRoot $stagingPath -RelativePath 'private/device-y.bin' `
-                -Source ('approved 100-byte Y fixture; SHA-256 ' + $fixtureHash))
-        } else {
-            $records += ,(Get-ReleaseFileRecord -PackageRoot $stagingPath -RelativePath 'runtime/private/device-y.bin' `
-                -Source ('approved 100-byte HRI protocol template; SHA-256 ' + $fixtureHash))
-        }
+        $records += ,(Get-ReleaseFileRecord -PackageRoot $stagingPath -RelativePath 'runtime/private/device-y.bin' `
+            -Source ('approved 100-byte HRI protocol template; SHA-256 ' + $fixtureHash))
         $assetNames = @($records | ForEach-Object { [string]$_.asset_name })
         if (@($assetNames | Sort-Object -Unique).Count -ne $assetNames.Count) { throw '生成的 release asset_name 存在重复。' }
 
         $manifest = [ordered]@{
             schema_version = 1
-            package_kind = if ($isStableRelease) { 'wirex_bridge_stable_release_green_directory' } else { 'wirex_bridge_private_alpha_release_green_directory' }
+            package_kind = 'wirex_bridge_stable_release_green_directory'
             package_status = 'awaiting_root_audit'
             version = $Version
             tag_candidate = $Version
@@ -1955,33 +1165,29 @@ Release 标签候选：$Version（打包器不创建标签，也不发布 Releas
                 rf_transmission = 'not tested'
             }
             approved_y_fixture = [ordered]@{
-                path = if ($isStableRelease) { 'runtime/private/device-y.bin' } else { 'private/device-y.bin' }
+                path = 'runtime/private/device-y.bin'
                 length_bytes = 100
                 sha256 = $fixtureHash
             }
             excluded_private_files = $excludedPrivateFiles
-            runtime_directories = if ($isStableRelease) {
-                @($profile.Directories | Where-Object { [string]$_ -like 'runtime*' })
-            } else { @('logs/ (empty at package creation)') }
+            runtime_directories = @($profile.Directories | Where-Object { [string]$_ -like 'runtime*' })
             manifest_asset_name = 'manifest.json'
             files = @($records)
         }
-        if ($isStableRelease) {
-            $manifest['launcher_build'] = [ordered]@{
-                source_commit = $sourceCommit
-                source_path = $launcherBuildEvidence.source_path
-                source_sha256 = $launcherBuildEvidence.source_sha256
-                compiler_family = $launcherBuildEvidence.compiler_family
-                compiler_version = $launcherBuildEvidence.compiler_version
-                target = $launcherBuildEvidence.target
-                output_directory = (Get-RepoRelativePath -RepositoryRoot $repo -Path $launcherBuildEvidence.build_directory)
-                executable_asset = 'WirexBridge.exe'
-                executable_sha256 = $launcherBuildEvidence.executable_sha256
-                provenance_asset = 'launcher-build-provenance.json'
-                provenance_sha256 = $launcherBuildEvidence.provenance_sha256
-                build_log_path = (Get-RepoRelativePath -RepositoryRoot $repo -Path $launcherBuildEvidence.build_log)
-                build_log_sha256 = $launcherBuildEvidence.build_log_sha256
-            }
+        $manifest['launcher_build'] = [ordered]@{
+            source_commit = $sourceCommit
+            source_path = $launcherBuildEvidence.source_path
+            source_sha256 = $launcherBuildEvidence.source_sha256
+            compiler_family = $launcherBuildEvidence.compiler_family
+            compiler_version = $launcherBuildEvidence.compiler_version
+            target = $launcherBuildEvidence.target
+            output_directory = (Get-RepoRelativePath -RepositoryRoot $repo -Path $launcherBuildEvidence.build_directory)
+            executable_asset = 'WirexBridge.exe'
+            executable_sha256 = $launcherBuildEvidence.executable_sha256
+            provenance_asset = 'launcher-build-provenance.json'
+            provenance_sha256 = $launcherBuildEvidence.provenance_sha256
+            build_log_path = (Get-RepoRelativePath -RepositoryRoot $repo -Path $launcherBuildEvidence.build_log)
+            build_log_sha256 = $launcherBuildEvidence.build_log_sha256
         }
         $manifestJson = ConvertTo-Json -InputObject $manifest -Depth 12
         [System.IO.File]::WriteAllText((Join-Path $stagingPath 'manifest.json'), $manifestJson + "`n", (New-Object System.Text.UTF8Encoding($false)))
@@ -1991,18 +1197,12 @@ Release 标签候选：$Version（打包器不创建标签，也不发布 Releas
         [System.IO.Directory]::Move($stagingPath, $outputPath)
         $createdOutput = $true
         Write-Host "绿色发布候选已创建：$outputPath"
-        if ($isStableRelease) {
-            Write-Host "文件清单记录数：$($records.Count)；GitHub 分发资产将为 ZIP、manifest.json、SHA256SUMS.txt。"
-        } else {
-            Write-Host "清单 asset 数：$($records.Count + 1)（含 manifest.json；未生成 ZIP）"
-        }
+        Write-Host "文件清单记录数：$($records.Count)；GitHub 分发资产将为 ZIP、manifest.json、SHA256SUMS.txt。"
         Write-Host 'package_status=awaiting_root_audit'
-        if ($isStableRelease) {
-            $distribution = New-StableReleaseDistribution -PackageRoot $outputPath -RepositoryRoot $repo
-            Write-Host ('stable 分发 ZIP 已创建：' + (Get-RepoRelativePath -RepositoryRoot $repo -Path $distribution.archive))
-            Write-Host ('SHA256SUMS 已创建：' + (Get-RepoRelativePath -RepositoryRoot $repo -Path $distribution.checksum))
-            Write-Host ('stable GitHub Release 固定为 3 个资产：ZIP、manifest.json、SHA256SUMS.txt；不会逐项上传 runtime 文件。')
-        }
+        $distribution = New-StableReleaseDistribution -PackageRoot $outputPath -RepositoryRoot $repo
+        Write-Host ('stable 分发 ZIP 已创建：' + (Get-RepoRelativePath -RepositoryRoot $repo -Path $distribution.archive))
+        Write-Host ('SHA256SUMS 已创建：' + (Get-RepoRelativePath -RepositoryRoot $repo -Path $distribution.checksum))
+        Write-Host ('stable GitHub Release 固定为 3 个资产：ZIP、manifest.json、SHA256SUMS.txt；不会逐项上传 runtime 文件。')
     } catch {
         $originalFailure = $_
         if (-not $createdOutput -and (Test-Path -LiteralPath $stagingPath -PathType Container)) {
