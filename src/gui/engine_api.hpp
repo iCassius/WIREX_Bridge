@@ -1,0 +1,89 @@
+#pragma once
+
+// GUI 使用的引擎抽象。方法与 wirex::engine::Engine 一一对应（名字、参数、返回值相同），
+// 因此 FakeEngine 与真实引擎可以互换：真实引擎接入时只需
+//     wirex::engine::Engine engine;
+//     wirex::gui::EngineAdapter<wirex::engine::Engine> api{engine};
+// 适配器是模板，未实例化时不会引入对真实引擎实现的链接依赖。
+
+#include "wirex/engine.hpp"
+
+#include <cstddef>
+#include <functional>
+#include <future>
+#include <memory>
+#include <optional>
+#include <string>
+#include <vector>
+
+namespace wirex::gui {
+
+class EngineApi {
+public:
+    EngineApi() = default;
+    EngineApi(const EngineApi&) = delete;
+    EngineApi& operator=(const EngineApi&) = delete;
+    virtual ~EngineApi() = default;
+
+    virtual std::future<engine::CommandResult> start(engine::StartConfig config) = 0;
+    virtual std::future<engine::CommandResult> stop() = 0;
+    virtual std::future<engine::CommandResult> set_bm_connection(bool enabled, std::uint64_t expected_revision) = 0;
+    virtual std::future<engine::CommandResult> replace_rx_policy(std::uint64_t expected_revision,
+                                                                 talkgroup_routing::RxPolicy policy) = 0;
+    virtual std::future<engine::CommandResult> replace_tx_policy(std::uint64_t expected_revision,
+                                                                 talkgroup_routing::TxTarget target,
+                                                                 bool transmit_enabled) = 0;
+    virtual std::future<engine::CommandResult> quick_call_join(talkgroup_routing::GroupRoute route) = 0;
+    virtual std::future<engine::CommandResult> set_audio_gains(std::uint32_t radio_playback_gain_milli,
+                                                               std::uint32_t mic_transmit_gain_milli) = 0;
+    virtual std::future<engine::CommandResult> upsert_radio_identity(std::uint32_t source_id, std::uint64_t revision,
+                                                                     std::optional<std::string> callsign) = 0;
+
+    [[nodiscard]] virtual std::shared_ptr<const engine::Snapshot> snapshot() const = 0;
+    [[nodiscard]] virtual std::vector<engine::Event> drain_events(std::size_t max) = 0;
+    virtual void set_wakeup(std::function<void()> wakeup) = 0;
+};
+
+template <class E>
+class EngineAdapter final : public EngineApi {
+public:
+    explicit EngineAdapter(E& engine) : engine_(engine) {}
+
+    std::future<engine::CommandResult> start(engine::StartConfig config) override {
+        return engine_.start(std::move(config));
+    }
+    std::future<engine::CommandResult> stop() override { return engine_.stop(); }
+    std::future<engine::CommandResult> set_bm_connection(bool enabled, std::uint64_t expected_revision) override {
+        return engine_.set_bm_connection(enabled, expected_revision);
+    }
+    std::future<engine::CommandResult> replace_rx_policy(std::uint64_t expected_revision,
+                                                         talkgroup_routing::RxPolicy policy) override {
+        return engine_.replace_rx_policy(expected_revision, std::move(policy));
+    }
+    std::future<engine::CommandResult> replace_tx_policy(std::uint64_t expected_revision,
+                                                         talkgroup_routing::TxTarget target,
+                                                         bool transmit_enabled) override {
+        return engine_.replace_tx_policy(expected_revision, target, transmit_enabled);
+    }
+    std::future<engine::CommandResult> quick_call_join(talkgroup_routing::GroupRoute route) override {
+        return engine_.quick_call_join(route);
+    }
+    std::future<engine::CommandResult> set_audio_gains(std::uint32_t radio_playback_gain_milli,
+                                                       std::uint32_t mic_transmit_gain_milli) override {
+        return engine_.set_audio_gains(radio_playback_gain_milli, mic_transmit_gain_milli);
+    }
+    std::future<engine::CommandResult> upsert_radio_identity(std::uint32_t source_id, std::uint64_t revision,
+                                                             std::optional<std::string> callsign) override {
+        return engine_.upsert_radio_identity(source_id, revision, std::move(callsign));
+    }
+    [[nodiscard]] std::shared_ptr<const engine::Snapshot> snapshot() const override { return engine_.snapshot(); }
+    [[nodiscard]] std::vector<engine::Event> drain_events(std::size_t max) override {
+        return engine_.drain_events(max);
+    }
+    void set_wakeup(std::function<void()> wakeup) override { engine_.set_wakeup(std::move(wakeup)); }
+
+private:
+    E& engine_;
+};
+
+} // namespace wirex::gui

@@ -1,0 +1,6 @@
+#include "resource.h"
+
+// 路径相对 rc.exe 的 /I 搜索路径（tools/build-gui.ps1 传入仓库根目录）。
+IDI_WIREX_APP ICON "assets/wiresx-official.ico"
+
+1 24 "src/gui/wirex_gui.manifest"
