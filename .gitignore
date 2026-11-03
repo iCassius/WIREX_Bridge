@@ -22,3 +22,7 @@
 # 用户运行配置随便携目录移动；配置正文与原子写入期间的备份不进入 Git。
 /config.json
 /config.*.backup*
+
+# wirex CLI 本地产物与临时目录。
+/tools/wirex/wirex.exe
+/tmp/
