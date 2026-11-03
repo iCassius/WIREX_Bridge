@@ -34,6 +34,7 @@ const usage = `用法：wirex <命令> [参数]
   doctor                                   检查构建/运行环境
   build [--release|--debug] [--compile-only] [--cmake] [--with-launcher]
                                            构建 Native 核心（默认复用 tools/build-bm-bridge.ps1）
+  build --gui                              构建 R128 原生 GUI（tools/build-gui.ps1）
   test [--offline|--all] [--build-dir D] [--launcher P] [--run S]
                                            运行 Native 测试与 PowerShell 离线测试
   package --version V [--build-dir D] [--build-log L] [--launcher-dir D] [--fixture F] [--native-repo R]
@@ -627,6 +628,7 @@ type buildOptions struct {
 	CompileOnly  bool
 	CMake        bool
 	WithLauncher bool
+	GUI          bool
 }
 
 func parseBuildArgs(args []string) (buildOptions, error) {
@@ -636,8 +638,15 @@ func parseBuildArgs(args []string) (buildOptions, error) {
 	compileOnly := fs.Bool("compile-only", false, "")
 	useCMake := fs.Bool("cmake", false, "")
 	withLauncher := fs.Bool("with-launcher", false, "")
+	gui := fs.Bool("gui", false, "")
 	if err := parseFlags(fs, args); err != nil {
 		return buildOptions{}, err
+	}
+	if *gui {
+		if *debug || *compileOnly || *useCMake || *withLauncher {
+			return buildOptions{}, usageError{"--gui 只构建原生 GUI，不能与 --debug/--compile-only/--cmake/--with-launcher 同时使用"}
+		}
+		return buildOptions{GUI: true}, nil
 	}
 	if *release && *debug {
 		return buildOptions{}, usageError{"--release 与 --debug 不能同时使用"}
@@ -656,6 +665,14 @@ func cmdBuild(args []string) error {
 	root, err := repoRoot()
 	if err != nil {
 		return err
+	}
+	if opts.GUI {
+		exe, err := buildGUI(root)
+		if err != nil {
+			return err
+		}
+		fmt.Println("GUI：", exe)
+		return nil
 	}
 	if opts.CMake {
 		return buildCMake(root, opts)
@@ -752,6 +769,29 @@ func buildLauncher(root string) (string, error) {
 		return "", fmt.Errorf("build-launcher.ps1 失败（退出码 %d）", code)
 	}
 	return filepath.Join(out, "WirexBridge.exe"), nil
+}
+
+var guiOutputLine = regexp.MustCompile(`(?m)^GUI 构建产物：(.+?)\s*$`)
+
+// buildGUI runs tools/build-gui.ps1; the script picks its own build/_work/wirex-gui-* directory.
+func buildGUI(root string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	fmt.Println("运行 tools/build-gui.ps1")
+	var captured strings.Builder
+	cmd := powershellFile(ctx, root, false, filepath.Join(root, "tools", "build-gui.ps1"))
+	code, err := runStreaming(ctx, cmd, consoleCodePage(), os.Stdout, &captured)
+	if err != nil {
+		return "", err
+	}
+	if code != 0 {
+		return "", fmt.Errorf("build-gui.ps1 失败（退出码 %d）", code)
+	}
+	m := guiOutputLine.FindAllStringSubmatch(captured.String(), -1)
+	if len(m) == 0 {
+		return "", errors.New("build-gui.ps1 输出中缺少“GUI 构建产物：”行")
+	}
+	return filepath.Join(strings.TrimSpace(m[len(m)-1][1]), "WirexBridge.exe"), nil
 }
 
 // buildCMake configures CMakeLists.txt with the VS 2019 generator. It produces no
