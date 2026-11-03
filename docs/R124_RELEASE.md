@@ -64,3 +64,13 @@ Root 审计 generic 目录后，只修订 manifest 的人工审核元数据：�
 publisher 先创建 draft 并核验三个资产，再将其发布为 stable Release。发布后用真实 downloader 从私有 GitHub Release 下载到隔离审计目录 `build/_work/downloaded-v0.1.0-r124-audit`。下载器验证 Release 状态、manifest、checksum、ZIP 条目路径/类型/大小/hash、provenance 和固定库存；结果为 43 个文件、8 个目录，42 条 manifest 记录及外部 manifest 均与获审 generic 目录逐字节相同，无 `config.json`、reparse point 或遗留 staging。最初下载暴露出 `.part` 临时资产与精确解压库存处于同一路径的真实错误。后续 downloader 修复把临时资产放到同级独立 scratch 根，解压目录仍执行完整精确库存与 provenance 校验；fake-HTTP 生产路径回归及真实私有 Release 下载均通过。此工具修订在 v0.1.0 tag 之后，不属于已发布资产，tag 仍指向 `c12b50a`。
 
 发布包不包含用户配置；本机 stable 目录的配置迁移及 Alpha 19 归档按本机交接记录单独执行，配置内容和哈希不写入文档。此前 63 项真实 WPF 输入回归获 root 接受；后一次前台 Dota 2 环境没有让 WPF 窗口收到输入，不作为通过结果。本轮未进行设备、BM、音频、PTT 或 RF 实测。
+
+## 本机旧版本归档与启动入口（2026-11-03）
+
+正式发布后的 downloader sibling-scratch 修复及交接提交 `3ce22aee7d080311be0821228d59072bd8de6f57` 推送到 `origin/codex/r124-stable-release`。它没有更新 `origin/main`、`v0.1.0` tag、Release 或三项已发布资产；tag 仍指向 `c12b50a9f339417ffd49d37b7acab6057fa51bcf`。
+
+为保留旧版和离线构建证据，以下内容已按原相对路径可恢复移动到 `private/build-retired/R124/build/`：Alpha 19 本机包、7 个 R124 launcher 旧构建目录、R123 `b102cd6` Native 构建目录及其 `r123-b102cd6-clean-full40.log`，合计 10 项、230 个文件、70 个目录。操作前逐项解析了绝对源路径，确认路径仍在 `app/build/`、源树没有 reparse point、文件可独占打开、没有来自该 build 的进程，且归档目标不存在；目录使用 `Directory.Move`，日志使用 `File.Move`。操作后源路径均消失，目标文件和目录计数与移动前一致，目标树没有 reparse point。现在 `build/_work/` 为空，`build/releases/` 只留 `v0.1.0`。
+
+Alpha 19 目录内的 config、日志和缓存随目录原样保留；没有读取该旧 config 的字段、打印其内容或计算哈希。当前 stable `build/releases/v0.1.0/config.json` 保持原位，用 `WirexBridge.exe --validate-config` 完成只读 schema 校验，退出码为 0；校验前后文件长度和修改时间相同，没有与 Alpha 19 配置比较或覆盖。
+
+根目录被 `.git/info/exclude` 忽略的 `start-my-bridge.cmd` 长 103 字节，调用 Alpha 19 的启动器。已用 `File.Move` 原样移动到 `private/build-retired/R124/legacy-entrypoints/start-my-bridge.cmd`，移动前后逐字节比较相同；没有创建新的 CMD 入口。用户当前保留的 stable 启动目录和配置未被移动或覆盖。本次归档及配置检查没有连接电台、BM、音频或 RF。

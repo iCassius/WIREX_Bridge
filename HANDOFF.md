@@ -10,6 +10,14 @@ fresh Native full40、launcher 45、package 795、publisher 163（含完整 Git 
 
 真实 WPF 输入回归曾通过 63 项断言，root 接受该证据。另一次尝试时 Dota 2 在前台，WPF 窗口没有收到输入事件；该次不形成有效 UI 结果，也不覆盖此前通过的 63 项结果，未再抢占输入。此次发行未连接真实设备、BM、音频、PTT 或 RF，也没有实机验收结果。
 
+## R124 本机归档与旧入口收尾（2026-11-03）
+
+正式发布后，下载器 sibling-scratch 修复与交接文档由提交 `3ce22aee7d080311be0821228d59072bd8de6f57` 推送到 `origin/codex/r124-stable-release`。`origin/main` 和已发布 `v0.1.0` tag 仍指向产品源码提交 `c12b50a9f339417ffd49d37b7acab6057fa51bcf`；没有改写或重发稳定资产。
+
+Alpha 19 本机目录、7 个 R124 launcher 旧构建目录、R123 `b102cd6` Native 构建目录及其 full40 日志共 10 项，已用 `Directory.Move`/`File.Move` 可恢复地镜像归档到 `private/build-retired/R124/build/`，共保留 230 个文件和 70 个目录。源树移动前检查均在 `app/build/` 内、没有 reparse point、没有独占打开失败或运行中的 build 进程；移动后源路径均已消失，目标计数一致。`build/_work/` 现在为空；`build/releases/` 只保留 stable `v0.1.0`。Alpha 19 内配置、日志和缓存随目录原样保存，配置字段和哈希没有读取或记录。
+
+根目录原忽略入口 `start-my-bridge.cmd` 长 103 字节，内容指向已归档的 Alpha 19 启动器；已用 `File.Move` 移到 `private/build-retired/R124/legacy-entrypoints/start-my-bridge.cmd`，移动前后逐字节相同。没有新增 CMD 启动入口。stable `build/releases/v0.1.0/config.json` 保留在原位；其 launcher `--validate-config` 只读校验退出码为 0，文件长度和修改时间未变，且没有与归档中的 Alpha 19 配置比较或覆盖。
+
 ## R123 / Alpha 19 最终交接（2026-11-02）
 
 源码提交 `b102cd630d49839eb99869f87958909cd365094d` 已推送至 `origin/main`。基于该干净提交在 `build/_work/wirex-bridge-b102cd6-20261102-153831` 完成 Native full40，40/40 通过，`source_tree_clean=true`、`compile_only=false`，编译 warning/error 均为 0。EXE 长 999,936 字节，SHA-256 为 `aad6ce7d48c616215b5979f0c7bba3e4da0eb33dee56f26554e84f3f85e640a7`。首个全量构建在链接 `session_timing_test.exe` 时报告 LNK1105；检查时没有发现仍在运行的 link、cl 或测试进程。随后在新目录重跑 full40 并通过；仅记录观察结果，不推断失败原因。失败目录及日志已可恢复归档。
