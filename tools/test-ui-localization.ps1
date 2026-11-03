@@ -67,7 +67,7 @@ $config.connection.source_id=[uint64]123456
 $config.connection.color_code=[uint64]1
 $config.channels=[object[]]@([pscustomobject][ordered]@{id=[uint64]91;kind='group';slot=[uint64]1;name='用户自定义组名'})
 $config.tx_channel_id='group:91:1'
-$config.ui.language='zh-CN'
+$config.ui.language='en-US'
 [void](Save-WirexPortableConfig -Path $configPath -Config $config -PersistUiLanguage)
 $raw=ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($configPath,[Text.Encoding]::UTF8))
 Add-Member -InputObject $raw -NotePropertyName future_extension -NotePropertyValue ([pscustomobject][ordered]@{preserve='keep-me';revision=7}) -Force
@@ -79,6 +79,13 @@ if([Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA'){throw '请�
 . $uiPath -UiTestFixture -NoAutoConnect -UserConfigDirectory $configDirectory -PackageDirectory $repo
 try {
     Assert-Locale ($script:mainWindow -and $script:mainWindow.IsVisible -and $script:settingsWindow) '离线测试没有启动真实主窗口和设置窗口'
+    $languageButton=$script:mainWindow.FindName('LanguageToggleButton')
+    $startupConfig=ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($configPath,[Text.Encoding]::UTF8))
+    Assert-Locale ($script:uiLanguage -ceq 'zh-CN' -and $script:portableConfig.ui.language -ceq 'en-US' -and $startupConfig.ui.language -ceq 'en-US') '应用没有固定以中文启动，或启动时改写了配置中的语言值'
+    Assert-Locale ($languageButton.Visibility -eq [System.Windows.Visibility]::Collapsed -and -not $languageButton.IsEnabled) '语言切换按钮仍在界面显示或可用'
+    $languageButton.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))
+    $startupConfigAfterClick=ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($configPath,[Text.Encoding]::UTF8))
+    Assert-Locale ($script:uiLanguage -ceq 'zh-CN' -and $startupConfigAfterClick.ui.language -ceq 'en-US') '隐藏按钮触发了语言切换或改写配置'
     if($script:uiTimer){$script:uiTimer.Stop()}
     $remove=New-Object System.Windows.Controls.TextBlock
     $unlisten=New-Object System.Windows.Controls.TextBlock
@@ -204,7 +211,7 @@ try {
         [void](Set-UiLanguagePreference -Language $language)
         $script:mainWindow.Dispatcher.Invoke([Action]{},[System.Windows.Threading.DispatcherPriority]::Render)
         if($language -ceq 'en-US'){
-            Assert-Locale ($removeButton.Content -ceq 'Remove' -and $script:mainWindow.FindName('LanguageToggleButton').Content -ceq '中文') '静态中文控件在English窗口没有正确显示或切换按钮标签错误'
+            Assert-Locale ($removeButton.Content -ceq 'Remove' -and $languageButton.Visibility -eq [System.Windows.Visibility]::Collapsed -and -not $languageButton.IsEnabled) '内部翻译函数未更新静态文案，或主界面语言入口变为可见/可用'
             Assert-Locale ($script:mainWindow.FindName('TransientStatusText').Text -match '^BM connection state has not updated') 'BM动态状态没有随语言即时翻译'
             Assert-Locale ($script:mainWindow.FindName('BmStaticGroupSourceValue').Text -ceq 'Device 1') 'BM来源标签没有随语言切换'
             Assert-Locale ($script:mainWindow.FindName('CatObservedMainModeText').Text -ceq '') '切换语言改变了隐藏MAIN观测源文本'
@@ -213,15 +220,12 @@ try {
             $presentation=Get-UiChannelActivationPresentation -Channel $script:channels[0]
             Assert-Locale ($presentation.title -match 'Group 91 · 用户自定义组名') '频道标签中的自定义组名被翻译或丢失'
         } else {
-            Assert-Locale ($removeButton.Content -ceq '移除' -and $script:mainWindow.FindName('LanguageToggleButton').Content -ceq 'English') '中文窗口没有从规范源文案恢复'
+            Assert-Locale ($removeButton.Content -ceq '移除' -and $languageButton.Visibility -eq [System.Windows.Visibility]::Collapsed -and -not $languageButton.IsEnabled) '内部翻译函数没有恢复中文源文案，或主界面语言入口变为可见/可用'
             Assert-Locale ($script:mainWindow.FindName('TransientStatusText').Text -match 'BM 连接状态尚未更新') 'BM动态状态没有恢复中文源文案'
         }
     }
-    $languageButton=$script:mainWindow.FindName('LanguageToggleButton')
     $languageButton.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))
-    Assert-Locale ($script:uiLanguage -ceq 'en-US' -and $languageButton.Content -ceq '中文') '语言按钮的程序化Click没有执行中文到英文切换'
-    $languageButton.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))
-    Assert-Locale ($script:uiLanguage -ceq 'zh-CN' -and $languageButton.Content -ceq 'English') '语言按钮的程序化Click没有执行英文到中文切换'
+    Assert-Locale ($languageButton.Visibility -eq [System.Windows.Visibility]::Collapsed -and -not $languageButton.IsEnabled -and $script:uiLanguage -ceq 'zh-CN') '本地化实现测试意外启用了主界面的语言切换入口'
 
     Assert-Locale ((Get-ComboTagSnapshot -Names $comboNames) -ceq $tagsBefore) '语言切换修改了串口或音频endpoint的Tag值'
     Assert-Locale ((@($script:channels|ForEach-Object{Get-UiChannelKey -Channel $_}) -join '|') -ceq $channelKeysBefore -and [string]$script:txChannelKey -ceq $txBefore) '语言切换修改了频道列表或PTT目标'
@@ -255,45 +259,47 @@ try {
     if($script:application){$script:application.Shutdown()}
 }
 
-$englishConfigDirectory=Join-Path $task 'english-config'
-[void][IO.Directory]::CreateDirectory($englishConfigDirectory)
-$englishConfigPath=Join-Path $englishConfigDirectory 'config.json'
-$englishConfig=Get-WirexPortableConfig -Path $englishConfigPath
-$englishConfig.ui.language='en-US'
-[void](Save-WirexPortableConfig -Path $englishConfigPath -Config $englishConfig -PersistUiLanguage)
+$storedEnglishConfigDirectory=Join-Path $task 'stored-en-language-config'
+[void][IO.Directory]::CreateDirectory($storedEnglishConfigDirectory)
+$storedEnglishConfigPath=Join-Path $storedEnglishConfigDirectory 'config.json'
+$storedEnglishConfig=Get-WirexPortableConfig -Path $storedEnglishConfigPath
+$storedEnglishConfig.ui.language='en-US'
+[void](Save-WirexPortableConfig -Path $storedEnglishConfigPath -Config $storedEnglishConfig -PersistUiLanguage)
+$chineseRenderDirectory=Join-Path $task 'default-chinese-render'
+[void][IO.Directory]::CreateDirectory($chineseRenderDirectory)
 $oldErrorActionPreference=$ErrorActionPreference
 try {
     $ErrorActionPreference='Continue'
     $renderOutput=@(& powershell.exe -NoLogo -NoProfile -STA -File $uiPath -RenderOnly -NoAutoConnect `
-        -UserConfigDirectory $englishConfigDirectory -PackageDirectory $fakePackageDir -PortableDirectory $fakePackageDir `
-        -RenderOutputDirectory $renderDirectory -RenderWorkArea '1360x900' 2>&1)
+        -UserConfigDirectory $storedEnglishConfigDirectory -PackageDirectory $fakePackageDir -PortableDirectory $fakePackageDir `
+        -RenderOutputDirectory $chineseRenderDirectory -RenderWorkArea '1360x900' 2>&1)
     $renderExit=$LASTEXITCODE
 } finally { $ErrorActionPreference=$oldErrorActionPreference }
-if($renderExit -ne 0){throw ('English RenderOnly failed for package {0} (wrapper={1}, native={2}): {3}' -f $fakePackageDir,[IO.File]::Exists((Join-Path $fakePackageDir 'start-bm-radio-bridge.ps1')),[IO.File]::Exists((Join-Path $fakePackageDir 'wirex_bridge.exe')),($renderOutput -join [Environment]::NewLine))}
-$layoutPath=Join-Path $renderDirectory 'layout-info.json'
-if(-not [IO.File]::Exists($layoutPath)){throw 'English RenderOnly did not export layout-info.json'}
+if($renderExit -ne 0){throw ('Default Chinese RenderOnly failed for package {0} (wrapper={1}, native={2}): {3}' -f $fakePackageDir,[IO.File]::Exists((Join-Path $fakePackageDir 'start-bm-radio-bridge.ps1')),[IO.File]::Exists((Join-Path $fakePackageDir 'wirex_bridge.exe')),($renderOutput -join [Environment]::NewLine))}
+$layoutPath=Join-Path $chineseRenderDirectory 'layout-info.json'
+if(-not [IO.File]::Exists($layoutPath)){throw 'RenderOnly did not export layout-info.json'}
 $layout=ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($layoutPath,[Text.Encoding]::UTF8))
-$image=[System.Drawing.Image]::FromFile((Join-Path $renderDirectory 'main-window.png'))
-try{Assert-Locale ($image.Width -eq 1360 -and $image.Height -eq 900) 'English主界面截图不是1360x900'}finally{$image.Dispose()}
+$image=[System.Drawing.Image]::FromFile((Join-Path $chineseRenderDirectory 'main-window.png'))
+try{Assert-Locale ($image.Width -eq 1360 -and $image.Height -eq 900) '中文主界面截图不是1360x900'}finally{$image.Dispose()}
 function Has-VisibleText { param([object]$Control,[string]$Text) return ([string]$Control.text -ceq $Text -or @($Control.visual_text) -contains $Text) }
-$requiredEnglish=[ordered]@{
-    ConnectionConfigTitleText='Connection setup';RefreshDevicesButton='Refresh devices';StopButton='Stop and exit';
-    ConnectButton='Connect BM';SaveSettingsButton='Save settings';LanguageToggleButton='中文';
-    AddBmStaticGroupButton='Add as static group';StaticApiRequiredText='BM API key required';
-    CatModeCaptionText='MAIN mode';CatFrequencyCaptionText='Frequency MHz';CatPowerCaptionText='Power W';
-    SourceIdCaptionText='DMR ID';AddChannelButton='Add to listening';SetHistoryCallTargetButton='Set TX target'
+$requiredChinese=[ordered]@{
+    ConnectionConfigTitleText='连接配置';RefreshDevicesButton='刷新设备';StopButton='停止并退出';
+    ConnectButton='连接BM';SaveSettingsButton='保存配置';AddBmStaticGroupButton='添加为静态组';
+    CatModeCaptionText='MAIN 模式';CatFrequencyCaptionText='频率 MHz';CatPowerCaptionText='功率 W';
+    AddChannelButton='加入监听';SetHistoryCallTargetButton='设为PTT目标'
 }
-foreach($controlName in $requiredEnglish.Keys){
+Assert-Locale ($layout.ui_language -ceq 'zh-CN') '保存en-US的配置导致RenderOnly界面使用英文'
+Assert-Locale (-not [bool]$layout.main.controls_visible.LanguageToggleButton -and -not [bool]$layout.main.controls_bounds.LanguageToggleButton.is_enabled) 'RenderOnly主界面显示了语言切换按钮或按钮可用'
+foreach($controlName in $requiredChinese.Keys){
     $control=$layout.main.controls_bounds.PSObject.Properties[$controlName].Value
-    Assert-Locale (Has-VisibleText -Control $control -Text $requiredEnglish[$controlName]) "English实际窗口缺少控件${controlName}的翻译$($requiredEnglish[$controlName])"
+    Assert-Locale (Has-VisibleText -Control $control -Text $requiredChinese[$controlName]) "RenderOnly中文窗口缺少控件${controlName}的文案$($requiredChinese[$controlName])"
 }
-Assert-Locale ([string]$layout.main.controls_bounds.SerialConnectButton.visual_text[0] -match 'Connect|Disconnect|Cancel') 'English串口按钮仍显示中文'
+Assert-Locale ([string]$layout.main.controls_bounds.SerialConnectButton.visual_text[0] -match '连接串口|断开串口|取消连接') '中文串口按钮显示了错误文案'
 Assert-Locale ([bool]$layout.main.controls_visible.SourceIdCaptionText -and [double]$layout.main.controls_bounds.SourceIdCaptionText.actual.width -gt 0 -and [double]$layout.main.controls_bounds.SourceIdCaptionText.actual.height -gt 0) 'DMR ID 标签没有实际可见的TextBlock边界'
 Assert-Locale (-not [bool]$layout.main.controls_visible.CatObservedFrequencyText -and [string]$layout.main.controls_bounds.CatObservedFrequencyText.text -ceq '145.500 MHz') 'CAT频率观测值仍显示或后台值被清空'
 Assert-Locale (-not [bool]$layout.main.controls_visible.CatObservedPowerText -and [string]$layout.main.controls_bounds.CatObservedPowerText.text -ceq '25 W') 'CAT功率观测值仍显示或后台值被清空'
-Assert-Locale (@($layout.channel_card_layout|Where-Object{-not $_.blank}|ForEach-Object{[string]$_.card_title.text}|Where-Object{$_ -match '组呼|单呼|动态组|静态组'}).Count -eq 0) 'English频道卡仍显示中文类别或状态'
-Assert-Locale (@($layout.channel_card_layout|Where-Object{-not $_.blank}|ForEach-Object{[string]$_.buttons -join ' '}) -join ' ' -match 'Set TX|Remove|Mute|Join|Rejoin') 'English频道卡没有翻译动作按钮'
-Assert-Locale ([string]$layout.caller_identity_samples.short.visual_text -join ' ' -match '短呼号测试者') 'English窗口翻译了用户姓名'
-Assert-Locale ([string]$layout.channel_card_layout[1].card_title.text -match '测试长频道名称') 'English窗口翻译了用户自定义频道名称'
+Assert-Locale (@($layout.channel_card_layout|Where-Object{-not $_.blank}|ForEach-Object{[string]$_.card_title.text}|Where-Object{$_ -match '组呼|单呼'}).Count -gt 0) '中文RenderOnly频道标题没有显示通话类型'
+Assert-Locale ([string]$layout.caller_identity_samples.short.visual_text -join ' ' -match '短呼号测试者') 'RenderOnly窗口翻译了用户姓名'
+Assert-Locale ([string]$layout.channel_card_layout[1].card_title.text -match '测试长频道名称') 'RenderOnly窗口翻译了用户自定义频道名称'
 
-Write-Output ("PASS: test-ui-localization.ps1 ({0}断言; reversible zh/en; no action/config side effects; English 1360x900 render={1})" -f $script:assertionCount,$renderDirectory)
+Write-Output ("PASS: test-ui-localization.ps1 ({0}断言; runtime default zh-CN; switch hidden/disabled; translator helpers retained; Chinese 1360x900 render={1})" -f $script:assertionCount,$chineseRenderDirectory)

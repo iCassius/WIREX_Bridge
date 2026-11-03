@@ -7621,7 +7621,7 @@ function Get-UiComboContrastEvidence {
 function Import-UiPortableConfig {
     try {
         $script:portableConfig = Get-WirexPortableConfig -Path $script:portableConfigPath
-        $script:uiLanguage = Get-WirexUiDisplayLanguage -Config $script:portableConfig
+        $script:uiLanguage = 'zh-CN'
         $script:channels = @($script:portableConfig.channels)
         $script:txChannelKey = [string]$script:portableConfig.tx_channel_id
         $script:mutedChannelKeys = @{}
@@ -8394,8 +8394,6 @@ $script:radioCatControllerInitialized = $false
 $script:application.MainWindow = $script:mainWindow
 [void](Import-UiPortableConfig)
 Set-WirexUiLocalizedWindow -Window $script:mainWindow -Language $script:uiLanguage
-$languageButton = $script:mainWindow.FindName('LanguageToggleButton')
-if ($languageButton) { $languageButton.Content = if ($script:uiLanguage -ceq 'zh-CN') { 'English' } else { '中文' } }
 $script:uiStartupLocalizationProbe = [pscustomobject][ordered]@{
     language=[string]$script:uiLanguage
     connection_title=[string]$script:mainWindow.FindName('ConnectionConfigTitleText').Text
@@ -8420,7 +8418,6 @@ Register-UiSetupLinks
 (Get-UiControl 'ConnectButton').Add_Click({ [void](Toggle-UiBmConnection) })
 (Get-UiControl 'SaveSettingsButton').Add_Click({ [void](Save-SettingsFromWindow) })
 (Get-UiControl 'StopButton').Add_Click({ Request-StopAndExit })
-(Get-UiControl 'LanguageToggleButton').Add_Click({ Toggle-UiLanguagePreference })
 (Get-UiControl 'AddChannelButton').Add_Click({ Add-UiChannelFromInputs })
 $pagePreviousButton = $script:mainWindow.FindName('ChannelPagePreviousButton')
 if ($pagePreviousButton) { $pagePreviousButton.Add_Click({ Set-UiChannelPage -Delta -1 }) }

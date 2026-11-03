@@ -28,6 +28,6 @@ R126 从 R125 本机测试包源码提交 `2d8b7ea` 开始。本记录覆盖来�
 - Windows PowerShell 5.1 STA 对 `bridge-ui.ps1` 解析成功；文件保留 UTF-8 BOM。
 - MSVC 针对性构建并运行现有 `hri_stream_session_test` 通过；新增断言覆盖正常取消、网络结束、T3 写入失败但 T0 收尾成功、T0 写入失败、T0 记录超时、T0 未观察、音频关闭失败及未启动 HRI 的路径，没有新增测试 target。
 - `src/probe_main.cpp` 的 BM bridge 编译单元以 R125 配置参数编译通过。
-- Windows PowerShell 5.1 STA 的 RenderOnly 回归通过 6,410 项布局/边界断言并目视检查截图。内置来话历史 probe 确认新记录回第 0 页、重复状态 tick 保持用户第 1 页；cleanup probe 确认失败文案显示红色、正常收尾文案为“来话结束”。
+- Windows PowerShell 5.1 STA 的 RenderOnly 回归通过 6,404 项布局/实际边界断言并目视检查截图。内置来话历史 probe 确认新记录回第 0 页、重复状态 tick 保持用户第 1 页；cleanup probe 确认失败文案显示红色、正常收尾文案为“来话结束”。
 - 当前 R125 测试运行的 `main_window_icon_loaded=false`，因为该启动器尚未嵌入 `WIREX.ico`。已验证资源缺失时 UI 可以继续运行；图标资源的加载和实际显示待含资源的 launcher/package 验收。
-- 本记录不构成完整 Native full40、真实 BM、CAT、音频、PTT、RF 或硬件验收。
+- 独立 worktree `worktrees/native-build-R126` 在 clean 源码提交 `9170badbc2392931b0d0fa6027d6ecc6365d921b` 完成 Native full40，40/40 项通过，`source_tree_clean=true`、`compile_only=false`；EXE SHA-256 为 `f178ddfbc6a7766233bf46ed2c3e27ee201ba9fabd1f0b71dc2ac95a699df734`。本记录不包含真实 BM、CAT、音频、PTT、RF 或硬件验收。
