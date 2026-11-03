@@ -19,4 +19,10 @@ go test ./tools/wirex; go vet ./tools/wirex
 | `wirex package --version V` | 调用 `tools/package-release.ps1`。会自动查找最新的干净完整构建及其 `.log`、当前 HEAD 的 launcher 构建和 fixture。各项都可以用 `--build-dir/--build-log/--launcher-dir/--fixture/--native-repo` 覆盖 |
 | `wirex package --version V --zip` | ZIP-only 版本（v0.1.1-test.2 / v0.1.1）在 root 审计后调用 `New-ZipOnlyReleaseDistribution`，ZIP 输出到 `build/_work/r126-distribution/V/` |
 
+已知环境问题（wirex 已规避前两项）：
+- 从 pwsh 7 启动时，PSModulePath 会让 5.1 找不到 `Get-FileHash`。wirex 启动子进程前会去掉 PSModulePath。
+- PATH 中没有 vswhere 时，vcvarsall 会往 stderr 写警告，build-bm-bridge.ps1 会因此中止。wirex 会把 VS Installer 目录追加到子进程的 PATH。
+- 新 checkout/worktree 中，`third_party/droidstar_mbe/upstream/imbe_vocoder` 有 22 个文件的原始字节（CRLF/LF 混合）与已提交的 blob 不一致，build-bm-bridge.ps1 的 SHA-256 校验无法通过。目前只有主 checkout 能正常构建。
+- test-package-release、test-download-release、test-r126-zip-only 需要仓库内的 `private/fixtures/device-y.bin` 和 `build/releases/v0.1.0`，test-publish-release 需要 `build/releases/v0.1.0-alpha.10`，在 worktree 中会失败。
+
 正式发布流程：在干净工作树上依次执行 `wirex build --with-launcher`、`wirex test`、`wirex package --version V`；root 审计后执行 `wirex package --version V --zip`。
