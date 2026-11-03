@@ -117,6 +117,8 @@ foreach ($name in $functionNames) {
     Assert-UiAudioGain (@($selected | Where-Object { $_.Name -ceq $name }).Count -eq 1) ("必须从当前 UI 提取一个 {0} 实现。" -f $name)
 }
 Invoke-Expression (($selected | ForEach-Object { $_.Extent.Text }) -join "`r`n")
+Import-Module -Name (Join-Path $repoRoot 'ui\windows\UiLocalization.psm1') -Force
+$script:uiLanguage = 'zh-CN'
 Import-Module -Name $configModulePath -Force
 
 function Set-MainText {

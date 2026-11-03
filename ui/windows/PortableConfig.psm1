@@ -21,7 +21,7 @@ function New-WirexPortableConfigDefaults {
         channels = [object[]]@([pscustomobject][ordered]@{ id = [uint64]460997; kind = 'private'; slot = 2; name = '460997' })
         tx_channel_id = 'private:460997:2'
         routing = [pscustomobject][ordered]@{ blocked_source_ids = [uint64[]]@() }
-        ui = [pscustomobject][ordered]@{ bm_server_selection_id = 'bm-china-4602'; legacy_rx_policy = $null }
+        ui = [pscustomobject][ordered]@{ bm_server_selection_id = 'bm-china-4602'; legacy_rx_policy = $null; language = 'zh-CN' }
         window = [pscustomobject][ordered]@{}
     }
 }
@@ -305,6 +305,9 @@ function ConvertTo-WirexPortableConfig {
         throw 'ui.bm_server_selection_id 字段格式无效。'
     }
     if ($null -ne $merged.ui.legacy_rx_policy -and -not (Test-WirexObject -Value $merged.ui.legacy_rx_policy)) { throw 'ui.legacy_rx_policy 必须是对象或 null。' }
+    if ($merged.ui.language -isnot [string] -or $merged.ui.language -cnotin @('zh-CN','en-US')) {
+        throw 'ui.language 只接受 zh-CN 或 en-US。'
+    }
     Assert-WirexNoCredentialPathProperties -Value $merged
     return $merged
 }
@@ -497,7 +500,8 @@ function Get-WirexPortableConfig {
 function Save-WirexPortableConfig {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string]$Path,
-        [Parameter(Mandatory = $true)][object]$Config)
+        [Parameter(Mandatory = $true)][object]$Config,
+        [switch]$PersistUiLanguage)
     $fullPath = [System.IO.Path]::GetFullPath($Path)
     $directory = [System.IO.Path]::GetDirectoryName($fullPath)
     if (-not [System.IO.Directory]::Exists($directory)) { throw 'config.json 所在目录不存在；没有写入配置。' }
@@ -505,6 +509,16 @@ function Save-WirexPortableConfig {
     $base = if ($null -ne $existing) { $existing } else { New-WirexPortableConfigDefaults }
     $merged = Merge-WirexConfigObjects -Base $base -Override $Config
     $validated = ConvertTo-WirexPortableConfig -Config $merged
+    $existingHasLanguage = $false
+    if ($existing) {
+        $rawExisting = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($fullPath,[System.Text.Encoding]::UTF8)) -ErrorAction Stop
+        $rawUi = Get-WirexPropertyValue -Object $rawExisting -Name 'ui'
+        $existingHasLanguage = ($rawUi -and (Test-WirexHasProperty -Object $rawUi -Name 'language'))
+    }
+    if (-not $PersistUiLanguage -and -not $existingHasLanguage) {
+        if ($validated.ui -is [System.Collections.IDictionary]) { [void]$validated.ui.Remove('language') }
+        else { [void]$validated.ui.PSObject.Properties.Remove('language') }
+    }
     $temporaryPath = $fullPath + '.backup-tmp-' + [guid]::NewGuid().ToString('N')
     $backupPath = $fullPath + '.backup-' + [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ') + '-' + [guid]::NewGuid().ToString('N')
     try {
@@ -518,6 +532,36 @@ function Save-WirexPortableConfig {
         if ([System.IO.File]::Exists($backupPath)) { [System.IO.File]::Delete($backupPath) }
     }
     return $validated
+}
+
+function Set-WirexPortableConfigLanguage {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string]$Path,
+        [Parameter(Mandatory = $true)][ValidateSet('zh-CN','en-US')][string]$Language)
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $existing = Read-WirexPortableConfigFile -Path $fullPath
+    if ($null -eq $existing) { throw 'config.json 尚未初始化；没有写入语言设置。' }
+    $rawJson = [System.IO.File]::ReadAllText($fullPath,[System.Text.Encoding]::UTF8)
+    $rawConfig = ConvertFrom-Json -InputObject $rawJson -ErrorAction Stop
+    if (-not (Test-WirexHasProperty -Object $rawConfig.ui -Name 'language')) {
+        Add-Member -InputObject $rawConfig.ui -NotePropertyName language -NotePropertyValue $Language
+    } else {
+        $rawConfig.ui.PSObject.Properties['language'].Value = $Language
+    }
+    [void](ConvertTo-WirexPortableConfig -Config $rawConfig)
+    $directory = [System.IO.Path]::GetDirectoryName($fullPath)
+    $temporaryPath = $fullPath + '.language-tmp-' + [guid]::NewGuid().ToString('N')
+    $backupPath = $fullPath + '.language-backup-' + [guid]::NewGuid().ToString('N')
+    try {
+        $json = (ConvertTo-Json -InputObject $rawConfig -Depth 24) + "`n"
+        if ([System.Text.Encoding]::UTF8.GetByteCount($json) -gt $script:WirexPortableConfigMaxBytes) { throw 'config.json 超过 128 KiB；没有写入语言设置。' }
+        [System.IO.File]::WriteAllText($temporaryPath,$json,(New-Object System.Text.UTF8Encoding($false)))
+        [System.IO.File]::Replace($temporaryPath,$fullPath,$backupPath)
+    } finally {
+        if ([System.IO.File]::Exists($temporaryPath)) { [System.IO.File]::Delete($temporaryPath) }
+        if ([System.IO.File]::Exists($backupPath)) { [System.IO.File]::Delete($backupPath) }
+    }
+    return Get-WirexPortableConfig -Path $fullPath
 }
 
 function Initialize-PortableConfig {
@@ -568,4 +612,4 @@ function Initialize-PortableConfig {
     }
 }
 
-Export-ModuleMember -Function Get-WirexPortableConfig, Save-WirexPortableConfig, Initialize-PortableConfig
+Export-ModuleMember -Function Get-WirexPortableConfig, Save-WirexPortableConfig, Set-WirexPortableConfigLanguage, Initialize-PortableConfig

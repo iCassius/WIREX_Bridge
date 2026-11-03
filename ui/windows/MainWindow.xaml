@@ -56,7 +56,7 @@
       <Setter Property="Foreground" Value="#F2F6F7"/><Setter Property="Background" Value="#12191C"/>
       <Setter Property="BorderBrush" Value="#64747C"/><Setter Property="BorderThickness" Value="1"/>
       <Setter Property="Padding" Value="6,4"/><Setter Property="Margin" Value="2,1"/>
-      <Setter Property="MinHeight" Value="29"/><Setter Property="FontSize" Value="13"/>
+      <Setter Property="MinHeight" Value="29"/><Setter Property="FontSize" Value="14"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="ComboBox">
@@ -101,11 +101,50 @@
       <Setter Property="Background" Value="#12191C"/><Setter Property="Foreground" Value="#E6EEF0"/>
       <Setter Property="BorderBrush" Value="#526169"/><Setter Property="BorderThickness" Value="1"/>
       <Setter Property="Padding" Value="3"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ListBox">
+            <Border x:Name="ListBoxChrome" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="{TemplateBinding BorderThickness}" SnapsToDevicePixels="True">
+              <ItemsPresenter Margin="{TemplateBinding Padding}" SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter TargetName="ListBoxChrome" Property="Background" Value="#151C20"/>
+                <Setter TargetName="ListBoxChrome" Property="BorderBrush" Value="#263138"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+      <Style.Triggers>
+        <Trigger Property="IsEnabled" Value="False">
+          <Setter Property="Background" Value="#151C20"/><Setter Property="Foreground" Value="#758188"/>
+        </Trigger>
+      </Style.Triggers>
     </Style>
     <Style TargetType="ListBoxItem">
       <Setter Property="Background" Value="Transparent"/><Setter Property="Foreground" Value="#E6EEF0"/>
       <Setter Property="Padding" Value="3,1"/><Setter Property="FontSize" Value="10"/>
-      <Style.Triggers><Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="#28533B"/></Trigger></Style.Triggers>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ListBoxItem">
+            <Border x:Name="ItemChrome" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" SnapsToDevicePixels="True">
+              <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                Margin="{TemplateBinding Padding}" SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}"
+                                Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}"
+                                ContentTemplateSelector="{TemplateBinding ContentTemplateSelector}" ContentStringFormat="{TemplateBinding ContentStringFormat}"/>
+            </Border>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+      <Style.Triggers>
+        <Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="#28533B"/></Trigger>
+        <Trigger Property="IsEnabled" Value="False">
+          <Setter Property="Background" Value="#151C20"/><Setter Property="Foreground" Value="#758188"/>
+          <Setter Property="BorderBrush" Value="#263138"/><Setter Property="Opacity" Value="1"/>
+        </Trigger>
+      </Style.Triggers>
     </Style>
     <Style x:Key="AudioGainSliderStyle" TargetType="Slider">
       <Setter Property="Foreground" Value="#4C7FF5"/><Setter Property="Margin" Value="2,4,6,4"/>
@@ -199,7 +238,10 @@
         </StackPanel>
         <TextBlock x:Name="TransientStatusText" Text="" FontSize="11" Foreground="#EFC36F" VerticalAlignment="Center" Margin="8,0,0,0" MaxWidth="390" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" ToolTip="{Binding RelativeSource={RelativeSource Self}, Path=Text}" ToolTipService.ShowDuration="30000" Visibility="Collapsed"/>
       </StackPanel>
-      <Button x:Name="StopButton" Grid.Column="2" Content="停止并退出" MinWidth="120" Height="26" Padding="8,2" Margin="2,0" Background="#69422E" BorderBrush="#A06F4D" VerticalAlignment="Center"/>
+      <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+        <Button x:Name="LanguageToggleButton" Content="English" MinWidth="62" Height="26" Padding="6,2" Margin="2,0,6,0" VerticalAlignment="Center"/>
+        <Button x:Name="StopButton" Content="停止并退出" MinWidth="120" Height="26" Padding="8,2" Margin="2,0" Background="#69422E" BorderBrush="#A06F4D" VerticalAlignment="Center"/>
+      </StackPanel>
     </Grid>
 
     <Grid x:Name="ConsoleTop" Grid.Row="1" Margin="0,0,0,6">
@@ -234,7 +276,7 @@
                 <Setter Property="FontSize" Value="11"/><Setter Property="VerticalContentAlignment" Value="Center"/>
               </Style>
             </ListBox.ItemContainerStyle>
-            <ListBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding text}" TextTrimming="CharacterEllipsis" ToolTip="{Binding text}"/></DataTemplate></ListBox.ItemTemplate>
+            <ListBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding display_text}" TextTrimming="CharacterEllipsis" ToolTip="{Binding display_text}"/></DataTemplate></ListBox.ItemTemplate>
           </ListBox>
         </Grid>
       </Border>
@@ -245,74 +287,74 @@
 
       <Border x:Name="ConnectionConfigPanel" Grid.Column="0" Background="#1D2529" BorderBrush="#46545B" BorderThickness="1" Padding="6" Margin="0,0,6,0">
         <Grid>
-          <Grid.RowDefinitions><RowDefinition Height="24"/><RowDefinition Height="*"/><RowDefinition Height="*"/><RowDefinition Height="*"/><RowDefinition Height="*"/><RowDefinition Height="*"/><RowDefinition Height="36"/></Grid.RowDefinitions>
+          <Grid.RowDefinitions><RowDefinition Height="24"/><RowDefinition Height="*"/><RowDefinition Height="*"/><RowDefinition Height="*"/><RowDefinition Height="*"/><RowDefinition Height="*"/><RowDefinition Height="52"/></Grid.RowDefinitions>
           <Grid Grid.Row="0">
             <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
             <TextBlock x:Name="ConnectionConfigTitleText" Text="连接配置" FontSize="13" FontWeight="Bold" VerticalAlignment="Center"/>
-            <Button x:Name="RefreshDevicesButton" Grid.Column="1" Content="刷新设备" Width="62" Height="21" Padding="4,0" Margin="0,0,3,0" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+            <Button x:Name="RefreshDevicesButton" Grid.Column="1" Content="刷新设备" Width="104" Height="21" Padding="4,0" Margin="0,0,3,0" HorizontalAlignment="Right" VerticalAlignment="Center"/>
           </Grid>
-          <Grid x:Name="ConnectionRowSerial" Grid.Row="1">
+          <Grid x:Name="ConnectionRowSerial" Grid.Row="1" Margin="0,3">
             <Grid.RowDefinitions><RowDefinition Height="17"/><RowDefinition Height="*"/></Grid.RowDefinitions>
             <Grid.ColumnDefinitions><ColumnDefinition Width="1*"/><ColumnDefinition Width="2*"/><ColumnDefinition Width="1*"/></Grid.ColumnDefinitions>
-            <TextBlock Grid.Row="0" Grid.Column="0" Text="Wires-X 串口" Foreground="#A8B5BB" FontSize="10" VerticalAlignment="Center" Margin="2,0"/>
+            <TextBlock Grid.Row="0" Grid.Column="0" Text="Wires-X 串口" Foreground="#A8B5BB" FontSize="11" VerticalAlignment="Center" Margin="2,0"/>
             <ComboBox x:Name="SerialBox" Grid.Row="1" Grid.Column="0" Height="29" Margin="2,0" VerticalAlignment="Center"/>
             <Grid x:Name="RadioCatPanel" Grid.RowSpan="2" Grid.Column="1"><Grid.RowDefinitions><RowDefinition Height="17"/><RowDefinition Height="*"/></Grid.RowDefinitions><Grid.ColumnDefinitions><ColumnDefinition Width="1*"/><ColumnDefinition Width="1*"/></Grid.ColumnDefinitions>
-              <TextBlock Grid.Row="0" Text="CAT 串口" Foreground="#A8B5BB" FontSize="10" VerticalAlignment="Center" Margin="2,0"/>
+              <TextBlock Grid.Row="0" Text="CAT 串口" Foreground="#A8B5BB" FontSize="11" VerticalAlignment="Center" Margin="2,0"/>
               <ComboBox x:Name="CatPortBox" Grid.Row="1" IsEditable="True" IsTextSearchEnabled="False" Height="29" Margin="2,0" VerticalAlignment="Center"/>
-              <TextBlock Grid.Row="0" Grid.Column="1" Text="波特率" Foreground="#A8B5BB" FontSize="10" VerticalAlignment="Center" Margin="2,0"/>
-              <ComboBox x:Name="CatBaudRateBox" Grid.Row="1" Grid.Column="1" Height="29" FontSize="11" Padding="3,2" Margin="2,0" VerticalAlignment="Center"><ComboBoxItem Content="4800" Tag="4800"/><ComboBoxItem Content="9600" Tag="9600"/><ComboBoxItem Content="19200" Tag="19200"/><ComboBoxItem Content="38400" Tag="38400"/><ComboBoxItem Content="115200" Tag="115200"/></ComboBox>
+              <TextBlock Grid.Row="0" Grid.Column="1" Text="波特率" Foreground="#A8B5BB" FontSize="11" VerticalAlignment="Center" Margin="2,0"/>
+              <ComboBox x:Name="CatBaudRateBox" Grid.Row="1" Grid.Column="1" Height="29" FontSize="12" Padding="3,2" Margin="2,0" VerticalAlignment="Center"><ComboBoxItem Content="4800" Tag="4800"/><ComboBoxItem Content="9600" Tag="9600"/><ComboBoxItem Content="19200" Tag="19200"/><ComboBoxItem Content="38400" Tag="38400"/><ComboBoxItem Content="115200" Tag="115200"/></ComboBox>
             </Grid>
             <Button x:Name="SerialConnectButton" Grid.Row="1" Grid.Column="2" Content="连接串口" Height="29" Margin="2,0" Padding="5,2" VerticalAlignment="Center" Background="#28583C" BorderBrush="#64A477"/>
           </Grid>
-          <Grid x:Name="CatOperatingPanel" Grid.Row="2" Height="58" Margin="1,0" VerticalAlignment="Center">
+          <Grid x:Name="CatOperatingPanel" Grid.Row="2" Height="58" Margin="0,3" VerticalAlignment="Center">
             <Grid.ColumnDefinitions><ColumnDefinition Width="1*"/><ColumnDefinition Width="1*"/><ColumnDefinition Width="1*"/></Grid.ColumnDefinitions>
             <Grid Grid.Column="0" Margin="3,0">
               <Grid.RowDefinitions><RowDefinition Height="25"/><RowDefinition Height="29"/></Grid.RowDefinitions>
               <Grid Grid.Row="0"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                <TextBlock x:Name="CatModeCaptionText" Text="MAIN 模式" Foreground="#A8B5BB" FontSize="10" VerticalAlignment="Center"/>
-                <StackPanel x:Name="CatObservedPanel" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right"><TextBlock x:Name="CatObservedMainModeText" Text="" Foreground="#9BE0AE" FontSize="10"/></StackPanel>
+                <TextBlock x:Name="CatModeCaptionText" Text="MAIN 模式" Foreground="#A8B5BB" FontSize="11" VerticalAlignment="Center"/>
+                <StackPanel x:Name="CatObservedPanel" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" Visibility="Collapsed"><TextBlock x:Name="CatObservedMainModeText" Text="" Foreground="#9BE0AE" FontSize="10"/></StackPanel>
               </Grid>
               <ComboBox x:Name="CatMainModeBox" Grid.Row="1" SelectedIndex="-1" Height="29" Margin="0"><ComboBoxItem Content="FM" Tag="FM"/><ComboBoxItem Content="FM-N" Tag="FM-N"/><ComboBoxItem Content="C4FM-DN" Tag="C4FM-DN"/><ComboBoxItem Content="C4FM-VW" Tag="C4FM-VW"/></ComboBox>
             </Grid>
             <Grid Grid.Column="1" Margin="3,0">
               <Grid.RowDefinitions><RowDefinition Height="25"/><RowDefinition Height="29"/></Grid.RowDefinitions>
               <Grid Grid.Row="0"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <TextBlock x:Name="CatFrequencyCaptionText" Text="频率 MHz" Foreground="#A8B5BB" FontSize="10" VerticalAlignment="Center"/>
-                <TextBlock x:Name="CatObservedFrequencyText" Grid.Column="2" Text="" Foreground="#9BE0AE" FontSize="10" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                <TextBlock x:Name="CatFrequencyCaptionText" Text="频率 MHz" Foreground="#A8B5BB" FontSize="11" VerticalAlignment="Center"/>
+                <TextBlock x:Name="CatObservedFrequencyText" Grid.Column="2" Text="" Foreground="#9BE0AE" FontSize="11" HorizontalAlignment="Right" VerticalAlignment="Center" Visibility="Collapsed"/>
               </Grid>
               <ComboBox x:Name="CatMainFrequencyMHzBox" Grid.Row="1" IsEditable="True" IsTextSearchEnabled="False" SelectedIndex="-1" Height="29" Margin="0"/>
             </Grid>
             <Grid Grid.Column="2" Margin="3,0">
               <Grid.RowDefinitions><RowDefinition Height="25"/><RowDefinition Height="29"/></Grid.RowDefinitions>
               <Grid Grid.Row="0"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <TextBlock x:Name="CatPowerCaptionText" Text="功率 W" Foreground="#A8B5BB" FontSize="10" VerticalAlignment="Center"/>
-                <TextBlock x:Name="CatObservedPowerText" Grid.Column="1" Text="" Foreground="#9BE0AE" FontSize="10" Margin="4,0" VerticalAlignment="Center" HorizontalAlignment="Right"/>
+                <TextBlock x:Name="CatPowerCaptionText" Text="功率 W" Foreground="#A8B5BB" FontSize="11" VerticalAlignment="Center"/>
+                <TextBlock x:Name="CatObservedPowerText" Grid.Column="1" Text="" Foreground="#9BE0AE" FontSize="11" Margin="4,0" VerticalAlignment="Center" HorizontalAlignment="Right" Visibility="Collapsed"/>
                 <Button x:Name="ApplyCatSettingsButton" Grid.Column="2" Content="应用" Width="64" Height="24" Margin="0" Padding="5,1" VerticalAlignment="Center"/>
               </Grid>
               <ComboBox x:Name="CatPowerBox" Grid.Row="1" SelectedIndex="3" Height="29" Margin="0"><ComboBoxItem Content="5 W" Tag="5"/><ComboBoxItem Content="10 W" Tag="10"/><ComboBoxItem Content="15 W" Tag="15"/><ComboBoxItem Content="25 W" Tag="25"/><ComboBoxItem Content="50 W" Tag="50"/></ComboBox>
             </Grid>
           </Grid>
-          <Grid x:Name="ConnectionRowIdentity" Grid.Row="3" Margin="0,0,0,1" VerticalAlignment="Center">
+          <Grid x:Name="ConnectionRowIdentity" Grid.Row="3" Margin="0,3" VerticalAlignment="Center">
             <Grid.ColumnDefinitions><ColumnDefinition Width="1*"/><ColumnDefinition Width="1*"/><ColumnDefinition Width="1*"/></Grid.ColumnDefinitions>
-            <StackPanel><TextBlock Text="呼号" Foreground="#A8B5BB" FontSize="10"/><TextBox x:Name="CallsignBox" Height="27"/></StackPanel>
-            <StackPanel Grid.Column="1"><TextBlock Text="DMR ID" Foreground="#A8B5BB" FontSize="10"/><TextBox x:Name="SourceBox" Height="27"/></StackPanel>
-            <StackPanel Grid.Column="2"><TextBlock Text="设备编号" Foreground="#A8B5BB" FontSize="10"/><TextBox x:Name="DeviceNumberBox" MaxLength="2" TextAlignment="Center" ToolTip="00–99。旧 Gateway 无法拆分时留空；未编辑时保留原值。" Height="27"/></StackPanel>
+            <StackPanel><TextBlock Text="呼号" Foreground="#A8B5BB" FontSize="11"/><TextBox x:Name="CallsignBox" Height="27"/></StackPanel>
+            <StackPanel Grid.Column="1"><TextBlock x:Name="SourceIdCaptionText" Text="DMR ID" Foreground="#A8B5BB" FontSize="11"/><TextBox x:Name="SourceBox" Height="27"/></StackPanel>
+            <StackPanel Grid.Column="2"><TextBlock Text="设备编号" Foreground="#A8B5BB" FontSize="11"/><TextBox x:Name="DeviceNumberBox" MaxLength="2" TextAlignment="Center" ToolTip="00–99。旧 Gateway 无法拆分时留空；未编辑时保留原值。" Height="27"/></StackPanel>
           </Grid>
-          <Grid x:Name="ConnectionRowServer" Grid.Row="4" Margin="0,0,0,1" VerticalAlignment="Center">
+          <Grid x:Name="ConnectionRowServer" Grid.Row="4" Margin="0,3" VerticalAlignment="Center">
             <Grid.ColumnDefinitions><ColumnDefinition Width="1*"/><ColumnDefinition Width="1*"/><ColumnDefinition Width="1*"/></Grid.ColumnDefinitions>
-            <StackPanel><TextBlock Text="BM 服务器" Foreground="#A8B5BB" FontSize="10"/><ComboBox x:Name="MasterPresetBox" SelectedIndex="0" Height="27"><ComboBoxItem Content="BM 4602" Tag="bm-china-4602"/><ComboBoxItem Content="自定义" Tag="custom"/></ComboBox></StackPanel>
-            <StackPanel Grid.Column="1"><TextBlock Text="UDP 端口" Foreground="#A8B5BB" FontSize="10"/><TextBox x:Name="MasterPortBox" Text="62031" Height="27"/></StackPanel>
-            <StackPanel Grid.Column="2"><TextBlock Text="主机名 / IPv4" Foreground="#A8B5BB" FontSize="10"/><TextBox x:Name="MasterBox" Text="43.129.83.124" Height="27"/></StackPanel>
+            <StackPanel><TextBlock Text="BM 服务器" Foreground="#A8B5BB" FontSize="11"/><ComboBox x:Name="MasterPresetBox" SelectedIndex="0" Height="27"><ComboBoxItem Content="BM 4602" Tag="bm-china-4602"/><ComboBoxItem Content="自定义" Tag="custom"/></ComboBox></StackPanel>
+            <StackPanel Grid.Column="1"><TextBlock Text="UDP 端口" Foreground="#A8B5BB" FontSize="11"/><TextBox x:Name="MasterPortBox" Text="62031" Height="27"/></StackPanel>
+            <StackPanel Grid.Column="2"><TextBlock Text="主机名 / IPv4" Foreground="#A8B5BB" FontSize="11"/><TextBox x:Name="MasterBox" Text="43.129.83.124" Height="27"/></StackPanel>
           </Grid>
-          <Grid x:Name="ConnectionRowSecrets" Grid.Row="5" Margin="0,0,0,1" VerticalAlignment="Center">
+          <Grid x:Name="ConnectionRowSecrets" Grid.Row="5" Margin="0,3" VerticalAlignment="Center">
             <Grid.ColumnDefinitions><ColumnDefinition Width="1*"/><ColumnDefinition Width="1*"/></Grid.ColumnDefinitions>
-            <StackPanel><TextBlock Foreground="#A8B5BB" FontSize="10"><Run Text="BM API Key  "/><Hyperlink x:Name="BmApiKeySetupLink" Tag="bm_api_key" Foreground="#9BE0AE"><Run Text="设置"/></Hyperlink></TextBlock><PasswordBox x:Name="BmApiKeyBox" Height="27"/></StackPanel>
-            <StackPanel Grid.Column="1"><TextBlock Foreground="#A8B5BB" FontSize="10"><Run Text="BM 密码  "/><Hyperlink x:Name="BmPasswordSetupLink" Tag="bm_password" Foreground="#9BE0AE"><Run Text="设置"/></Hyperlink></TextBlock><PasswordBox x:Name="PasswordBox" Height="27"/></StackPanel>
+            <StackPanel><TextBlock Foreground="#A8B5BB" FontSize="11"><Run Text="BM API Key  "/><Hyperlink x:Name="BmApiKeySetupLink" Tag="bm_api_key" Foreground="#9BE0AE"><Run Text="设置"/></Hyperlink></TextBlock><PasswordBox x:Name="BmApiKeyBox" Height="27"/></StackPanel>
+            <StackPanel Grid.Column="1"><TextBlock Foreground="#A8B5BB" FontSize="11"><Run Text="BM 密码  "/><Hyperlink x:Name="BmPasswordSetupLink" Tag="bm_password" Foreground="#9BE0AE"><Run Text="设置"/></Hyperlink></TextBlock><PasswordBox x:Name="PasswordBox" Height="27"/></StackPanel>
           </Grid>
           <Grid x:Name="ConnectionRowActions" Grid.Row="6">
             <Grid.ColumnDefinitions><ColumnDefinition Width="1*"/><ColumnDefinition Width="1*"/></Grid.ColumnDefinitions>
-            <Button x:Name="ConnectButton" Content="连接BM" Height="29" Background="#28583C" BorderBrush="#64A477"/>
-            <Button x:Name="SaveSettingsButton" Grid.Column="1" Content="保存配置" Height="29"/>
+            <Button x:Name="ConnectButton" Content="连接BM" Height="29" Margin="2,0" VerticalAlignment="Top" Background="#28583C" BorderBrush="#64A477"/>
+            <Button x:Name="SaveSettingsButton" Grid.Column="1" Content="保存配置" Height="29" Margin="2,0" VerticalAlignment="Top"/>
           </Grid>
         </Grid>
       </Border>
@@ -325,8 +367,8 @@
             <Grid VerticalAlignment="Center">
               <Grid.RowDefinitions><RowDefinition Height="17"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
               <Grid.ColumnDefinitions><ColumnDefinition Width="1.35*"/><ColumnDefinition Width="1*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-              <Grid Grid.Column="0" Grid.RowSpan="2"><Grid.RowDefinitions><RowDefinition Height="17"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><TextBlock Text="频道 ID" Grid.Row="0" Foreground="#A8B5BB" FontSize="10"/><ComboBox x:Name="ChannelIdBox" Grid.Row="1" IsEditable="True" IsTextSearchEnabled="False" StaysOpenOnEdit="True" Height="29" Margin="2,0" VerticalAlignment="Center"><ComboBoxItem Content="460997 中国鹦鹉" Tag="460997|private" TextSearch.Text="460997"/><ComboBoxItem Content="46001 组呼" Tag="46001|group" TextSearch.Text="46001"/><ComboBoxItem Content="91 组呼" Tag="91|group" TextSearch.Text="91"/></ComboBox></Grid>
-              <Grid Grid.Column="1" Grid.RowSpan="2"><Grid.RowDefinitions><RowDefinition Height="17"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><TextBlock Text="类型" Grid.Row="0" Foreground="#A8B5BB" FontSize="10"/><ComboBox x:Name="ChannelKindBox" Grid.Row="1" SelectedIndex="0" Height="29" Margin="2,0" VerticalAlignment="Center"><ComboBoxItem Content="请选择" Tag="unknown"/><ComboBoxItem Content="单呼" Tag="private"/><ComboBoxItem Content="组呼" Tag="group"/></ComboBox></Grid>
+              <Grid Grid.Column="0" Grid.RowSpan="2"><Grid.RowDefinitions><RowDefinition Height="17"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><TextBlock Text="增加动态组 频道ID" Grid.Row="0" Foreground="#A8B5BB" FontSize="11"/><ComboBox x:Name="ChannelIdBox" Grid.Row="1" IsEditable="True" IsTextSearchEnabled="False" StaysOpenOnEdit="True" Height="29" Margin="2,0" VerticalAlignment="Center"><ComboBoxItem Content="460997 中国鹦鹉" Tag="460997|private" TextSearch.Text="460997"/><ComboBoxItem Content="46001 组呼" Tag="46001|group" TextSearch.Text="46001"/><ComboBoxItem Content="91 组呼" Tag="91|group" TextSearch.Text="91"/></ComboBox></Grid>
+              <Grid Grid.Column="1" Grid.RowSpan="2"><Grid.RowDefinitions><RowDefinition Height="17"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><TextBlock Text="类型" Grid.Row="0" Foreground="#A8B5BB" FontSize="11"/><ComboBox x:Name="ChannelKindBox" Grid.Row="1" SelectedIndex="0" Height="29" Margin="2,0" VerticalAlignment="Center"><ComboBoxItem Content="请选择" Tag="unknown"/><ComboBoxItem Content="单呼" Tag="private"/><ComboBoxItem Content="组呼" Tag="group"/></ComboBox></Grid>
               <Button x:Name="AddChannelButton" Grid.Row="1" Grid.Column="2" Content="加入监听" Padding="8,4" Background="#28583C" BorderBrush="#64A477" VerticalAlignment="Center" Height="29" Margin="2,0"/>
             </Grid>
           </Grid>
@@ -334,10 +376,10 @@
             <Grid>
               <Grid.RowDefinitions><RowDefinition Height="21"/><RowDefinition Height="49"/><RowDefinition Height="24"/></Grid.RowDefinitions>
               <Grid Grid.Row="0"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <TextBlock Text="BM 静态组" FontSize="11" Foreground="#A8B5BB" VerticalAlignment="Center" Margin="1,0,4,0"/>
-                <TextBlock x:Name="BmStaticGroupSourceValue" Grid.Column="1" Text="" Foreground="#A8B5BB" FontSize="10" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                <TextBlock Text="增加BM静态组" FontSize="11" Foreground="#A8B5BB" VerticalAlignment="Center" Margin="1,0,4,0"/>
+                <TextBlock x:Name="BmStaticGroupSourceValue" Grid.Column="1" Text="" Foreground="#A8B5BB" FontSize="11" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
                 <Button x:Name="BmStaticGroupPagePreviousButton" Grid.Column="2" Content="‹" MinWidth="25" Height="19" Padding="3,0"/>
-                <TextBlock x:Name="BmStaticGroupPageText" Grid.Column="3" Text="1 / 1" Foreground="#A8B5BB" FontSize="10" VerticalAlignment="Center" Margin="3,0"/>
+                <TextBlock x:Name="BmStaticGroupPageText" Grid.Column="3" Text="1 / 1" Foreground="#A8B5BB" FontSize="11" VerticalAlignment="Center" Margin="3,0"/>
                 <Button x:Name="BmStaticGroupPageNextButton" Grid.Column="4" Content="›" MinWidth="25" Height="19" Padding="3,0"/>
                 <Button x:Name="RefreshBmStaticGroupsButton" Grid.Column="5" Content="刷新" Padding="5,1" Height="19" Margin="3,1"/>
                 <Button x:Name="RemoveBmStaticGroupButton" Grid.Column="6" Content="移除" Padding="5,1" Height="19" Margin="1" IsEnabled="False"/>
@@ -345,25 +387,25 @@
               <Grid Grid.Row="1">
                 <ListBox x:Name="BmStaticGroupsList" Height="49" FontSize="10" Padding="0" Background="#12191C" Foreground="#E6EEF0" ScrollViewer.VerticalScrollBarVisibility="Disabled" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                   <ListBox.ItemContainerStyle><Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}"><Setter Property="Padding" Value="3,0"/></Style></ListBox.ItemContainerStyle>
-                  <ListBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding talkgroup, StringFormat='TG {0}'}" TextTrimming="CharacterEllipsis" ToolTip="{Binding talkgroup}"/></DataTemplate></ListBox.ItemTemplate>
+                  <ListBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding talkgroup, StringFormat='TG {0}'}" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type ListBoxItem}}}" TextTrimming="CharacterEllipsis" ToolTip="{Binding talkgroup}"/></DataTemplate></ListBox.ItemTemplate>
                 </ListBox>
                 <Grid x:Name="StaticApiRequiredOverlay" Background="#151C20" IsHitTestVisible="False" Visibility="Visible">
                   <TextBlock x:Name="StaticApiRequiredText" Text="需启用BM API key" Foreground="#A8B5BB" FontSize="11" HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center"/>
                 </Grid>
               </Grid>
-              <Grid Grid.Row="2"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="4"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+              <Grid Grid.Row="2"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="6"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <TextBox x:Name="BmStaticGroupIdBox" Grid.Column="0" ToolTip="TG" Height="24" Margin="0"/>
-                <Button x:Name="AddBmStaticGroupButton" Grid.Column="2" Content="添加" Padding="7,2" Height="24" Margin="0" IsEnabled="False"/>
+                <Button x:Name="AddBmStaticGroupButton" Grid.Column="2" Content="添加为静态组" Padding="7,2" Height="24" Margin="0" IsEnabled="False"/>
               </Grid>
             </Grid>
           </Grid>
           <Grid x:Name="AudioDevicePanel" Grid.Row="3" Margin="2,1,2,1">
             <Grid.RowDefinitions><RowDefinition Height="17"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-            <TextBlock Grid.Row="0" Text="音频设备" Foreground="#A8B5BB" FontSize="10" FontWeight="Bold" VerticalAlignment="Center"/>
+            <TextBlock Grid.Row="0" Text="音频设备" Foreground="#A8B5BB" FontSize="11" FontWeight="Bold" VerticalAlignment="Center"/>
             <Grid x:Name="ConnectionRowAudio" Grid.Row="1" VerticalAlignment="Center">
               <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-              <StackPanel Grid.Column="0"><TextBlock Text="输入" Foreground="#A8B5BB" FontSize="10"/><ComboBox x:Name="WaveInEndpointBox" Height="27"/></StackPanel>
-              <StackPanel Grid.Column="1"><TextBlock Text="输出" Foreground="#A8B5BB" FontSize="10"/><ComboBox x:Name="WaveOutEndpointBox" Height="27"/></StackPanel>
+              <StackPanel Grid.Column="0"><TextBlock Text="输入" Foreground="#A8B5BB" FontSize="11"/><ComboBox x:Name="WaveInEndpointBox" Height="27"/></StackPanel>
+              <StackPanel Grid.Column="1"><TextBlock Text="输出" Foreground="#A8B5BB" FontSize="11"/><ComboBox x:Name="WaveOutEndpointBox" Height="27"/></StackPanel>
             </Grid>
           </Grid>
           <Grid x:Name="VolumeControlsPanel" Grid.Row="4" Margin="2,2,2,1">
@@ -372,11 +414,11 @@
               <TextBlock Grid.Row="0" Text="音量" FontWeight="Bold" FontSize="11" VerticalAlignment="Center"/>
               <Grid Grid.Row="1"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0" Margin="1,0,6,0" VerticalAlignment="Center">
-                  <DockPanel><TextBlock Text="播放增益" Foreground="#A8B5BB" FontSize="10"/><TextBlock x:Name="PlaybackGainValueText" DockPanel.Dock="Right" Text="" Foreground="#9BE0AE" FontWeight="Bold" Margin="0,0,4,0" FontSize="10"/></DockPanel>
+                  <DockPanel><TextBlock Text="播放增益" Foreground="#A8B5BB" FontSize="11"/><TextBlock x:Name="PlaybackGainValueText" DockPanel.Dock="Right" Text="" Foreground="#9BE0AE" FontWeight="Bold" Margin="0,0,4,0" FontSize="10"/></DockPanel>
                   <Slider x:Name="PlaybackGainSlider" Style="{StaticResource AudioGainSliderStyle}" Minimum="1" Maximum="16" Value="1"/>
                 </StackPanel>
                 <StackPanel Grid.Column="1" Margin="6,0,1,0" VerticalAlignment="Center">
-                  <DockPanel><TextBlock Text="发送增益" Foreground="#A8B5BB" FontSize="10"/><TextBlock x:Name="TransmitGainValueText" DockPanel.Dock="Right" Text="" Foreground="#9BE0AE" FontWeight="Bold" Margin="0,0,4,0" FontSize="10"/></DockPanel>
+                  <DockPanel><TextBlock Text="发送增益" Foreground="#A8B5BB" FontSize="11"/><TextBlock x:Name="TransmitGainValueText" DockPanel.Dock="Right" Text="" Foreground="#9BE0AE" FontWeight="Bold" Margin="0,0,4,0" FontSize="10"/></DockPanel>
                   <Slider x:Name="TransmitGainSlider" Style="{StaticResource AudioGainSliderStyle}" Minimum="1" Maximum="16" Value="16"/>
                 </StackPanel>
               </Grid>

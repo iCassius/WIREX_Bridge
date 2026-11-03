@@ -103,22 +103,22 @@ function Update-UiSerialConnectButton {
     $operationBusy = [bool]($preparing -or $stopping -or $disconnectPending)
 
     if ($disconnectPending -or $stopping) {
-        $button.Content = '正在断开串口'
+        $button.Content = ConvertTo-WirexUiDisplayText -Text '正在断开串口' -Language $script:uiLanguage
         $button.IsEnabled = $false
         return
     }
     if ($preparing -and -not $coreActive -and -not $catRequested) {
-        $button.Content = '取消连接'
+        $button.Content = ConvertTo-WirexUiDisplayText -Text '取消连接' -Language $script:uiLanguage
         $button.IsEnabled = $true
         return
     }
     if ($coreActive -or $catRequested) {
-        $button.Content = '断开串口'
+        $button.Content = ConvertTo-WirexUiDisplayText -Text '断开串口' -Language $script:uiLanguage
         $button.IsEnabled = (-not $operationBusy)
         return
     }
 
-    $button.Content = '连接串口'
+    $button.Content = ConvertTo-WirexUiDisplayText -Text '连接串口' -Language $script:uiLanguage
     $portReady = $true
     if (Get-Command -Name 'Get-UiRadioCatSelectedPort' -ErrorAction SilentlyContinue) {
         $portReady = [bool](Get-UiRadioCatSelectedPort)
@@ -534,7 +534,10 @@ function Set-UiRadioCatText {
     $control = Find-UiRadioCatControl -Name $Name
     if (-not $control) { return }
     if ($control -is [System.Windows.Controls.TextBlock] -or $control -is [System.Windows.Controls.TextBox]) {
-        if ([string]$control.Text -cne $Text) { $control.Text = $Text }
+        if ($control -is [System.Windows.Controls.TextBlock] -and (Get-Command -Name Set-WirexUiLocalizedElementProperty -ErrorAction SilentlyContinue)) {
+            [void](Set-WirexUiLocalizedElementProperty -Element $control -Property Text -SourceText $Text `
+                -Language $script:uiLanguage -UpdateSource)
+        } elseif ([string]$control.Text -cne $Text) { $control.Text = $Text }
     }
 }
 

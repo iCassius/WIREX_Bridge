@@ -11,6 +11,9 @@ $ErrorActionPreference = 'Stop'
 $script:stableReleaseContractPath = Join-Path $PSScriptRoot 'StableReleaseContract.psm1'
 if (-not [System.IO.File]::Exists($script:stableReleaseContractPath)) { throw 'StableReleaseContract.psm1 is missing.' }
 Import-Module -Name $script:stableReleaseContractPath -Force -Scope Global -ErrorAction Stop
+$script:zipOnlyReleaseContractPath = Join-Path $PSScriptRoot 'ZipOnlyRelease.psm1'
+if (-not [System.IO.File]::Exists($script:zipOnlyReleaseContractPath)) { throw 'ZipOnlyRelease.psm1 is missing.' }
+Import-Module -Name $script:zipOnlyReleaseContractPath -Force -Scope Global -ErrorAction Stop
 Add-Type -AssemblyName System.Net.Http -ErrorAction Stop
 
 $script:repositoryFullName = 'iCassius/WIREX_Bridge'
@@ -73,6 +76,24 @@ function Set-PublishProfile {
             }
             $script:expectedDirectories = @('runtime','runtime/docs','runtime/licenses','runtime/licenses/dmr_signal',
                 'runtime/licenses/droidstar_mbe','runtime/private','runtime/ui','runtime/ui/windows')
+            $script:expectedTestNames = $script:alpha19TestNames
+        }
+        'v0.1.1-test.2' {
+            $zip = Get-WirexZipOnlyReleaseProfile -Version $Tag
+            $script:publishTag = $Tag
+            $script:publishIsPrerelease = $true
+            $script:assetPathMap = [ordered]@{}
+            $script:assetPathMap[$zip.ArchiveName] = $zip.ArchiveName
+            $script:expectedDirectories = @($zip.Directories)
+            $script:expectedTestNames = $script:alpha19TestNames
+        }
+        'v0.1.1' {
+            $zip = Get-WirexZipOnlyReleaseProfile -Version $Tag
+            $script:publishTag = $Tag
+            $script:publishIsPrerelease = $false
+            $script:assetPathMap = [ordered]@{}
+            $script:assetPathMap[$zip.ArchiveName] = $zip.ArchiveName
+            $script:expectedDirectories = @($zip.Directories)
             $script:expectedTestNames = $script:alpha19TestNames
         }
         'v0.1.0-alpha.1' {
@@ -335,7 +356,7 @@ function Set-PublishProfile {
             $script:expectedDirectories = @($alpha18.Directories)
             $script:expectedTestNames = $script:alpha18TestNames
         }
-        default { throw 'Only v0.1.0-alpha.1 through v0.1.0-alpha.19 release profiles are supported.' }
+        default { throw 'Only registered v0.1.0, v0.1.0-alpha, v0.1.1-test.2, and v0.1.1 profiles are supported.' }
     }
     return [pscustomobject]@{
         Tag = $script:publishTag
@@ -644,6 +665,53 @@ function Get-GitText {
     return ([string]$output[0]).Trim()
 }
 
+function Assert-ZipOnlyPublishPackage {
+    param([string]$PackageRoot,[string]$ExpectedCommit,[string]$Tag,[string]$RepositoryRoot)
+    $root = [System.IO.Path]::GetFullPath($RepositoryRoot)
+    $zipProfile = Get-WirexZipOnlyReleaseProfile -Version $Tag
+    $auditManifestPath = Join-Path $root ('private\release-audits\R126\' + $Tag + '\manifest.json')
+    $validated = Get-WirexZipOnlyAuditManifest -AuditManifestPath $auditManifestPath -Version $Tag `
+        -PackageRoot $PackageRoot -RequireRootAudit
+    $manifest = $validated.Manifest
+    if ([string]$manifest.source.repository -cne $script:repositoryUrl -or
+        [string]$manifest.source.commit -cne $ExpectedCommit -or
+        [string]$manifest.build.launcher_source_commit -cne $ExpectedCommit) {
+        throw 'ZIP-only private audit source does not match the requested release commit.'
+    }
+    $tests = @($manifest.build.passed_tests | ForEach-Object { [string]$_ })
+    if ([int]$manifest.build.passed_test_count -ne $script:expectedTestNames.Count -or $tests.Count -ne $script:expectedTestNames.Count) {
+        throw 'ZIP-only private audit does not record the exact Native test set.'
+    }
+    for ($index=0; $index -lt $tests.Count; $index++) {
+        if ($tests[$index] -cne $script:expectedTestNames[$index]) { throw 'ZIP-only Native test inventory does not match the fixed profile.' }
+    }
+    $nativeCommit = [string]$manifest.build.native_source_commit
+    $mergeBaseLines = @(& git -C $root merge-base --is-ancestor $nativeCommit $ExpectedCommit 2>$null)
+    if ($LASTEXITCODE -ne 0) { throw 'ZIP-only Native build commit is not an ancestor of the package source commit.' }
+    $nativeInputPaths = @('CMakeLists.txt','include/','src/','tests/','third_party/','tools/build-bm-bridge.ps1')
+    $diffOutput = @(& git -C $root diff --quiet $nativeCommit $ExpectedCommit -- @nativeInputPaths 2>$null)
+    if ($LASTEXITCODE -ne 0) { throw 'ZIP-only Native build inputs changed after its source commit.' }
+
+    $distributionRoot = Join-Path $root ('build\_work\r126-distribution\' + $Tag)
+    if (-not [System.IO.Directory]::Exists($distributionRoot)) { throw 'ZIP-only distribution directory is missing.' }
+    $distributionItems = @(Get-ChildItem -LiteralPath $distributionRoot -Force -ErrorAction Stop)
+    if ($distributionItems.Count -ne 1 -or $distributionItems[0].PSIsContainer -or $distributionItems[0].Name -cne $zipProfile.ArchiveName) {
+        throw 'ZIP-only distribution must contain exactly one archive asset.'
+    }
+    $archivePath = Join-Path $distributionRoot $zipProfile.ArchiveName
+    $archiveInfo = Get-Item -LiteralPath $archivePath -ErrorAction Stop
+    $archiveHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($null -eq $manifest.archive -or [string]$manifest.archive.name -cne $zipProfile.ArchiveName -or
+        [long]$manifest.archive.length_bytes -ne [long]$archiveInfo.Length -or [string]$manifest.archive.sha256 -cne $archiveHash) {
+        throw 'ZIP-only archive does not match its private audit record.'
+    }
+    [void](Test-WirexZipOnlyArchive -ArchivePath $archivePath -Version $Tag `
+        -AuditManifestPath $auditManifestPath -PackageRoot $PackageRoot)
+    return ,([pscustomobject]@{Manifest=$manifest;Assets=@([pscustomobject]@{
+        Name=$zipProfile.ArchiveName;Path=$archivePath;Length=[long]$archiveInfo.Length;Sha256=$archiveHash
+    })})
+}
+
 function Assert-LocalRepositoryIdentity {
     param([string]$RepositoryRoot)
     $gitRoot = [System.IO.Path]::GetFullPath((Get-GitText -RepositoryRoot $RepositoryRoot -Arguments @('rev-parse', '--show-toplevel')))
@@ -667,6 +735,9 @@ function Assert-PublishPackage {
     [void](Set-PublishProfile -Tag $Tag)
     $root = [System.IO.Path]::GetFullPath($PackageRoot)
     if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw 'ReleaseDirectory does not exist.' }
+    if (Test-WirexZipOnlyVersion -Version $Tag) {
+        return (Assert-ZipOnlyPublishPackage -PackageRoot $root -ExpectedCommit $ExpectedCommit -Tag $Tag -RepositoryRoot (Join-Path $root '..\..\..'))
+    }
     if ($Tag -ceq 'v0.1.0') { return (Assert-StablePublishPackage -PackageRoot $root -ExpectedCommit $ExpectedCommit -DistributionDirectory $DistributionDirectory) }
     $manifestPath = Join-Path $root 'manifest.json'
     if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw 'Package is missing manifest.json.' }
@@ -1245,9 +1316,9 @@ function Invoke-ReleasePublisher {
     $script:anonymousClient = $null
     $script:token = $null
     try {
-    if ($Tag -ceq 'v0.1.0') {
+    if ($Tag -ceq 'v0.1.0' -or (Test-WirexZipOnlyVersion -Version $Tag)) {
         $assets = @($package.Assets)
-        $expectedRemoteAssetCount = 3
+        $expectedRemoteAssetCount = if (Test-WirexZipOnlyVersion -Version $Tag) { 1 } else { 3 }
     } else {
         $helper = Export-CommitHelperBlob -RepositoryRoot $root -ExpectedCommit $Commit
         $assets = @($package.Assets) + @($helper)

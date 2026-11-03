@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)]
-    [ValidatePattern('^(v0\.1\.0|v0\.1\.0-alpha\.(?:[1-9]|1[0-9]))$')]
+    [ValidatePattern('^(v0\.1\.0|v0\.1\.0-alpha\.(?:[1-9]|1[0-9])|v0\.1\.1-test\.2|v0\.1\.1)$')]
     [string]$Tag,
     [Parameter(Mandatory=$true)]
     [string]$Destination,
@@ -12,6 +12,9 @@ $ErrorActionPreference = 'Stop'
 $script:stableReleaseContractPath = Join-Path $PSScriptRoot 'StableReleaseContract.psm1'
 if (-not [System.IO.File]::Exists($script:stableReleaseContractPath)) { throw 'StableReleaseContract.psm1 is missing.' }
 Import-Module -Name $script:stableReleaseContractPath -Force -Scope Global -ErrorAction Stop
+$script:zipOnlyReleaseContractPath = Join-Path $PSScriptRoot 'ZipOnlyRelease.psm1'
+if (-not [System.IO.File]::Exists($script:zipOnlyReleaseContractPath)) { throw 'ZipOnlyRelease.psm1 is missing.' }
+Import-Module -Name $script:zipOnlyReleaseContractPath -Force -Scope Global -ErrorAction Stop
 $script:stableReleaseLimits = Get-WirexStableReleaseLimits
 $script:githubOwner = 'iCassius'
 $script:githubRepository = 'WIREX_Bridge'
@@ -41,7 +44,7 @@ function Test-ReleaseTag {
         $Tag -ceq 'v0.1.0-alpha.13' -or $Tag -ceq 'v0.1.0-alpha.14' -or
         $Tag -ceq 'v0.1.0-alpha.15' -or $Tag -ceq 'v0.1.0-alpha.16' -or
         $Tag -ceq 'v0.1.0-alpha.17' -or $Tag -ceq 'v0.1.0-alpha.18' -or
-        $Tag -ceq 'v0.1.0-alpha.19')
+        $Tag -ceq 'v0.1.0-alpha.19' -or (Test-WirexZipOnlyVersion -Version $Tag))
 }
 
 function Get-ExpectedReleaseTests {
@@ -154,6 +157,9 @@ function Get-ExpectedReleaseDirectories {
     if ($Tag -ceq 'v0.1.0') {
         return @('runtime','runtime/docs','runtime/licenses','runtime/licenses/dmr_signal',
             'runtime/licenses/droidstar_mbe','runtime/private','runtime/ui','runtime/ui/windows')
+    }
+    if (Test-WirexZipOnlyVersion -Version $Tag) {
+        return @(Get-WirexZipOnlyReleaseProfile -Version $Tag).Directories
     }
     return @('docs','licenses','licenses/dmr_signal','licenses/droidstar_mbe','logs','private')
 }
@@ -769,11 +775,15 @@ function Test-BuildProvenanceDocument {
 
 function Select-ReleaseCandidate {
     param([object[]]$Releases, [Parameter(Mandatory=$true)][string]$RequestedTag, [switch]$AllowDraft)
-    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Only v0.1.0 and v0.1.0-alpha.1 through v0.1.0-alpha.19 are supported.' }
+    if (-not (Test-ReleaseTag -Tag $RequestedTag)) { throw 'Requested release tag is not in a registered WIREX Bridge download profile.' }
     $matches = @($Releases | Where-Object { [string]$_.tag_name -ceq $RequestedTag })
     if ($matches.Count -ne 1) { throw 'GitHub Release 列表中没有唯一匹配的 tag。' }
     $release = $matches[0]
-    $expectedPrerelease = ($RequestedTag -cne 'v0.1.0')
+    $expectedPrerelease = if (Test-WirexZipOnlyVersion -Version $RequestedTag) {
+        [bool](Get-WirexZipOnlyReleaseProfile -Version $RequestedTag).IsPrerelease
+    } else {
+        ($RequestedTag -cne 'v0.1.0')
+    }
     if ($AllowDraft) {
         if ($release.draft -ne $true -or $release.prerelease -ne $expectedPrerelease) {
             throw '-AllowDraft 只接受 draft 且 prerelease 状态符合 tag 类型的 Release。'
@@ -1433,6 +1443,45 @@ function Invoke-ReleaseDownload {
         $release = Get-ReleaseForTag -RequestedTag $RequestedTag -Token $token -AllowDraft:$AllowDraft
         if ([string]$release.tag_name -cne $RequestedTag) { throw 'GitHub Release 返回了不同的 tag。' }
         $apiAssets = @($release.assets)
+        if (Test-WirexZipOnlyVersion -Version $RequestedTag) {
+            $zipProfile = Get-WirexZipOnlyReleaseProfile -Version $RequestedTag
+            if ($apiAssets.Count -ne 1 -or [string]$apiAssets[0].name -cne $zipProfile.ArchiveName) {
+                throw 'ZIP-only Release 必须包含唯一的版本 ZIP asset。'
+            }
+            $zipAsset = $apiAssets[0]
+            if (-not (Test-JsonUnsignedInteger $zipAsset.id 1 9223372036854775807) -or
+                [string]$zipAsset.state -cne 'uploaded' -or
+                -not (Test-JsonUnsignedInteger $zipAsset.size 1 ([long]$script:maximumAssetBytes)) -or
+                -not (Test-WirexStableLengthWithinLimit -Length ([long]$zipAsset.size) -MaximumBytes ([long]$script:maximumAssetBytes))) {
+                throw 'ZIP-only Release asset metadata is invalid.'
+            }
+            $digestText = [string]$zipAsset.digest
+            if ($digestText -cnotmatch '^sha256:([0-9a-f]{64})$') {
+                throw 'ZIP-only Release asset is missing a valid GitHub SHA-256 digest.'
+            }
+            $expectedZipHash = $Matches[1]
+            [void](New-DownloadStagingRoot -Path $context.Staging)
+            $stagingCreated = $true
+            Assert-DownloadStagingRoot -Path $context.Staging
+            $assetScratch = Join-Path $context.Parent ('.wirex-release-assets-' + [guid]::NewGuid().ToString('N'))
+            if (-not (Test-PathWithinDirectory -Path $assetScratch -Directory $context.Parent) -or
+                (Test-Path -LiteralPath $assetScratch)) { throw 'ZIP-only asset scratch path is invalid or occupied.' }
+            [void](New-DownloadStagingRoot -Path $assetScratch)
+            $assetScratchCreated = $true
+            Assert-DownloadStagingRoot -Path $assetScratch
+            $zipAssetPath = Join-Path $assetScratch ('.archive-' + ([long]$zipAsset.id).ToString([Globalization.CultureInfo]::InvariantCulture) + '.part')
+            Write-ReleaseAssetToFile -Asset $zipAsset -Token $token -Path $zipAssetPath `
+                -ExpectedLength ([long]$zipAsset.size) -MaximumBytes ([long]$script:maximumAssetBytes)
+            [void](Test-DownloadedFile -Path $zipAssetPath -ExpectedLength ([long]$zipAsset.size) -ExpectedSha256 $expectedZipHash)
+            [void](Expand-WirexZipOnlyArchive -ArchivePath $zipAssetPath -Version $RequestedTag -Destination $context.Staging)
+            if (Test-Path -LiteralPath $context.Destination) { throw 'Destination appeared during ZIP-only download; no overwrite was attempted.' }
+            Assert-DownloadStagingRoot -Path $context.Staging
+            [System.IO.Directory]::Move($context.Staging, $context.Destination)
+            $stagingCreated = $false
+            Write-Host "ZIP-only Release $RequestedTag 已校验并解压到：$($context.Destination)"
+            Write-Host '已校验唯一 ZIP asset 的 GitHub SHA-256 摘要和固定文件清单；未运行包内文件。'
+            return
+        }
         $manifestAssets = @($apiAssets | Where-Object { [string]$_.name -ceq 'manifest.json' })
         if ($manifestAssets.Count -ne 1) { throw 'Release 必须包含唯一的 manifest.json asset。' }
         $manifestAsset = $manifestAssets[0]

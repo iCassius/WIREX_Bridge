@@ -1164,6 +1164,16 @@ try {
         $stablePublishProfile.AssetPathMap.Contains('manifest.json') -and
         $stablePublishProfile.AssetPathMap.Contains('SHA256SUMS.txt')) `
         'v0.1.0 publisher uses prerelease=false and exactly ZIP, manifest, and checksum assets'
+    $r126TestProfile = Set-PublishProfile -Tag 'v0.1.1-test.2'
+    Assert-True ($script:publishIsPrerelease -and $r126TestProfile.AssetPathMap.Count -eq 1 -and
+        $r126TestProfile.AssetPathMap.Contains('WIREX_Bridge_v0.1.1-test.2.zip') -and
+        $r126TestProfile.Directories.Count -eq 7 -and $r126TestProfile.TestNames.Count -eq 40) `
+        'v0.1.1-test.2 publisher profile uploads only its ZIP as a prerelease'
+    $r126StableProfile = Set-PublishProfile -Tag 'v0.1.1'
+    Assert-True (-not $script:publishIsPrerelease -and $r126StableProfile.AssetPathMap.Count -eq 1 -and
+        $r126StableProfile.AssetPathMap.Contains('WIREX_Bridge_v0.1.1.zip') -and
+        $r126StableProfile.TestNames.Count -eq 40) `
+        'v0.1.1 publisher profile uploads only its ZIP as a stable release'
     Assert-True (@($stableRecords | ForEach-Object { [string]$_.Path } | Sort-Object -Unique).Count -eq $stableRecords.Count -and
         @($stableRecords | Where-Object { [string]$_.Path -ceq 'runtime/ui/windows/ChannelActivationState.psm1' -and
             [string]$_.AssetName -ceq 'runtime__ui__windows__channel-activation-state.psm1' }).Count -eq 1 -and

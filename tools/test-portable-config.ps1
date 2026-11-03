@@ -41,7 +41,35 @@ try {
     Assert-PortableConfig ($defaults.channels[0].id -eq 460997 -and $defaults.channels[0].kind -ceq 'private' -and $defaults.channels[0].slot -eq 2) 'the default channel should be private 460997 TS2'
     Assert-PortableConfig ($defaults.tx_channel_id -ceq 'private:460997:2') 'default TX should use the tuple key'
     Assert-PortableConfig ($defaults.connection.master -ceq '43.129.83.124' -and $defaults.ui.bm_server_selection_id -ceq 'bm-china-4602') 'the default Master and selector should match the current BM catalog'
+    Assert-PortableConfig ($defaults.ui.language -ceq 'zh-CN') 'new and older configs should default to Simplified Chinese'
     Assert-PortableConfig (-not [System.IO.File]::Exists($configPath)) 'reading defaults must not create config.json'
+
+    $languageOnlyPath = Join-Path $portableDirectory 'language-only.json'
+    $languageOnlyConfig = Get-WirexPortableConfig -Path (Join-Path $portableDirectory 'language-seed.json')
+    [void]$languageOnlyConfig.ui.PSObject.Properties.Remove('language')
+    Add-Member -InputObject $languageOnlyConfig -NotePropertyName future_language_test_field -NotePropertyValue 'preserve-me'
+    [System.IO.File]::WriteAllText($languageOnlyPath,(ConvertTo-Json -InputObject $languageOnlyConfig -Depth 24),$utf8NoBom)
+    $oldLanguageRead = Get-WirexPortableConfig -Path $languageOnlyPath
+    Assert-PortableConfig ($oldLanguageRead.ui.language -ceq 'zh-CN') 'an old config without ui.language should read with the Chinese default'
+    [void](Save-WirexPortableConfig -Path $languageOnlyPath -Config $oldLanguageRead)
+    $rawAfterOrdinarySave = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($languageOnlyPath,[System.Text.Encoding]::UTF8))
+    Assert-PortableConfig ($null -eq $rawAfterOrdinarySave.ui.PSObject.Properties['language'] -and
+        $rawAfterOrdinarySave.future_language_test_field -ceq 'preserve-me') 'ordinary config saves must not persist the implicit language default and must retain unknown fields'
+    $beforeLanguageClick = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($languageOnlyPath,[System.Text.Encoding]::UTF8))
+    $languageChanged = Set-WirexPortableConfigLanguage -Path $languageOnlyPath -Language 'en-US'
+    $afterLanguageClick = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($languageOnlyPath,[System.Text.Encoding]::UTF8))
+    Assert-PortableConfig ($languageChanged.ui.language -ceq 'en-US' -and $afterLanguageClick.ui.language -ceq 'en-US' -and
+        $afterLanguageClick.future_language_test_field -ceq 'preserve-me') 'a language toggle should persist the enum and preserve unknown config fields'
+    [void]$afterLanguageClick.ui.PSObject.Properties.Remove('language')
+    $beforeUnchangedJson = ConvertTo-Json -InputObject $beforeLanguageClick -Depth 24 -Compress
+    $afterUnchangedJson = ConvertTo-Json -InputObject $afterLanguageClick -Depth 24 -Compress
+    Assert-PortableConfig ([string]::Equals($beforeUnchangedJson,$afterUnchangedJson,[System.StringComparison]::Ordinal)) 'the language-only writer must leave every other stored config value unchanged'
+    $badLanguageConfig = Get-WirexPortableConfig -Path $languageOnlyPath
+    $badLanguageConfig.ui.language = 'fr-FR'
+    $beforeBadLanguage = [System.IO.File]::ReadAllBytes($languageOnlyPath)
+    $badLanguageRejected = $false
+    try { [void](Save-WirexPortableConfig -Path $languageOnlyPath -Config $badLanguageConfig) } catch { $badLanguageRejected = $true }
+    Assert-PortableConfig ($badLanguageRejected -and [System.Linq.Enumerable]::SequenceEqual([byte[]]$beforeBadLanguage,[byte[]][System.IO.File]::ReadAllBytes($languageOnlyPath))) 'unsupported language values must be rejected without changing the config'
 
     $bootstrapDirectory = Join-Path $tempDirectory 'exe root 中文 path'
     $null = [System.IO.Directory]::CreateDirectory($bootstrapDirectory)

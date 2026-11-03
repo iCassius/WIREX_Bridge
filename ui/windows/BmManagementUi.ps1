@@ -44,7 +44,8 @@ function Update-BmManagementUiVisiblePage {
     $list = Get-BmManagementUiControl -Name 'BmStaticGroupsList'
     $list.ItemsSource = $null
     $list.ItemsSource = [object[]]$visibleRows
-    (Get-BmManagementUiControl -Name 'BmStaticGroupPageText').Text = ('{0} / {1}' -f ($pageIndex + 1),$pageCount)
+    [void](Set-WirexUiLocalizedElementProperty -Element (Get-BmManagementUiControl -Name 'BmStaticGroupPageText') `
+        -Property Text -SourceText ('{0} / {1}' -f ($pageIndex + 1),$pageCount) -Language $script:uiLanguage -UpdateSource)
     (Get-BmManagementUiControl -Name 'BmStaticGroupPagePreviousButton').IsEnabled = ($pageIndex -gt 0)
     (Get-BmManagementUiControl -Name 'BmStaticGroupPageNextButton').IsEnabled = ($pageIndex -lt ($pageCount - 1))
 }
@@ -137,7 +138,8 @@ function Set-BmManagementUiControlState {
     $pageCount = Get-BmManagementUiPageCount
     $pageIndex = [Math]::Max(0,[Math]::Min([int]$script:bmManagementUiPageIndex,$pageCount - 1))
     $script:bmManagementUiPageIndex = $pageIndex
-    (Get-BmManagementUiControl -Name 'BmStaticGroupPageText').Text = ('{0} / {1}' -f ($pageIndex + 1),$pageCount)
+    [void](Set-WirexUiLocalizedElementProperty -Element (Get-BmManagementUiControl -Name 'BmStaticGroupPageText') `
+        -Property Text -SourceText ('{0} / {1}' -f ($pageIndex + 1),$pageCount) -Language $script:uiLanguage -UpdateSource)
     (Get-BmManagementUiControl -Name 'BmStaticGroupPagePreviousButton').IsEnabled = ($loaded -and $pageIndex -gt 0)
     (Get-BmManagementUiControl -Name 'BmStaticGroupPageNextButton').IsEnabled = ($loaded -and $pageIndex -lt ($pageCount - 1))
     $remove = Get-BmManagementUiControl -Name 'RemoveBmStaticGroupButton'
@@ -157,7 +159,9 @@ function Set-BmManagementUiControlState {
         [string]$context.add_slot -in @('0','1','2'))
     $add.IsEnabled = ($contextReady -and -not $busy -and -not $script:bmManagementDisposeRequested)
     $source = Get-BmManagementUiControl -Name 'BmStaticGroupSourceValue'
-    $source.Text = if ([string]::IsNullOrWhiteSpace($deviceId)) { '' } else { '设备 ' + $deviceId }
+    $sourceText = if ([string]::IsNullOrWhiteSpace($deviceId)) { '' } else { '设备 ' + $deviceId }
+    [void](Set-WirexUiLocalizedElementProperty -Element $source -Property Text -SourceText $sourceText `
+        -Language $script:uiLanguage -UpdateSource)
     if ([string]::IsNullOrWhiteSpace($apiKey)) {
         Set-BmManagementUiStatus -Text ''
     } elseif (-not $hasApiKey) {

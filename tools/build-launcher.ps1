@@ -8,6 +8,8 @@ $ErrorActionPreference = 'Stop'
 $appRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $workRoot = [System.IO.Path]::GetFullPath((Join-Path $appRoot 'build\_work'))
 $sourcePath = Join-Path $appRoot 'ui\launcher\WirexBridgeLauncher.cs'
+$iconRelativePath = 'assets/wiresx-official.ico'
+$iconPath = Join-Path $appRoot $iconRelativePath
 $fullOutput = if ([System.IO.Path]::IsPathRooted($OutputDirectory)) {
     [System.IO.Path]::GetFullPath($OutputDirectory)
 } else {
@@ -18,6 +20,7 @@ if (-not $fullOutput.StartsWith($workPrefix, [System.StringComparison]::OrdinalI
     throw 'Launcher 输出目录必须位于 app/build/_work 内。'
 }
 if (-not [System.IO.File]::Exists($sourcePath)) { throw '找不到 launcher C# 源码。' }
+if (-not [System.IO.File]::Exists($iconPath)) { throw '找不到内嵌 launcher / WPF 使用的官方图标素材。' }
 if (-not [System.IO.Directory]::Exists($workRoot)) { throw 'app/build/_work 目录不存在。' }
 if ([System.IO.Directory]::Exists($fullOutput) -or [System.IO.File]::Exists($fullOutput)) {
     throw 'Launcher 输出目录已存在；为避免覆盖，请选择新的 build/_work 子目录。'
@@ -36,8 +39,11 @@ $executablePath = Join-Path $fullOutput 'WirexBridge.exe'
 $provenancePath = Join-Path $fullOutput 'launcher-build-provenance.json'
 $logPath = Join-Path $fullOutput 'launcher-build.log'
 $sourceHash = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash.ToLowerInvariant()
+$iconHash = (Get-FileHash -LiteralPath $iconPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $arguments = @(
     '/nologo', '/target:winexe', '/platform:x64', '/optimize+', '/debug-', '/codepage:65001',
+    ('/win32icon:"' + $iconPath + '"'),
+    ('/resource:"' + $iconPath + '",WIREX.ico'),
     ('/out:"' + $executablePath + '"'),
     ('"' + $sourcePath + '"')
 ) -join ' '
@@ -76,7 +82,13 @@ $provenance = [ordered]@{
         family = 'Microsoft .NET Framework csc.exe'
         version = [string]$compilerVersion
         target = 'x64 Windows GUI executable'
-        command = 'csc.exe /nologo /target:winexe /platform:x64 /optimize+ /debug- /codepage:65001'
+        command = 'csc.exe /nologo /target:winexe /platform:x64 /optimize+ /debug- /codepage:65001 /win32icon:assets/wiresx-official.ico /resource:assets/wiresx-official.ico,WIREX.ico'
+    }
+    resources = [ordered]@{
+        icon_path = $iconRelativePath
+        icon_sha256 = $iconHash
+        assembly_resource_name = 'WIREX.ico'
+        windows_executable_icon = $true
     }
     output = [ordered]@{
         directory = $relativeOutput

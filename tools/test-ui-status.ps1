@@ -32,6 +32,8 @@ $wantedFunctions = @('Test-UiSourceIdentityRecord', 'Get-UiSourceIdentityDisplay
 $found = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wantedFunctions -ccontains $node.Name }, $true))
 Assert-UiStatus ($found.Count -eq $wantedFunctions.Count) '没有找到状态记录验证函数。'
 foreach ($functionAst in $found) { Invoke-Expression $functionAst.Extent.Text }
+Import-Module -Name (Join-Path (Join-Path $repoRoot 'ui\windows') 'UiLocalization.psm1') -Force
+$script:uiLanguage = 'zh-CN'
 Import-Module -Name (Join-Path (Join-Path $repoRoot 'ui\windows') 'RadioIdentity.psm1') -Force
 Import-Module -Name (Join-Path (Join-Path $repoRoot 'ui\windows') 'ChannelActivationState.psm1') -Force
 $script:channelActivationState = New-WirexChannelActivationState

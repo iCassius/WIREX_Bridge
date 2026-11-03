@@ -133,7 +133,8 @@ function Set-UiConsoleManualCatPort {
     $editBox = $combo.Template.FindName('PART_EditableTextBox',$combo)
     if ($editBox -isnot [System.Windows.Controls.TextBox]) { throw 'CatPortBox 没有可编辑的 WPF TextBox。' }
     [void]$combo.Focus()
-    [void]$editBox.Focus()
+    [void][System.Windows.Input.Keyboard]::Focus($editBox)
+    if (-not $editBox.IsKeyboardFocusWithin) { throw 'CAT ComboBox 的实际编辑 TextBox 未获得测试窗口内的键盘焦点。' }
     $editBox.SelectAll()
     $editBox.Text = $PortName
     [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{},[System.Windows.Threading.DispatcherPriority]::Background)
@@ -459,7 +460,7 @@ try {
     Assert-UiConsole $audioErrorReady 'audio error blocked serial result publication.'
     Assert-UiConsole ($null -eq $script:uiTestDiscoveryResult) 'audio error regression used the fixture-only publisher path instead of production orchestration.'
     Assert-UiConsole (@($script:deviceCatalog.serial_ports | Where-Object { $_.PortName -ceq 'COM11' }).Count -eq 1) 'serial catalog lost valid COM11 after audio error.'
-    Assert-UiConsole ((Get-UiConsoleControl 'CatPortBox').Text -ceq 'COM11') 'CAT did not auto-select the unique Enhanced CP2105 port after audio error.'
+    Assert-UiConsole ((Get-UiRadioCatSelectedPort) -ceq 'COM11') ('CAT did not auto-select the unique Enhanced CP2105 port after audio error; selected={0}.' -f [string](Get-UiRadioCatSelectedPort))
     Assert-UiConsole (-not $script:radioCatPortSelectionExplicit) 'automatic Enhanced port selection was incorrectly saved as a manual choice.'
 
     Start-UiDeviceDiscovery -UseProductionOrchestration
@@ -468,12 +469,14 @@ try {
     }
     Assert-UiConsole $audioTimeoutReady 'audio timeout blocked serial result publication.'
     Assert-UiConsole ($null -eq $script:uiTestDiscoveryResult) 'audio timeout regression used the fixture-only publisher path instead of production orchestration.'
-    Assert-UiConsole ((Get-UiConsoleControl 'CatPortBox').Text -ceq 'COM11') 'CAT selection was lost after audio timeout.'
+    Assert-UiConsole ((Get-UiRadioCatSelectedPort) -ceq 'COM11') ('CAT selection was lost after audio timeout; selected={0}.' -f [string](Get-UiRadioCatSelectedPort))
 
     $catPortBox = Get-UiConsoleControl 'CatPortBox'
     Set-UiConsoleManualCatPort -PortName COM99
     Assert-UiConsole ([bool]$script:radioCatPortSelectionExplicit) 'real CAT port text editing did not mark the selection explicit.'
-    Assert-UiConsole ((Get-UiRadioCatSelectedPort) -ceq 'COM99') 'manual CAT COM port entry was rejected without discovery metadata.'
+    Assert-UiConsole ((Get-UiRadioCatSelectedPort) -ceq 'COM99') ('manual CAT COM port entry was rejected without discovery metadata; selected={0}, text={1}, editExplicit={2}, selectionExplicit={3}, tag={4}, focused={5}.' -f `
+        [string](Get-UiRadioCatSelectedPort),[string]$catPortBox.Text,[bool]$script:radioCatPortTextEditExplicit,[bool]$script:radioCatPortSelectionExplicit, `
+        [string]$catPortBox.SelectedItem.Tag.Value,[bool]$catPortBox.Template.FindName('PART_EditableTextBox',$catPortBox).IsKeyboardFocusWithin)
     Set-UiConsoleManualCatPort -PortName COM5
     Assert-UiConsole ($null -eq (Get-UiRadioCatSelectedPort)) 'known HRI port COM5 was accepted as CAT.'
     Select-UiConsoleCatPortOption -PortName COM11
@@ -526,7 +529,9 @@ try {
 
     $catPortBox = Get-UiConsoleControl 'CatPortBox'
     Set-UiConsoleManualCatPort -PortName COM99
-    Assert-UiConsole ((Get-UiRadioCatSelectedPort) -ceq 'COM99') 'manual CAT COM port entry was rejected without discovery metadata.'
+    Assert-UiConsole ((Get-UiRadioCatSelectedPort) -ceq 'COM99') ('manual CAT COM port entry was rejected without discovery metadata; selected={0}, text={1}, editExplicit={2}, selectionExplicit={3}, tag={4}, focused={5}.' -f `
+        [string](Get-UiRadioCatSelectedPort),[string]$catPortBox.Text,[bool]$script:radioCatPortTextEditExplicit,[bool]$script:radioCatPortSelectionExplicit, `
+        [string]$catPortBox.SelectedItem.Tag.Value,[bool]$catPortBox.Template.FindName('PART_EditableTextBox',$catPortBox).IsKeyboardFocusWithin)
     Start-UiRadioCatOperation -Operation 'query' -StopBitsOverride 'One'
     Assert-UiConsole ([string]$script:radioCatOperationStopBits -ceq 'Two') 'legacy stop-bits override changed the internal CAT framing from Two.'
     $manualPortQueryReady = Invoke-UiConsoleDispatcherUntil -TimeoutMs 4000 -Condition { -not $script:radioCatOperationPowerShell }

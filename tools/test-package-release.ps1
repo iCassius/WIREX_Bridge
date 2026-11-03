@@ -231,6 +231,8 @@ Assert-True (Test-ReleaseVersion -Value 'v0.1.0-alpha.4') 'alpha.4 明确版本�
 Assert-True (Test-ReleaseVersion -Value 'v0.1.0-alpha.5') 'alpha.5 明确版本允许'
 Assert-True (Test-ReleaseVersion -Value 'v0.1.0-alpha.9') 'alpha.9 明确版本允许'
 Assert-True (Test-ReleaseVersion -Value 'v0.1.0') 'stable v0.1.0 has its own explicit release profile'
+Assert-True (Test-ReleaseVersion -Value 'v0.1.1-test.2') 'R126 ZIP-only prerelease profile is explicitly registered'
+Assert-True (Test-ReleaseVersion -Value 'v0.1.1') 'R126 ZIP-only final profile is explicitly registered'
 Assert-True (-not (Test-ReleaseVersion -Value 'v0.2.0-alpha.1')) '未登记的 alpha 版本必须拒绝'
 Assert-True (-not (Test-ReleaseVersion -Value 'V0.1.0-ALPHA.1')) '版本匹配区分大小写'
 Assert-Throws { Get-ReleaseAssetName -RelativePath 'docs/未知文件.md' } '未列入白名单的文件路径'

@@ -255,6 +255,8 @@ $selected = @($allDefinitions | Where-Object { $functionNames -ccontains $_.Name
 Invoke-Expression (($selected | ForEach-Object { $_.Extent.Text }) -join "`r`n")
 $script:actualStartBridgeRun = (Get-Command Start-BridgeRun -CommandType Function).ScriptBlock
 $script:actualCompleteBridgePreparation = (Get-Command Complete-BridgePreparation -CommandType Function).ScriptBlock
+Import-Module -Name (Join-Path $repoRoot 'ui\windows\UiLocalization.psm1') -Force
+$script:uiLanguage = 'zh-CN'
 Import-Module -Name $portableConfigModulePath -Force
 Import-Module -Name $channelActivationStateModulePath -Force
 Import-Module -Name $radioIdentityModulePath -Force
@@ -276,8 +278,8 @@ Assert-UiChannels ($mainXaml -notmatch 'x:Name="ChannelListPanel"') 'MainWindow.
 Assert-UiChannels ($mainXaml -notmatch 'ReadRadioButton|读取电台' -and
     @([regex]::Matches($mainXaml,'x:Name="SerialConnectButton"')).Count -eq 1 -and
     $mainXaml -match 'x:Name="SerialConnectButton"[^>]*Content="连接串口"' -and
-    $radioCatSource -match '\$button\.Content = ''断开串口''' -and
-    $radioCatSource -match '\$button\.Content = ''取消连接''' -and
+    $radioCatSource -match 'ConvertTo-WirexUiDisplayText -Text ''断开串口'' -Language \$script:uiLanguage' -and
+    $radioCatSource -match 'ConvertTo-WirexUiDisplayText -Text ''取消连接'' -Language \$script:uiLanguage' -and
     $radioCatSource -match 'function Update-UiSerialConnectButton') '电台串口连接未使用单个真实状态 toggle，或仍显示单独读取按钮。'
 Assert-UiChannels ($mainXaml -match 'Rows="2" Columns="3"' -and
     $mainXaml -notmatch 'ChannelAdvancedButton|Content="TS1"|Content="TS2"' -and
@@ -886,15 +888,18 @@ try {
     $callerArea = $callerCard.Child.Children[1]
     Assert-UiChannels ($callerArea -is [System.Windows.Controls.Border] -and [string]$callerArea.Tag -ceq 'ChannelCallArea') '来话显示区域没有保留在卡片主体的第二项。'
     $callerVisualText = @(Get-UiVisualTextValues -Root $callerArea)
-    Assert-UiChannels ($callerVisualText -contains 'N0TEST · 测试话者' -and $callerVisualText -contains 'DMR ID 460997') `
-        ('来话卡没有放大显示呼号/中文姓名并在下一行显示 DMR ID。 visual={0}' -f ($callerVisualText -join '|'))
     $callerIdText = @($callerArea.Child.Children | Where-Object { $_ -is [System.Windows.Controls.TextBlock] }) | Select-Object -Last 1
     $callerIdLink = @($callerIdText.Inlines | Where-Object { $_ -is [System.Windows.Documents.Hyperlink] }) | Select-Object -First 1
     $callerSourceText = @($callerArea.Child.Children | Where-Object { $_ -is [System.Windows.Controls.TextBlock] }) | Select-Object -First 1
     $callerCallsignLink = @($callerSourceText.Inlines | Where-Object { $_ -is [System.Windows.Documents.Hyperlink] }) | Select-Object -First 1
+    $callerCallsignText = if ($callerCallsignLink) { @($callerCallsignLink.Inlines | ForEach-Object { if ($_ -is [System.Windows.Documents.Run]) { [string]$_.Text } }) -join '' } else { '' }
+    Assert-UiChannels ($callerCallsignText -ceq 'N0TEST' -and @($callerVisualText | Where-Object { $_ -match '测试话者' }).Count -gt 0 -and $callerVisualText -contains 'DMR ID 460997') `
+        ('来话卡没有放大显示呼号/中文姓名并在下一行显示 DMR ID。 visual={0}; callsign={1}; link={2}; moduleLoaded={3}; normalized={4}; details={5}' -f `
+            ($callerVisualText -join '|'),$callerCallsignText,[bool]$callerCallsignLink,[bool]$script:radioIdentityModuleLoaded, `
+            [string](Get-UiNativeIdentityCallsign -Value 'N0TEST'),(ConvertTo-Json -InputObject (Get-UiChannelCallerDetails -RadioId 460997) -Compress))
     Assert-UiChannels ($callerIdLink -and [string]$callerIdLink.Tag.callsign -ceq 'N0TEST' -and
         $callerCallsignLink -and [string]$callerCallsignLink.Tag -ceq 'N0TEST' -and
-        [double]$callerSourceText.FontSize -eq 22 -and [double]$callerIdText.FontSize -eq 18) `
+        [double]$callerSourceText.FontSize -eq 23 -and [double]$callerIdText.FontSize -eq 19) `
         '来话卡应以大字号显示呼号/姓名和 DMR ID，并为两种身份分别建立链接。'
     $script:openedProfileUris = New-Object 'System.Collections.Generic.List[string]'
     $script:uiTestHooks.OpenUri = { param($Uri) $script:openedProfileUris.Add([string]$Uri) }

@@ -8,9 +8,9 @@ using System.Text;
 [assembly: AssemblyProduct("WIREX Bridge")]
 [assembly: AssemblyCompany("iCassius")]
 [assembly: AssemblyDescription("Portable WIREX Bridge launcher")]
-[assembly: AssemblyVersion("0.1.0.0")]
-[assembly: AssemblyFileVersion("0.1.0.0")]
-[assembly: AssemblyInformationalVersion("0.1.0")]
+[assembly: AssemblyVersion("0.1.1.0")]
+[assembly: AssemblyFileVersion("0.1.1.0")]
+[assembly: AssemblyInformationalVersion("0.1.1")]
 
 internal static class WirexBridgeLauncher
 {

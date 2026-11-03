@@ -2,6 +2,7 @@
 
 $script:stableReleaseContractPath = Join-Path $PSScriptRoot 'StableReleaseContract.psm1'
 Import-Module -Name $script:stableReleaseContractPath -Force -Scope Global -ErrorAction Stop
+Import-Module -Name (Join-Path $PSScriptRoot 'ZipOnlyRelease.psm1') -Force -Scope Global -ErrorAction Stop
 $script:stableReleaseLimits = Get-WirexStableReleaseLimits
 $scriptPath = Join-Path $PSScriptRoot 'download-release.ps1'
 $tokens = $null
@@ -978,6 +979,24 @@ Assert-True (@($alpha19Manifest.build.passed_tests).Count -eq 40 -and
     [string]::Join('|', @($alpha19Manifest.build.passed_tests)) -ceq [string]::Join('|', $expectedAlpha19Tests)) `
     'alpha.19 pins the inherited 40 Native tests in their existing order'
 Assert-True (Test-ReleaseTag -Tag 'v0.1.0-alpha.19') 'alpha.19 is an explicitly supported release tag'
+foreach ($zipOnlyTag in @('v0.1.1-test.2','v0.1.1')) {
+    $zipOnlyProfile = Get-WirexZipOnlyReleaseProfile -Version $zipOnlyTag
+    Assert-True (Test-ReleaseTag -Tag $zipOnlyTag) ($zipOnlyTag + ' is an explicitly supported ZIP-only release tag')
+    Assert-True ([string]::Join('|',(Get-ExpectedReleaseDirectories -Tag $zipOnlyTag)) -ceq
+        [string]::Join('|',$zipOnlyProfile.Directories)) ($zipOnlyTag + ' uses the fixed ZIP-only directory inventory')
+    Assert-True (@($zipOnlyProfile.PackageFiles | Where-Object { $_ -ceq 'WirexBridge.exe' }).Count -eq 1 -and
+        @($zipOnlyProfile.PackageFiles | Where-Object { $_ -ceq 'runtime/ui/windows/UiLocalization.psm1' }).Count -eq 1) `
+        ($zipOnlyTag + ' includes one root launcher and the required UI localization module')
+}
+Assert-True ((Select-ReleaseCandidate -Releases @([pscustomobject]@{
+    tag_name='v0.1.1-test.2'; draft=$false; prerelease=$true
+}) -RequestedTag 'v0.1.1-test.2').tag_name -ceq 'v0.1.1-test.2') `
+    'v0.1.1-test.2 requires prerelease=true'
+Assert-True ((Select-ReleaseCandidate -Releases @([pscustomobject]@{
+    tag_name='v0.1.1'; draft=$false; prerelease=$false
+}) -RequestedTag 'v0.1.1').tag_name -ceq 'v0.1.1') `
+    'v0.1.1 requires prerelease=false'
+Assert-True (-not (Test-ReleaseTag -Tag 'v0.1.1-test.1')) 'unregistered ZIP-only tags are rejected'
 $missingAlpha19ConfigExclusion = New-TestManifest -Tag 'v0.1.0-alpha.19'
 $missingAlpha19ConfigExclusion.excluded_private_files = @($missingAlpha19ConfigExclusion.excluded_private_files | Where-Object {
     [string]$_ -cne 'config.json'

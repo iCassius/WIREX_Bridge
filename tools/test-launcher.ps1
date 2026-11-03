@@ -142,6 +142,35 @@ function Test-ByteSequence {
     return $false
 }
 
+function Test-IcoResourceBytes {
+    param([Parameter(Mandatory = $true)][byte[]]$Bytes)
+    if ($Bytes.Length -lt 22 -or [System.BitConverter]::ToUInt16($Bytes, 0) -ne 0 -or
+        [System.BitConverter]::ToUInt16($Bytes, 2) -ne 1) { return $false }
+    $imageCount = [int][System.BitConverter]::ToUInt16($Bytes, 4)
+    $directoryEnd = 6 + 16 * $imageCount
+    if ($imageCount -lt 1 -or $directoryEnd -gt $Bytes.Length) { return $false }
+    for ($index = 0; $index -lt $imageCount; $index++) {
+        $entryOffset = 6 + 16 * $index
+        $imageLength = [System.BitConverter]::ToUInt32($Bytes, $entryOffset + 8)
+        $imageOffset = [System.BitConverter]::ToUInt32($Bytes, $entryOffset + 12)
+        $imageEnd = [uint64]$imageOffset + [uint64]$imageLength
+        if ($imageLength -lt 1 -or $imageOffset -lt $directoryEnd -or $imageEnd -gt $Bytes.Length) {
+            return $false
+        }
+        $isPng = $imageLength -ge 8 -and
+            [System.BitConverter]::ToString($Bytes,[int]$imageOffset,8) -ceq '89-50-4E-47-0D-0A-1A-0A'
+        if (-not $isPng) {
+            if ($imageLength -lt 40) { return $false }
+            $dibHeaderSize = [System.BitConverter]::ToUInt32($Bytes,[int]$imageOffset)
+            $dibWidth = [System.BitConverter]::ToInt32($Bytes,[int]$imageOffset + 4)
+            $dibHeight = [System.BitConverter]::ToInt32($Bytes,[int]$imageOffset + 8)
+            if ($dibHeaderSize -notin @(40,108,124) -or $dibWidth -lt 1 -or
+                $dibHeight -lt 2 -or ($dibHeight % 2) -ne 0) { return $false }
+        }
+    }
+    return $true
+}
+
 function Stop-OwnedFakeChildIfNeeded {
     if ($script:ownedChildId -le 0) { return }
     $process = @(Get-CimInstance -ClassName Win32_Process -Filter ('ProcessId=' + $script:ownedChildId) -ErrorAction Stop)
@@ -207,10 +236,26 @@ if (-not [string]::IsNullOrWhiteSpace($env:WIREX_TEST_START_UI_PROBE)) {
         'launcher output should be a 64-bit PE32+ image'
     Assert-LauncherTest ($peFacts.Subsystem -eq 2) 'launcher output should use the Windows GUI subsystem and show no console window'
     $versionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $exeRoot 'WirexBridge.exe'))
-    Assert-LauncherTest ($versionInfo.ProductName -ceq 'WIREX Bridge' -and $versionInfo.FileVersion -ceq '0.1.0.0' -and
-        $versionInfo.ProductVersion -ceq '0.1.0' -and $versionInfo.CompanyName -ceq 'iCassius') `
-        'launcher PE metadata should identify WIREX Bridge v0.1.0 and iCassius'
     $launcherBytes = [System.IO.File]::ReadAllBytes((Join-Path $exeRoot 'WirexBridge.exe'))
+    $launcherAssembly = [System.Reflection.Assembly]::Load([byte[]]$launcherBytes)
+    $iconResourceBytes = $null
+    if (@($launcherAssembly.GetManifestResourceNames()) -ccontains 'WIREX.ico') {
+        $iconResourceStream = $launcherAssembly.GetManifestResourceStream('WIREX.ico')
+        if ($null -ne $iconResourceStream) {
+            $iconResourceMemory = New-Object System.IO.MemoryStream
+            try {
+                $iconResourceStream.CopyTo($iconResourceMemory)
+                $iconResourceBytes = $iconResourceMemory.ToArray()
+            } finally {
+                $iconResourceStream.Dispose()
+                $iconResourceMemory.Dispose()
+            }
+        }
+    }
+    Assert-LauncherTest ($versionInfo.ProductName -ceq 'WIREX Bridge' -and $versionInfo.FileVersion -ceq '0.1.1.0' -and
+        $versionInfo.ProductVersion -ceq '0.1.1' -and $versionInfo.CompanyName -ceq 'iCassius' -and
+        (Test-IcoResourceBytes -Bytes $iconResourceBytes)) `
+        'launcher metadata should identify WIREX Bridge v0.1.1 by iCassius and include a parseable WIREX.ico resource'
     $unicodeLiteral = [System.Text.Encoding]::Unicode.GetBytes('WIREX Bridge 启动失败')
     Assert-LauncherTest (Test-ByteSequence -Haystack $launcherBytes -Needle $unicodeLiteral) `
         'compiled launcher should preserve the Chinese startup message as a Unicode string'

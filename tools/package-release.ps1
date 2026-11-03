@@ -4,13 +4,17 @@ param(
     [string]$BuildDirectory,
     [string]$BuildLogPath,
     [string]$YFixturePath,
-    [string]$LauncherBuildDirectory
+    [string]$LauncherBuildDirectory,
+    [string]$NativeBuildRepositoryRoot
 )
 
 $ErrorActionPreference = 'Stop'
 $script:stableReleaseContractPath = Join-Path $PSScriptRoot 'StableReleaseContract.psm1'
 if (-not [System.IO.File]::Exists($script:stableReleaseContractPath)) { throw 'StableReleaseContract.psm1 is missing.' }
 Import-Module -Name $script:stableReleaseContractPath -Force -Scope Global -ErrorAction Stop
+$script:zipOnlyReleaseContractPath = Join-Path $PSScriptRoot 'ZipOnlyRelease.psm1'
+if (-not [System.IO.File]::Exists($script:zipOnlyReleaseContractPath)) { throw 'ZipOnlyRelease.psm1 is missing.' }
+Import-Module -Name $script:zipOnlyReleaseContractPath -Force -Scope Global -ErrorAction Stop
 
 $script:approvedYFixtureSha256 = '82e0085ccaccb769a83362c5b335ce6b9a0e3ae93afdf2ad4f46eb81f908577f'
 $script:alpha1TestNames = @(
@@ -856,7 +860,37 @@ function Get-ReleaseProfile {
                 NotIncluded = @($alpha19.NotIncluded + 'user callsign, password, BM API key, current-release device/HRI/audio/PTT/RF acceptance')
             }
         }
-        default { throw 'Only v0.1.0 and v0.1.0-alpha.1 through v0.1.0-alpha.19 release profiles are supported.' }
+        'v0.1.1-test.2' {
+            $base = Get-ReleaseProfile -Version 'v0.1.0-alpha.19'
+            $zip = Get-WirexZipOnlyReleaseProfile -Version 'v0.1.1-test.2'
+            return [pscustomobject]@{
+                Version = 'v0.1.1-test.2'
+                TestNames = @($base.TestNames)
+                SourceFiles = @($zip.SourceFiles)
+                PackageFiles = @($zip.PackageFiles)
+                Directories = @($zip.Directories)
+                AssetMap = $zip.AssetMap
+                PackageReadme = 'docs\releases\v0.1.1-test.2.md'
+                ReleaseScope = $zip.ReleaseScope
+                NotIncluded = @()
+            }
+        }
+        'v0.1.1' {
+            $base = Get-ReleaseProfile -Version 'v0.1.0-alpha.19'
+            $zip = Get-WirexZipOnlyReleaseProfile -Version 'v0.1.1'
+            return [pscustomobject]@{
+                Version = 'v0.1.1'
+                TestNames = @($base.TestNames)
+                SourceFiles = @($zip.SourceFiles)
+                PackageFiles = @($zip.PackageFiles)
+                Directories = @($zip.Directories)
+                AssetMap = $zip.AssetMap
+                PackageReadme = 'docs\releases\v0.1.1.md'
+                ReleaseScope = $zip.ReleaseScope
+                NotIncluded = @()
+            }
+        }
+        default { throw 'Only the registered v0.1.0, v0.1.0-alpha, v0.1.1-test.2, and v0.1.1 profiles are supported.' }
     }
 }
 
@@ -923,16 +957,49 @@ function Get-ExpectedReleaseTests {
     return (Get-ReleaseProfile -Version $script:activeReleaseVersion).TestNames
 }
 
+function Get-RepositoryGitCommonDirectory {
+    param([Parameter(Mandatory=$true)][string]$RepositoryRoot)
+    $root = [System.IO.Path]::GetFullPath($RepositoryRoot)
+    $commonLines = @(& git -C $root rev-parse --git-common-dir 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $commonLines.Count -lt 1 -or [string]::IsNullOrWhiteSpace([string]$commonLines[0])) {
+        throw 'Unable to resolve the Git common directory for a build worktree.'
+    }
+    $commonPath = [string]$commonLines[0].Trim()
+    if ([System.IO.Path]::IsPathRooted($commonPath)) { return [System.IO.Path]::GetFullPath($commonPath) }
+    return [System.IO.Path]::GetFullPath((Join-Path $root $commonPath))
+}
+
 function Test-ReleaseBuildEvidence {
     param(
         [Parameter(Mandatory=$true)][string]$RepositoryRoot,
         [Parameter(Mandatory=$true)][string]$SourceCommit,
         [Parameter(Mandatory=$true)][string]$BuildDirectory,
-        [Parameter(Mandatory=$true)][string]$BuildLogPath
+        [Parameter(Mandatory=$true)][string]$BuildLogPath,
+        [string]$BuildRepositoryRoot
     )
     if ($SourceCommit -cnotmatch '^[0-9a-f]{40}$') { throw '源码提交必须是完整的小写 SHA-1。' }
     $repo = [System.IO.Path]::GetFullPath($RepositoryRoot)
-    $workRoot = [System.IO.Path]::GetFullPath((Join-Path $repo 'build\_work'))
+    $buildRepo = if ([string]::IsNullOrWhiteSpace($BuildRepositoryRoot)) { $repo } else { [System.IO.Path]::GetFullPath($BuildRepositoryRoot) }
+    if (-not $buildRepo.Equals($repo,[System.StringComparison]::OrdinalIgnoreCase)) {
+        $repoCommon = Get-RepositoryGitCommonDirectory -RepositoryRoot $repo
+        $buildRepoCommon = Get-RepositoryGitCommonDirectory -RepositoryRoot $buildRepo
+        $buildRootLines = @(& git -C $buildRepo rev-parse --show-toplevel 2>$null)
+        if ($LASTEXITCODE -ne 0 -or $buildRootLines.Count -lt 1 -or
+            -not ([System.IO.Path]::GetFullPath(([string]$buildRootLines[0]).Trim()).Equals($buildRepo,[System.StringComparison]::OrdinalIgnoreCase)) -or
+            -not $repoCommon.Equals($buildRepoCommon,[System.StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Native build directory must belong to a registered worktree of the same Git repository.'
+        }
+        $buildHeadLines = @(& git -C $buildRepo rev-parse HEAD 2>$null)
+        if ($LASTEXITCODE -ne 0 -or $buildHeadLines.Count -lt 1 -or
+            ([string]$buildHeadLines[0]).Trim().ToLowerInvariant() -cne $SourceCommit) {
+            throw 'Native build worktree HEAD does not match its build source commit.'
+        }
+        $buildStatusLines = @(& git -C $buildRepo status --porcelain --untracked-files=all 2>$null)
+        if ($LASTEXITCODE -ne 0 -or $buildStatusLines.Count -ne 0) {
+            throw 'Native build worktree must remain clean while its evidence is used.'
+        }
+    }
+    $workRoot = [System.IO.Path]::GetFullPath((Join-Path $buildRepo 'build\_work'))
     $build = [System.IO.Path]::GetFullPath($BuildDirectory)
     $log = [System.IO.Path]::GetFullPath($BuildLogPath)
     if (-not (Test-PathWithinDirectory -Path $build -Directory $workRoot) -or
@@ -967,7 +1034,7 @@ function Test-ReleaseBuildEvidence {
         $provenance.build_completed -ne $true -or $provenance.result -cne 'passed') {
         throw 'builder provenance 未证明当前 clean source commit 的完整正式构建。'
     }
-    $buildRelative = Get-RepoRelativePath -RepositoryRoot $repo -Path $build
+    $buildRelative = Get-RepoRelativePath -RepositoryRoot $buildRepo -Path $build
     if (([string]$provenance.output_directory).Replace('\', '/') -cne $buildRelative) {
         throw 'builder provenance 的输出目录与指定构建目录不一致。'
     }
@@ -1019,6 +1086,7 @@ function Test-ReleaseBuildEvidence {
 
     $exe = Get-Item -LiteralPath $exePath -ErrorAction Stop
     return [pscustomobject]@{
+        build_repository_root = $buildRepo
         build_directory = $build
         build_log = $log
         executable = $exePath
@@ -1065,7 +1133,7 @@ function Test-ReleaseLauncherBuildEvidence {
     if ([string]$provenance.source.path -cne 'ui/launcher/WirexBridgeLauncher.cs' -or
         [string]$provenance.source.commit -cne $SourceCommit -or
         [string]$provenance.compiler.family -cne 'Microsoft .NET Framework csc.exe' -or
-        [string]$provenance.compiler.command -cne 'csc.exe /nologo /target:winexe /platform:x64 /optimize+ /debug- /codepage:65001' -or
+        [string]$provenance.compiler.command -cne 'csc.exe /nologo /target:winexe /platform:x64 /optimize+ /debug- /codepage:65001 /win32icon:assets/wiresx-official.ico /resource:assets/wiresx-official.ico,WIREX.ico' -or
         [string]$provenance.compiler.target -cne 'x64 Windows GUI executable' -or
         [string]$provenance.output.path -cne 'WirexBridge.exe') {
         throw 'Launcher provenance 的源码、编译器或输出类型不符合固定合同。'
@@ -1074,6 +1142,14 @@ function Test-ReleaseLauncherBuildEvidence {
     $sourceHash = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash.ToLowerInvariant()
     if ([string]$provenance.source.sha256 -cne $sourceHash) {
         throw 'Launcher provenance 的源码 SHA-256 与当前发行源码不一致。'
+    }
+    $iconPath = Join-Path $repo 'assets\wiresx-official.ico'
+    if (-not [System.IO.File]::Exists($iconPath) -or
+        [string]$provenance.resources.icon_path -cne 'assets/wiresx-official.ico' -or
+        [string]$provenance.resources.icon_sha256 -cne (Get-FileHash -LiteralPath $iconPath -Algorithm SHA256).Hash.ToLowerInvariant() -or
+        [string]$provenance.resources.assembly_resource_name -cne 'WIREX.ico' -or
+        $provenance.resources.windows_executable_icon -ne $true) {
+        throw 'Launcher provenance 未确认已嵌入且匹配的 WIRES-X 图标资源。'
     }
     $buildRelative = Get-RepoRelativePath -RepositoryRoot $repo -Path $build
     if ([string]$provenance.output.directory -cne $buildRelative) {
@@ -1119,7 +1195,7 @@ function Get-ExpectedReleasePackageFiles {
 function Get-ReleaseExcludedPrivateFiles {
     param([Parameter(Mandatory=$true)][string]$Version)
     $excluded = @('private/bm-device-password.txt', 'connection-profile.json', 'audio-settings.json')
-    if ($Version -ceq 'v0.1.0') {
+    if ($Version -cin @('v0.1.0','v0.1.1-test.2','v0.1.1')) {
         return @(
             'config.json', 'config.*.backup*', 'credentials/', 'tempSecrets/', 'logs/',
             'runtime/config.json', 'runtime/config.*.backup*', 'runtime/credentials/', 'runtime/tempSecrets/', 'runtime/logs/',
@@ -1221,9 +1297,17 @@ function Assert-ReleaseArchivePath {
 
 function Test-ReleaseArchiveMatchesPackage {
     param([Parameter(Mandatory=$true)][string]$PackageRoot, [Parameter(Mandatory=$true)][string]$ArchivePath,
-        [string]$Version = 'v0.1.0')
+        [string]$Version = 'v0.1.0', [string]$AuditManifestPath)
     $profile = Get-ReleaseProfile -Version $Version
-    if ($Version -cne 'v0.1.0') { throw 'The archive verifier only supports the stable v0.1.0 package.' }
+    if (Test-WirexZipOnlyVersion -Version $Version) {
+        if ([string]::IsNullOrWhiteSpace($AuditManifestPath)) {
+            $repo = [System.IO.Path]::GetFullPath((Join-Path $PackageRoot '..\..\..'))
+            $AuditManifestPath = Join-Path $repo ('private\release-audits\R126\' + $Version + '\manifest.json')
+        }
+        return (Test-WirexZipOnlyArchive -ArchivePath $ArchivePath -Version $Version `
+            -AuditManifestPath $AuditManifestPath -PackageRoot $PackageRoot)
+    }
+    if ($Version -cne 'v0.1.0') { throw 'The archive verifier only supports v0.1.0 and registered ZIP-only versions.' }
     Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
     $package = [System.IO.Path]::GetFullPath($PackageRoot)
     $expectedPaths = @(@($profile.PackageFiles | Where-Object { $_ -cne 'manifest.json' }) + 'manifest.json')
@@ -1394,9 +1478,44 @@ function New-StableReleaseDistribution {
     }
 }
 
+function New-ZipOnlyReleaseDistribution {
+    param([Parameter(Mandatory=$true)][string]$PackageRoot,[Parameter(Mandatory=$true)][string]$RepositoryRoot,
+        [Parameter(Mandatory=$true)][string]$Version,[string]$DistributionDirectory)
+    $repo = [System.IO.Path]::GetFullPath($RepositoryRoot)
+    $package = [System.IO.Path]::GetFullPath($PackageRoot)
+    $profile = Get-WirexZipOnlyReleaseProfile -Version $Version
+    $auditManifest = Join-Path $repo ('private\release-audits\R126\' + $Version + '\manifest.json')
+    [void](Get-WirexZipOnlyAuditManifest -AuditManifestPath $auditManifest -Version $Version -PackageRoot $package)
+    if ([string]::IsNullOrWhiteSpace($DistributionDirectory)) {
+        $DistributionDirectory = Join-Path $repo ('build\_work\r126-distribution\' + $Version)
+    }
+    $finalDirectory = [System.IO.Path]::GetFullPath($DistributionDirectory)
+    $workRoot = [System.IO.Path]::GetFullPath((Join-Path $repo 'build\_work'))
+    if (-not (Test-PathWithinDirectory -Path $finalDirectory -Directory $workRoot)) {
+        throw 'ZIP-only distribution must stay under build/_work.'
+    }
+    if (Test-Path -LiteralPath $finalDirectory) { throw 'ZIP-only distribution directory exists; refusing to overwrite it.' }
+    [System.IO.Directory]::CreateDirectory($finalDirectory) | Out-Null
+    try {
+        $archivePath = Join-Path $finalDirectory $profile.ArchiveName
+        $archive = New-WirexZipOnlyArchive -PackageRoot $package -AuditManifestPath $auditManifest `
+            -Version $Version -ArchivePath $archivePath
+        $children = @(Get-ChildItem -LiteralPath $finalDirectory -Force -ErrorAction Stop)
+        if ($children.Count -ne 1 -or $children[0].Name -cne $profile.ArchiveName -or $children[0].PSIsContainer) {
+            throw 'ZIP-only distribution directory must contain exactly one ZIP asset.'
+        }
+        return $archive
+    } catch {
+        throw
+    }
+}
+
 function Assert-ReleasePackageInventory {
     param([Parameter(Mandatory=$true)][string]$PackageRoot, [string]$Version = $script:activeReleaseVersion)
     $profile = Set-ReleaseVersion -Version $Version
+    if (Test-WirexZipOnlyVersion -Version $Version) {
+        return (Test-WirexZipOnlyPackageInventory -PackageRoot $PackageRoot -Version $Version)
+    }
     $expectedFiles = @($profile.PackageFiles | Sort-Object)
     $expectedPathSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($expectedPath in $expectedFiles) {
@@ -1533,6 +1652,86 @@ function Assert-ReleasePackageInventory {
     }
 }
 
+function Invoke-ZipOnlyReleasePackaging {
+    param([Parameter(Mandatory=$true)][string]$Version,[Parameter(Mandatory=$true)][string]$BuildDirectory,
+        [Parameter(Mandatory=$true)][string]$BuildLogPath,[Parameter(Mandatory=$true)][string]$YFixturePath,
+        [Parameter(Mandatory=$true)][string]$LauncherBuildDirectory,[Parameter(Mandatory=$true)][string]$RepositoryRoot,
+        [string]$NativeBuildRepositoryRoot)
+    $repo = [System.IO.Path]::GetFullPath($RepositoryRoot)
+    $profile = Set-ReleaseVersion -Version $Version
+    $gitRootLines = @(& git -C $repo rev-parse --show-toplevel 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $gitRootLines.Count -lt 1 -or
+        -not ([System.IO.Path]::GetFullPath(([string]$gitRootLines[0]).Trim()).Equals($repo,[System.StringComparison]::OrdinalIgnoreCase))) {
+        throw '打包脚本必须从 WIREX Bridge Git 仓库运行。'
+    }
+    $commitLines = @(& git -C $repo rev-parse HEAD 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $commitLines.Count -lt 1) { throw '无法读取当前源码提交。' }
+    $sourceCommit = ([string]$commitLines[0]).Trim().ToLowerInvariant()
+    if ($sourceCommit -cnotmatch '^[0-9a-f]{40}$') { throw '当前源码提交号格式不正确。' }
+    $statusLines = @(& git -C $repo status --porcelain --untracked-files=all 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $statusLines.Count -ne 0) { throw '发布打包要求 Git 工作树干净且没有未跟踪文件。' }
+    $existingTag = @(& git -C $repo tag --list $Version 2>$null | Where-Object { $_ -ceq $Version })
+    if ($LASTEXITCODE -ne 0) { throw '无法检查本地 tag 列表。' }
+    if ($existingTag.Count -gt 0) { throw "本地已存在 tag $Version；打包器不会复用该版本。" }
+
+    $nativeBuildRepo = if ([string]::IsNullOrWhiteSpace($NativeBuildRepositoryRoot)) { $repo } else {
+        Resolve-ReleasePath -Path $NativeBuildRepositoryRoot -BaseDirectory $repo
+    }
+    $buildPath = Resolve-ReleasePath -Path $BuildDirectory -BaseDirectory $nativeBuildRepo
+    $logPath = Resolve-ReleasePath -Path $BuildLogPath -BaseDirectory $nativeBuildRepo
+    $nativeProvenancePath = Join-Path $buildPath 'build-provenance.json'
+    if (-not [System.IO.File]::Exists($nativeProvenancePath)) { throw 'Native build provenance is missing.' }
+    try { $nativeProvenance = [System.IO.File]::ReadAllText($nativeProvenancePath,[System.Text.Encoding]::UTF8) | ConvertFrom-Json -ErrorAction Stop }
+    catch { throw 'Native build provenance is invalid.' }
+    $nativeSourceCommit = ([string]$nativeProvenance.source_commit).ToLowerInvariant()
+    if ($nativeSourceCommit -cnotmatch '^[0-9a-f]{40}$') { throw 'Native provenance does not identify a full source commit.' }
+    $mergeBaseLines = @(& git -C $repo merge-base --is-ancestor $nativeSourceCommit $sourceCommit 2>$null)
+    if ($LASTEXITCODE -ne 0) { throw 'Native build source must be an ancestor of the final package source.' }
+    $nativeInputPaths = @('CMakeLists.txt','include/','src/','tests/','third_party/','tools/build-bm-bridge.ps1')
+    $diffOutput = @(& git -C $repo diff --quiet $nativeSourceCommit $sourceCommit -- @nativeInputPaths 2>$null)
+    if ($LASTEXITCODE -ne 0) { throw 'Native build inputs changed after the recorded Native source commit.' }
+    $buildEvidence = Test-ReleaseBuildEvidence -RepositoryRoot $repo -SourceCommit $nativeSourceCommit `
+        -BuildDirectory $buildPath -BuildLogPath $logPath -BuildRepositoryRoot $nativeBuildRepo
+    $launcherBuildPath = Resolve-ReleasePath -Path $LauncherBuildDirectory -BaseDirectory $repo
+    $launcherEvidence = Test-ReleaseLauncherBuildEvidence -RepositoryRoot $repo -SourceCommit $sourceCommit -BuildDirectory $launcherBuildPath
+    $fixturePath = Resolve-ReleasePath -Path $YFixturePath -BaseDirectory $repo
+    [void](Test-ApprovedYFixture -Path $fixturePath)
+
+    $releaseRoot = [System.IO.Path]::GetFullPath((Join-Path $repo 'build\releases'))
+    if (-not [System.IO.Directory]::Exists($releaseRoot)) { [System.IO.Directory]::CreateDirectory($releaseRoot) | Out-Null }
+    $outputPath = Join-Path $releaseRoot $Version
+    if (Test-Path -LiteralPath $outputPath) { throw "发布目录已存在，拒绝覆盖：$outputPath" }
+    $stagePath = Join-Path $releaseRoot ('.staging-' + $Version + '-' + [guid]::NewGuid().ToString('N'))
+    if (Test-Path -LiteralPath $stagePath) { throw 'ZIP-only staging path already exists.' }
+    $auditRoot = Join-Path $repo ('private\release-audits\R126\' + $Version)
+    if (Test-Path -LiteralPath $auditRoot) { throw 'ZIP-only private audit directory already exists.' }
+    try {
+        [void](New-WirexZipOnlyPackageTree -RepositoryRoot $repo -PackageRoot $stagePath -Version $Version `
+            -LauncherExecutable $launcherEvidence.executable -NativeExecutable (Join-Path $buildPath 'wirex_bridge.exe') -FixturePath $fixturePath)
+        $auditManifestPath = New-WirexZipOnlyAuditManifest -PackageRoot $stagePath -AuditDirectory $auditRoot -Version $Version `
+            -SourceCommit $sourceCommit -NativeSourceCommit $nativeSourceCommit -LauncherSourceCommit $sourceCommit `
+            -Repository 'https://github.com/iCassius/WIREX_Bridge.git' -PassedTests @($profile.TestNames) `
+            -NativeBuildProvenanceSha256 ([string]$buildEvidence.build_provenance_sha256) `
+            -LauncherBuildProvenanceSha256 ([string]$launcherEvidence.provenance_sha256)
+        Copy-Item -LiteralPath (Join-Path $buildPath 'build-provenance.json') -Destination (Join-Path $auditRoot 'native-build-provenance.json') -ErrorAction Stop
+        Copy-Item -LiteralPath $logPath -Destination (Join-Path $auditRoot 'native-build.log') -ErrorAction Stop
+        Copy-Item -LiteralPath $launcherEvidence.provenance -Destination (Join-Path $auditRoot 'launcher-build-provenance.json') -ErrorAction Stop
+        Copy-Item -LiteralPath $launcherEvidence.build_log -Destination (Join-Path $auditRoot 'launcher-build.log') -ErrorAction Stop
+        if (-not (Test-PathWithinDirectory -Path $stagePath -Directory $releaseRoot)) { throw 'ZIP-only staging path escaped build/releases.' }
+        [System.IO.Directory]::Move($stagePath,$outputPath)
+        return [pscustomobject]@{
+            Version=$Version; PackageRoot=$outputPath; AuditManifest=$auditManifestPath; SourceCommit=$sourceCommit
+            FileCount=$profile.PackageFiles.Count; DirectoryCount=$profile.Directories.Count; PackageStatus='awaiting_root_audit'
+        }
+    } catch {
+        if ([System.IO.Directory]::Exists($stagePath) -and (Test-PathWithinDirectory -Path $stagePath -Directory $releaseRoot) -and
+            [System.IO.Path]::GetFileName($stagePath).StartsWith('.staging-' + $Version + '-',[System.StringComparison]::Ordinal)) {
+            Remove-Item -LiteralPath $stagePath -Recurse -Force -ErrorAction Stop
+        }
+        throw
+    }
+}
+
 function Invoke-ReleasePackaging {
     param(
         [Parameter(Mandatory=$true)][string]$Version,
@@ -1540,9 +1739,18 @@ function Invoke-ReleasePackaging {
         [Parameter(Mandatory=$true)][string]$BuildLogPath,
         [string]$YFixturePath,
         [string]$LauncherBuildDirectory,
+        [string]$NativeBuildRepositoryRoot,
         [Parameter(Mandatory=$true)][string]$RepositoryRoot
     )
     $profile = Set-ReleaseVersion -Version $Version
+    if (Test-WirexZipOnlyVersion -Version $Version) {
+        if ([string]::IsNullOrWhiteSpace($YFixturePath) -or [string]::IsNullOrWhiteSpace($LauncherBuildDirectory)) {
+            throw 'ZIP-only release requires the approved HRI template and an explicit launcher build directory.'
+        }
+        return (Invoke-ZipOnlyReleasePackaging -Version $Version -BuildDirectory $BuildDirectory -BuildLogPath $BuildLogPath `
+            -YFixturePath $YFixturePath -LauncherBuildDirectory $LauncherBuildDirectory -RepositoryRoot $RepositoryRoot `
+            -NativeBuildRepositoryRoot $NativeBuildRepositoryRoot)
+    }
     $isStableRelease = $profile.Version -ceq 'v0.1.0'
     $repo = [System.IO.Path]::GetFullPath($RepositoryRoot)
     $gitRootLines = @(& git -C $repo rev-parse --show-toplevel 2>$null)
@@ -1834,5 +2042,6 @@ function Get-RepoRelativePath {
 if ($MyInvocation.InvocationName -ne '.') {
     $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
     Invoke-ReleasePackaging -Version $Version -BuildDirectory $BuildDirectory -BuildLogPath $BuildLogPath `
-        -YFixturePath $YFixturePath -LauncherBuildDirectory $LauncherBuildDirectory -RepositoryRoot $repositoryRoot
+        -YFixturePath $YFixturePath -LauncherBuildDirectory $LauncherBuildDirectory `
+        -NativeBuildRepositoryRoot $NativeBuildRepositoryRoot -RepositoryRoot $repositoryRoot
 }
