@@ -24,7 +24,7 @@ stable profile 使用 tag `v0.1.0`；alpha.1–alpha.19 的历史资产路径和
 
 ## 源码阶段状态
 
-截至 2026-11-03，R124 源码阶段离线回归结果如下。publisher 的 161 项合成断言是在源码树有修改时运行，跳过了仓库 Git 检查；这条结果只记录合成校验，不作为 clean-commit Git 检查结果。downloader 的 3,262 项断言通过，跳过 0 项。
+截至 2026-11-03，R124 源码阶段离线回归结果如下。publisher 的 161 项合成断言是在源码树有修改时运行，跳过了仓库 Git 检查；这条结果只记录合成校验，不作为 clean-commit Git 检查结果。downloader 的初始 3,262 项断言通过，跳过 0 项；发布后修复稳定下载时 ZIP/checksum 临时文件落在解压库存根目录的问题，加入实际 `Invoke-StableArchiveDownload` fake-HTTP 集成路径后，完整离线回归为 3,264 项，跳过 0 项。
 
 | 检查 | 通过断言 |
 | --- | ---: |
@@ -32,7 +32,7 @@ stable profile 使用 tag `v0.1.0`；alpha.1–alpha.19 的历史资产路径和
 | launcher 启动、诊断与生命周期 | 45 |
 | stable/alpha package | 795 |
 | publisher 合成校验 | 161 |
-| downloader | 3,262 |
+| downloader | 3,264 |
 | ChannelActivationState | 345 |
 | channels | 171 |
 | console | 121 |
@@ -48,3 +48,19 @@ stable profile 使用 tag `v0.1.0`；alpha.1–alpha.19 的历史资产路径和
 此前的实际 WPF 输入回归通过 63 项断言，root 接受该证据。另一次后续尝试时 Dota 2 在前台，WPF 窗口没有收到输入事件；该次没有形成有效 UI 输入结果，也不覆盖此前通过的 63 项结果。没有再次抢占前台输入。
 
 打包工具在初次形成 stable package 时会生成 `awaiting_root_audit` 状态的中间 ZIP。root 审核 generic 目录并将 manifest 标记为 `root_audit_passed` 后，中间分发需从候选位置移出并保留到私有归档，再通过 `New-StableReleaseDistribution` 在独立路径重新生成最终 ZIP、manifest 原字节副本和 SHA256SUMS；root 对这三项最终资产复核后，才进入发布步骤。
+
+## 正式 stable Release（2026-11-03）
+
+Root 审核 generic 目录和最终三项资产后，正式发布 tag `v0.1.0`。该 annotated tag 指向产品源码提交 `c12b50a9f339417ffd49d37b7acab6057fa51bcf`，普通推送到 `origin`；GitHub 仓库为 private，Release 已发布且 `prerelease=false`：[WIREX Bridge v0.1.0](https://github.com/iCassius/WIREX_Bridge/releases/tag/v0.1.0)。stable manifest 记录 `package_status=root_audit_passed`、42 条文件记录、43 个 ZIP 条目、8 个目录和 36 个源码映射。package 在 tag 发布前完成；发布后没有重打 ZIP、改 tag 或改动 manifest。
+
+| 分发资产 | 长度（字节） | SHA-256 |
+| --- | ---: | --- |
+| `WIREX_Bridge_v0.1.0.zip` | 768,471 | `891c5028ed682b158acf17c39e3e1f699750111750f2ebd0bba22d8fbd0456ed` |
+| `manifest.json` | 22,534 | `1bdc80890cd8aa0b51b19c8f6385d312014b11c006b4643e2b31862cd980cc0e` |
+| `SHA256SUMS.txt` | 170 | `f81e1a2132323543041c3fac160b8885657e5670f4e7badd4eb31008a7c1567d` |
+
+Root 审计 generic 目录后，只修订 manifest 的人工审核元数据：将静态组说明更新为 `Static labels require current BM API readback; local listening routes alone do not establish server static bindings.`，并把 `release_scope` 更新为 R124 频道来源标记、激活去重、纯 ID 中文预设、频道点击控件、胶囊增益滑块和 EXE/自动配置初始化。42 条文件记录、36 个源码映射及 Native/launcher 构建 provenance 未改；root 随后复核了标记后的目录和最终 ZIP 的每条文件长度、SHA-256 与配置排除状态。
+
+publisher 先创建 draft 并核验三个资产，再将其发布为 stable Release。发布后用真实 downloader 从私有 GitHub Release 下载到隔离审计目录 `build/_work/downloaded-v0.1.0-r124-audit`。下载器验证 Release 状态、manifest、checksum、ZIP 条目路径/类型/大小/hash、provenance 和固定库存；结果为 43 个文件、8 个目录，42 条 manifest 记录及外部 manifest 均与获审 generic 目录逐字节相同，无 `config.json`、reparse point 或遗留 staging。最初下载暴露出 `.part` 临时资产与精确解压库存处于同一路径的真实错误。后续 downloader 修复把临时资产放到同级独立 scratch 根，解压目录仍执行完整精确库存与 provenance 校验；fake-HTTP 生产路径回归及真实私有 Release 下载均通过。此工具修订在 v0.1.0 tag 之后，不属于已发布资产，tag 仍指向 `c12b50a`。
+
+发布包不包含用户配置；本机 stable 目录的配置迁移及 Alpha 19 归档按本机交接记录单独执行，配置内容和哈希不写入文档。此前 63 项真实 WPF 输入回归获 root 接受；后一次前台 Dota 2 环境没有让 WPF 窗口收到输入，不作为通过结果。本轮未进行设备、BM、音频、PTT 或 RF 实测。

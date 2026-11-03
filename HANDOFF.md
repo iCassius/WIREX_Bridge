@@ -1,10 +1,14 @@
 ﻿# WIREX Bridge 交接入口
 
-## R124 / v0.1.0 源码阶段交接（2026-11-03）
+## R124 / v0.1.0 正式发布交接（2026-11-03）
 
-stable 包采用根目录 `WirexBridge.exe` 加 `runtime/` 运行目录，通用清单不收录用户配置、凭据或日志。源码阶段回归记录：config 63、launcher 45、package 795、publisher 161（该次跳过仓库 Git 检查）、downloader 3,262（跳过 0）、ActivationState 345、channels 171、console 121、status 87、CAT 197、UI 63、RenderOnly 1,951、gain 85、R123 固定回归 54。测试没有连接真实设备、BM、音频、PTT 或 RF。
+stable tag `v0.1.0` 指向产品源码提交 `c12b50a9f339417ffd49d37b7acab6057fa51bcf`，已推送到 `origin`；GitHub 私有仓库 Release 已发布，`prerelease=false`：[WIREX Bridge v0.1.0](https://github.com/iCassius/WIREX_Bridge/releases/tag/v0.1.0)。generic 包采用根目录 `WirexBridge.exe` 加 `runtime/` 运行目录，清单 42 条文件记录、ZIP 43 个条目、8 个目录、36 个源码映射；包内没有 `config.json`、凭据、日志或机器私有路径。
 
-真实 WPF 输入回归曾通过 63 项断言，root 接受该证据。另一次尝试时 Dota 2 在前台，WPF 窗口没有收到输入事件；该次不形成有效 UI 结果，未再抢占输入。EXE 自动 routing diagnostic 曾因 Loaded 事件先走 `NoAutoConnect` 离线早退而未启动 Native；修复后，使用短路径合成配置和临时 manifest-copy overlay 的真实 EXE→PowerShell 5.1→WPF→Native 流程通过，完成两帧内存发送并正常关闭。此结果是诊断预检；最终候选以相同 clean source commit 的 Native、launcher 构建及 package provenance 为准。打包工具会创建待 root 审计的中间 ZIP；root 审核 generic 目录并标记通过后，再将中间分发移出候选并生成最终 ZIP、manifest 和 checksums 三项资产，供 root 复核。当前未创建 tag 或 GitHub Release。详见 [R124 发布记录](docs/R124_RELEASE.md)。
+正式 ZIP SHA-256：`891c5028ed682b158acf17c39e3e1f699750111750f2ebd0bba22d8fbd0456ed`；manifest SHA-256：`1bdc80890cd8aa0b51b19c8f6385d312014b11c006b4643e2b31862cd980cc0e`；`SHA256SUMS.txt` SHA-256：`f81e1a2132323543041c3fac160b8885657e5670f4e7badd4eb31008a7c1567d`。发布说明和审计修订见 [R124 发布记录](docs/R124_RELEASE.md)。
+
+fresh Native full40、launcher 45、package 795、publisher 163（含完整 Git 检查）、PortableConfig 63、channels 171、ChannelActivationState 345、downloader 3,264 及既有 UI 回归已通过。真实 EXE routing diagnostic 完成 WPF→Native 两帧内存发送和正常关闭。v0.1.0 发布后还修复了 downloader 的临时 ZIP/checksum 与解压库存相互干扰问题；真实下载器从私有 Release 重新下载 3 个分发资产，验证了 42 条文件记录、43 个文件和 8 个目录，逐文件长度及 SHA-256 与获审 generic 目录相同，且下载目录不含配置。这个工具修订属于后续源码交接，tag 和已发布资产仍固定在 `c12b50a`。
+
+真实 WPF 输入回归曾通过 63 项断言，root 接受该证据。另一次尝试时 Dota 2 在前台，WPF 窗口没有收到输入事件；该次不形成有效 UI 结果，也不覆盖此前通过的 63 项结果，未再抢占输入。此次发行未连接真实设备、BM、音频、PTT 或 RF，也没有实机验收结果。
 
 ## R123 / Alpha 19 最终交接（2026-11-02）
 

@@ -1381,11 +1381,20 @@ function Expand-StablePackageArchive {
 }
 
 function Invoke-StableArchiveDownload {
-    param([string]$Staging,[string]$Token,[object]$AssetMap,[object]$ValidatedManifest,[byte[]]$ManifestBytes)
+    param([string]$Staging,[string]$AssetStaging,[string]$Token,[object]$AssetMap,[object]$ValidatedManifest,[byte[]]$ManifestBytes)
+    $stagingRoot = [System.IO.Path]::GetFullPath($Staging)
+    $assetStagingRoot = [System.IO.Path]::GetFullPath($AssetStaging)
+    if ([System.IO.Path]::GetDirectoryName($stagingRoot) -cne [System.IO.Path]::GetDirectoryName($assetStagingRoot) -or
+        $stagingRoot -ceq $assetStagingRoot -or
+        [System.IO.Path]::GetFileName($assetStagingRoot) -notmatch '^\.wirex-release-assets-[0-9a-f]{32}$') {
+        throw 'Stable asset scratch must be a separate, named sibling of the package staging root.'
+    }
+    Assert-DownloadStagingRoot -Path $stagingRoot
+    Assert-DownloadStagingRoot -Path $assetStagingRoot
     $checksumAsset = $AssetMap['SHA256SUMS.txt']
     $archiveAsset = $AssetMap['WIREX_Bridge_v0.1.0.zip']
-    $checksumPath = Join-Path $Staging ('.checksums-' + ([long]$checksumAsset.id).ToString([Globalization.CultureInfo]::InvariantCulture) + '.part')
-    $archivePath = Join-Path $Staging ('.archive-' + ([long]$archiveAsset.id).ToString([Globalization.CultureInfo]::InvariantCulture) + '.part')
+    $checksumPath = Join-Path $assetStagingRoot ('.checksums-' + ([long]$checksumAsset.id).ToString([Globalization.CultureInfo]::InvariantCulture) + '.part')
+    $archivePath = Join-Path $assetStagingRoot ('.archive-' + ([long]$archiveAsset.id).ToString([Globalization.CultureInfo]::InvariantCulture) + '.part')
     Write-ReleaseAssetToFile -Asset $checksumAsset -Token $Token -Path $checksumPath -ExpectedLength ([long]$checksumAsset.size) -MaximumBytes 4096
     $utf8 = New-Object System.Text.UTF8Encoding($false,$true)
     try { $checksumText = [System.IO.File]::ReadAllText($checksumPath,$utf8) } catch { throw 'Stable SHA256SUMS.txt is not valid UTF-8.' }
@@ -1403,7 +1412,8 @@ function Invoke-StableArchiveDownload {
         -MaximumBytes ([long]$script:maximumStableArchiveBytes)
     $actualArchiveHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($actualArchiveHash -cne $expectedArchiveHash) { throw 'Stable ZIP SHA-256 does not match SHA256SUMS.txt.' }
-    Expand-StablePackageArchive -ArchivePath $archivePath -Destination $Staging -ValidatedManifest $ValidatedManifest -ManifestBytes $ManifestBytes
+    Expand-StablePackageArchive -ArchivePath $archivePath -Destination $stagingRoot -ValidatedManifest $ValidatedManifest `
+        -ManifestBytes $ManifestBytes
     Remove-Item -LiteralPath $checksumPath -Force -ErrorAction Stop
     Remove-Item -LiteralPath $archivePath -Force -ErrorAction Stop
 }
@@ -1416,6 +1426,8 @@ function Invoke-ReleaseDownload {
     $context = Get-DownloadDestinationContext -Destination $OutputDirectory
     $token = Get-GitCredentialToken
     $stagingCreated = $false
+    $assetScratch = $null
+    $assetScratchCreated = $false
     $primaryError = $null
     try {
         $release = Get-ReleaseForTag -RequestedTag $RequestedTag -Token $token -AllowDraft:$AllowDraft
@@ -1442,8 +1454,20 @@ function Invoke-ReleaseDownload {
         $stagingCreated = $true
         Assert-DownloadStagingRoot -Path $context.Staging
         if ($RequestedTag -ceq 'v0.1.0') {
-            Invoke-StableArchiveDownload -Staging $context.Staging -Token $token -AssetMap $assetMap `
+            $assetScratch = Join-Path $context.Parent ('.wirex-release-assets-' + [guid]::NewGuid().ToString('N'))
+            if (-not (Test-PathWithinDirectory -Path $assetScratch -Directory $context.Parent) -or
+                (Test-Path -LiteralPath $assetScratch)) { throw 'Stable asset scratch path is invalid or occupied.' }
+            [void](New-DownloadStagingRoot -Path $assetScratch)
+            $assetScratchCreated = $true
+            Assert-DownloadStagingRoot -Path $assetScratch
+            Invoke-StableArchiveDownload -Staging $context.Staging -AssetStaging $assetScratch -Token $token -AssetMap $assetMap `
                 -ValidatedManifest $validatedManifest -ManifestBytes $manifestBytes
+            if (@(Get-ChildItem -LiteralPath $assetScratch -Force -ErrorAction Stop).Count -ne 0) {
+                throw 'Stable asset scratch is not empty after download validation.'
+            }
+            Assert-DownloadStagingRoot -Path $assetScratch
+            [System.IO.Directory]::Delete($assetScratch, $false)
+            $assetScratchCreated = $false
             if (Test-Path -LiteralPath $context.Destination) { throw 'Destination appeared during stable download; no overwrite was attempted.' }
             Assert-DownloadStagingRoot -Path $context.Staging
             [System.IO.Directory]::Move($context.Staging, $context.Destination)
@@ -1509,13 +1533,38 @@ function Invoke-ReleaseDownload {
                 } catch { $cleanupFailure = $_.Exception.Message }
             }
         }
+        if ($assetScratchCreated -and $null -ne $assetScratch -and (Test-Path -LiteralPath $assetScratch)) {
+            $safeAssetScratchPath = (Test-PathWithinDirectory -Path $assetScratch -Directory $context.Parent) -and
+                [System.IO.Path]::GetFileName($assetScratch) -match '^\.wirex-release-assets-[0-9a-f]{32}$'
+            if (-not $safeAssetScratchPath -or -not (Test-Path -LiteralPath $assetScratch -PathType Container)) {
+                if ($null -eq $cleanupFailure) { $cleanupFailure = 'Asset scratch path escaped its verified sibling directory.' }
+            } else {
+                try {
+                    Assert-DownloadStagingRoot -Path $assetScratch
+                    foreach ($scratchItem in @(Get-ChildItem -LiteralPath $assetScratch -Force -ErrorAction Stop)) {
+                        if ($scratchItem.PSIsContainer -or
+                            (($scratchItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) -or
+                            $scratchItem.Name -notmatch '^\.(checksums|archive)-[0-9]+\.part$') {
+                            throw 'Asset scratch contains an unexpected entry; it was left in place.'
+                        }
+                        [System.IO.File]::Delete($scratchItem.FullName)
+                    }
+                    [System.IO.Directory]::Delete($assetScratch, $false)
+                    if (Test-Path -LiteralPath $assetScratch) { throw 'Asset scratch remains after cleanup.' }
+                } catch {
+                    if ($null -eq $cleanupFailure) { $cleanupFailure = $_.Exception.Message }
+                    else { $cleanupFailure += ' ' + $_.Exception.Message }
+                }
+            }
+        }
         $token = $null
         $manifestBytes = $null
         $manifestText = $null
         $provenanceText = $null
         $sourceText = $null
         if ($null -ne $cleanupFailure) {
-            $cleanupMessage = "下载暂存目录清理失败，残留路径：$($context.Staging)。清理错误：$cleanupFailure"
+            $cleanupPath = if ($null -ne $assetScratch -and (Test-Path -LiteralPath $assetScratch)) { $assetScratch } else { $context.Staging }
+            $cleanupMessage = "下载暂存目录清理失败，残留路径：$cleanupPath。清理错误：$cleanupFailure"
             if ($null -eq $primaryError) { throw $cleanupMessage }
             [Console]::Error.WriteLine($cleanupMessage)
         }

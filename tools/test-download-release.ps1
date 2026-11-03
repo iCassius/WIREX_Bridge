@@ -1165,6 +1165,49 @@ try {
     $stableZipEntries.Add([pscustomobject]@{ Path='manifest.json'; Bytes=[byte[]]$stableArchiveFixture.ManifestBytes })
     $validStableArchive = Join-Path $temporaryRoot 'stable-valid.zip'
     New-StableTestZipArchive -Path $validStableArchive -Entries $stableZipEntries.ToArray()
+
+    $stableArchiveHash = (Get-FileHash -LiteralPath $validStableArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+    $stableManifestHash = Get-ByteArraySha256 -Bytes $stableArchiveFixture.ManifestBytes
+    $stableChecksumText = $stableArchiveHash + '  WIREX_Bridge_v0.1.0.zip' + "`n" +
+        $stableManifestHash + '  manifest.json' + "`n"
+    $stableChecksumBytes = [System.Text.Encoding]::UTF8.GetBytes($stableChecksumText)
+    $script:stableFakeAssetPayloads = @{}
+    $script:stableFakeAssetPayloads[[long]3101] = $stableChecksumBytes
+    $script:stableFakeAssetPayloads[[long]3102] = [System.IO.File]::ReadAllBytes($validStableArchive)
+    $productionGetAssetResponse = (Get-Item -Path 'Function:Get-ReleaseAssetResponse').ScriptBlock
+    try {
+        Set-Item -Path 'Function:Get-ReleaseAssetResponse' -Value {
+            param([long]$AssetId, [string]$Token)
+            $payload = $script:stableFakeAssetPayloads[[long]$AssetId]
+            if ($null -eq $payload) { throw 'Fake HTTP server received an unregistered asset id.' }
+            $fakeResponse = [pscustomobject]@{ ContentLength=[long]$payload.Length; Bytes=[byte[]]$payload }
+            Add-Member -InputObject $fakeResponse -MemberType ScriptMethod -Name GetResponseStream -Value {
+                return [System.IO.MemoryStream]::new([byte[]]$this.Bytes, $false)
+            } -Force
+            Add-Member -InputObject $fakeResponse -MemberType ScriptMethod -Name Close -Value { } -Force
+            return $fakeResponse
+        }
+        $stableProductionStage = Join-Path $temporaryRoot 'stable-production-stage'
+        $stableAssetScratch = Join-Path $temporaryRoot ('.wirex-release-assets-' + [guid]::NewGuid().ToString('N'))
+        [void](New-DownloadStagingRoot -Path $stableProductionStage)
+        [void](New-DownloadStagingRoot -Path $stableAssetScratch)
+        $stableIntegrationAssets = @{
+            'SHA256SUMS.txt'=[pscustomobject]@{ id=3101; name='SHA256SUMS.txt'; size=[long]$stableChecksumBytes.Length; digest='' }
+            'WIREX_Bridge_v0.1.0.zip'=[pscustomobject]@{ id=3102; name='WIREX_Bridge_v0.1.0.zip'; size=[long](Get-Item -LiteralPath $validStableArchive).Length; digest='' }
+        }
+        Invoke-StableArchiveDownload -Staging $stableProductionStage -AssetStaging $stableAssetScratch `
+            -Token 'offline-fake-http' -AssetMap $stableIntegrationAssets `
+            -ValidatedManifest $stableArchiveFixture.Validated -ManifestBytes $stableArchiveFixture.ManifestBytes
+        Assert-True ((Test-StableExtractedInventory -Directory $stableProductionStage) -eq $true -and
+            (Test-StablePackageProvenance -Directory $stableProductionStage -ValidatedManifest $stableArchiveFixture.Validated) -eq $null) `
+            'production stable asset-download path validates extracted inventory and provenance with asset parts isolated in sibling scratch'
+        Assert-True (@(Get-ChildItem -LiteralPath $stableAssetScratch -Force).Count -eq 0) `
+            'production stable asset-download path removes both temporary files before returning'
+    } finally {
+        Set-Item -Path 'Function:Get-ReleaseAssetResponse' -Value $productionGetAssetResponse
+        $script:stableFakeAssetPayloads = $null
+    }
+
     $stableExtraction = Join-Path $temporaryRoot 'stable-extracted'
     [System.IO.Directory]::CreateDirectory($stableExtraction) | Out-Null
     Expand-StablePackageArchive -ArchivePath $validStableArchive -Destination $stableExtraction `
