@@ -342,6 +342,8 @@ CommandResult run_loop(Shared& shared, StartConfig config)
     };
     auto build_snapshot = [&]() {
         Snapshot next{};
+        next.clock_origin_ms = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(run_started.time_since_epoch()).count());
         next.phase = shutdown_requested ? Phase::stopping : (hri_ready ? Phase::running : Phase::starting);
         next.serial_open = port != nullptr;
         next.hri_ready = hri_ready;

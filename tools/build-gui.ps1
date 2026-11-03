@@ -39,10 +39,24 @@ $guiFiles = @('gui_main.cpp', 'app_view.cpp', 'view_model.cpp', 'fake_engine.cpp
     ForEach-Object { 'src\gui\' + $_ }
 # GUI 用到的 app 服务与 native 公共模块（与 tools/build-app-tests.ps1 同一组源文件）。
 $serviceFiles = @('app\config.cpp', 'app\json.cpp', 'app\devices.cpp', 'app\radio_cat.cpp', 'app\bm_api.cpp',
-    'app\bm_servers.cpp', 'app\http_client.cpp', 'app\radio_identity.cpp', 'radio_identity_cache.cpp',
-    'bm_connection_config.cpp', 'talkgroup_routing.cpp') | ForEach-Object { 'src\' + $_ }
-$appFiles = @($guiFiles + $serviceFiles)
-foreach ($relative in @($imguiFiles + $appFiles + @('src\gui\wirex_gui.rc', 'src\gui\wirex_gui.manifest', 'assets\wiresx-official.ico'))) {
+    'app\bm_servers.cpp', 'app\http_client.cpp', 'app\radio_identity.cpp') | ForEach-Object { 'src\' + $_ }
+# 进程内桥接引擎及其 native 模块：与 tools/build-bm-bridge.ps1 的 $coreSources 相同（不含管道适配层与 CLI 入口）。
+$engineFiles = @('dmrd.cpp', 'dmr_call.cpp', 'talkgroup_routing.cpp', 'dmr_vocoder.cpp', 'pcm_resampler.cpp',
+    'bm_voice_pipeline.cpp', 'bm_test_profile.cpp', 'bm_connection_config.cpp', 'bm_connection_control.cpp',
+    'bm_session.cpp', 'bm_udp.cpp', 'direct_frame.cpp', 'direct_stream.cpp', 'hri_session.cpp', 'hri_ptt_gate.cpp',
+    'hri_downlink_session.cpp', 'hri_radio_protocol.cpp', 'hri_t_payload.cpp', 'hri_call_header.cpp', 'hri_t_record.cpp',
+    'hri_lcd_identity_candidate.cpp', 'radio_identity_cache.cpp', 'hri_stream_session.cpp', 'wave_file.cpp',
+    'pcm_gain.cpp', 'console_lifecycle.cpp', 'session_report.cpp', 'ui_control_protocol.cpp', 'strict_json.cpp',
+    'routing_state.cpp', 'engine\engine.cpp', 'engine\engine_loop.cpp', 'engine\engine_status.cpp',
+    'engine\engine_devices_win.cpp') | ForEach-Object { 'src\' + $_ }
+$engineFiles += 'third_party\dmr_signal\dmr_signal.cpp'
+$droidstarManifest = Get-Content -LiteralPath (Join-Path $appRoot 'third_party\droidstar_mbe\source-manifest.json') -Raw -Encoding UTF8 |
+    ConvertFrom-Json
+$droidstarFiles = @($droidstarManifest.files | Where-Object { [string]$_.path -match '^upstream/(imbe_vocoder/.*\.cc|mbe/.*\.cpp)$' } |
+    ForEach-Object { 'third_party\droidstar_mbe\' + ([string]$_.path).Replace('/', '\') })
+if ($droidstarFiles.Count -ne 27) { throw "DroidStar 编译源数量不符：$($droidstarFiles.Count)" }
+$appFiles = @($guiFiles + $serviceFiles + $engineFiles)
+foreach ($relative in @($imguiFiles + $appFiles + $droidstarFiles + @('src\gui\wirex_gui.rc', 'src\gui\wirex_gui.manifest', 'assets\wiresx-official.ico'))) {
     if (-not (Test-Path -LiteralPath (Join-Path $appRoot $relative) -PathType Leaf)) { throw "缺少 GUI 构建输入：$relative" }
 }
 $imguiVersionLine = Select-String -LiteralPath (Join-Path $appRoot 'third_party\imgui\imgui.h') -Pattern '^#define IMGUI_VERSION\s+"([^"]+)"' |
@@ -65,7 +79,8 @@ if (-not (Test-Path -LiteralPath $vcvars -PathType Leaf)) { throw "所选 VS 201
 New-Item -ItemType Directory -Path $outputDirectory -ErrorAction Stop | Out-Null
 $objImgui = Join-Path $outputDirectory 'obj\imgui'
 $objApp = Join-Path $outputDirectory 'obj\app'
-New-Item -ItemType Directory -Path $objImgui, $objApp -Force | Out-Null
+$objUpstream = Join-Path $outputDirectory 'obj\upstream'
+New-Item -ItemType Directory -Path $objImgui, $objApp, $objUpstream -Force | Out-Null
 $logPath = Join-Path $outputDirectory 'gui-build.log'
 $executablePath = Join-Path $outputDirectory 'WirexBridge.exe'
 $resPath = Join-Path $outputDirectory 'wirex_gui.res'
@@ -86,18 +101,19 @@ function Invoke-MsvcStep {
     return @($output | ForEach-Object { [string]$_ })
 }
 
-$common = '/nologo /c /O2 /MT /EHsc /std:c++17 /permissive- /utf-8 /DUNICODE /D_UNICODE /DIMGUI_DISABLE_DEMO_WINDOWS /I third_party\imgui /I include'
+$common = '/nologo /c /O2 /MT /EHsc /std:c++17 /permissive- /utf-8 /DUNICODE /D_UNICODE /DIMGUI_DISABLE_DEMO_WINDOWS /DWIREX_GUI_REAL_ENGINE=1 /I third_party\imgui /I include /I third_party\dmr_signal /I third_party\droidstar_mbe\upstream'
 Push-Location $appRoot
 try {
     [void](Invoke-MsvcStep -Name 'ImGui (/W3)' -CommandLine ('cl.exe {0} /W3 /Fo"{1}\\" {2}' -f $common, $objImgui, ($imguiFiles -join ' ')))
+    [void](Invoke-MsvcStep -Name 'DroidStar MBE/IMBE (/W0)' -CommandLine ('cl.exe {0} /W0 /D_USE_MATH_DEFINES /Fo"{1}\\" {2}' -f $common, $objUpstream, ($droidstarFiles -join ' ')))
     $appOutput = Invoke-MsvcStep -Name 'GUI (/W4 /WX)' -CommandLine ('cl.exe {0} /W4 /WX /Fo"{1}\\" {2}' -f $common, $objApp, ($appFiles -join ' '))
     $appWarnings = @($appOutput | Where-Object { $_ -match '\bwarning [A-Z]+\d+' })
     if ($appWarnings.Count -gt 0) { throw ('本项目 GUI 代码出现 {0} 条告警。' -f $appWarnings.Count) }
     [void](Invoke-MsvcStep -Name 'rc' -CommandLine ('rc.exe /nologo /I . /fo "{0}" src\gui\wirex_gui.rc' -f $resPath))
     $libs = 'd3d11.lib dxgi.lib d3dcompiler.lib user32.lib gdi32.lib shell32.lib ole32.lib windowscodecs.lib imm32.lib dwmapi.lib ' +
-        'winhttp.lib setupapi.lib advapi32.lib winmm.lib icuuc.lib bcrypt.lib'
-    [void](Invoke-MsvcStep -Name 'link' -CommandLine ('link.exe /nologo /SUBSYSTEM:WINDOWS /OPT:REF /OPT:ICF /OUT:"{0}" "{1}\*.obj" "{2}\*.obj" "{3}" {4}' -f `
-        $executablePath, $objApp, $objImgui, $resPath, $libs))
+        'winhttp.lib setupapi.lib advapi32.lib winmm.lib icuuc.lib bcrypt.lib ws2_32.lib'
+    [void](Invoke-MsvcStep -Name 'link' -CommandLine ('link.exe /nologo /SUBSYSTEM:WINDOWS /OPT:REF /OPT:ICF /OUT:"{0}" "{1}\*.obj" "{2}\*.obj" "{3}\*.obj" "{4}" {5}' -f `
+        $executablePath, $objApp, $objImgui, $objUpstream, $resPath, $libs))
 } finally {
     Pop-Location
 }

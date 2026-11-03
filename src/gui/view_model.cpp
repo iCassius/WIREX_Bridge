@@ -288,11 +288,13 @@ std::optional<std::uint32_t> ViewModel::idle_timeout_ms() const {
 // ---------------------------------------------------------------- 事件
 
 std::chrono::system_clock::time_point ViewModel::to_wall(std::uint64_t engine_ms) const {
-    // 引擎时间戳为单调时钟毫秒；按当前 steady/system 差值换算成墙钟时间用于显示。
-    // TODO(engine): 若真实引擎的单调时钟原点不是 steady_clock，需在 Snapshot 中提供换算基准。
+    // 引擎时间戳是相对本次运行起点（Snapshot::clock_origin_ms，steady_clock 毫秒）的毫秒数；
+    // fake engine 的起点为 0，即时间戳本身就是 steady_clock 毫秒。
+    const std::uint64_t origin = snapshot_ ? snapshot_->clock_origin_ms : 0U;
     const auto steady_now = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
-    const auto age = steady_now >= engine_ms ? steady_now - engine_ms : 0U;
+    const std::uint64_t absolute = origin + engine_ms;
+    const auto age = steady_now >= absolute ? steady_now - absolute : 0U;
     return std::chrono::system_clock::now() - std::chrono::milliseconds(age);
 }
 

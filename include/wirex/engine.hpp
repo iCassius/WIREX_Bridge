@@ -96,6 +96,9 @@ struct Counters {
 
 struct Snapshot {
     std::uint64_t seq{};                   // 每次发布 +1
+    // 本次运行起点（steady_clock::time_since_epoch 毫秒）。CallInfo::started_ms 与 Event::at_ms 都是相对它的毫秒数；
+    // 显示墙钟时间时用 clock_origin_ms + at_ms 与 steady_clock::now() 比较。
+    std::uint64_t clock_origin_ms{};
     Phase phase{Phase::stopped};
     std::string failure_reason{};          // phase==failed 时的机器可读原因
     bool serial_open{};
