@@ -244,6 +244,8 @@ try {
             [string]::Join('|', @($expectedStableDirectories | Sort-Object -CaseSensitive))) `
         'stable publisher inventory includes the new runtime module and exact eight-directory tree without runtime/tools'
 
+    # v0.1.1 profile 追加了 engine_test；构造 v0.1.0 合成包前切回 v0.1.0 的 40 项清单。
+    [void](Set-PublishProfile -Tag 'v0.1.0')
     $stablePackageRoot = Join-Path $testRoot 'package-stable'
     $stableDistributionRoot = Join-Path $testRoot 'distribution-stable'
     $stableFixture = New-SyntheticStablePublishPackage -PackageRoot $stablePackageRoot `
