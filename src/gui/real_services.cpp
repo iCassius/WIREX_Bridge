@@ -1,0 +1,1004 @@
+#include "real_services.hpp"
+
+#include "config_bridge.hpp"
+
+#include "wirex/app/bm_api.hpp"
+#include "wirex/app/config.hpp"
+#include "wirex/app/devices.hpp"
+#include "wirex/app/radio_cat.hpp"
+#include "wirex/app/radio_identity.hpp"
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
+#include <bcrypt.h>
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstdio>
+#include <deque>
+#include <fstream>
+#include <iterator>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <thread>
+#include <utility>
+
+namespace wirex::gui {
+namespace {
+
+namespace fs = std::filesystem;
+using engine::CommandResult;
+using engine::CommandStatus;
+using steady = std::chrono::steady_clock;
+using namespace std::chrono_literals;
+
+std::string narrow(const std::wstring& w) {
+    if (w.empty()) return {};
+    const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+    if (n <= 0) return {};
+    std::string out(static_cast<std::size_t>(n), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), out.data(), n, nullptr, nullptr);
+    return out;
+}
+
+std::wstring widen(const std::string& s) {
+    if (s.empty()) return {};
+    const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+    if (n <= 0) return {};
+    std::wstring out(static_cast<std::size_t>(n), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), n);
+    return out;
+}
+
+void wipe(std::string& secret) noexcept {
+    if (!secret.empty()) SecureZeroMemory(secret.data(), secret.size());
+    secret.clear();
+}
+
+CommandResult make_result(CommandStatus status, std::string detail = {}) {
+    CommandResult r;
+    r.status = status;
+    r.detail = std::move(detail);
+    return r;
+}
+
+// 单线程任务队列：任务按投递顺序串行执行；stop() 丢弃未执行任务并等待当前任务结束。
+class TaskThread final {
+public:
+    TaskThread() : thread_([this]() { loop(); }) {}
+    ~TaskThread() { stop(); }
+    TaskThread(const TaskThread&) = delete;
+    TaskThread& operator=(const TaskThread&) = delete;
+
+    bool post(std::function<void()> task) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (stopping_ || queue_.size() >= 64U) return false;
+            queue_.push_back(std::move(task));
+        }
+        wake_.notify_one();
+        return true;
+    }
+
+    void stop() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stopping_ = true;
+            queue_.clear();
+        }
+        wake_.notify_all();
+        if (thread_.joinable() && thread_.get_id() != std::this_thread::get_id()) thread_.join();
+    }
+
+private:
+    void loop() {
+        for (;;) {
+            std::function<void()> task;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                wake_.wait(lock, [this]() { return stopping_ || !queue_.empty(); });
+                if (stopping_) return;
+                task = std::move(queue_.front());
+                queue_.pop_front();
+            }
+            try {
+                task();
+            } catch (...) {
+                // 任务自身负责报告错误；这里只保证线程不因异常退出。
+            }
+        }
+    }
+
+    std::mutex mutex_;
+    std::condition_variable wake_;
+    std::deque<std::function<void()>> queue_;
+    bool stopping_{};
+    std::thread thread_; // 最后声明：其它成员先构造
+};
+
+// ---------------------------------------------------------------- 配置与设备
+
+struct ConfigState {
+    std::mutex mutex;
+    fs::path path;
+    fs::path exe_directory;
+    bool lenient{};
+    std::optional<app::AppConfig> base;        // 最近一次成功读取/保存的完整配置（含未知字段）
+    app::devices::SerialCatalog last_serial;   // 最近一次串口枚举（CAT 的 HRI 冲突判断）
+};
+
+std::optional<std::string> sha256_hex(const fs::path& path, std::string& error) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        error = "无法读取本机 Y 模板：" + narrow(path.wstring());
+        return std::nullopt;
+    }
+    const std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    BCRYPT_ALG_HANDLE alg = nullptr;
+    BCRYPT_HASH_HANDLE hash = nullptr;
+    unsigned char digest[32] = {};
+    bool ok = BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0));
+    ok = ok && BCRYPT_SUCCESS(BCryptCreateHash(alg, &hash, nullptr, 0, nullptr, 0, 0));
+    ok = ok && BCRYPT_SUCCESS(BCryptHashData(hash, reinterpret_cast<PUCHAR>(const_cast<char*>(bytes.data())),
+                                             static_cast<ULONG>(bytes.size()), 0));
+    ok = ok && BCRYPT_SUCCESS(BCryptFinishHash(hash, digest, sizeof(digest), 0));
+    if (hash != nullptr) BCryptDestroyHash(hash);
+    if (alg != nullptr) BCryptCloseAlgorithmProvider(alg, 0);
+    if (!ok) {
+        error = "无法计算 Y 模板 SHA-256。";
+        return std::nullopt;
+    }
+    std::string hex;
+    char buf[3];
+    for (const unsigned char b : digest) {
+        std::snprintf(buf, sizeof(buf), "%02x", b);
+        hex += buf;
+    }
+    return hex;
+}
+
+// Test-ApprovedBody：100 字节且 SHA-256 与批准值一致。
+fs::path find_body_file(const fs::path& exe_directory, std::string& error) {
+    const auto candidates = config_bridge::body_file_candidates(exe_directory);
+    for (const auto& candidate : candidates) {
+        std::error_code ec;
+        if (!fs::is_regular_file(candidate, ec)) continue;
+        if (fs::file_size(candidate, ec) != config_bridge::approved_body_length || ec) {
+            error = "Y 模板长度不符：" + narrow(candidate.wstring()) + "（必须为 100 字节）。";
+            return {};
+        }
+        const auto hex = sha256_hex(candidate, error);
+        if (!hex) return {};
+        if (*hex != config_bridge::approved_body_sha256) {
+            error = "Y 模板完整性校验失败：" + narrow(candidate.wstring()) + "；没有启动核心。";
+            return {};
+        }
+        return candidate;
+    }
+    error = "找不到本机 Y 模板：" + narrow(candidates.front().wstring()) + "（或 runtime\\private\\device-y.bin）。";
+    return {};
+}
+
+// --fake：真实检查未通过时给模拟引擎的最小启动参数。
+engine::StartConfig lenient_start_config(const services::GuiConfig& gui) {
+    engine::StartConfig sc;
+    sc.hri_port = gui.hri_port.empty() ? std::wstring(L"COM5") : gui.hri_port;
+    sc.audio.expected_wave_in_endpoint_id = gui.wave_in_endpoint_id;
+    sc.audio.expected_wave_out_endpoint_id = gui.wave_out_endpoint_id;
+    sc.bm.master_host = gui.master_host;
+    sc.bm.master_port = gui.master_port;
+    sc.bm.profile.gateway_id = services::effective_gateway_id(gui);
+    sc.bm.profile.callsign = gui.callsign;
+    sc.bm.profile.password = gui.bm_password;
+    sc.local_source_id = gui.dmr_id;
+    sc.rx_policy = config_bridge::make_rx_policy(gui.channels, {}, gui.dmr_id, gui.blocked_source_ids);
+    if (gui.tx_target) {
+        sc.tx_policy.target = *gui.tx_target;
+        sc.tx_policy.transmit_enabled = true;
+    }
+    return sc;
+}
+
+services::ConfigService make_config_service(const std::shared_ptr<ConfigState>& st) {
+    services::ConfigService svc;
+    svc.load = [st](std::string& error) -> std::optional<services::GuiConfig> {
+        // Initialize-PortableConfig：不存在时原子写入默认配置；存在时只校验，不改写。
+        auto loaded = app::create_default(st->path);
+        std::lock_guard<std::mutex> lock(st->mutex);
+        if (!loaded) {
+            error = loaded.error().message;
+            st->base.reset();
+            return std::nullopt;
+        }
+        st->base = loaded.value();
+        return config_bridge::to_gui(*st->base);
+    };
+    svc.save = [st](const services::GuiConfig& gui, std::string& error) {
+        std::lock_guard<std::mutex> lock(st->mutex);
+        if (!st->base) {
+            error = "config.json 尚未成功读取；为避免覆盖原文件，没有写入。";
+            return false;
+        }
+        auto next = config_bridge::apply_gui(*st->base, gui, error);
+        if (!next) return false;
+        auto saved = app::save(st->path, *next);
+        if (!saved) {
+            error = saved.error().message;
+            return false;
+        }
+        st->base = std::move(saved).value();
+        return true;
+    };
+    svc.make_start_config = [st](const services::GuiConfig& gui, std::string& error) -> std::optional<engine::StartConfig> {
+        config_bridge::StartInputs inputs;
+        bool lenient = false;
+        {
+            std::lock_guard<std::mutex> lock(st->mutex);
+            if (st->base) inputs.color_code = st->base->connection.color_code;
+            lenient = st->lenient;
+        }
+        std::optional<engine::StartConfig> sc;
+        inputs.body_file = find_body_file(st->exe_directory, error);
+        if (!inputs.body_file.empty()) {
+            error.clear();
+            inputs.serial = app::devices::enumerate_serial_ports();
+            {
+                std::lock_guard<std::mutex> lock(st->mutex);
+                st->last_serial = inputs.serial;
+            }
+            auto audio = app::devices::enumerate_audio();
+            inputs.wave_inputs = std::move(audio.wave_inputs);
+            inputs.wave_outputs = std::move(audio.wave_outputs);
+            sc = config_bridge::make_start_config(gui, inputs, error);
+        }
+        if (!sc && lenient) {
+            // 返回参数并保留 error：ViewModel 把它作为提示显示。
+            error = "模拟引擎：真实启动检查未通过（" + error + "）";
+            return lenient_start_config(gui);
+        }
+        return sc;
+    };
+    return svc;
+}
+
+services::DeviceService make_device_service(const std::shared_ptr<ConfigState>& st) {
+    services::DeviceService svc;
+    svc.enumerate = [st]() {
+        services::DeviceInventory inv;
+        auto serial = app::devices::enumerate_serial_ports();
+        for (const auto& p : serial.serial_ports) {
+            std::string caption = p.port_name;
+            if (!p.friendly_name.empty()) caption += " · " + p.friendly_name;
+            if (p.is_hri) caption += " · HRI";
+            inv.serial_ports.push_back({widen(p.port_name), std::move(caption)});
+        }
+        {
+            std::lock_guard<std::mutex> lock(st->mutex);
+            st->last_serial = std::move(serial);
+        }
+        // Get-UiEndpointOptions：只列 48 kHz 单声道可用且有 endpoint ID 的 WinMM 设备；名称用 MMDevice 全名。
+        const auto audio = app::devices::enumerate_audio();
+        const auto add = [](const std::vector<app::devices::WaveDevice>& waves,
+                            const std::vector<app::devices::AudioEndpoint>& endpoints,
+                            std::vector<services::AudioEndpointInfo>& out) {
+            for (const auto& w : waves) {
+                if (!app::devices::usable(w)) continue;
+                std::string name = w.name;
+                for (const auto& e : endpoints) {
+                    if (_stricmp(e.endpoint_id.c_str(), w.endpoint_id->c_str()) == 0 && !e.friendly_name.empty()) {
+                        name = e.friendly_name;
+                    }
+                }
+                out.push_back({widen(*w.endpoint_id), std::move(name)});
+            }
+        };
+        add(audio.wave_inputs, audio.capture_endpoints, inv.wave_in);
+        add(audio.wave_outputs, audio.render_endpoints, inv.wave_out);
+        return inv;
+    };
+    return svc;
+}
+
+// ---------------------------------------------------------------- CAT
+
+std::optional<services::CatMode> to_gui_mode(app::CatMode mode) {
+    switch (mode) {
+    case app::CatMode::fm: return services::CatMode::fm;
+    case app::CatMode::fm_n: return services::CatMode::fm_n;
+    case app::CatMode::c4fm_dn: return services::CatMode::c4fm_dn;
+    case app::CatMode::c4fm_vw: return services::CatMode::c4fm_vw;
+    default: return std::nullopt;
+    }
+}
+
+app::CatMode to_app_mode(services::CatMode mode) {
+    switch (mode) {
+    case services::CatMode::fm: return app::CatMode::fm;
+    case services::CatMode::fm_n: return app::CatMode::fm_n;
+    case services::CatMode::c4fm_dn: return app::CatMode::c4fm_dn;
+    case services::CatMode::c4fm_vw: return app::CatMode::c4fm_vw;
+    }
+    return app::CatMode::fm;
+}
+
+CommandResult to_command_result(const app::CatResult& r) {
+    switch (r.status) {
+    case app::CatResultStatus::confirmed: return make_result(CommandStatus::accepted);
+    case app::CatResultStatus::busy: return make_result(CommandStatus::busy, r.error_message);
+    case app::CatResultStatus::identity_mismatch: return make_result(CommandStatus::forbidden, r.error_message);
+    case app::CatResultStatus::rejected:
+        switch (r.error) {
+        case app::CatError::core_not_stopped:
+        case app::CatError::core_not_idle:
+        case app::CatError::write_not_authorized:
+        case app::CatError::hri_port_conflict: return make_result(CommandStatus::forbidden, r.error_message);
+        case app::CatError::invalid_request:
+        case app::CatError::power_out_of_range:
+        case app::CatError::frequency_out_of_range: return make_result(CommandStatus::invalid, r.error_message);
+        default: return make_result(CommandStatus::failed, r.error_message);
+        }
+    case app::CatResultStatus::mismatch:
+    case app::CatResultStatus::unknown: break;
+    }
+    return make_result(CommandStatus::failed, r.error_message.empty() ? std::string(app::to_string(r.error)) : r.error_message);
+}
+
+// 核心门控输入：进程内 Snapshot 由引擎线程同步发布，读取时即为最新状态，因此“空闲确认时间”取读取时刻。
+// （PS 版用 status.jsonl 的 timestamp_utc_ms，要求 3 s 内；Snapshot 没有 rx 队列深度，以 media_owner==idle 代替。）
+app::CatCoreState core_state_from(const std::shared_ptr<const engine::Snapshot>& s) {
+    app::CatCoreState c;
+    if (!s) return c;
+    using talkgroup_routing::MediaOwner;
+    c.core_stopped = s->phase == engine::Phase::stopped;
+    c.active_call = s->active_rx_call.has_value();
+    c.tx_active = s->tx_active || s->media_owner == MediaOwner::tx_active || s->media_owner == MediaOwner::tx_draining;
+    c.receive_media_idle = s->media_owner == MediaOwner::idle;
+    if (!c.core_stopped && s->phase == engine::Phase::running && !c.active_call && !c.tx_active && c.receive_media_idle) {
+        c.idle_status_at = steady::now();
+    }
+    return c;
+}
+
+class CatRunner final {
+public:
+    CatRunner(EngineApi& engine, std::shared_ptr<ConfigState> config)
+        : config_(std::move(config)),
+          worker_(app::CatClient(), [e = &engine]() { return core_state_from(e->snapshot()); }),
+          thread_([this]() { loop(); }) {}
+
+    ~CatRunner() { stop(); }
+    CatRunner(const CatRunner&) = delete;
+    CatRunner& operator=(const CatRunner&) = delete;
+
+    void stop() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (stopping_) return;
+            stopping_ = true;
+            tasks_.clear();
+        }
+        worker_.disconnect(); // 取消进行中的串口操作，解除 runner 对 future 的等待
+        wake_.notify_all();
+        if (thread_.joinable()) thread_.join();
+    }
+
+    void set_wakeup(std::function<void()> wakeup) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        wakeup_ = std::move(wakeup);
+    }
+
+    services::CatState state() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return state_;
+    }
+
+    void connect(std::wstring port, std::uint32_t baud, services::Done done) {
+        post([this, port = std::move(port), baud, done]() { do_connect(port, baud, done); }, done);
+    }
+
+    void disconnect(services::Done done) {
+        worker_.disconnect();
+        update([](services::CatState& s) {
+            s.connected = false;
+            s.error.clear();
+        });
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            connection_.reset();
+        }
+        if (done) done(make_result(CommandStatus::accepted));
+    }
+
+    void apply(services::CatSettings settings, services::Done done) {
+        post([this, settings, done]() { do_apply(settings, done); }, done);
+    }
+
+private:
+    void post(std::function<void()> task, const services::Done& done) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (stopping_ || state_.busy || !tasks_.empty()) {
+                if (done) done(make_result(CommandStatus::busy, "CAT 操作正在进行。"));
+                return;
+            }
+            tasks_.push_back(std::move(task));
+            state_.busy = true;
+            ++state_.revision;
+        }
+        wake_.notify_one();
+        notify();
+    }
+
+    template <class F>
+    void update(F&& mutate) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            mutate(state_);
+            ++state_.revision;
+        }
+        notify();
+    }
+
+    void notify() {
+        std::function<void()> wakeup;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            wakeup = wakeup_;
+        }
+        if (wakeup) wakeup();
+    }
+
+    // 观测值（断开后仍保留）同步到 GUI 状态。
+    void absorb_observed() {
+        const auto snap = worker_.snapshot();
+        update([&](services::CatState& s) {
+            s.observed_mode.reset();
+            s.observed_frequency_hz.reset();
+            s.observed_power_w.reset();
+            if (snap.observed.main_mode) s.observed_mode = to_gui_mode(snap.observed.main_mode->value.mode);
+            if (snap.observed.main_frequency_hz) s.observed_frequency_hz = snap.observed.main_frequency_hz->value;
+            if (snap.observed.power) s.observed_power_w = static_cast<std::uint32_t>(snap.observed.power->value.watts);
+        });
+    }
+
+    std::optional<app::CatConnection> make_connection(const std::wstring& port, std::uint32_t baud, std::string& error) {
+        app::CatConnection c;
+        c.port_name = app::cat_normalize_port_name(port);
+        c.baud_rate = baud;
+        c.stop_bits = app::CatStopBits::two;
+        if (!app::cat_is_valid_port_name(c.port_name)) {
+            error = "CAT 串口必须是 COM1 到 COM999。";
+            return std::nullopt;
+        }
+        if (!app::cat_is_supported_baud_rate(baud)) {
+            error = "CAT 波特率无效。";
+            return std::nullopt;
+        }
+        // HRI 端口：配置中的显式端口，否则本次枚举中唯一的 HRI 口。CAT 不得与 HRI 共用。
+        std::lock_guard<std::mutex> lock(config_->mutex);
+        const auto& hri_ports = config_->last_serial.hri_ports;
+        if (config_->base && config_->base->devices.hri_port != "auto") {
+            c.hri_port_name = widen(config_->base->devices.hri_port);
+        } else if (hri_ports.size() == 1U) {
+            c.hri_port_name = widen(hri_ports.front().port_name);
+        }
+        for (const auto& p : hri_ports) {
+            if (app::cat_normalize_port_name(widen(p.port_name)) == c.port_name) {
+                error = "所选串口已识别为 HRI，不能用于 CAT。";
+                return std::nullopt;
+            }
+        }
+        return c;
+    }
+
+    app::CatResult run(const app::CatJob& job) { return worker_.submit(job).get(); }
+
+    void do_connect(const std::wstring& port, std::uint32_t baud, const services::Done& done) {
+        std::string error;
+        const auto conn = make_connection(port, baud, error);
+        if (!conn) {
+            finish(done, make_result(CommandStatus::invalid, error), [&](services::CatState& s) { s.error = error; });
+            return;
+        }
+        app::CatJob job;
+        job.operation = app::CatOperation::query;
+        job.connection = *conn;
+        const auto r = run(job);
+        absorb_observed();
+        const bool ok = r.status == app::CatResultStatus::confirmed;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (ok) connection_ = conn;
+            last_poll_ = steady::now();
+        }
+        finish(done, to_command_result(r), [&](services::CatState& s) {
+            s.connected = ok;
+            s.port = conn->port_name;
+            s.baud_rate = baud;
+            s.error = ok ? std::string{} : r.error_message;
+        });
+    }
+
+    // Apply-UiRadioCatSettings：先读取一次，再按 模式 → 频率 → 功率 顺序只写有变化的项；每步读回确认，失败即停止。
+    void do_apply(const services::CatSettings& settings, const services::Done& done) {
+        std::optional<app::CatConnection> conn;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            conn = connection_;
+        }
+        if (!conn) {
+            finish(done, make_result(CommandStatus::not_ready, "CAT 未连接。"), [](services::CatState&) {});
+            return;
+        }
+        if (settings.main_frequency_hz != 0U && (settings.main_frequency_hz < app::cat_min_frequency_hz ||
+                                                 settings.main_frequency_hz > app::cat_max_frequency_hz)) {
+            finish(done, make_result(CommandStatus::invalid, "频率超出 FTX-1 CAT 允许范围。"), [](services::CatState&) {});
+            return;
+        }
+        app::CatJob job;
+        job.connection = *conn;
+        job.operation = app::CatOperation::query;
+        auto r = run(job);
+        absorb_observed();
+        if (r.status != app::CatResultStatus::confirmed) {
+            finish(done, to_command_result(r), [&](services::CatState& s) { s.error = r.error_message; });
+            return;
+        }
+        const auto observed = worker_.snapshot().observed;
+        int steps = 0;
+        const auto step = [&](app::CatJob next) {
+            next.connection = *conn;
+            r = run(next);
+            absorb_observed();
+            ++steps;
+            return r.status == app::CatResultStatus::confirmed;
+        };
+        bool ok = true;
+        const auto mode = to_app_mode(settings.main_mode);
+        if (!observed.main_mode || observed.main_mode->value.mode != mode) {
+            app::CatJob j;
+            j.operation = app::CatOperation::set_mode;
+            j.side = app::CatSide::main;
+            j.mode = mode;
+            ok = step(j);
+        }
+        const auto hz = static_cast<std::uint32_t>(settings.main_frequency_hz);
+        if (ok && hz != 0U && (!observed.main_frequency_hz || observed.main_frequency_hz->value != hz)) {
+            app::CatJob j;
+            j.operation = app::CatOperation::set_frequency;
+            j.frequency_hz = hz;
+            ok = step(j);
+        }
+        const int watts = static_cast<int>(settings.power_w);
+        if (ok && watts != 0 && (!observed.power || observed.power->value.watts != watts)) {
+            app::CatJob j;
+            j.operation = app::CatOperation::set_power;
+            j.power_watts = watts;
+            ok = step(j);
+        }
+        if (!ok) {
+            auto cr = to_command_result(r);
+            if (steps > 1) cr.detail += "（已完成的步骤不回滚）";
+            finish(done, cr, [&](services::CatState& s) { s.error = r.error_message; });
+            return;
+        }
+        finish(done, make_result(steps == 0 ? CommandStatus::idempotent : CommandStatus::accepted),
+               [](services::CatState& s) { s.error.clear(); });
+    }
+
+    template <class F>
+    void finish(const services::Done& done, const CommandResult& result, F&& mutate) {
+        update([&](services::CatState& s) {
+            mutate(s);
+            s.busy = false;
+        });
+        if (done) done(result);
+    }
+
+    // 连接后每秒只读查询一次（RadioCatUi.ps1 轮询 1000 ms）；用户操作进行中时跳过。
+    void poll() {
+        std::optional<app::CatConnection> conn;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            conn = connection_;
+            last_poll_ = steady::now();
+        }
+        if (!conn) return;
+        app::CatJob job;
+        job.operation = app::CatOperation::query;
+        job.connection = *conn;
+        const auto r = run(job);
+        absorb_observed();
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!connection_) return; // 期间已断开
+        const std::string error = r.status == app::CatResultStatus::confirmed ? std::string{} : r.error_message;
+        if (state_.error != error) {
+            state_.error = error;
+            ++state_.revision;
+        }
+    }
+
+    void loop() {
+        for (;;) {
+            std::function<void()> task;
+            bool do_poll = false;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                wake_.wait_for(lock, 250ms, [this]() { return stopping_ || !tasks_.empty(); });
+                if (stopping_) return;
+                if (!tasks_.empty()) {
+                    task = std::move(tasks_.front());
+                    tasks_.pop_front();
+                } else if (connection_ && steady::now() - last_poll_ >= 1s) {
+                    do_poll = true;
+                }
+            }
+            try {
+                if (task) task();
+                if (do_poll) {
+                    poll();
+                    notify();
+                }
+            } catch (...) {
+                update([](services::CatState& s) {
+                    s.busy = false;
+                    s.error = "CAT 内部错误。";
+                });
+            }
+        }
+    }
+
+    std::shared_ptr<ConfigState> config_;
+    std::mutex mutex_;
+    std::condition_variable wake_;
+    std::deque<std::function<void()>> tasks_;
+    bool stopping_{};
+    services::CatState state_{};
+    std::optional<app::CatConnection> connection_{};
+    steady::time_point last_poll_{};
+    std::function<void()> wakeup_{};
+    app::CatWorker worker_;
+    std::thread thread_; // 最后声明
+};
+
+// ---------------------------------------------------------------- BM API
+
+std::string bm_error_text(const app::bm_api::Error& e, bool write) {
+    using app::bm_api::ErrorKind;
+    switch (e.kind) {
+    case ErrorKind::canceled: return write ? "静态组写入结果未确认；请刷新列表后再操作。" : "BM 静态组读取已取消。";
+    case ErrorKind::timeout: return "BM API 操作超时；请刷新列表确认服务器状态。";
+    case ErrorKind::invalid_key:
+    case ErrorKind::invalid_request: return e.message.empty() ? "BM API 参数无效。" : e.message;
+    default: return "BM API 操作失败；请检查 API Key 与网络后刷新。";
+    }
+}
+
+std::vector<services::StaticGroup> to_gui_groups(const std::vector<app::bm_api::StaticGroup>& groups) {
+    std::vector<services::StaticGroup> out;
+    for (const auto& g : groups) out.push_back({g.talkgroup, g.slot});
+    return out;
+}
+
+class BmApiRunner final {
+public:
+    void list(std::uint32_t device_id, std::string api_key, services::BmApiDone done) {
+        post(std::move(api_key), done, [this, device_id, done](const app::bm_api::ApiKey& key) {
+            const std::string dev = std::to_string(device_id);
+            services::BmApiResult out;
+            const auto listed = client_.list_static_groups(key, dev, app::bm_api::default_timeout_ms, &cancel_);
+            if (listed.error) {
+                out.failed = true;
+                out.message = bm_error_text(listed.error, false);
+                done(std::move(out));
+                return;
+            }
+            out.groups = to_gui_groups(listed.groups);
+            out.groups_valid = true;
+            const auto ctx = client_.get_add_context(key, dev, app::bm_api::default_timeout_ms, &cancel_);
+            if (!ctx.error && ctx.context.success) {
+                out.add_slot = ctx.context.add_slot;
+                out.device_status = ctx.context.status;
+            }
+            const std::string status = out.device_status ? std::to_string(*out.device_status) : std::string("未知");
+            out.message = "已读取 " + std::to_string(out.groups.size()) + " 条 BM 静态组；设备状态 " + status +
+                          (out.add_slot ? "。" : "，添加已禁用。");
+            done(std::move(out));
+        });
+    }
+
+    void write(bool add, std::uint32_t device_id, std::string api_key, std::uint32_t talkgroup, int slot,
+               services::BmApiDone done) {
+        post(std::move(api_key), done, [this, add, device_id, talkgroup, slot, done](const app::bm_api::ApiKey& key) {
+            const std::string dev = std::to_string(device_id);
+            const auto r = add ? client_.add_static_group(key, dev, talkgroup, slot, app::bm_api::default_timeout_ms, &cancel_)
+                               : client_.remove_static_group(key, dev, talkgroup, slot, app::bm_api::default_timeout_ms, &cancel_);
+            services::BmApiResult out;
+            if (r.error) {
+                out.failed = true;
+                out.message = bm_error_text(r.error, true);
+                done(std::move(out));
+                return;
+            }
+            using app::bm_api::ReadbackStatus;
+            out.groups_valid = r.readback_status == ReadbackStatus::confirmed || r.readback_status == ReadbackStatus::not_confirmed;
+            out.groups = to_gui_groups(r.groups);
+            switch (r.readback_status) {
+            case ReadbackStatus::confirmed: out.message = "BM 已接受静态组更改，读取列表已确认。"; break;
+            case ReadbackStatus::not_confirmed:
+                out.failed = true;
+                out.message = "BM 已接受静态组更改，但读取结果与请求不符；请检查列表。";
+                break;
+            default:
+                out.failed = true;
+                out.message = "BM 已接受静态组更改，但回查未完成；请刷新确认。";
+                break;
+            }
+            done(std::move(out));
+        });
+    }
+
+    void stop() {
+        cancel_.store(true);
+        thread_.stop();
+    }
+
+private:
+    template <class F>
+    void post(std::string api_key, const services::BmApiDone& done, F&& body) {
+        auto key_holder = std::make_shared<std::string>(std::move(api_key));
+        const bool queued = thread_.post([key_holder, done, body = std::forward<F>(body)]() {
+            app::bm_api::Error key_error;
+            auto key = app::bm_api::ApiKey::from_text(*key_holder, &key_error);
+            wipe(*key_holder);
+            if (!key) {
+                services::BmApiResult out;
+                out.failed = true;
+                out.message = key_error.message.empty() ? "BM API Key 格式无效。" : key_error.message;
+                done(std::move(out));
+                return;
+            }
+            body(*key);
+        });
+        if (!queued) {
+            wipe(*key_holder);
+            services::BmApiResult out;
+            out.failed = true;
+            out.message = "BM 静态组后台操作未能启动。";
+            done(std::move(out));
+        }
+    }
+
+    app::bm_api::Client client_{};
+    std::atomic<bool> cancel_{false};
+    TaskThread thread_; // 最后声明
+};
+
+// ---------------------------------------------------------------- RadioID
+
+// Start-UiIdentityQuery / Start-NextUiIdentityQuery：队列上限 16、同 ID 合并、单并发、两次联网至少间隔 1 s、
+// 失败冷却 30 s×2^(n−1)（上限 900 s，取消不计）、成功清除冷却；缓存命中（found/not_found）不联网。
+class IdentityRunner final {
+public:
+    explicit IdentityRunner(fs::path cache_path) : cache_(std::move(cache_path)), thread_([this]() { loop(); }) {}
+    ~IdentityRunner() { stop(); }
+    IdentityRunner(const IdentityRunner&) = delete;
+    IdentityRunner& operator=(const IdentityRunner&) = delete;
+
+    std::vector<services::IdentityResult> preload() const {
+        std::vector<services::IdentityResult> out;
+        for (auto& m : app::radio_identity::native_mappings(cache_, app::radio_identity::cache_entry_limit)) {
+            out.push_back({m.source_id, true, std::move(m.callsign)});
+        }
+        return out;
+    }
+
+    void lookup(std::uint32_t id, services::IdentityDone done) {
+        if (!app::radio_identity::is_valid_radio_id(id) || !done) return;
+        std::optional<services::IdentityResult> memo;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (stopping_) return;
+            if (auto it = memo_.find(id); it != memo_.end()) {
+                memo = it->second;
+            } else if (auto c = cooldown_.find(id); c != cooldown_.end() && steady::now() < c->second.retry_after) {
+                return;
+            } else if (auto w = waiters_.find(id); w != waiters_.end()) {
+                w->second.push_back(std::move(done));
+                return;
+            } else {
+                if (queue_.size() >= 16U) return; // queue_full
+                queue_.push_back(id);
+                waiters_[id].push_back(std::move(done));
+            }
+        }
+        if (memo) {
+            done(*memo);
+            return;
+        }
+        wake_.notify_one();
+    }
+
+    void stop() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (stopping_) return;
+            stopping_ = true;
+            queue_.clear();
+            waiters_.clear();
+        }
+        cancel_.store(true);
+        wake_.notify_all();
+        if (thread_.joinable()) thread_.join();
+    }
+
+private:
+    struct Cooldown {
+        int failures{};
+        steady::time_point retry_after{};
+    };
+
+    void deliver(std::uint32_t id, std::optional<services::IdentityResult> result) {
+        std::vector<services::IdentityDone> waiters;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (auto it = waiters_.find(id); it != waiters_.end()) {
+                waiters = std::move(it->second);
+                waiters_.erase(it);
+            }
+            if (result) {
+                if (memo_.size() >= 1024U) memo_.clear();
+                memo_[id] = *result;
+            }
+        }
+        if (!result) return;
+        for (auto& w : waiters) {
+            if (w) w(*result);
+        }
+    }
+
+    static std::optional<services::IdentityResult> known(const app::radio_identity::Result& r) {
+        using app::radio_identity::Status;
+        if (r.status != Status::found && r.status != Status::not_found) return std::nullopt;
+        services::IdentityResult out{r.id, true, std::nullopt};
+        if (r.status == Status::found && r.callsign) out.callsign = app::radio_identity::native_callsign(*r.callsign);
+        return out;
+    }
+
+    void loop() {
+        for (;;) {
+            std::uint32_t id = 0U;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                wake_.wait(lock, [this]() { return stopping_ || !queue_.empty(); });
+                if (stopping_) return;
+                id = queue_.front();
+                queue_.pop_front();
+            }
+            try {
+                if (auto cached = known(app::radio_identity::resolve(id, cache_))) {
+                    deliver(id, cached);
+                    continue;
+                }
+                {
+                    std::unique_lock<std::mutex> lock(mutex_);
+                    const auto earliest = last_request_ + 1s;
+                    if (wake_.wait_until(lock, earliest, [this]() { return stopping_; })) return;
+                    last_request_ = steady::now();
+                }
+                std::error_code ec;
+                fs::create_directories(cache_.parent_path(), ec);
+                app::radio_identity::QueryOptions options;
+                options.timeout_seconds = 5U;
+                options.cancel = &cancel_;
+                const auto r = app::radio_identity::query(id, cache_, options);
+                const auto result = known(r);
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    if (result) {
+                        cooldown_.erase(id);
+                    } else if (r.error_code.value_or("") != "cancelled") {
+                        auto& c = cooldown_[id];
+                        c.failures = std::min(8, c.failures + 1);
+                        const auto seconds = std::min(900, 30 * (1 << (c.failures - 1)));
+                        c.retry_after = steady::now() + std::chrono::seconds(seconds);
+                    }
+                }
+                deliver(id, result);
+            } catch (...) {
+                deliver(id, std::nullopt);
+            }
+        }
+    }
+
+    fs::path cache_;
+    std::mutex mutex_;
+    std::condition_variable wake_;
+    std::deque<std::uint32_t> queue_;
+    std::map<std::uint32_t, std::vector<services::IdentityDone>> waiters_;
+    std::map<std::uint32_t, services::IdentityResult> memo_;
+    std::map<std::uint32_t, Cooldown> cooldown_;
+    steady::time_point last_request_{};
+    std::atomic<bool> cancel_{false};
+    bool stopping_{};
+    std::thread thread_; // 最后声明
+};
+
+} // namespace
+
+// ---------------------------------------------------------------- 组装
+
+fs::path executable_directory() {
+    std::wstring buffer(MAX_PATH, L'\0');
+    for (;;) {
+        const DWORD n = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+        if (n == 0U) return fs::current_path();
+        if (n < buffer.size()) {
+            buffer.resize(n);
+            break;
+        }
+        buffer.resize(buffer.size() * 2U);
+    }
+    return fs::path(buffer).parent_path();
+}
+
+services::Services make_real_services(EngineApi& engine, RealServiceOptions options) {
+    if (options.exe_directory.empty()) options.exe_directory = executable_directory();
+    if (options.config_path.empty()) options.config_path = options.exe_directory / L"config.json";
+
+    auto config = std::make_shared<ConfigState>();
+    config->path = options.config_path;
+    config->exe_directory = options.exe_directory;
+    config->lenient = options.lenient_start;
+
+    services::Services sv;
+    sv.config = make_config_service(config);
+    sv.devices = make_device_service(config);
+
+    auto cat = std::make_shared<CatRunner>(engine, config);
+    sv.cat.state = [cat]() { return cat->state(); };
+    sv.cat.connect = [cat](std::wstring port, std::uint32_t baud, services::Done done) {
+        cat->connect(std::move(port), baud, std::move(done));
+    };
+    sv.cat.disconnect = [cat](services::Done done) { cat->disconnect(std::move(done)); };
+    sv.cat.apply = [cat](services::CatSettings settings, services::Done done) { cat->apply(settings, std::move(done)); };
+
+    auto bm = std::make_shared<BmApiRunner>();
+    sv.bm_api.list_static_groups = [bm](std::uint32_t device_id, std::string key, services::BmApiDone done) {
+        bm->list(device_id, std::move(key), std::move(done));
+    };
+    sv.bm_api.add_static_group = [bm](std::uint32_t device_id, std::string key, std::uint32_t tg, int slot,
+                                      services::BmApiDone done) {
+        bm->write(true, device_id, std::move(key), tg, slot, std::move(done));
+    };
+    sv.bm_api.remove_static_group = [bm](std::uint32_t device_id, std::string key, std::uint32_t tg, int slot,
+                                         services::BmApiDone done) {
+        bm->write(false, device_id, std::move(key), tg, slot, std::move(done));
+    };
+
+    // 与 PS 版一致：<程序目录>\private\runtime\radio-identity-cache.json
+    auto identity = std::make_shared<IdentityRunner>(
+        app::radio_identity::cache_path(options.exe_directory / L"private" / L"runtime"));
+    sv.identity.preload = [identity]() { return identity->preload(); };
+    sv.identity.lookup = [identity](std::uint32_t id, services::IdentityDone done) { identity->lookup(id, std::move(done)); };
+
+    sv.set_wakeup = [cat](std::function<void()> wakeup) { cat->set_wakeup(std::move(wakeup)); };
+    sv.shutdown = [cat, bm, identity]() {
+        cat->set_wakeup({});
+        cat->stop();
+        bm->stop();
+        identity->stop();
+    };
+    return sv;
+}
+
+} // namespace wirex::gui

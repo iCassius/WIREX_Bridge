@@ -14,6 +14,7 @@
 #include <deque>
 #include <functional>
 #include <future>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -55,6 +56,25 @@ struct ChannelView {
     bool quick_call_pending{};
     bool quick_call_allowed{};    // 组呼且不是 TG 4000
     std::optional<engine::CallInfo> current_call{};
+    std::optional<CallRecord> last_call{};  // 空闲时显示该频道最近一次来话
+};
+
+// BM 静态组面板（对应 ui/windows/BmManagementUi.ps1）。
+struct StaticGroupsView {
+    static constexpr std::size_t page_size = 3U;
+    std::vector<services::StaticGroup> groups{};
+    std::optional<int> add_slot{};          // 设备状态 4 → 0，0..3 → 2；空：添加禁用
+    std::optional<std::int64_t> device_status{};
+    bool loaded{};                          // groups 属于 observed_device/observed_key
+    bool busy{};
+    bool refresh_pending{};
+    std::uint32_t observed_device{};
+    std::string observed_key{};
+    std::size_t page{};
+    std::optional<std::size_t> selected{};  // groups 下标
+    std::string status{};
+    bool status_failed{};
+    std::string tg_input{};
 };
 
 enum class FontStatus : std::uint8_t { yahei, simhei, fallback_default };
@@ -102,6 +122,12 @@ public:
     [[nodiscard]] std::optional<std::size_t> selected_history() const noexcept { return selected_history_; }
     [[nodiscard]] std::vector<CallRecord> recent_callers(std::size_t max) const;
     [[nodiscard]] std::optional<std::chrono::system_clock::time_point> current_call_started() const;
+    // 当前来话（呼号缺失时用身份查询结果补全）。
+    [[nodiscard]] std::optional<engine::CallInfo> active_call() const;
+    [[nodiscard]] engine::CallInfo with_callsign(engine::CallInfo call) const;
+    [[nodiscard]] const StaticGroupsView& static_groups() const noexcept { return static_; }
+    [[nodiscard]] std::uint32_t bm_device_id() const noexcept { return services::effective_gateway_id(config_); }
+    [[nodiscard]] bool bm_api_available() const noexcept { return static_cast<bool>(services_.bm_api.list_static_groups); }
     [[nodiscard]] bool pending(Str op) const;
     [[nodiscard]] const std::string& transient_text() const noexcept { return transient_text_; }
     [[nodiscard]] bool transient_failed() const noexcept { return transient_failed_; }
@@ -137,6 +163,13 @@ public:
     [[nodiscard]] bool save_config(const services::GuiConfig& next, std::string& error);
     void set_channel_page(std::size_t page);
     void set_history_page(std::size_t page);
+    // BM 静态组
+    void static_refresh();
+    void static_add();
+    void static_remove();
+    void static_set_page(std::size_t page);
+    void static_select(std::optional<std::size_t> index);
+    StaticGroupsView& static_form() noexcept { return static_; }
     void select_history(std::optional<std::size_t> index);
     void request_exit() noexcept { exit_requested_ = true; }
     [[nodiscard]] bool exit_requested() const noexcept { return exit_requested_; }
@@ -146,6 +179,15 @@ private:
         Str op;
         std::future<engine::CommandResult> future;
         std::function<void(const engine::CommandResult&)> on_done;
+    };
+
+    // 跨线程投递：后台回调只持有 Mailbox 的 shared_ptr；ViewModel 析构时关闭信箱，之后的投递被丢弃。
+    struct Mailbox {
+        std::mutex mutex;
+        std::vector<std::function<void()>> actions;
+        std::function<void()> wakeup;
+        bool closed{};
+        void post(std::function<void()> action);
     };
 
     void track(Str op, std::future<engine::CommandResult> future,
@@ -159,6 +201,15 @@ private:
     void push_rx_policy();
     void persist();
     [[nodiscard]] std::chrono::system_clock::time_point to_wall(std::uint64_t engine_ms) const;
+    // BM 静态组 / 身份查询
+    void static_sync();
+    void static_status(std::string text, bool failed);
+    void static_apply(const services::BmApiResult& result, bool write);
+    [[nodiscard]] bool is_static_channel(const services::ChannelEntry& entry) const;
+    void lookup_identity(const engine::CallInfo& call);
+    void apply_identity(const services::IdentityResult& result);
+    void push_identity(std::uint32_t source_id, std::optional<std::string> callsign);
+    void on_engine_running();
 
     EngineApi& engine_;
     services::Services services_;
@@ -170,7 +221,12 @@ private:
     std::set<ChannelKey> muted_{};
     std::set<ChannelKey> quick_call_sent_{};
     std::optional<ChannelKey> quick_call_pending_{};
-    std::set<std::uint32_t> static_groups_{};
+    StaticGroupsView static_{};
+    std::map<std::uint32_t, std::string> callsigns_{};     // RadioID 查询得到的呼号
+    std::set<std::uint32_t> identity_requested_{};
+    std::uint64_t identity_revision_{};                    // 每次引擎进入 running 从 0 开始
+    std::vector<std::future<engine::CommandResult>> identity_ops_{};
+    engine::Phase last_phase_{engine::Phase::stopped};
     std::deque<CallRecord> history_{};
     std::size_t channel_page_{};
     std::size_t history_page_{};
@@ -182,9 +238,7 @@ private:
     FontStatus font_status_{FontStatus::yahei};
     bool exit_requested_{};
 
-    std::function<void()> wakeup_{};
-    std::shared_ptr<std::mutex> inbox_mutex_{std::make_shared<std::mutex>()};
-    std::shared_ptr<std::vector<std::function<void()>>> inbox_{std::make_shared<std::vector<std::function<void()>>>()};
+    std::shared_ptr<Mailbox> mailbox_{std::make_shared<Mailbox>()};
 };
 
 // 显示用的小工具

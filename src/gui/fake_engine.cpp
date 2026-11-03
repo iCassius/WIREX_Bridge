@@ -322,16 +322,16 @@ struct FakeEngine::Impl {
         state.bm_link = BmLink::connected;
         state.bm_requested_enabled = true;
         state.bm_connection_revision = 1U;
-        state.tx_target = {46001U, dmr_call::CallKind::group, dmr_call::Slot::ts1};
+        state.tx_target = {46001U, dmr_call::CallKind::group, dmr_call::Slot::ts2};
         state.radio_playback_gain_milli = 4000U;
         state.mic_transmit_gain_milli = 16000U;
         transmit_enabled = true;
         rx_policy.group_mode = talkgroup_routing::GroupMode::selected;
         for (std::uint32_t tg : {46001U, 91U, 4600U, 46025U}) {
-            rx_policy.allowed_groups.push_back({tg, dmr_call::Slot::ts1});
+            rx_policy.allowed_groups.push_back({tg, dmr_call::Slot::ts2});
         }
         rx_policy.private_mode = talkgroup_routing::PrivateMode::selected_peers;
-        rx_policy.private_peers.push_back({460997U, local_id, dmr_call::Slot::ts1});
+        rx_policy.private_peers.push_back({460997U, local_id, dmr_call::Slot::ts2});
 
         // 历史来话：过去 20 分钟内的 11 通，最后一通仍在进行。
         const auto now = now_ms();
@@ -344,6 +344,7 @@ struct FakeEngine::Impl {
             c.source_id = kCallers[history[i].first].source_id;
             c.destination_id = history[i].second;
             c.kind = dmr_call::CallKind::group;
+            c.slot = dmr_call::Slot::ts2;
             c.callsign = lookup_callsign(c.source_id);
             c.started_ms = now - (history.size() - i) * 97'000U;
             Event start;
@@ -576,6 +577,7 @@ struct FakeServiceState {
     std::mutex mutex;
     services::CatState cat{};
     services::GuiConfig config{};
+    std::vector<services::StaticGroup> static_groups{{46001U, 2}, {4600U, 2}, {91U, 2}, {46025U, 2}};
 };
 
 services::GuiConfig demo_config() {
@@ -583,7 +585,9 @@ services::GuiConfig demo_config() {
     c.callsign = "N0CALL";
     c.dmr_id = 4609100U;
     c.device_number = "01";
+    c.gateway_id = 460910001U;
     c.bm_password = "demo-password";
+    c.bm_api_key = "demo-api-key";
     c.hri_port = L"COM5";
     c.cat_port = L"COM6";
     c.wave_in_endpoint_id = L"{0.0.1.00000000}.{fake-in}";
@@ -593,13 +597,13 @@ services::GuiConfig demo_config() {
     using dmr_call::CallKind;
     using dmr_call::Slot;
     c.channels = {
-        {46001U, CallKind::group, Slot::ts1, ""},
-        {91U, CallKind::group, Slot::ts1, ""},
-        {460997U, CallKind::private_call, Slot::ts1, "中国鹦鹉"},
-        {4600U, CallKind::group, Slot::ts1, ""},
-        {46025U, CallKind::group, Slot::ts1, ""},
+        {46001U, CallKind::group, Slot::ts2, ""},
+        {91U, CallKind::group, Slot::ts2, ""},
+        {460997U, CallKind::private_call, Slot::ts2, "中国鹦鹉"},
+        {4600U, CallKind::group, Slot::ts2, ""},
+        {46025U, CallKind::group, Slot::ts2, ""},
     };
-    c.tx_target = talkgroup_routing::TxTarget{46001U, CallKind::group, Slot::ts1};
+    c.tx_target = talkgroup_routing::TxTarget{46001U, CallKind::group, Slot::ts2};
     return c;
 }
 
@@ -701,6 +705,61 @@ services::Services make_fake_services(FakeEngine& engine) {
         sc.bm.profile.password = config.bm_password;
         sc.local_source_id = config.dmr_id;
         return sc;
+    };
+
+    // BM 静态组：内存列表，设备状态固定为 0（添加时隙 2）。
+    auto list_result = [st]() {
+        services::BmApiResult r;
+        r.groups = st->static_groups;
+        r.groups_valid = true;
+        r.add_slot = 2;
+        r.device_status = 0;
+        r.message = "已读取 " + std::to_string(r.groups.size()) + " 条 BM 静态组；设备状态 0。";
+        return r;
+    };
+    sv.bm_api.list_static_groups = [st, &engine, list_result](std::uint32_t, std::string, services::BmApiDone done) {
+        engine.post_after(300ms, [st, list_result, done = std::move(done)]() {
+            services::BmApiResult r;
+            {
+                std::lock_guard<std::mutex> lock(st->mutex);
+                r = list_result();
+            }
+            done(std::move(r));
+        });
+    };
+    auto write = [st, &engine](bool add, std::uint32_t tg, int slot, services::BmApiDone done) {
+        engine.post_after(400ms, [st, add, tg, slot, done = std::move(done)]() {
+            services::BmApiResult r;
+            {
+                std::lock_guard<std::mutex> lock(st->mutex);
+                auto& g = st->static_groups;
+                if (add) {
+                    g.push_back({tg, slot});
+                } else {
+                    g.erase(std::remove_if(g.begin(), g.end(), [&](const auto& x) { return x.talkgroup == tg && x.slot == slot; }),
+                            g.end());
+                }
+                r.groups = g;
+            }
+            r.groups_valid = true;
+            r.message = "BM 已接受静态组更改，读取列表已确认。";
+            done(std::move(r));
+        });
+    };
+    sv.bm_api.add_static_group = [write](std::uint32_t, std::string, std::uint32_t tg, int slot, services::BmApiDone done) {
+        write(true, tg, slot, std::move(done));
+    };
+    sv.bm_api.remove_static_group = [write](std::uint32_t, std::string, std::uint32_t tg, int slot, services::BmApiDone done) {
+        write(false, tg, slot, std::move(done));
+    };
+
+    // RadioID：模拟查询（kCallers 中未命中的 ID 返回演示呼号）。
+    sv.identity.lookup = [&engine](std::uint32_t id, services::IdentityDone done) {
+        engine.post_after(700ms, [id, done = std::move(done)]() {
+            services::IdentityResult r{id, true, std::nullopt};
+            if (id == 4609004U) r.callsign = "BY0QRY";
+            done(r);
+        });
     };
     return sv;
 }

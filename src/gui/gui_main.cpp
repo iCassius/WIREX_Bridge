@@ -1,9 +1,13 @@
 // WIREX Bridge 原生 GUI 外壳（R128）：Win32 + DirectX 11 + Dear ImGui。
 //
 // 命令行：
-//   --fake                 使用模拟引擎（真实引擎接入前唯一可运行的模式）
+//   --fake                 模拟引擎 + 真实服务（config.json、设备枚举、CAT、BM API、RadioID 均为真实实现）
+//   --fake-services        与 --fake 合用：服务也用内存模拟（离线截图，不读写 config.json、不访问串口/网络）
+//   --config <json>        config.json 路径（默认 exe 同目录；不存在时生成默认配置）
 //   --screenshot <png>     渲染若干帧后把后台缓冲区保存为 PNG 并退出（离线验收）
 //   --open-settings        启动时打开设置弹窗（配合 --screenshot 检查弹窗布局）
+//   --check-config         只做 config.json 生成/读取检查并退出（退出码 0 = 成功；不打开窗口）
+// 不带 --fake 时使用真实引擎（需以 WIREX_GUI_REAL_ENGINE=1 编译；否则提示“真实引擎尚未接入”）。
 //
 // 重绘策略：只在窗口消息、引擎唤醒事件或动画需要时绘制。
 // - 鼠标按下/拖动：按垂直同步连续绘制；
@@ -30,9 +34,17 @@
 
 #include "app_view.hpp"
 #include "fake_engine.hpp"
+#include "real_services.hpp"
 #include "resource.h"
 #include "strings.hpp"
 #include "view_model.hpp"
+
+#ifndef WIREX_GUI_REAL_ENGINE
+#define WIREX_GUI_REAL_ENGINE 0
+#endif
+#if WIREX_GUI_REAL_ENGINE
+#include "wirex/engine.hpp"
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -321,8 +333,11 @@ bool save_back_buffer_png(const std::wstring& path, std::string& error) {
 
 struct Options {
     bool fake{};
+    bool fake_services{};
     bool open_settings{};
+    bool check_config{};
     std::optional<std::wstring> screenshot{};
+    std::optional<std::filesystem::path> config{};
     std::wstring error{};
 };
 
@@ -338,8 +353,24 @@ Options parse_args() {
         const std::wstring a = argv[i];
         if (a == L"--fake") {
             o.fake = true;
+        } else if (a == L"--fake-services") {
+            o.fake_services = true;
         } else if (a == L"--open-settings") {
             o.open_settings = true;
+        } else if (a == L"--check-config") {
+            o.check_config = true;
+        } else if (a == L"--config") {
+            if (i + 1 >= argc) {
+                o.error = L"--config 需要 config.json 路径。";
+                break;
+            }
+            std::error_code ec;
+            auto full = std::filesystem::absolute(argv[++i], ec);
+            if (ec) {
+                o.error = L"config.json 路径无效。";
+                break;
+            }
+            o.config = std::move(full);
         } else if (a == L"--screenshot") {
             if (i + 1 >= argc) {
                 o.error = L"--screenshot 需要 PNG 路径。";
@@ -353,12 +384,83 @@ Options parse_args() {
             }
             o.screenshot = full.wstring();
         } else {
-            o.error = L"未知参数：" + a + L"\n用法：WirexBridge.exe [--fake] [--screenshot <png>] [--open-settings]";
+            o.error = L"未知参数：" + a +
+                      L"\n用法：WirexBridge.exe [--fake [--fake-services]] [--config <json>] [--screenshot <png>] "
+                      L"[--open-settings] [--check-config]";
             break;
         }
     }
     LocalFree(argv);
+    if (o.error.empty() && o.fake_services && !o.fake) o.error = L"--fake-services 只能与 --fake 一起使用。";
     return o;
+}
+
+std::wstring widen(const std::string& s);
+
+// 引擎 + 服务的组合。FakeEngine 或真实 Engine（经 EngineAdapter 包装）二选一。
+struct Backend {
+    std::unique_ptr<wirex::gui::FakeEngine> fake{};
+#if WIREX_GUI_REAL_ENGINE
+    std::unique_ptr<wirex::engine::Engine> real{};
+    std::unique_ptr<wirex::gui::EngineAdapter<wirex::engine::Engine>> adapter{};
+#endif
+    wirex::gui::EngineApi* api{};
+    wirex::gui::services::Services services{};
+};
+
+std::optional<Backend> make_backend(const Options& opts, std::wstring& error) {
+    Backend b;
+    wirex::gui::RealServiceOptions so;
+    if (opts.config) so.config_path = *opts.config;
+    if (opts.fake) {
+        wirex::gui::FakeEngineOptions fake_opts;
+        fake_opts.seed_demo = true;
+        b.fake = std::make_unique<wirex::gui::FakeEngine>(fake_opts);
+        b.api = b.fake.get();
+        if (opts.fake_services) {
+            b.services = wirex::gui::make_fake_services(*b.fake);
+        } else {
+            so.lenient_start = true; // 真实检查未通过时仍允许模拟引擎“连接串口”
+            b.services = wirex::gui::make_real_services(*b.api, so);
+        }
+        return b;
+    }
+#if WIREX_GUI_REAL_ENGINE
+    try {
+        b.real = std::make_unique<wirex::engine::Engine>();
+    } catch (const std::exception& e) {
+        error = L"无法创建桥接引擎：" + widen(e.what());
+        return std::nullopt;
+    }
+    b.adapter = std::make_unique<wirex::gui::EngineAdapter<wirex::engine::Engine>>(*b.real);
+    b.api = b.adapter.get();
+    b.services = wirex::gui::make_real_services(*b.api, so);
+    return b;
+#else
+    // 真实引擎（wirex::engine::Engine）尚未合入；以 /DWIREX_GUI_REAL_ENGINE=1 编译并链接引擎源文件后启用。
+    error = widen(wirex::gui::tr(wirex::gui::Str::engine_unavailable));
+    return std::nullopt;
+#endif
+}
+
+// --check-config：生成（若不存在）并读回 config.json；只输出结构信息，不输出任何字段值。
+int check_config(const Options& opts) {
+    wirex::gui::FakeEngine engine;
+    wirex::gui::RealServiceOptions so;
+    if (opts.config) so.config_path = *opts.config;
+    auto services = wirex::gui::make_real_services(engine, so);
+    std::string error;
+    auto first = services.config.load(error);
+    int code = 0;
+    if (!first) {
+        code = 3;
+    } else if (!services.config.save(*first, error)) {
+        code = 4; // 写回（保留未知字段）失败
+    } else if (auto second = services.config.load(error); !second || second->channels.size() != first->channels.size()) {
+        code = 5;
+    }
+    services.shutdown();
+    return code;
 }
 
 void fail_box(const std::wstring& text) { MessageBoxW(nullptr, text.c_str(), L"WIREX Bridge", MB_ICONERROR | MB_OK); }
@@ -386,11 +488,13 @@ int run(HINSTANCE instance) {
         fail_box(opts.error);
         return 2;
     }
+    if (opts.check_config) return check_config(opts);
+#if !WIREX_GUI_REAL_ENGINE
     if (!opts.fake) {
-        // 真实引擎（wirex::engine::Engine）由另一模块实现；接入后在此处构造并用 EngineAdapter 包装。
         fail_box(widen(wirex::gui::tr(wirex::gui::Str::engine_unavailable)));
         return 2;
     }
+#endif
 
     ImGui_ImplWin32_EnableDpiAwareness(); // Per-Monitor V2（manifest 中也已声明）
 
@@ -475,14 +579,18 @@ int run(HINSTANCE instance) {
     int exit_code = 0;
     {
         HANDLE wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        std::wstring backend_error;
+        std::optional<Backend> backend;
+        if (wake != nullptr) backend = make_backend(opts, backend_error);
         if (wake == nullptr) {
             fail_box(L"CreateEventW 失败。");
             exit_code = 1;
+        } else if (!backend) {
+            fail_box(backend_error);
+            exit_code = 2;
         } else {
-            wirex::gui::FakeEngineOptions fake_opts;
-            fake_opts.seed_demo = true;
-            wirex::gui::FakeEngine engine(fake_opts);
-            wirex::gui::ViewModel vm(engine, wirex::gui::make_fake_services(engine), true);
+            // 成员析构顺序：vm（停止服务线程）→ backend（引擎）。
+            wirex::gui::ViewModel vm(*backend->api, std::move(backend->services), opts.fake);
             vm.set_font_status(font_status);
             vm.set_wakeup([wake]() { SetEvent(wake); });
             wirex::gui::AppView view(vm, fonts);
@@ -495,6 +603,7 @@ int run(HINSTANCE instance) {
             int settle_frames = 0;
             int hover_frames = 0;
             int frames = 0;
+            const auto shot_after = Clock::now() + 1500ms; // 等后台服务（静态组、CAT、身份查询）的首个结果
             DWORD wait_ms = 0;
             auto last_frame = Clock::now() - 1s;
             bool running = true;
@@ -577,7 +686,7 @@ int run(HINSTANCE instance) {
                 render(clear);
                 ++frames;
 
-                if (opts.screenshot && frames >= kScreenshotFrames) {
+                if (opts.screenshot && frames >= kScreenshotFrames && Clock::now() >= shot_after) {
                     std::string error;
                     if (!save_back_buffer_png(*opts.screenshot, error)) {
                         fail_box(L"截图失败：" + widen(error));

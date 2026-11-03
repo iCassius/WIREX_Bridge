@@ -81,39 +81,84 @@ struct ChannelEntry {
 struct GuiConfig {
     std::string ui_language{"zh-CN"};           // 运行界面固定中文；保留字段供以后启用切换
     std::string callsign{};
-    std::uint32_t dmr_id{};
-    std::string device_number{};                // "00".."99" 或空
-    std::string master_preset{"bm-china-4602"}; // "bm-china-4602" | "custom"
+    std::uint32_t dmr_id{};                     // connection.source_id
+    std::string device_number{};                // "00".."99" 或空（空：沿用 gateway_id）
+    std::uint32_t gateway_id{};                 // 读取时的 connection.gateway_id；保存时见 effective_gateway_id()
+    std::string master_preset{"bm-china-4602"}; // ui.bm_server_selection_id：目录中的 id 或 "custom"
     std::string master_host{"43.129.83.124"};
     std::uint16_t master_port{62031U};
     std::string bm_password{};
     std::string bm_api_key{};
-    std::wstring hri_port{};
-    std::wstring cat_port{};
+    std::wstring hri_port{};                    // 空 = "auto"
+    std::wstring cat_port{};                    // 空 = "auto"
     std::uint32_t cat_baud_rate{38400U};
-    std::wstring wave_in_endpoint_id{};
+    std::wstring wave_in_endpoint_id{};         // 空 = "auto"
     std::wstring wave_out_endpoint_id{};
     std::uint32_t playback_gain_step{1U};       // 1..16，对应 1000..16000 milli
     std::uint32_t transmit_gain_step{16U};
     std::vector<ChannelEntry> channels{};
     std::optional<talkgroup_routing::TxTarget> tx_target{};
+    std::vector<std::uint32_t> blocked_source_ids{};  // routing.blocked_source_ids（只读透传）
 };
+
+// BM 设备 ID（Hotspot ID）：两位设备编号时为 DMR ID×100+编号，否则沿用已保存的 gateway_id。
+// 对应 bridge-ui.ps1 Get-UiGatewayIdentityForSave。
+[[nodiscard]] inline std::uint32_t effective_gateway_id(const GuiConfig& c) noexcept {
+    const auto& n = c.device_number;
+    if (c.dmr_id != 0U && n.size() == 2U && n[0] >= '0' && n[0] <= '9' && n[1] >= '0' && n[1] <= '9') {
+        return c.dmr_id * 100U + static_cast<std::uint32_t>((n[0] - '0') * 10 + (n[1] - '0'));
+    }
+    return c.gateway_id;
+}
 
 struct ConfigService {
     std::function<std::optional<GuiConfig>(std::string& error)> load{};
     std::function<bool(const GuiConfig& config, std::string& error)> save{};
     // 由配置生成引擎启动参数（解析 endpoint id → WinMM 编号、device-y.bin 路径等）。
+    // 在 UI 线程调用；会做一次设备枚举（约百毫秒级）。
     std::function<std::optional<engine::StartConfig>(const GuiConfig& config, std::string& error)> make_start_config{};
 };
 
 // ---------- BrandMeister API（静态组） ----------
 
-using StaticGroupsDone = std::function<void(std::optional<std::vector<std::uint32_t>> groups, std::string error)>;
+struct StaticGroup {
+    std::uint32_t talkgroup{};
+    int slot{};                                 // API slot：0 = DMO/simplex，1，2
+};
+
+struct BmApiResult {
+    bool failed{};                              // true：message 为错误文案
+    bool groups_valid{};                        // groups 是本次（或写入回读）得到的完整列表
+    std::vector<StaticGroup> groups{};
+    std::optional<int> add_slot{};              // 仅 list：设备状态 4 → 0，0..3 → 2；未知时为空（添加禁用）
+    std::optional<std::int64_t> device_status{};
+    std::string message{};                      // 中文源文案；不含 API Key
+};
+
+using BmApiDone = std::function<void(BmApiResult result)>;
 
 struct BmApiService {
-    std::function<void(std::uint32_t device_id, std::string api_key, StaticGroupsDone done)> list_static_groups{};
-    std::function<void(std::uint32_t device_id, std::string api_key, std::uint32_t talkgroup, StaticGroupsDone done)> add_static_group{};
-    std::function<void(std::uint32_t device_id, std::string api_key, std::uint32_t talkgroup, StaticGroupsDone done)> remove_static_group{};
+    // 依次 GET /talkgroup 与 GET /device（取添加时隙）。
+    std::function<void(std::uint32_t device_id, std::string api_key, BmApiDone done)> list_static_groups{};
+    std::function<void(std::uint32_t device_id, std::string api_key, std::uint32_t talkgroup, int slot, BmApiDone done)> add_static_group{};
+    std::function<void(std::uint32_t device_id, std::string api_key, std::uint32_t talkgroup, int slot, BmApiDone done)> remove_static_group{};
+};
+
+// ---------- RadioID 呼号查询 ----------
+
+struct IdentityResult {
+    std::uint32_t source_id{};
+    bool known{};                               // true：found（callsign 有值）或 not_found（callsign 为空）
+    std::optional<std::string> callsign{};      // 已规范化，可直接写入引擎身份缓存
+};
+
+using IdentityDone = std::function<void(IdentityResult result)>;
+
+struct IdentityService {
+    // 只读本地缓存中新鲜且合规的 found 条目（启动时预载到引擎，最多 128 条）。UI 线程调用。
+    std::function<std::vector<IdentityResult>()> preload{};
+    // 先查缓存；未命中时排队联网查询（节流、失败冷却由服务负责）。done 只在得到确定结果时调用。
+    std::function<void(std::uint32_t source_id, IdentityDone done)> lookup{};
 };
 
 struct Services {
@@ -121,6 +166,11 @@ struct Services {
     CatService cat{};
     ConfigService config{};
     BmApiService bm_api{};
+    IdentityService identity{};
+    // 后台状态（例如 CAT 轮询读数）变化时调用的唤醒函数；ViewModel::set_wakeup 转发。
+    std::function<void(std::function<void()> wakeup)> set_wakeup{};
+    // 停止后台线程并等待结束；之后不会再调用任何回调。ViewModel 析构时调用。
+    std::function<void()> shutdown{};
 };
 
 } // namespace wirex::gui::services

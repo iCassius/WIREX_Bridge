@@ -41,6 +41,7 @@ private:
     void draw_recent_calls(float width, float height);
     void draw_radio_panel(float width, float height);
     void draw_daily_panel(float width, float height);
+    void draw_static_groups(float inner_w);
     void draw_footer();
     void draw_settings();
     [[nodiscard]] float px(float logical) const noexcept { return logical * scale_; }
@@ -50,6 +51,7 @@ private:
     float scale_{1.0F};
     bool continuous_{};
     bool settings_requested_{};
+    float daily_slack_{};   // 日常控制区上一帧的剩余高度（均分到段间距）
 
     // 设置弹窗草稿
     services::GuiConfig draft_{};

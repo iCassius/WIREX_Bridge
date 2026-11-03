@@ -1,5 +1,7 @@
 #include "view_model.hpp"
 
+#include "config_bridge.hpp"
+
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -162,39 +164,44 @@ ViewModel::ViewModel(EngineApi& engine, services::Services services, bool fake)
     }
     refresh_devices();
     if (services_.cat.state) cat_ = services_.cat.state();
-    if (services_.bm_api.list_static_groups && !config_.bm_api_key.empty() && config_.dmr_id != 0U) {
-        services_.bm_api.list_static_groups(
-            config_.dmr_id, config_.bm_api_key,
-            [this](std::optional<std::vector<std::uint32_t>> groups, std::string error) {
-                post_to_ui([this, groups = std::move(groups), error = std::move(error)]() {
-                    if (groups) {
-                        static_groups_ = std::set<std::uint32_t>(groups->begin(), groups->end());
-                    } else if (!error.empty()) {
-                        flash(error, true);
-                    }
-                });
-            });
-    }
+    last_phase_ = snapshot_->phase;
+    static_sync(); // 已有 API Key 与设备 ID 时读取 BM 静态组
 }
 
 ViewModel::~ViewModel() {
     engine_.set_wakeup({});
-    std::lock_guard<std::mutex> lock(*inbox_mutex_);
-    inbox_->clear();
+    {
+        std::lock_guard<std::mutex> lock(mailbox_->mutex);
+        mailbox_->closed = true;
+        mailbox_->actions.clear();
+        mailbox_->wakeup = {};
+    }
+    // 后台线程可能仍持有本对象的回调：先停线程，再销毁成员。
+    if (services_.shutdown) services_.shutdown();
+}
+
+void ViewModel::Mailbox::post(std::function<void()> action) {
+    std::function<void()> wake;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (closed) return;
+        actions.push_back(std::move(action));
+        wake = wakeup;
+    }
+    if (wake) wake();
 }
 
 void ViewModel::set_wakeup(std::function<void()> wakeup) {
-    wakeup_ = wakeup;
+    {
+        std::lock_guard<std::mutex> lock(mailbox_->mutex);
+        mailbox_->wakeup = wakeup;
+    }
+    if (services_.set_wakeup) services_.set_wakeup(wakeup);
     engine_.set_wakeup(std::move(wakeup));
 }
 
-void ViewModel::post_to_ui(std::function<void()> action) {
-    {
-        std::lock_guard<std::mutex> lock(*inbox_mutex_);
-        inbox_->push_back(std::move(action));
-    }
-    if (wakeup_) wakeup_();
-}
+// 后台线程（CAT/HTTP/RadioID worker）的回调都经这里排队，pump() 在 UI 线程执行。
+void ViewModel::post_to_ui(std::function<void()> action) { mailbox_->post(std::move(action)); }
 
 bool ViewModel::pump() {
     bool changed = false;
@@ -205,8 +212,21 @@ bool ViewModel::pump() {
             playback_step = gain_step(snapshot_->radio_playback_gain_milli);
             transmit_step = gain_step(snapshot_->mic_transmit_gain_milli);
         }
+        if (snapshot_->phase != last_phase_) {
+            last_phase_ = snapshot_->phase;
+            if (last_phase_ == Phase::running) on_engine_running();
+        }
+        if (snapshot_->active_rx_call && snapshot_->active_rx_call->callsign.empty()) {
+            lookup_identity(*snapshot_->active_rx_call);
+        }
         changed = true;
     }
+    // 身份写回引擎的结果不需要提示；只回收已完成的 future。
+    identity_ops_.erase(std::remove_if(identity_ops_.begin(), identity_ops_.end(),
+                                       [](std::future<CommandResult>& f) {
+                                           return !f.valid() || f.wait_for(0s) == std::future_status::ready;
+                                       }),
+                        identity_ops_.end());
     for (const auto& event : engine_.drain_events(256U)) {
         handle_event(event);
         changed = true;
@@ -232,8 +252,8 @@ bool ViewModel::pump() {
     }
     std::vector<std::function<void()>> actions;
     {
-        std::lock_guard<std::mutex> lock(*inbox_mutex_);
-        actions.swap(*inbox_);
+        std::lock_guard<std::mutex> lock(mailbox_->mutex);
+        actions.swap(mailbox_->actions);
     }
     for (auto& action : actions) {
         action();
@@ -255,7 +275,7 @@ bool ViewModel::pump() {
 
 std::optional<std::uint32_t> ViewModel::idle_timeout_ms() const {
     // 命令等待中：轮询 future（引擎完成时也会唤醒，这里只作兜底）。
-    if (!pending_.empty()) return 100U;
+    if (!pending_.empty() || static_.busy) return 100U;
     // 有来话时显示通话时长，需要每秒刷新。
     if (snapshot_->active_rx_call) return 1000U;
     if (!transient_text_.empty()) {
@@ -280,6 +300,7 @@ void ViewModel::handle_event(const engine::Event& event) {
     switch (event.kind) {
     case engine::EventKind::rx_call_started:
         if (event.call) {
+            if (event.call->callsign.empty()) lookup_identity(*event.call);
             history_.push_front({*event.call, to_wall(event.call->started_ms)});
             if (history_.size() > history_limit) history_.pop_back();
             if (selected_history_) {
@@ -376,11 +397,19 @@ std::vector<ChannelView> ViewModel::channel_page() const {
         v.is_tx_active = v.is_tx_target && tx_active;
         v.is_muted = muted_.count(v.key) != 0U;
         v.quick_call_allowed = entry.kind == dmr_call::CallKind::group && entry.id != 4000U;
-        v.is_static = v.quick_call_allowed && static_groups_.count(entry.id) != 0U;
+        v.is_static = v.quick_call_allowed && is_static_channel(entry);
         v.quick_call_sent = quick_call_sent_.count(v.key) != 0U;
         v.quick_call_pending = quick_call_pending_ && *quick_call_pending_ == v.key;
         if (!v.is_muted && snapshot_->active_rx_call && call_matches(*snapshot_->active_rx_call, entry, config_.dmr_id)) {
-            v.current_call = snapshot_->active_rx_call;
+            v.current_call = with_callsign(*snapshot_->active_rx_call);
+        } else {
+            for (const auto& rec : history_) {
+                if (call_matches(rec.call, entry, config_.dmr_id)) {
+                    v.last_call = rec;
+                    v.last_call->call = with_callsign(rec.call);
+                    break;
+                }
+            }
         }
         const char* kind = entry.kind == dmr_call::CallKind::group ? tr(Str::group) : tr(Str::private_call);
         v.title = fmt("%s %u", kind, entry.id);
@@ -413,6 +442,7 @@ std::vector<CallRecord> ViewModel::recent_callers(std::size_t max) const {
         }
         if (!seen.insert(rec.call.source_id).second) continue;
         out.push_back(rec);
+        out.back().call = with_callsign(rec.call);
         if (out.size() >= max) break;
     }
     return out;
@@ -421,6 +451,18 @@ std::vector<CallRecord> ViewModel::recent_callers(std::size_t max) const {
 std::optional<std::chrono::system_clock::time_point> ViewModel::current_call_started() const {
     if (!snapshot_->active_rx_call) return std::nullopt;
     return to_wall(snapshot_->active_rx_call->started_ms);
+}
+
+std::optional<engine::CallInfo> ViewModel::active_call() const {
+    if (!snapshot_->active_rx_call) return std::nullopt;
+    return with_callsign(*snapshot_->active_rx_call);
+}
+
+engine::CallInfo ViewModel::with_callsign(engine::CallInfo call) const {
+    if (call.callsign.empty()) {
+        if (auto it = callsigns_.find(call.source_id); it != callsigns_.end()) call.callsign = it->second;
+    }
+    return call;
 }
 
 // ---------------------------------------------------------------- 命令
@@ -437,11 +479,9 @@ void ViewModel::start() {
         flash(fmt(tr(Str::result_fmt), tr(Str::op_start), error.c_str()), true);
         return;
     }
+    if (!error.empty()) flash(error, true); // 参数可用但有提示（例如 --fake 下真实设备检查未通过）
+    // make_start_config 已按配置生成 RX/TX 策略；这里叠加本次会话的临时屏蔽状态。
     sc->rx_policy = build_rx_policy();
-    if (auto tx = config_.tx_target) {
-        sc->tx_policy.target = *tx;
-        sc->tx_policy.transmit_enabled = true;
-    }
     sc->radio_playback_gain_milli = gain_milli(playback_step);
     sc->mic_transmit_gain_milli = gain_milli(transmit_step);
     sc->bm_start_disconnected = true;
@@ -463,21 +503,11 @@ void ViewModel::toggle_bm() {
     track(Str::op_bm, engine_.set_bm_connection(enable, snapshot_->bm_connection_revision));
 }
 
+// Get-UiNativeRxPolicyForChannels：屏蔽 = 从 allow 列表中移除（Router 拒绝同时出现在 allow 与 block 的组）。
 talkgroup_routing::RxPolicy ViewModel::build_rx_policy() const {
-    talkgroup_routing::RxPolicy policy;
-    policy.group_mode = talkgroup_routing::GroupMode::selected;
-    policy.private_mode = talkgroup_routing::PrivateMode::disabled;
-    for (const auto& ch : config_.channels) {
-        const bool muted = muted_.count(key_of(ch)) != 0U;
-        if (ch.kind == dmr_call::CallKind::group) {
-            policy.allowed_groups.push_back({ch.id, ch.slot});
-            if (muted) policy.blocked_groups.push_back({ch.id, ch.slot});
-        } else if (!muted) {
-            policy.private_mode = talkgroup_routing::PrivateMode::selected_peers;
-            policy.private_peers.push_back({ch.id, config_.dmr_id, ch.slot});
-        }
-    }
-    return policy;
+    std::set<std::string> muted;
+    for (const auto& k : muted_) muted.insert(config_bridge::channel_key(k.id, k.kind, k.slot));
+    return config_bridge::make_rx_policy(config_.channels, muted, config_.dmr_id, config_.blocked_source_ids);
 }
 
 void ViewModel::push_rx_policy() {
@@ -551,6 +581,8 @@ void ViewModel::add_channel() {
     services::ChannelEntry entry;
     entry.id = id;
     entry.kind = add_channel_kind == 1 ? dmr_call::CallKind::private_call : dmr_call::CallKind::group;
+    entry.slot = dmr_call::Slot::ts2; // bridge-ui.ps1 channelEditorSlot 默认 TS2（BM 热点为单时隙 TS2）
+    entry.name = config_bridge::known_channel_name(id, entry.kind);
     const auto k = key_of(entry);
     if (std::any_of(config_.channels.begin(), config_.channels.end(), [&](const auto& e) { return key_of(e) == k; })) {
         flash(tr(Str::channel_exists), true);
@@ -636,8 +668,230 @@ void ViewModel::refresh_devices() {
 bool ViewModel::save_config(const services::GuiConfig& next, std::string& error) {
     if (services_.config.save && !services_.config.save(next, error)) return false;
     config_ = next;
+    config_.gateway_id = services::effective_gateway_id(next);
     flash(tr(Str::settings_saved), false);
+    static_sync(); // 设备 ID 或 API Key 变化时刷新静态组（Sync-BmManagementUiIdentity）
     return true;
+}
+
+// ---------------------------------------------------------------- BM 静态组（BmManagementUi.ps1）
+
+bool ViewModel::is_static_channel(const services::ChannelEntry& entry) const {
+    // Test-UiBmStaticChannelReadback：同 TG 同时隙；API slot 0（DMO）只在设备状态 4 且该 TG 只有一个频道时对应。
+    if (!static_.loaded || entry.kind != dmr_call::CallKind::group) return false;
+    bool slot0 = false;
+    for (const auto& g : static_.groups) {
+        if (g.talkgroup != entry.id) continue;
+        if (g.slot == static_cast<int>(entry.slot)) return true;
+        if (g.slot == 0) slot0 = true;
+    }
+    if (!slot0 || !static_.add_slot || *static_.add_slot != 0) return false;
+    const auto same_tg = std::count_if(config_.channels.begin(), config_.channels.end(), [&](const auto& e) {
+        return e.kind == dmr_call::CallKind::group && e.id == entry.id;
+    });
+    return same_tg == 1;
+}
+
+// Set-MainText BmStaticGroupStatus → Set-UiTransientStatus：静态组状态显示在标题栏的临时提示中；
+// 面板内只保留最后一条作为列表悬停提示。
+void ViewModel::static_status(std::string text, bool failed) {
+    static_.status = text;
+    static_.status_failed = failed;
+    if (!text.empty()) flash(std::move(text), failed);
+}
+
+void ViewModel::static_sync() {
+    const auto device = bm_device_id();
+    const auto& key = config_.bm_api_key;
+    if (device == static_.observed_device && key == static_.observed_key) return;
+    const bool had = static_.loaded;
+    static_.loaded = false;
+    static_.groups.clear();
+    static_.add_slot.reset();
+    static_.device_status.reset();
+    static_.selected.reset();
+    static_.page = 0U;
+    static_.observed_device = device;
+    static_.observed_key = key;
+    if (key.empty() || device == 0U) {
+        static_status(key.empty() ? std::string() : std::string("请先保存有效的 BM 设备 ID。"), !key.empty());
+        return;
+    }
+    if (had) static_status("设备或 API Key 已变更；请刷新 BM 静态组。", false);
+    if (static_.busy) {
+        static_.refresh_pending = true;
+        return;
+    }
+    static_refresh();
+}
+
+void ViewModel::static_refresh() {
+    if (!services_.bm_api.list_static_groups) {
+        static_status("BM 静态组模块不可用。", true);
+        return;
+    }
+    if (config_.bm_api_key.empty()) {
+        static_status("请输入 BM API Key。", true);
+        return;
+    }
+    const auto device = bm_device_id();
+    if (device == 0U) {
+        static_status("请先保存有效的 BM 设备 ID。", true);
+        return;
+    }
+    if (static_.busy) {
+        static_.refresh_pending = true;
+        return;
+    }
+    static_.busy = true;
+    static_.observed_device = device;
+    static_.observed_key = config_.bm_api_key;
+    static_status("正在读取 BM 静态组。", false);
+    services_.bm_api.list_static_groups(device, config_.bm_api_key, [this, device](services::BmApiResult r) {
+        post_to_ui([this, device, r = std::move(r)]() {
+            static_.busy = false;
+            if (device != bm_device_id() || static_.observed_key != config_.bm_api_key) {
+                static_status("设备或 API Key 已变更；未显示旧设备的 BM 静态组。", false);
+            } else {
+                static_apply(r, false);
+            }
+            if (static_.refresh_pending) {
+                static_.refresh_pending = false;
+                static_refresh();
+            }
+        });
+    });
+}
+
+void ViewModel::static_apply(const services::BmApiResult& r, bool write) {
+    static_.page = 0U;
+    static_.selected.reset();
+    if (r.groups_valid) {
+        static_.groups = r.groups;
+        static_.loaded = true;
+    } else if (!write) {
+        static_.groups.clear();
+        static_.loaded = false;
+    }
+    if (!write) {
+        static_.add_slot = r.add_slot;
+        static_.device_status = r.device_status;
+    }
+    static_status(r.message, r.failed);
+}
+
+void ViewModel::static_add() {
+    if (static_.busy) {
+        static_status("BM 静态组操作正在进行。", true);
+        return;
+    }
+    if (!static_.loaded || static_.observed_device != bm_device_id() || static_.observed_key != config_.bm_api_key) {
+        static_status("请先读取当前设备的 BM 静态组。", true);
+        return;
+    }
+    std::uint32_t tg = 0U;
+    const auto& text = static_.tg_input;
+    const auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), tg);
+    if (text.empty() || text.size() > 8U || ec != std::errc{} || ptr != text.data() + text.size() || tg == 0U ||
+        tg > 16777215U) {
+        static_status("请输入 1 至 16777215 的静态组 ID。", true);
+        return;
+    }
+    if (!static_.add_slot) {
+        static_status("设备状态不可用；添加已禁用。", true);
+        return;
+    }
+    const int slot = *static_.add_slot;
+    if (std::any_of(static_.groups.begin(), static_.groups.end(),
+                    [&](const auto& g) { return g.talkgroup == tg && g.slot == slot; })) {
+        static_status("该静态组已存在。", true);
+        return;
+    }
+    static_.busy = true;
+    static_status("正在向 BM 添加静态组。", false);
+    const auto device = bm_device_id();
+    services_.bm_api.add_static_group(device, config_.bm_api_key, tg, slot, [this, device](services::BmApiResult r) {
+        post_to_ui([this, device, r = std::move(r)]() {
+            static_.busy = false;
+            if (device == bm_device_id()) {
+                static_apply(r, true);
+                if (!r.failed) static_.tg_input.clear();
+            }
+        });
+    });
+}
+
+void ViewModel::static_remove() {
+    if (static_.busy) {
+        static_status("BM 静态组操作正在进行。", true);
+        return;
+    }
+    if (!static_.loaded || !static_.selected || *static_.selected >= static_.groups.size()) {
+        static_status("请先选择当前设备的一条 BM 静态组。", true);
+        return;
+    }
+    const auto group = static_.groups[*static_.selected]; // 删除保留原 slot
+    static_.busy = true;
+    static_status("正在向 BM 移除静态组。", false);
+    const auto device = bm_device_id();
+    services_.bm_api.remove_static_group(device, config_.bm_api_key, group.talkgroup, group.slot,
+                                         [this, device](services::BmApiResult r) {
+                                             post_to_ui([this, device, r = std::move(r)]() {
+                                                 static_.busy = false;
+                                                 if (device == bm_device_id()) static_apply(r, true);
+                                             });
+                                         });
+}
+
+void ViewModel::static_set_page(std::size_t page) {
+    const std::size_t pages = std::max<std::size_t>(1U, (static_.groups.size() + StaticGroupsView::page_size - 1U) /
+                                                            StaticGroupsView::page_size);
+    static_.page = std::min(page, pages - 1U);
+}
+
+void ViewModel::static_select(std::optional<std::size_t> index) { static_.selected = index; }
+
+// ---------------------------------------------------------------- 身份查询（bridge-ui.ps1 Start-UiIdentityQuery）
+
+void ViewModel::lookup_identity(const engine::CallInfo& call) {
+    if (!services_.identity.lookup || call.source_id == 0U || call.source_id > 16777215U) return;
+    if (callsigns_.count(call.source_id) != 0U || !identity_requested_.insert(call.source_id).second) return;
+    services_.identity.lookup(call.source_id, [this](services::IdentityResult r) {
+        post_to_ui([this, r = std::move(r)]() { apply_identity(r); });
+    });
+}
+
+void ViewModel::apply_identity(const services::IdentityResult& r) {
+    identity_requested_.erase(r.source_id);
+    if (!r.known) return;
+    if (r.callsign) {
+        callsigns_[r.source_id] = *r.callsign;
+    } else {
+        callsigns_.erase(r.source_id);
+    }
+    if (snapshot_->phase == Phase::running) push_identity(r.source_id, r.callsign);
+}
+
+void ViewModel::push_identity(std::uint32_t source_id, std::optional<std::string> callsign) {
+    // revision：本次运行内单调递增（每次引擎进入 running 从 1 开始）。
+    identity_ops_.push_back(engine_.upsert_radio_identity(source_id, ++identity_revision_, std::move(callsign)));
+}
+
+void ViewModel::on_engine_running() {
+    // Initialize-UiNativeIdentitySync：预载缓存中的新鲜映射，再回放本次会话查到的结果。
+    identity_revision_ = 0U;
+    std::set<std::uint32_t> pushed;
+    if (services_.identity.preload) {
+        for (auto& m : services_.identity.preload()) {
+            if (!m.callsign) continue;
+            pushed.insert(m.source_id);
+            callsigns_.emplace(m.source_id, *m.callsign);
+            push_identity(m.source_id, std::move(m.callsign));
+        }
+    }
+    for (const auto& [id, callsign] : callsigns_) {
+        if (pushed.count(id) == 0U) push_identity(id, callsign);
+    }
 }
 
 void ViewModel::set_channel_page(std::size_t page) { channel_page_ = std::min(page, channel_page_count() - 1U); }

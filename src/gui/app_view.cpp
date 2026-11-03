@@ -3,6 +3,8 @@
 #include "imgui.h"
 #include "imgui_internal.h"
 
+#include "wirex/app/bm_servers.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <cstdarg>
@@ -131,6 +133,13 @@ void section_title(const char* text, ImFont* bold) {
     ImGui::PushFont(bold, 14.0F);
     ImGui::TextUnformatted(text);
     ImGui::PopFont();
+}
+
+std::string known_name_for_static(std::uint32_t tg) {
+    services::ChannelEntry e;
+    e.id = tg;
+    e.kind = dmr_call::CallKind::group;
+    return channel_display_name(e);
 }
 
 // 只保留 A-Z0-9/ 的呼号，用于构造资料页链接。
@@ -381,8 +390,8 @@ void AppView::draw(float dpi_scale) {
     draw_header();
     const ImVec2 avail = ImGui::GetContentRegionAvail();
     const float body_h = avail.y - footer_h - gap;
-    // 频道卡片 : 来话 : 控制区 ≈ 39% : 20% : 剩余（来话区刚好容纳 5 行历史）
-    const float cards_h = std::max(px(240.0F), body_h * 0.39F);
+    // 频道卡片 : 来话 : 控制区 ≈ 35% : 20% : 剩余（来话区刚好容纳 5 行历史；控制区含 BM 静态组）
+    const float cards_h = std::max(px(230.0F), body_h * 0.35F);
     const float calls_h = std::max(px(150.0F), body_h * 0.205F);
     const float panels_h = body_h - cards_h - calls_h - gap * 2.0F;
 
@@ -588,6 +597,25 @@ void AppView::draw_channel_card(const ChannelView& ch, float width, float height
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     if (ch.current_call) {
         caller_block(*ch.current_call, fonts_.bold, 23.0F, 17.0F, ch.is_tx_active ? rgb(0xFFFFFF) : rgb(color::callsign));
+    } else {
+        // 空闲：显示该频道最近一次来话（呼号 + 时间），没有记录时显示“空闲”。
+        const float call_inner = ImGui::GetContentRegionAvail().x;
+        ImGui::PushFont(nullptr, 13.0F);
+        caption(tr(Str::channel_idle));
+        ImGui::PopFont();
+        if (ch.last_call) {
+            const auto& last = ch.last_call->call;
+            const auto cs = safe_callsign(last.callsign);
+            ImGui::PushFont(fonts_.bold, 17.0F);
+            text_ellipsis(cs.empty() ? fmt("DMR ID %u", last.source_id).c_str() : cs.c_str(), call_inner,
+                          cs.empty() ? rgb(color::muted) : rgb(0x8FBF9A));
+            ImGui::PopFont();
+            ImGui::PushFont(nullptr, 12.0F);
+            const auto when = fmt(tr(Str::last_call_fmt), format_clock(ch.last_call->started_wall).c_str());
+            const auto id = cs.empty() ? when : fmt("%s · %u", when.c_str(), last.source_id);
+            text_ellipsis(id.c_str(), call_inner, rgb(color::muted));
+            ImGui::PopFont();
+        }
     }
     ImGui::EndChild();
     ImGui::PopStyleVar();
@@ -686,7 +714,7 @@ void AppView::draw_history(float width, float height) {
     for (std::size_t i = begin; i < history.size() && i < begin + ViewModel::history_page_size; ++i) {
         const auto& rec = history[i];
         const auto clock = format_clock(rec.started_wall);
-        const auto from = source_label(rec.call);
+        const auto from = source_label(vm_.with_callsign(rec.call));
         const auto text = rec.call.kind == dmr_call::CallKind::group
                               ? fmt(tr(Str::history_group), clock.c_str(), rec.call.destination_id, from.c_str())
                               : fmt(tr(Str::history_private), clock.c_str(), rec.call.destination_id, from.c_str());
@@ -705,7 +733,8 @@ void AppView::draw_history(float width, float height) {
 
 void AppView::draw_current_call(float width, float height) {
     const auto& s = vm_.snapshot();
-    const bool rx = s.active_rx_call.has_value();
+    const auto active = vm_.active_call();
+    const bool rx = active.has_value();
     ImGui::PushStyleColor(ImGuiCol_ChildBg, vec(s.tx_active ? color::call_tx_active : rx ? color::call_active : color::panel));
     ImGui::PushStyleColor(ImGuiCol_Border, vec(rx ? 0x3E8A5C : color::line));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(8.0F), px(5.0F)));
@@ -714,7 +743,7 @@ void AppView::draw_current_call(float width, float height) {
     const float inner_w = ImGui::GetContentRegionAvail().x;
     section_title(tr(Str::current_call), fonts_.bold);
     if (rx) {
-        const auto& call = *s.active_rx_call;
+        const auto& call = *active;
         if (auto started = vm_.current_call_started()) {
             const auto secs = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now() - *started).count();
             const auto dur = fmt("%02lld:%02lld", static_cast<long long>(secs / 60), static_cast<long long>(secs % 60));
@@ -853,7 +882,10 @@ void AppView::draw_radio_panel(float width, float height) {
     }
     ImGui::PopFont();
 
-    ImGui::Spacing();
+    // 连接概况贴底（4 行），中间留白在 CAT 区与概况之间。
+    const float overview_h = ImGui::GetTextLineHeightWithSpacing() * 4.0F + ImGui::GetStyle().ItemSpacing.y * 2.0F + px(2.0F);
+    const float overview_y = ImGui::GetCursorPosY() + ImGui::GetContentRegionAvail().y - overview_h;
+    ImGui::SetCursorPosY(std::max(ImGui::GetCursorPosY() + ImGui::GetStyle().ItemSpacing.y, overview_y));
     ImGui::Separator();
     ImGui::Spacing();
 
@@ -864,7 +896,7 @@ void AppView::draw_radio_panel(float width, float height) {
         for (const auto& e : list) {
             if (e.endpoint_id == id) return e.name;
         }
-        return id.empty() ? std::string("—") : to_utf8(id);
+        return id.empty() ? std::string(tr(Str::auto_select)) : to_utf8(id);
     };
     const float label_w = px(96.0F);
     auto row = [&](const char* label, const std::string& value) {
@@ -872,7 +904,7 @@ void AppView::draw_radio_panel(float width, float height) {
         ImGui::SameLine(label_w);
         text_ellipsis(value.c_str(), inner_w - label_w, rgb(color::text));
     };
-    row(tr(Str::wiresx_port), cfg.hri_port.empty() ? std::string("—") : to_utf8(cfg.hri_port));
+    row(tr(Str::wiresx_port), cfg.hri_port.empty() ? std::string(tr(Str::auto_select)) : to_utf8(cfg.hri_port));
     row(tr(Str::input), endpoint_name(vm_.devices().wave_in, cfg.wave_in_endpoint_id));
     row(tr(Str::output), endpoint_name(vm_.devices().wave_out, cfg.wave_out_endpoint_id));
     caption(tr(Str::core));
@@ -895,8 +927,13 @@ void AppView::draw_daily_panel(float width, float height) {
     ImGui::PopStyleVar();
     const float inner_w = ImGui::GetContentRegionAvail().x;
     const float gap = ImGui::GetStyle().ItemSpacing.x;
+    // 上一帧测得的剩余高度均分到 4 处段间距，避免底部空白（窗口变高时各段一起拉开）。
+    const float spread = std::max(0.0F, daily_slack_) / 4.0F;
+    auto vgap = [&]() {
+        if (spread > 0.5F) ImGui::Dummy(ImVec2(0.0F, spread - ImGui::GetStyle().ItemSpacing.y));
+    };
     section_title(tr(Str::daily_controls), fonts_.bold);
-    ImGui::Spacing();
+    vgap();
 
     // 增加动态组 频道ID / 类型 / 加入监听
     static const std::vector<std::string> presets = {"460997 中国鹦鹉", "46001 组呼", "91 组呼"};
@@ -916,12 +953,13 @@ void AppView::draw_daily_panel(float width, float height) {
         ImGui::EndTable();
     }
 
-    ImGui::Spacing();
+    vgap();
     ImGui::Separator();
-    ImGui::Spacing();
+    draw_static_groups(inner_w);
+    ImGui::Separator();
+    vgap();
 
-    // 音量
-    section_title(tr(Str::volume), fonts_.bold);
+    // 音量：每列“标题 + 数值”一行，滑块一行。
     bool commit = false;
     if (ImGui::BeginTable("##gains", 2, ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoPadOuterX)) {
         // 标题行与滑块行分开：同一表格行内各列共享文本基线，滑块的 FramePadding 会把另一列的标题推低。
@@ -939,7 +977,7 @@ void AppView::draw_daily_panel(float width, float height) {
         };
         auto slider_cell = [&](const char* id, int& value) {
             ImGui::TableNextColumn();
-            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(px(4.0F), px(6.0F)));
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(px(4.0F), px(4.0F)));
             commit = gain_slider(id, value, ImGui::GetContentRegionAvail().x - px(8.0F), scale_) || commit;
             ImGui::PopStyleVar();
         };
@@ -953,27 +991,150 @@ void AppView::draw_daily_panel(float width, float height) {
     }
     if (commit) vm_.commit_gains();
 
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-
-    // 接收电平与计数
+    // 接收电平与计数：贴在面板底部。
     const auto& s = vm_.snapshot();
+    ImGui::PushFont(nullptr, 12.0F);
+    const float level_h = ImGui::GetTextLineHeight() + ImGui::GetStyle().ItemSpacing.y;
+    const float bottom = ImGui::GetCursorPosY() + ImGui::GetContentRegionAvail().y;
+    const float slack_now = bottom - level_h - ImGui::GetCursorPosY(); // 本帧剩余（已扣除 4 处间距）
+    const float next_slack = std::max(0.0F, spread * 4.0F + slack_now);
+    if (std::abs(next_slack - daily_slack_) > 1.0F) {
+        daily_slack_ = next_slack;
+        continuous_ = true; // 下一帧用新的间距重排一次（之后稳定，不再连续重绘）
+    }
+    ImGui::SetCursorPosY(std::max(ImGui::GetCursorPosY(), bottom - level_h));
     caption(tr(Str::rx_level));
+    ImGui::SameLine();
+    const auto counters = fmt("RX %llu · TX %llu · Reconnect %llu · Rejected %llu",
+                              static_cast<unsigned long long>(s.counters.calls_started),
+                              static_cast<unsigned long long>(s.counters.ptt_tx_starts),
+                              static_cast<unsigned long long>(s.counters.reconnects),
+                              static_cast<unsigned long long>(s.counters.rejected_calls));
+    const float counters_w = ImGui::CalcTextSize(counters.c_str()).x;
+    const float bar_w = std::max(px(40.0F), ImGui::GetContentRegionAvail().x - counters_w - px(10.0F));
+    const float y = ImGui::GetCursorPosY();
+    ImGui::SetCursorPosY(y + (ImGui::GetTextLineHeight() - px(8.0F)) * 0.5F);
     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, vec(s.levels.rx_peak > 0.9F ? color::warn : color::green));
     ImGui::PushStyleColor(ImGuiCol_FrameBg, vec(color::inset));
-    ImGui::ProgressBar(std::clamp(s.levels.rx_peak, 0.0F, 1.0F), ImVec2(inner_w, px(10.0F)), "");
+    ImGui::ProgressBar(std::clamp(s.levels.rx_peak, 0.0F, 1.0F), ImVec2(bar_w, px(8.0F)), "");
     ImGui::PopStyleColor(2);
-    ImGui::PushFont(nullptr, 12.0F);
+    ImGui::SameLine(0.0F, px(10.0F));
+    ImGui::SetCursorPosY(y);
     ImGui::PushStyleColor(ImGuiCol_Text, vec(color::muted));
-    ImGui::Text("RX %llu · TX %llu · Reconnect %llu · Rejected %llu",
-                static_cast<unsigned long long>(s.counters.calls_started),
-                static_cast<unsigned long long>(s.counters.ptt_tx_starts),
-                static_cast<unsigned long long>(s.counters.reconnects),
-                static_cast<unsigned long long>(s.counters.rejected_calls));
+    ImGui::TextUnformatted(counters.c_str());
     ImGui::PopStyleColor();
     ImGui::PopFont();
     ImGui::EndChild();
+}
+
+// BM 静态组（BmManagementUi.ps1）：标题行 [设备 · 分页 · 刷新 · 移除]，每页 3 条，下方 TG 输入 + 添加。
+void AppView::draw_static_groups(float inner_w) {
+    auto& sg = vm_.static_form();
+    const auto& cfg = vm_.config();
+    const bool has_key = !cfg.bm_api_key.empty();
+    const std::size_t pages =
+        std::max<std::size_t>(1U, (sg.groups.size() + StaticGroupsView::page_size - 1U) / StaticGroupsView::page_size);
+    const float bh = px(22.0F);
+    const float small_w = px(25.0F);
+
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(px(6.0F), px(2.0F)));
+    ImGui::AlignTextToFramePadding();
+    section_title(tr(Str::bm_static_groups), fonts_.bold);
+    ImGui::SameLine(0.0F, px(8.0F));
+    ImGui::AlignTextToFramePadding();
+    const auto device = vm_.bm_device_id();
+    caption(device != 0U ? fmt(tr(Str::static_device_fmt), device).c_str() : "—");
+
+    const float refresh_w = ImGui::CalcTextSize(tr(Str::static_refresh)).x + px(14.0F);
+    const float remove_w = ImGui::CalcTextSize(tr(Str::static_remove)).x + px(14.0F);
+    const auto page_label = fmt("%zu / %zu", sg.page + 1U, pages);
+    const float page_w = ImGui::CalcTextSize(page_label.c_str()).x;
+    const float spacing = ImGui::GetStyle().ItemSpacing.x;
+    const float right_w = small_w * 2.0F + page_w + refresh_w + remove_w + spacing * 4.0F;
+    ImGui::SameLine(ImGui::GetStyle().WindowPadding.x + inner_w - right_w);
+    if (button("‹##sgprev", ImVec2(small_w, bh), Tone::normal, sg.loaded && sg.page > 0U)) vm_.static_set_page(sg.page - 1U);
+    ImGui::SameLine();
+    ImGui::AlignTextToFramePadding();
+    caption(page_label.c_str());
+    ImGui::SameLine();
+    if (button("›##sgnext", ImVec2(small_w, bh), Tone::normal, sg.loaded && sg.page + 1U < pages)) {
+        vm_.static_set_page(sg.page + 1U);
+    }
+    ImGui::SameLine();
+    if (button(tr(Str::static_refresh), ImVec2(refresh_w, bh), Tone::normal, vm_.bm_api_available() && has_key && !sg.busy)) {
+        vm_.static_refresh();
+    }
+    ImGui::SameLine();
+    if (button(tr(Str::static_remove), ImVec2(remove_w, bh), Tone::normal, sg.loaded && sg.selected.has_value() && !sg.busy)) {
+        vm_.static_remove();
+    }
+    ImGui::PopStyleVar();
+
+    // 列表（固定 3 行高；左）+ TG 输入与添加（右）
+    const float add_w = ImGui::CalcTextSize(tr(Str::static_add)).x + px(20.0F);
+    const float list_outer_w = inner_w - add_w - spacing;
+    ImGui::PushFont(nullptr, 13.0F);
+    const float row_h = ImGui::GetTextLineHeight() + px(2.0F);
+    ImGui::PopFont();
+    const float list_h = std::max(row_h * static_cast<float>(StaticGroupsView::page_size) + px(8.0F),
+                                  ImGui::GetFrameHeight() * 2.0F + spacing);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, vec(color::input_bg));
+    ImGui::PushStyleColor(ImGuiCol_Border, vec(color::call_border));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(6.0F), px(4.0F)));
+    ImGui::BeginChild("##sglist", ImVec2(list_outer_w, list_h), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar);
+    ImGui::PopStyleVar();
+    ImGui::PushFont(nullptr, 13.0F);
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0F, px(2.0F)));
+    const float list_w = ImGui::GetContentRegionAvail().x;
+    auto centered = [&](const char* text, std::uint32_t col) {
+        const ImVec2 sz = ImGui::CalcTextSize(text);
+        ImGui::SetCursorPos(ImVec2((ImGui::GetWindowWidth() - sz.x) * 0.5F, (list_h - sz.y) * 0.5F));
+        ImGui::PushStyleColor(ImGuiCol_Text, vec(col));
+        ImGui::TextUnformatted(text);
+        ImGui::PopStyleColor();
+    };
+    if (!has_key) {
+        centered(tr(Str::static_need_key), color::muted);
+    } else if (sg.loaded && sg.groups.empty()) {
+        centered(tr(Str::static_empty), color::muted);
+    } else {
+        const std::size_t begin = sg.page * StaticGroupsView::page_size;
+        for (std::size_t i = begin; i < sg.groups.size() && i < begin + StaticGroupsView::page_size; ++i) {
+            const auto& g = sg.groups[i];
+            const auto slot = g.slot == 0 ? std::string(tr(Str::static_slot_dmo)) : fmt(tr(Str::static_slot_fmt), g.slot);
+            auto label = fmt(tr(Str::static_row_fmt), g.talkgroup, slot.c_str());
+            const auto name = known_name_for_static(g.talkgroup);
+            if (!name.empty()) label += " · " + name;
+            ImGui::PushID(static_cast<int>(i));
+            const bool selected = sg.selected == i;
+            if (ImGui::Selectable(label.c_str(), selected, ImGuiSelectableFlags_None, ImVec2(list_w, 0.0F))) {
+                vm_.static_select(selected ? std::nullopt : std::optional<std::size_t>(i));
+            }
+            ImGui::PopID();
+        }
+    }
+    ImGui::PopStyleVar();
+    ImGui::PopFont();
+    ImGui::EndChild();
+    ImGui::PopStyleColor(2);
+
+    ImGui::SameLine();
+    ImGui::BeginGroup();
+    ImGui::SetNextItemWidth(add_w);
+    ImGui::BeginDisabled(!has_key);
+    input_text("##sgtg", sg.tg_input, ImGuiInputTextFlags_CharsDecimal);
+    if (sg.tg_input.empty() && !ImGui::IsItemActive()) {
+        const ImVec2 p = ImGui::GetItemRectMin();
+        ImGui::GetWindowDrawList()->AddText(ImVec2(p.x + ImGui::GetStyle().FramePadding.x, p.y + ImGui::GetStyle().FramePadding.y),
+                                            rgb(color::disabled_text), tr(Str::static_tg_hint));
+    }
+    ImGui::EndDisabled();
+    if (button(tr(Str::static_add), ImVec2(add_w, 0.0F), Tone::normal,
+               sg.loaded && sg.add_slot.has_value() && !sg.busy && !sg.tg_input.empty())) {
+        vm_.static_add();
+    }
+    ImGui::EndGroup();
+    if (sg.busy) continuous_ = true;
 }
 
 void AppView::draw_footer() {
@@ -1064,14 +1225,16 @@ void AppView::draw_settings() {
         ImGui::SetNextItemWidth(-FLT_MIN);
         input_text(id, value, flags);
     };
+    // 空值 = "auto"（启动时自动选唯一的 USB Audio 端点）。
     auto endpoint_combo = [](const char* id, const std::vector<services::AudioEndpointInfo>& list, std::wstring& value) {
         ImGui::TableNextColumn();
-        std::string preview = "—";
+        std::string preview = value.empty() ? std::string(tr(Str::auto_select)) : to_utf8(value);
         for (const auto& e : list) {
             if (e.endpoint_id == value) preview = e.name;
         }
         ImGui::SetNextItemWidth(-FLT_MIN);
         if (ImGui::BeginCombo(id, preview.c_str())) {
+            if (ImGui::Selectable(tr(Str::auto_select), value.empty())) value.clear();
             for (const auto& e : list) {
                 if (ImGui::Selectable(e.name.c_str(), e.endpoint_id == value)) value = e.endpoint_id;
             }
@@ -1085,18 +1248,31 @@ void AppView::draw_settings() {
         input("##devno", draft_.device_number, ImGuiInputTextFlags_CharsDecimal);
         ImGui::EndTable();
     }
-    int preset = draft_.master_preset == "custom" ? 1 : 0;
+    // BM 服务器：离线目录（BmServers.psm1）+ 自定义。选目录项时主机名/端口取目录值（4602 保留已保存的 IPv4 别名）。
+    std::vector<std::string> server_labels;
+    int preset = static_cast<int>(app::bm_servers::catalog.size());
+    for (std::size_t i = 0; i < app::bm_servers::catalog.size(); ++i) {
+        const auto& e = app::bm_servers::catalog[i];
+        server_labels.emplace_back(e.label);
+        if (draft_.master_preset == e.selection_id) preset = static_cast<int>(i);
+    }
+    server_labels.emplace_back(tr(Str::custom));
+    const bool custom = preset == static_cast<int>(app::bm_servers::catalog.size());
     if (begin_fields("##server", {{tr(Str::bm_server), 1.0F, 0.0F}, {tr(Str::udp_port), 1.0F, 0.0F}, {tr(Str::host_ipv4), 1.0F, 0.0F}})) {
         ImGui::TableNextColumn();
-        const char* presets[] = {"BM 4602", tr(Str::custom)};
-        if (simple_combo("##preset", preset, presets, 2, -FLT_MIN)) {
-            draft_.master_preset = preset == 1 ? "custom" : "bm-china-4602";
-            if (preset == 0) {
-                draft_.master_host = "43.129.83.124";
-                draft_master_port_ = "62031";
+        std::vector<const char*> items;
+        for (const auto& l : server_labels) items.push_back(l.c_str());
+        if (simple_combo("##preset", preset, items.data(), static_cast<int>(items.size()), -FLT_MIN)) {
+            if (preset == static_cast<int>(app::bm_servers::catalog.size())) {
+                draft_.master_preset = "custom";
+            } else {
+                const auto& e = app::bm_servers::catalog[static_cast<std::size_t>(preset)];
+                draft_.master_preset = std::string(e.selection_id);
+                if (!app::bm_servers::address_matches(e, draft_.master_host)) draft_.master_host = std::string(e.hostname);
+                draft_master_port_ = std::to_string(e.port);
             }
         }
-        ImGui::BeginDisabled(preset == 0);
+        ImGui::BeginDisabled(!custom);
         input("##mport", draft_master_port_, ImGuiInputTextFlags_CharsDecimal);
         input("##mhost", draft_.master_host, ImGuiInputTextFlags_CharsNoBlank);
         ImGui::EndDisabled();
@@ -1157,7 +1333,7 @@ void AppView::draw_settings() {
             }
         };
         std::uint32_t port = 0U;
-        if (!parse_u(draft_dmr_id_, 0xFFFFFFFFU, next.dmr_id)) {
+        if (!parse_u(draft_dmr_id_, 16777215U, next.dmr_id)) {
             settings_error_ = fmt(tr(Str::settings_save_failed), tr(Str::dmr_id));
             ok = false;
         } else if (!parse_u(draft_master_port_, 65535U, port) || port == 0U) {

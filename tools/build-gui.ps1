@@ -35,7 +35,13 @@ if (Test-Path -LiteralPath $outputDirectory) { throw "GUI 输出目录已存在�
 
 $imguiFiles = @('imgui.cpp', 'imgui_draw.cpp', 'imgui_tables.cpp', 'imgui_widgets.cpp',
     'backends\imgui_impl_win32.cpp', 'backends\imgui_impl_dx11.cpp') | ForEach-Object { 'third_party\imgui\' + $_ }
-$appFiles = @('gui_main.cpp', 'app_view.cpp', 'view_model.cpp', 'fake_engine.cpp') | ForEach-Object { 'src\gui\' + $_ }
+$guiFiles = @('gui_main.cpp', 'app_view.cpp', 'view_model.cpp', 'fake_engine.cpp', 'config_bridge.cpp', 'real_services.cpp') |
+    ForEach-Object { 'src\gui\' + $_ }
+# GUI 用到的 app 服务与 native 公共模块（与 tools/build-app-tests.ps1 同一组源文件）。
+$serviceFiles = @('app\config.cpp', 'app\json.cpp', 'app\devices.cpp', 'app\radio_cat.cpp', 'app\bm_api.cpp',
+    'app\bm_servers.cpp', 'app\http_client.cpp', 'app\radio_identity.cpp', 'radio_identity_cache.cpp',
+    'bm_connection_config.cpp', 'talkgroup_routing.cpp') | ForEach-Object { 'src\' + $_ }
+$appFiles = @($guiFiles + $serviceFiles)
 foreach ($relative in @($imguiFiles + $appFiles + @('src\gui\wirex_gui.rc', 'src\gui\wirex_gui.manifest', 'assets\wiresx-official.ico'))) {
     if (-not (Test-Path -LiteralPath (Join-Path $appRoot $relative) -PathType Leaf)) { throw "缺少 GUI 构建输入：$relative" }
 }
@@ -88,7 +94,8 @@ try {
     $appWarnings = @($appOutput | Where-Object { $_ -match '\bwarning [A-Z]+\d+' })
     if ($appWarnings.Count -gt 0) { throw ('本项目 GUI 代码出现 {0} 条告警。' -f $appWarnings.Count) }
     [void](Invoke-MsvcStep -Name 'rc' -CommandLine ('rc.exe /nologo /I . /fo "{0}" src\gui\wirex_gui.rc' -f $resPath))
-    $libs = 'd3d11.lib dxgi.lib d3dcompiler.lib user32.lib gdi32.lib shell32.lib ole32.lib windowscodecs.lib imm32.lib dwmapi.lib'
+    $libs = 'd3d11.lib dxgi.lib d3dcompiler.lib user32.lib gdi32.lib shell32.lib ole32.lib windowscodecs.lib imm32.lib dwmapi.lib ' +
+        'winhttp.lib setupapi.lib advapi32.lib winmm.lib icuuc.lib bcrypt.lib'
     [void](Invoke-MsvcStep -Name 'link' -CommandLine ('link.exe /nologo /SUBSYSTEM:WINDOWS /OPT:REF /OPT:ICF /OUT:"{0}" "{1}\*.obj" "{2}\*.obj" "{3}" {4}' -f `
         $executablePath, $objApp, $objImgui, $resPath, $libs))
 } finally {

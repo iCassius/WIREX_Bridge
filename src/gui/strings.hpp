@@ -143,6 +143,20 @@ namespace wirex::gui {
     X(st_failed,            "失败",                                "Failed")                        /* new */ \
     X(st_no_result,         "无结果",                              "No result")                     /* new */ \
     X(tx_active_badge,      "发射中",                              "Transmitting")                  /* new */ \
+    X(bm_static_groups,     "BM 静态组",                           "BM static groups")              /* new */ \
+    X(static_device_fmt,    "设备 %u",                             "Device %u") \
+    X(static_refresh,       "刷新",                                "Refresh") \
+    X(static_remove,        "移除",                                "Remove") \
+    X(static_add,           "添加为静态组",                        "Add static group") \
+    X(static_need_key,      "需启用BM API key",                    "BM API key required") \
+    X(static_empty,         "当前设备没有 BM 静态组。",            "No BM static groups for this device.") /* new */ \
+    X(static_tg_hint,       "TG",                                  "TG") \
+    X(static_row_fmt,       "TG %u · %s",                          "TG %u · %s")                    /* new */ \
+    X(static_slot_fmt,      "TS%d",                                "TS%d")                          /* new */ \
+    X(static_slot_dmo,      "DMO",                                 "DMO")                           /* new */ \
+    X(channel_idle,         "空闲",                                "Idle")                          /* new */ \
+    X(last_call_fmt,        "上次 %s",                             "Last %s")                       /* new */ \
+    X(auto_select,          "自动",                                "Auto")                          /* new */ \
     X(muted_badge,          "已屏蔽",                              "Muted")                         /* new */
 // clang-format on
 
