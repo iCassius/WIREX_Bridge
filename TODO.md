@@ -23,6 +23,7 @@
 ### 2.1 中英文多语言完整支持
 - [ ] 启用语言切换入口：恢复中英文界面切换功能，支持实时动态无缝切换。
 - [ ] 完整翻译覆盖：主控制台、BrandMeister 状态窗、CAT 配置面板、提示信息及异常弹窗的完整本地化字典。
+  - R127 进度：词典新增 645 条；主窗、设置窗、CAT、BM 面板在 en-US 下的可视树检查已无中文（test-ui-localization 108 项）。遗留：`config.json` 损坏时的启动 MessageBox 仍为中文，因为它出现在语言初始化之前；仅内部使用的 throw 文案未收录。真实英文界面还没有人工验收。
 - [ ] 偏好持久化与防护：验证语言偏好保存与读取、用户自定义设置保留，以及英文环境下 CAT 手动端口输入保护。
 
 ---
@@ -44,6 +45,7 @@
 
 ### 3.2 阶段二：Go 运维工具链收敛（Tools Modernization）
 - [ ] **构建单一 Go CLI 工具（`tools/wirex.exe`）**：
+  - R127 进度：`tools/wirex` 第一版已落地，实现 doctor/build/test/package。build/package 目前包装现有的 ps1；`--cmake` 路径已写好，但本机没有 cmake，尚未验证。下一步把构建和打包逻辑改用 Go 原生实现，再删除对应的 ps1。
   - 彻底废除 `app/tools/` 下分散的 70+ 个 PowerShell 脚本，替换为单个开箱即用、无环境依赖的 Go 二进制工具：
     - `wirex build [--release|--debug]`：统一调用 CMake/MSVC 编译 Native 核心与测试套件。
     - `wirex test [--offline|--all]`：自动执行 40+ 项 Native 单元测试与 golden 离线协议断言。

@@ -34,33 +34,28 @@ R126 的设计与验收：[R126_DELIVERY](docs/R126_DELIVERY.md)、[R126_RUNTIME
 - **编码**：`.ps1`/`.psm1` 必须保留 UTF-8 BOM。PS5.1 会把无 BOM 的文件按本机 ANSI 读取，中文字符串会变成乱码，甚至导致解析失败。
 - **测试前置条件**：`private/fixtures/device-y.bin`（HRI 模板）、`build/releases/v0.1.0`（已发布包目录）和本地 `v0.1.0` tag。三者都不在 Git 工作树中，新 worktree 需要另行准备。
 
-## 离线测试基线
+## 构建与测试（`wirex` CLI）
 
-在 main `1283f86` 上用 Windows PowerShell 5.1 实测。
+```sh
+go build -o build/wirex.exe ./tools/wirex   # 仓库根，go.work 已配置
+build/wirex.exe doctor                      # 环境检查：MSVC/PS5.1/COM/音频/工作树/fixture
+build/wirex.exe build [--compile-only] [--with-launcher]
+build/wirex.exe test --offline              # Native 40 + PowerShell 离线回归
+build/wirex.exe package --version v0.1.1 [--zip]
+```
 
-全部通过：
+`wirex` 第一版包装现有的 `build-bm-bridge.ps1`、`build-launcher.ps1` 和 `package-release.ps1`，并会自动重置子进程的 `PSModulePath`、把 vswhere 加进 PATH。命令说明见 [tools/wirex/README](tools/wirex/README.md)。
 
-| 测试 | 断言数 |
-| --- | --- |
-| `test-package-release` | 214 |
-| `test-publish-release` | 66 |
-| `test-download-release` | 通过 |
-| `test-r126-zip-only` | 26 |
-| `test-bridge-user-config` | 通过 |
-| `test-start-bm-radio-bridge` | 通过 |
-| `test-portable-config` | 69 |
-| `test-ui-channels` | 通过 |
-| `test-ui-console` | 121 |
-| `test-ui-status` | 87 |
-| `test-channel-activation-state` | 348 |
+**基线**（main `847a461`，2026-11-04 实测）：
+- 干净工作树完整构建：Native 40/40、launcher 编译通过；全新 checkout 的 compile-only 构建也已验证（vendor 字节修复见下）。
+- `wirex test --offline`：**52 项通过、0 失败**（Native 40 + PowerShell 12：package-release 214、publish-release 66、download-release、r126-zip-only 26、launcher、portable-config 69、ui-localization 108、ui-render、ui-channels 186、ui-console 121、ui-status 87、channel-activation-state 348）。
+- 也已通过：`test-ui-audio-gain` 93、`test-package-ui-contract` 30、`test-bridge-user-config`、`test-start-bm-radio-bridge`。
 
-已知失败（R126 之前就存在，main `405426f` 上同样失败，与本轮清理无关）：
+**已知失败**（都是 R126 改了 UI、旧断言没跟上；main `405426f` 上同样失败）：
+- `test-ui-r124`：点击 `CatBaudRateBox` 后下拉列表没有打开。这是一项真实 WPF 鼠标输入测试，需要前台窗口。
+- `test-ui-radio-cat`：缺少的本地化模块导入已补上；现在失败在来话历史分页断言（“超过五条来话后……页码未正确建立”），需要按 R126 的分页规则更新。
 
-- `test-ui-render`：断言 [117]，BM 静态组按钮文字。
-- `test-ui-r124`：SerialBox 下拉列表。
-- `test-package-ui-contract`：R123 UI 合同。
-
-Native 40 项测试（`tools/build-bm-bridge.ps1`）本轮没有重跑。R126 Native 源码最近一次 clean full40 是在 `9170bad` 上 40/40 通过（见 R126_RUNTIME）。
+**vendor 字节**：`third_party/droidstar_mbe/upstream/**` 已标记为 `-text`。上游原文件是 CRLF/LF 混合行尾，由 `source-manifest.json` 锁定 SHA-256；之前 Git 把它们规范化为 LF，导致全新 checkout 构建失败，现已修复。
 
 ## 实机待办
 
