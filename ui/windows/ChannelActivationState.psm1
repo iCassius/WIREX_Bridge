@@ -89,12 +89,6 @@ function Start-WirexChannelActivationRequest {
 
     $slotNumber = [int]$Slot
     $slotKey = Get-WirexChannelActivationSlotKey -RunId $RunId -Slot $slotNumber
-    foreach ($targetKey in @($State.request_sent_by_target.Keys)) {
-        $sent = $State.request_sent_by_target[$targetKey]
-        if ([string]$sent.run_id -ceq $RunId -and [int]$sent.slot -eq $slotNumber) {
-            [void]$State.request_sent_by_target.Remove($targetKey)
-        }
-    }
     $State.latest_request_by_slot[$slotKey] = $RequestId
     foreach ($pendingKey in @($State.pending_by_request.Keys)) {
         $pending = $State.pending_by_request[$pendingKey]
@@ -191,6 +185,12 @@ function Complete-WirexChannelActivationRequest {
     $isCurrent = ($State.latest_request_by_slot.ContainsKey($slotKey) -and
         [string]$State.latest_request_by_slot[$slotKey] -ceq $RequestId)
     if ($Result -ceq 'ok' -and $isCurrent) {
+        foreach ($targetKey in @($State.request_sent_by_target.Keys)) {
+            $sent = $State.request_sent_by_target[$targetKey]
+            if ([string]$sent.run_id -ceq $RunId -and [int]$sent.slot -eq [int]$pending.slot) {
+                [void]$State.request_sent_by_target.Remove($targetKey)
+            }
+        }
         $targetKey = Get-WirexChannelActivationTargetKey -RunId $RunId -ChannelKey ([string]$pending.channel_key) -Slot ([int]$pending.slot)
         $State.request_sent_by_target[$targetKey] = [pscustomobject][ordered]@{
             run_id = $RunId

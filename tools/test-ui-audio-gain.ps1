@@ -104,7 +104,7 @@ $functionNames = @(
     'Import-WpfWindow','Get-UiControl','Set-UiControlStatus','Request-UiControlStatus',
     'Test-UiExactControlFields','Test-UiControlUnsigned','Test-UiHasCapability','Test-UiAudioGainsValue','Test-UiAudioGainCapability',
     'Test-UiControlSnapshot','Test-UiRoutingCapabilityList','Test-UiRxPolicy','Test-UiRoutingSnapshot','ConvertFrom-UiControlFrame',
-    'Format-UiGainMilli','Convert-UiGainSliderToMilli','Update-UiPlaybackGainDisplay','Update-UiAudioGainValueLabels',
+    'Format-UiGainMilli','Convert-UiGainSliderToMilli','Convert-UiStoredGainToMilli','Update-UiPlaybackGainDisplay','Update-UiAudioGainValueLabels',
     'Set-UiAudioGainStatus','Set-UiAudioGainSliders','Update-UiAudioGainControls','Reset-UiAudioGainRun',
     'Set-UiTransientStatus','Clear-UiTransientStatus','Update-UiTransientStatusExpiry',
     'Save-UiAudioGainsFromReadback','Apply-UiAudioGainReadback','Start-UiAudioGainDebounce','Get-UiAudioGainDraft',
@@ -205,10 +205,23 @@ try {
     $script:controlCapabilities = 'hello,status,shutdown'
     Assert-UiAudioGain (-not (Test-UiRoutingCapabilityList -Commands ([string[]]@('hello','status','shutdown','audio.gains.set','unknown')))) '命令能力白名单不能接受未知命令。'
 
+    Assert-UiAudioGain ((Convert-UiGainSliderToMilli -Value 1) -eq 1000 -and
+        (Convert-UiGainSliderToMilli -Value 16) -eq 16000) '滑块应把整数 1..16 转成毫增益。'
+    foreach ($badSliderValue in @(0,17,2.5)) {
+        $badSliderRejected=$false
+        try { [void](Convert-UiGainSliderToMilli -Value $badSliderValue) } catch { $badSliderRejected=$true }
+        Assert-UiAudioGain $badSliderRejected ("滑块拒绝范围外或小数增益 {0}。" -f $badSliderValue)
+    }
+    Assert-UiAudioGain ((Convert-UiStoredGainToMilli -Value 1.5) -eq 2000 -and
+        (Convert-UiStoredGainToMilli -Value 0.25) -eq 1000 -and
+        (Convert-UiStoredGainToMilli -Value 16) -eq 16000) '旧配置值只在内存中四舍五入并夹到整数 1..16。'
+    Assert-UiAudioGain (-not (Test-UiAudioGainsValue -Gains (New-TestAudioGains -Revision 1 -Playback 2001 -Transmit 16000))) `
+        'Native 状态读回必须拒绝非整数毫增益。'
+
     $script:controlCapabilities = 'hello,status,shutdown,audio.gains.set'
-    $ackJson = '{"schema_version":2,"type":"control_result","run_id":"4242-1","control_seq":1,"request_id":"audio-gains-1","command":"audio.gains.set","result":"ok","replayed":false,"audio_gains":{"revision":1,"radio_playback_gain_milli":1500,"mic_transmit_gain_milli":16000}}'
+    $ackJson = '{"schema_version":2,"type":"control_result","run_id":"4242-1","control_seq":1,"request_id":"audio-gains-1","command":"audio.gains.set","result":"ok","replayed":false,"audio_gains":{"revision":1,"radio_playback_gain_milli":2000,"mic_transmit_gain_milli":16000}}'
     $parsedAck = ConvertFrom-UiControlFrame -Json $ackJson -LockedRunId '4242-1' -LastControlSequence 0
-    Assert-UiAudioGain ($parsedAck.audio_gains.radio_playback_gain_milli -eq 1500) '严格控制帧解析应读出 audio.gains.set 确认值。'
+    Assert-UiAudioGain ($parsedAck.audio_gains.radio_playback_gain_milli -eq 2000) '严格控制帧解析应读出 audio.gains.set 确认值。'
     $badAckJson = $ackJson.Replace('"audio_gains":{"revision":1','"audio_gains":{"extra":1,"revision":1')
     $badAckRejected = $false
     try { [void](ConvertFrom-UiControlFrame -Json $badAckJson -LockedRunId '4242-1' -LastControlSequence 0) } catch { $badAckRejected = $true }
@@ -221,12 +234,12 @@ try {
     Assert-UiAudioGain (([double](Get-UiControl 'PlaybackGainSlider').Value -eq 1.0) -and
         ([double](Get-UiControl 'TransmitGainSlider').Value -eq 16.0)) '初始 status 应按 guard 更新两个滑块。'
 
-    Set-TestUiSlider -Name 'PlaybackGainSlider' -Value 1.5
+    Set-TestUiSlider -Name 'PlaybackGainSlider' -Value 2
     Assert-UiAudioGain (Invoke-UiAudioGainDispatcherUntil -Condition { (Get-TestUiGainCommandCount) -eq 1 }) '首个改动应在200ms节流窗口后发送。'
     $firstCommand = @($script:supervisor.Commands | Where-Object { $_.command -ceq 'audio.gains.set' })[0]
     $firstParameters = ConvertFrom-Json -InputObject $firstCommand.parameters_json
     Assert-UiAudioGain ($firstCommand.request_id -ceq 'audio-gains-1' -and $firstParameters.revision -eq 1 -and
-        $firstParameters.radio_playback_gain_milli -eq 1500 -and $firstParameters.mic_transmit_gain_milli -eq 16000 -and
+        $firstParameters.radio_playback_gain_milli -eq 2000 -and $firstParameters.mic_transmit_gain_milli -eq 16000 -and
         @($firstParameters.PSObject.Properties.Name | Sort-Object) -join ',' -ceq 'mic_transmit_gain_milli,radio_playback_gain_milli,revision') `
         '增益请求必须使用 revision request_id 和恰好三个协议字段。'
 
@@ -242,11 +255,11 @@ try {
     $firstPending = $script:audioGainPendingRequest
     [void]$script:pendingControlRequests.Remove([string]$firstPending.request_id)
     $firstApplied = [pscustomobject][ordered]@{
-        request_id=$firstPending.request_id; run_id=$firstPending.run_id; result='ok'; audio_gains=(New-TestAudioGains -Revision 1 -Playback 1500 -Transmit 16000)
+        request_id=$firstPending.request_id; run_id=$firstPending.run_id; result='ok'; audio_gains=(New-TestAudioGains -Revision 1 -Playback 2000 -Transmit 16000)
     }
     Assert-UiAudioGain (Complete-UiAudioGainResult -Record $firstApplied) '当前 request/revision ACK 应用于运行状态和配置。'
     $afterFirstAck = Read-TestUiGainConfig
-    Assert-UiAudioGain ([decimal]$afterFirstAck.audio.radio_playback_gain -eq 1.5 -and
+    Assert-UiAudioGain ([decimal]$afterFirstAck.audio.radio_playback_gain -eq 2 -and
         [decimal]$afterFirstAck.audio.mic_transmit_gain -eq 16.0) '只有已确认的 Native 实际值应写入临时根 config。'
     Assert-UiAudioGain ([double](Get-UiControl 'PlaybackGainSlider').Value -eq 4.0 -and
         [double](Get-UiControl 'TransmitGainSlider').Value -eq 2.0) '旧 ACK 不得把拖动中的较新滑块草稿跳回。'
@@ -262,21 +275,21 @@ try {
     Wait-UiAudioGainMilliseconds -Milliseconds 250
     Assert-UiAudioGain ([uint64]$script:audioGainDraftRevision -eq $programmaticRevision -and (Get-TestUiGainCommandCount) -eq 2) `
         'status/配置程序化写滑块必须被 guard 拦截，不触发新 IPC。'
-    Assert-UiAudioGain ([decimal](Read-TestUiGainConfig).audio.radio_playback_gain -eq 1.5) '程序化滑块更新不得写入配置。'
+    Assert-UiAudioGain ([decimal](Read-TestUiGainConfig).audio.radio_playback_gain -eq 2) '程序化滑块更新不得写入配置。'
 
     $secondPending = $script:audioGainPendingRequest
     [void]$script:pendingControlRequests.Remove([string]$secondPending.request_id)
     $secondApplied = [pscustomobject][ordered]@{
-        request_id=$secondPending.request_id; run_id=$secondPending.run_id; result='ok'; audio_gains=(New-TestAudioGains -Revision 2 -Playback 3750 -Transmit 2500)
+        request_id=$secondPending.request_id; run_id=$secondPending.run_id; result='ok'; audio_gains=(New-TestAudioGains -Revision 2 -Playback 5000 -Transmit 3000)
     }
     Assert-UiAudioGain (Complete-UiAudioGainResult -Record $secondApplied) '第二个实际值 ACK 应完成写回。'
     $afterSecondAck = Read-TestUiGainConfig
-    Assert-UiAudioGain ([decimal]$afterSecondAck.audio.radio_playback_gain -eq 3.75 -and
-        [decimal]$afterSecondAck.audio.mic_transmit_gain -eq 2.5) '配置应保存 Native ACK 的 actual readback，而不是请求值。'
-    Assert-UiAudioGain ([double](Get-UiControl 'PlaybackGainSlider').Value -eq 3.75 -and
-        [double](Get-UiControl 'TransmitGainSlider').Value -eq 2.5) 'ACK readback 应更新当前滑块值。'
+    Assert-UiAudioGain ([decimal]$afterSecondAck.audio.radio_playback_gain -eq 5 -and
+        [decimal]$afterSecondAck.audio.mic_transmit_gain -eq 3) '配置应保存 Native ACK 的整数 actual readback，而不是请求值。'
+    Assert-UiAudioGain ([double](Get-UiControl 'PlaybackGainSlider').Value -eq 5 -and
+        [double](Get-UiControl 'TransmitGainSlider').Value -eq 3) 'ACK readback 应更新整数滑块值。'
 
-    Set-TestUiSlider -Name 'PlaybackGainSlider' -Value 4.5
+    Set-TestUiSlider -Name 'PlaybackGainSlider' -Value 6
     Assert-UiAudioGain (Invoke-UiAudioGainDispatcherUntil -Condition { (Get-TestUiGainCommandCount) -eq 3 }) '错误回归前应真实发送一次 fake gain 命令。'
     $failedPending = $script:audioGainPendingRequest
     [void]$script:pendingControlRequests.Remove([string]$failedPending.request_id)
@@ -286,14 +299,14 @@ try {
         '拒绝响应不得假装应用；应发 status 查询校准。'
     [void]$script:pendingControlRequests.Remove([string]$script:pendingStatusRequestId)
     $script:pendingStatusRequestId = ''
-    [void](Complete-UiAudioGainStatus -Snapshot (New-TestAudioGainSnapshot -Gains (New-TestAudioGains -Revision 2 -Playback 3750 -Transmit 2500)))
+    [void](Complete-UiAudioGainStatus -Snapshot (New-TestAudioGainSnapshot -Gains (New-TestAudioGains -Revision 2 -Playback 5000 -Transmit 3000)))
     $afterFailureStatus = Read-TestUiGainConfig
     Assert-UiAudioGain ([decimal]$afterFailureStatus.audio.radio_playback_gain -eq [decimal]$beforeFailure.audio.radio_playback_gain -and
-        [double](Get-UiControl 'PlaybackGainSlider').Value -eq 3.75) '错误后的 status 只校准真实滑块，不写入失败草稿。'
+        [double](Get-UiControl 'PlaybackGainSlider').Value -eq 5) '错误后的 status 只校准真实滑块，不写入失败草稿。'
     Wait-UiAudioGainMilliseconds -Milliseconds 240
     Assert-UiAudioGain ((Get-TestUiGainCommandCount) -eq 3) 'status 校准不得重发失败的同一请求。'
 
-    Set-TestUiSlider -Name 'PlaybackGainSlider' -Value 5.0
+    Set-TestUiSlider -Name 'PlaybackGainSlider' -Value 7
     Assert-UiAudioGain (Invoke-UiAudioGainDispatcherUntil -Condition { (Get-TestUiGainCommandCount) -eq 4 }) 'timeout 回归前应发送新的 revision。'
     $timedOut = $script:audioGainPendingRequest
     $timedOut.started_utc = [DateTime]::UtcNow.AddSeconds(-9)
@@ -305,16 +318,16 @@ try {
     Assert-UiAudioGain $timeoutStateReady 'timeout 后必须清除待确认状态并读取当前 Native 值。'
     [void]$script:pendingControlRequests.Remove([string]$script:pendingStatusRequestId)
     $script:pendingStatusRequestId = ''
-    [void](Complete-UiAudioGainStatus -Snapshot (New-TestAudioGainSnapshot -Gains (New-TestAudioGains -Revision 2 -Playback 3750 -Transmit 2500)))
+    [void](Complete-UiAudioGainStatus -Snapshot (New-TestAudioGainSnapshot -Gains (New-TestAudioGains -Revision 2 -Playback 5000 -Transmit 3000)))
     $afterTimeout = Read-TestUiGainConfig
     Assert-UiAudioGain ([decimal]$afterTimeout.audio.radio_playback_gain -eq [decimal]$beforeTimeout.audio.radio_playback_gain -and
-        [double](Get-UiControl 'PlaybackGainSlider').Value -eq 3.75) 'timeout status 只显示 Native 实际值，不把 timeout 草稿写入配置。'
+        [double](Get-UiControl 'PlaybackGainSlider').Value -eq 5) 'timeout status 只显示 Native 实际值，不把 timeout 草稿写入配置。'
     Wait-UiAudioGainMilliseconds -Milliseconds 240
     Assert-UiAudioGain ((Get-TestUiGainCommandCount) -eq 4) 'timeout/status 流程不得重发超时的 request_id。'
     $beforeExpiredAck = Read-TestUiGainConfig
     $lateTimedOutAck = [pscustomobject][ordered]@{
         command='audio.gains.set'; request_id=$timedOut.request_id; run_id=$timedOut.run_id; result='ok';
-        audio_gains=(New-TestAudioGains -Revision $timedOut.revision -Playback 5000 -Transmit 2500)
+        audio_gains=(New-TestAudioGains -Revision $timedOut.revision -Playback 8000 -Transmit 3000)
     }
     Assert-UiAudioGain (Consume-UiAudioGainExpiredResult -Record $lateTimedOutAck) 'timeout 后到达的 ACK 应从事件队列中明确丢弃。'
     $afterExpiredAck = Read-TestUiGainConfig
@@ -322,14 +335,14 @@ try {
         [decimal]$afterExpiredAck.audio.mic_transmit_gain -eq [decimal]$beforeExpiredAck.audio.mic_transmit_gain) `
         'timeout 后的过期成功 ACK 不得持久化到根 config。'
 
-    Set-TestUiSlider -Name 'PlaybackGainSlider' -Value 6.0
+    Set-TestUiSlider -Name 'PlaybackGainSlider' -Value 8
     Assert-UiAudioGain (Invoke-UiAudioGainDispatcherUntil -Condition { (Get-TestUiGainCommandCount) -eq 5 }) '逾期ACK用例应先真实发送新 revision。'
     $expiredPending = $script:audioGainPendingRequest
     $expiredPending.started_utc = [DateTime]::UtcNow.AddSeconds(-9)
     $beforeOverdueAck = Read-TestUiGainConfig
     $overdueAck = [pscustomobject][ordered]@{
         request_id=$expiredPending.request_id; run_id=$expiredPending.run_id; result='ok';
-        audio_gains=(New-TestAudioGains -Revision $expiredPending.revision -Playback 6000 -Transmit 2500)
+        audio_gains=(New-TestAudioGains -Revision $expiredPending.revision -Playback 9000 -Transmit 3000)
     }
     Assert-UiAudioGain (-not (Complete-UiAudioGainResult -Record $overdueAck)) '超过8秒的ACK不得按及时ACK完成。'
     $afterOverdueAck = Read-TestUiGainConfig
@@ -339,7 +352,7 @@ try {
         '8秒后刚到达的成功ACK也必须先status校准，不能写配置。'
     [void]$script:pendingControlRequests.Remove([string]$script:pendingStatusRequestId)
     $script:pendingStatusRequestId = ''
-    [void](Complete-UiAudioGainStatus -Snapshot (New-TestAudioGainSnapshot -Gains (New-TestAudioGains -Revision 2 -Playback 3750 -Transmit 2500)))
+    [void](Complete-UiAudioGainStatus -Snapshot (New-TestAudioGainSnapshot -Gains (New-TestAudioGains -Revision 2 -Playback 5000 -Transmit 3000)))
     Assert-UiAudioGain ([decimal](Read-TestUiGainConfig).audio.radio_playback_gain -eq [decimal]$beforeOverdueAck.audio.radio_playback_gain) `
         '逾期ACK后的status对齐仍不写入root config。'
 
@@ -371,9 +384,9 @@ try {
     Update-UiAudioGainControls
     Assert-UiAudioGain ((Get-UiControl 'PlaybackGainSlider').IsEnabled -and (Get-UiControl 'TransmitGainSlider').IsEnabled) `
         '离线时仍应允许修改并保存偏好值。'
-    Set-TestUiSlider -Name 'PlaybackGainSlider' -Value 1.25
+    Set-TestUiSlider -Name 'PlaybackGainSlider' -Value 3
     $offlineConfig = Read-TestUiGainConfig
-    Assert-UiAudioGain ([decimal]$offlineConfig.audio.radio_playback_gain -eq 1.25) '离线滑块修改应保存到隔离根 config。'
+    Assert-UiAudioGain ([decimal]$offlineConfig.audio.radio_playback_gain -eq 3) '离线滑块修改应保存到隔离根 config。'
 
     $script:mainWindow.Close()
     Write-Output ("PASS: {0} UI audio-gain assertions; fake WPF and isolated config only." -f $script:assertionCount)

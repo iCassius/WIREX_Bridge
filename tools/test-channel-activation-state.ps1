@@ -25,6 +25,7 @@ $requestB = '8a16b667-7eb7-4a8b-9086-a7d26775eaa2'
 $requestC = '8a16b667-7eb7-4a8b-9086-a7d26775eaa3'
 $requestD = '8a16b667-7eb7-4a8b-9086-a7d26775eaa4'
 $requestE = '8a16b667-7eb7-4a8b-9086-a7d26775eaa5'
+$requestF = '8a16b667-7eb7-4a8b-9086-a7d26775eaa6'
 
 Assert-ChannelActivationState (-not (Start-WirexChannelActivationRequest -State $state -RunId '5202-1730592000123' `
     -RequestId $requestA -ChannelKey 'group:12345:2' -DestinationId 12345 -Slot 2)) '其他 run_id 可以创建请求。'
@@ -60,8 +61,8 @@ $sentC = Complete-WirexChannelActivationRequest -State $state -RunId $runId -Req
 Assert-ChannelActivationState ($sentC.sent) 'slot 1 的匹配请求没有记录发送状态。'
 Assert-ChannelActivationState (Start-WirexChannelActivationRequest -State $state -RunId $runId `
     -RequestId $requestD -ChannelKey 'group:44444:2' -DestinationId 44444 -Slot 2) 'slot 2 后续请求被拒绝。'
-Assert-ChannelActivationState ($null -eq (Get-WirexChannelActivationRequestSent -State $state -RunId $runId `
-    -ChannelKey 'group:23456:2' -Slot 2)) '同槽新请求没有清除旧 request_sent。'
+Assert-ChannelActivationState ($null -ne (Get-WirexChannelActivationRequestSent -State $state -RunId $runId `
+    -ChannelKey 'group:23456:2' -Slot 2)) '同槽新目标请求抹掉了旧目标的本地发送记录。'
 Assert-ChannelActivationState ($null -ne (Get-WirexChannelActivationRequestSent -State $state -RunId $runId `
     -ChannelKey 'group:33333:1' -Slot 1)) '清同槽状态时误清了另一个软件时隙。'
 $short = Complete-WirexChannelActivationRequest -State $state -RunId $runId -RequestId $requestD -Result ok `
@@ -73,6 +74,18 @@ Assert-ChannelActivationState (Start-WirexChannelActivationRequest -State $state
 $rejected = Complete-WirexChannelActivationRequest -State $state -RunId $runId -RequestId $requestE -Result rejected `
     -ErrorAction Stop
 Assert-ChannelActivationState ($rejected.matched -and $rejected.current -and -not $rejected.sent) '拒绝响应被当作发送成功。'
+Assert-ChannelActivationState ((Get-WirexChannelActivationRequestSent -State $state -RunId $runId `
+    -ChannelKey 'group:23456:2' -Slot 2) -and
+    $null -eq (Get-WirexChannelActivationRequestSent -State $state -RunId $runId `
+    -ChannelKey 'group:44444:2' -Slot 2)) 'NACK 提前清掉了同槽旧发送记录或新增了虚假的成功记录。'
+Assert-ChannelActivationState (Start-WirexChannelActivationRequest -State $state -RunId $runId `
+    -RequestId $requestF -ChannelKey 'group:44444:2' -DestinationId 44444 -Slot 2) '拒绝后无法重新请求同槽目标。'
+$sentF = Complete-WirexChannelActivationRequest -State $state -RunId $runId -RequestId $requestF -Result ok `
+    -ActivationStatus request_sent -DestinationId 44444 -Slot 2 -FramesSent 2
+Assert-ChannelActivationState ($sentF.sent -and
+    $null -eq (Get-WirexChannelActivationRequestSent -State $state -RunId $runId -ChannelKey 'group:23456:2' -Slot 2) -and
+    (Get-WirexChannelActivationRequestSent -State $state -RunId $runId -ChannelKey 'group:44444:2' -Slot 2)) `
+    '同槽新目标得到有效两帧结果后，没有更新本机最后一次发送记录。'
 
 foreach ($invalid in @(
     @{ request=$requestA; key='group:4000:2'; id=4000; slot=2 },

@@ -399,7 +399,7 @@ $active.lcd_source_identity = [pscustomobject][ordered]@{
 }
 Apply-StatusRecord -Record $active
  $cardTexts = @(Get-TestChannelCardTexts)
-Assert-UiStatus ($script:lastSequence -eq 3 -and @($cardTexts | Where-Object { $_ -match '^组呼 TG 91(?: ·|$)' }).Count -eq 1 -and $cardTexts -contains 'DMR ID 1234') `
+Assert-UiStatus ($script:lastSequence -eq 3 -and @($cardTexts | Where-Object { $_ -match '^组呼 91(?: ·|$)' }).Count -eq 1 -and $cardTexts -contains 'DMR ID 1234') `
     ('活动组呼未在匹配的频道卡片显示来话 DMR ID。 cards=[' + ($cardTexts -join '|') + ']')
 Assert-UiStatus (@($cardTexts | Where-Object { $_ -match 'CC|LC|接收中|缓冲中|未知' }).Count -eq 0) '频道来话卡片应只显示频道和来话身份，不显示协议字段或推测状态。'
 Assert-UiStatus ($script:mockUiFields['HriSourceIdentityValue'] -ceq 'ID1234 · 已准备' -and

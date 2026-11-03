@@ -59,6 +59,19 @@ function Get-TestChannelButton {
     return @($grid.Children | Where-Object { $_ -is [System.Windows.Controls.Button] -and [string]$_.Tag.action -ceq $Action }) | Select-Object -First 1
 }
 
+function Start-TestQueuedQuickCall {
+    param([Parameter(Mandatory=$true)][object]$Channel)
+    $script:latestStatus.media_owner='rx_active'
+    $script:lastStatusUtc=[DateTime]::UtcNow
+    if ($script:activeRouting) { $script:activeRouting.media_owner='rx_active' }
+    Update-UiChannelDisplays
+    $button=Get-TestChannelButton -ChannelKey (Get-UiChannelKey -Channel $Channel) -Action quick_call
+    if (-not $button -or -not $button.IsEnabled) { throw '测试夹具无法点击目标 Quick Call 按钮。' }
+    $button.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))
+    if (-not $script:queuedQuickCall) { throw '测试夹具没有创建排队 Quick Call 请求。' }
+    return $script:queuedQuickCall
+}
+
 function New-TestChannelSupervisor {
     param([string]$MediaOwner='rx_active',[bool]$StopAlreadyComplete=$false)
     $commands = New-Object 'System.Collections.Generic.List[object]'
@@ -203,23 +216,25 @@ $functionNames = @(
     'ConvertFrom-UiPortableConfigToProfile','Save-UiPortableConfig','Fit-WpfWindowToWorkArea',
     'Set-MainText','Set-UiTransientStatus','Clear-UiTransientStatus','Update-UiTransientStatusExpiry',
     'Set-UiChannelStatus','New-UiChannelActionButton','Update-UiChannelDisplays','Set-UiChannelPage','Start-UiChannelMutation',
-    'Get-UiChannelCallerDetails','New-UiDmIdLinkTextBlock','Open-UiDmIdProfile','Get-UiNativeIdentityCallsign',
+    'Get-UiChannelCallerDetails','New-UiDmIdLinkTextBlock','Open-UiDmIdProfile','Get-UiNativeIdentityCallsign','Get-UiCallsignProfileUri','Open-UiCallsignProfile',
     'Get-UiChannelTargetFromRouting','Complete-UiChannelMutation','Add-UiChannelFromInputs','Remove-UiChannel','Set-UiChannelMuted',
     'Get-UiKnownChannelName','Get-UiChannelDisplayName','Test-UiBmStaticChannelReadback','Get-UiChannelActivationPresentation',
     'Set-UiChannelPresetFromSelection','Update-UiChannelPresetFromManualText','Initialize-UiChannelInputHandlers','Get-UiSelectedChannelPreset',
     'Add-UiQuickCallDiagnostic','Reset-UiChannelActivationForBmReconnect','Clear-UiChannelActivationAfterGroupPtt',
     'Test-UiMouseOriginWithinElement','Set-DynamicGroupStatus',
     'Save-SettingsFromWindow','Get-UiSafeSettingsSaveErrorText','Copy-UiPortableConfigValue','ConvertTo-UiOptionalUnsigned',
-    'Get-UiComboValue','Get-UiComboItemValue','Request-Reconnect','Start-BridgeRun',
+    'Get-UiComboValue','Get-UiComboItemValue','Request-Reconnect','Request-StopAndExit','Start-BridgeRun',
     'Get-UiRadioCatPortConflictMessage','Test-UiRadioCatUserActionBusy','Get-UiRadioCatSessionState',
     'Invoke-UiSetCallTarget','Invoke-UiChannelQuickCall','Invoke-UiRoutingDiagnosticChannelQuickCallButton','Open-UiSetupPage','Register-UiSetupLinks',
+    'Set-UiQuickCallFailure','Clear-UiQueuedQuickCall','Send-UiChannelQuickCallRequest','Process-UiQueuedQuickCall',
     'Test-UiControlUnsigned','Test-UiExactControlFields','Test-UiRxPolicy','Copy-UiRxPolicy','Invoke-UiRoutingMutation',
     'Complete-UiChannelMutationFailure','Add-UiComboOpenHandlers','Register-UiRadioCatPortTextInput','Get-UiRadioCatConnectionKey',
     'Get-UiHriPortName','Set-UiRadioCatText','Set-UiRadioCatControlEnabled','Find-UiRadioCatControl','Set-UiRadioCatControls',
     'Set-UiRadioCatPowerSliderRange','Get-UiRadioCatObservedValue','Update-UiRadioCatObservationDisplay','Update-UiRadioCatControls',
     'Initialize-UiSettingsWindow','Initialize-SettingsWindow','Set-UiComboValue','Complete-BridgeStopInternal','Complete-BridgeStop',
     'On-UiTimerTick','Request-UiRoutingStatus','Update-UiBmConnectionPoll','Request-UiControlStatus','Set-UiBmConnectionSnapshot',
-    'Set-UiControlStatus','Set-UiOfflineDisplay','Set-OfflineDisplay',
+    'Set-UiControlStatus','Set-UiOfflineDisplay','Set-OfflineDisplay','Set-UiBmConnectionEnabled','Disconnect-UiSerialCombo',
+    'Clear-UiIdentityQueryQueue',
     'Set-ConnectionButtonState','Set-ConnectionConfigLocked','Test-UiBmTransportFieldsLocked','Set-UiIdentityRowVisibility','Update-UiPlaybackGainDisplay',
     'Test-UiAudioGainCapability','Update-UiAudioGainControls','Update-UiAudioGainValueLabels',
     'Convert-UiGainSliderToMilli',
@@ -411,7 +426,7 @@ function Update-UiReceiveMetricsDisplay { param([object]$Record=$null) return }
 function Set-UiIdentityRowVisibility { param([string]$Row,[System.Windows.Visibility]$Visibility) return }
 function Update-UiPlaybackGainDisplay { param([object]$Record=$null) return }
 function Format-BridgeGain { param([uint32]$GainMilli) return ([double]$GainMilli / 1000.0).ToString('0.###',[Globalization.CultureInfo]::InvariantCulture) }
-function Update-DynamicGroupControls { return }
+function Update-DynamicGroupControls { Update-UiChannelDisplays }
 function ConvertFrom-UiControlFrame { param([string]$Json,[string]$LockedRunId,[uint64]$LastControlSequence,[int]$ExpectedProcessId) return $script:testControlRecord }
 function Set-OfflineDisplay { param([string]$Reason='') return }
 
@@ -592,7 +607,8 @@ try {
     $script:txChannelKey = 'group:91:2'
     $script:channels = @($script:channels)
     $script:quickCallCapabilities = $true
-    $script:latestStatus = [pscustomobject]@{ run_id=$script:controlRunId;bm_state='ready' }
+    $script:latestStatus = [pscustomobject]@{ run_id=$script:controlRunId;bm_state='ready';media_owner='idle' }
+    $script:lastStatusUtc=[DateTime]::UtcNow
     Update-UiChannelDisplays
     $commandCountBeforeQuickCall = $script:supervisor.Commands.Count
     $groupCard = @($script:mainWindow.FindName('ChannelCardsPanel').Children | Where-Object { [string]$_.Tag.channel_key -ceq 'group:91:2' }) | Select-Object -First 1
@@ -862,22 +878,34 @@ try {
     $script:txChannelKey = ''
     $script:latestStatus = [pscustomobject]@{current_call_valid=$true;current_call_kind='P';current_call_slot=[uint64]2;
         current_call_source_id=[uint64]460997;current_call_destination_id=[uint64]123456}
-    $script:callIdentityCache['460997'] = [pscustomobject]@{source_id=[uint32]460997;id=[uint32]460997;callsign='N0TEST';name='Sample Operator';status='found';display_name='N0TEST'}
+    $script:callIdentityCache['460997'] = [pscustomobject]@{source_id=[uint32]460997;id=[uint32]460997;callsign='N0TEST';name='测试话者';status='found';display_name='N0TEST'}
+    $savedIdentityModuleLoaded = $script:radioIdentityModuleLoaded
+    $script:radioIdentityModuleLoaded = $true
     Update-UiChannelDisplays
     $callerCard = @($script:mainWindow.FindName('ChannelCardsPanel').Children | Where-Object { [string]$_.Tag.channel_key -ceq 'private:460997:2' }) | Select-Object -First 1
     $callerArea = $callerCard.Child.Children[1]
     Assert-UiChannels ($callerArea -is [System.Windows.Controls.Border] -and [string]$callerArea.Tag -ceq 'ChannelCallArea') '来话显示区域没有保留在卡片主体的第二项。'
     $callerVisualText = @(Get-UiVisualTextValues -Root $callerArea)
-    Assert-UiChannels ($callerVisualText -contains 'N0TEST · Sample Operator' -and $callerVisualText -contains 'DMR ID 460997') '来话卡没有放大显示呼号/姓名并在下一行显示 DMR ID。'
+    Assert-UiChannels ($callerVisualText -contains 'N0TEST · 测试话者' -and $callerVisualText -contains 'DMR ID 460997') `
+        ('来话卡没有放大显示呼号/中文姓名并在下一行显示 DMR ID。 visual={0}' -f ($callerVisualText -join '|'))
     $callerIdText = @($callerArea.Child.Children | Where-Object { $_ -is [System.Windows.Controls.TextBlock] }) | Select-Object -Last 1
     $callerIdLink = @($callerIdText.Inlines | Where-Object { $_ -is [System.Windows.Documents.Hyperlink] }) | Select-Object -First 1
-    Assert-UiChannels ($callerIdLink -and [string]$callerIdLink.Tag.callsign -ceq 'N0TEST') '已解析呼号时 DMR ID 没有连接到对应的 BM profile。'
+    $callerSourceText = @($callerArea.Child.Children | Where-Object { $_ -is [System.Windows.Controls.TextBlock] }) | Select-Object -First 1
+    $callerCallsignLink = @($callerSourceText.Inlines | Where-Object { $_ -is [System.Windows.Documents.Hyperlink] }) | Select-Object -First 1
+    Assert-UiChannels ($callerIdLink -and [string]$callerIdLink.Tag.callsign -ceq 'N0TEST' -and
+        $callerCallsignLink -and [string]$callerCallsignLink.Tag -ceq 'N0TEST' -and
+        [double]$callerSourceText.FontSize -eq 22 -and [double]$callerIdText.FontSize -eq 18) `
+        '来话卡应以大字号显示呼号/姓名和 DMR ID，并为两种身份分别建立链接。'
     $script:openedProfileUris = New-Object 'System.Collections.Generic.List[string]'
-    $savedIdentityModuleLoaded = $script:radioIdentityModuleLoaded
-    $script:radioIdentityModuleLoaded = $true
     $script:uiTestHooks.OpenUri = { param($Uri) $script:openedProfileUris.Add([string]$Uri) }
+    $callerCallsignLink.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Documents.Hyperlink]::ClickEvent))
+    $qrzUriCaptured = ($script:openedProfileUris.Count -eq 1 -and $script:openedProfileUris[0] -ceq 'https://www.qrz.com/db/N0TEST')
     $callerIdLink.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Documents.Hyperlink]::ClickEvent))
-    Assert-UiChannels ($script:openedProfileUris.Count -eq 1 -and $script:openedProfileUris[0] -ceq 'https://brandmeister.network/#/profile/N0TEST') 'DMR ID 链接没有把已验证的呼号 profile URL 交给隔离打开器。'
+    Assert-UiChannels ($qrzUriCaptured -and $script:openedProfileUris.Count -eq 2 -and
+        $script:openedProfileUris[1] -ceq 'https://brandmeister.network/#/profile/N0TEST') `
+        '呼号与 DMR ID 必须分别打开已验证的 QRZ 和 BrandMeister profile URL。'
+    Assert-UiChannels ([string]$callerCallsignLink.Foreground -match 'LightGreen|#FF90EE90' -and
+        [string]$callerIdLink.Foreground -match '#FF78B8FF') '深色卡片上的 QRZ 与 DMR profile 链接颜色应保持高对比。'
     $script:uiTestHooks.Remove('OpenUri')
     $script:radioIdentityModuleLoaded = $savedIdentityModuleLoaded
     [void]$script:callIdentityCache.Remove('460997')
@@ -1115,10 +1143,13 @@ return [pscustomobject]@{ operation='query'; status='cancelled'; port_name=[stri
     $script:bmManagementObservedApiKey=$script:testBmApiKey
     $script:bmManagementGroups=@([pscustomobject]@{device_id=$script:testBmDeviceId;talkgroup=[uint64]46001;slot=2;type='static'})
     $script:bmManagementAddContext=[pscustomobject]@{success=$true;device_id=$script:testBmDeviceId;status=2;add_slot=2}
+    $script:portableConfig=Get-WirexPortableConfig -Path $script:portableConfigPath
+    $script:portableConfig.connection.source_id=[uint64]123456
     $script:controlRunId='4242-1730592000123'; $script:controlLastSequence=[uint64]0
     $script:channelActivationState=New-WirexChannelActivationState
     Reset-WirexChannelActivationState -State $script:channelActivationState -RunId $script:controlRunId | Out-Null
-    $script:latestStatus=[pscustomobject]@{run_id=$script:controlRunId;bm_state='ready';current_call_valid=$false}
+    $script:latestStatus=[pscustomobject]@{run_id=$script:controlRunId;bm_state='ready';media_owner='idle';current_call_valid=$false}
+    $script:lastStatusUtc=[DateTime]::UtcNow
     $script:channels=@(
         (New-UiChannelRecord -Id 12345 -Kind group -Slot 2),
         (New-UiChannelRecord -Id 23456 -Kind group -Slot 2),
@@ -1127,7 +1158,12 @@ return [pscustomobject]@{ operation='query'; status='cancelled'; port_name=[stri
         (New-UiChannelRecord -Id 460997 -Kind private -Slot 2)
     )
     $script:txChannelKey='group:12345:2'; $script:channelPageIndex=0; $script:mutedChannelKeys=@{}
-    $script:quickCallCapabilities=$true; $script:controlConfirmed=$true; $script:controlDiagnostic=$false
+    $script:quickCallCapabilities=$true; $script:controlConfirmed=$true; $script:controlDiagnostic=$false; $script:routingCapabilities=$true
+    $script:activeRouting=[pscustomobject]@{
+        media_owner='idle';rx_policy_revision=[uint64]20;tx_policy_revision=[uint64]30
+        tx_target=[pscustomobject]@{destination_id=[uint64]12345;kind='group';slot=[uint64]2;transmit_enabled=$true}
+        rx_policy=(Get-UiNativeRxPolicyForChannels -Channels $script:channels);transmit_enabled=$true
+    }
     $script:isolatedUiMode=$false; $script:quickCallDiagnosticPath=Join-Path $testRoot 'quick-call-requests.jsonl'
     $script:pendingQuickCall=$null; $script:pendingControlRequests=@{}; $script:expiredQuickCallRequests=@{}
     $script:pendingRoutingMutation=$null; $script:pendingChannelMutation=$null; $script:pendingChannelStopMutation=$null
@@ -1192,14 +1228,20 @@ return [pscustomobject]@{ operation='query'; status='cancelled'; port_name=[stri
         $staticTitle.Tag.id -eq 46001 -and $staticTitle.Tag.kind -ceq 'group' -and $staticTitle.Tag.source -ceq '静态组') `
         '静态组卡片没有显示完整频道身份/证据，或仍允许激活。'
 
-    $script:pendingQuickCall=$null
+    $script:pendingQuickCall=$null; $script:queuedQuickCall=$null
+    $script:quickCallQueueTimeoutSeconds=60
     $dynamicOne=$script:channels[0]
     $dynamicTwo=$script:channels[1]
     $dynamicThree=$script:channels[2]
+    $script:lastStatusUtc=[DateTime]::UtcNow
     $commandCountBefore=$script:supervisor.Commands.Count
-    Assert-UiChannels ((Invoke-UiChannelQuickCall -Channel $dynamicOne) -and
-        $script:supervisor.Commands.Count -eq ($commandCountBefore+1) -and
-        $script:supervisor.Commands[-1].command -ceq 'network_subscription.quick_call_join') '有效动态组请求没有只发送一个本机 quick_call_join 命令。'
+    $quickCallButton=Get-TestChannelButton -ChannelKey 'group:12345:2' -Action quick_call
+    $quickCallButton.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))
+    Assert-UiChannels ($script:supervisor.Commands.Count -eq ($commandCountBefore+1) -and
+        $script:supervisor.Commands[-1].command -ceq 'network_subscription.quick_call_join' -and
+        $script:transientStatusText -match '激活请求已提交') ('实际点击动态组按钮后没有显示反馈并只发送一个本机 quick_call_join 命令。 enabled={0}, content={1}, count={2}/{3}, status={4}, latest={5}, last={6}, queued={7}, pending={8}, error={9}' -f `
+            $quickCallButton.IsEnabled,$quickCallButton.Content,$script:supervisor.Commands.Count,$commandCountBefore,$script:transientStatusText,
+            $script:latestStatus.media_owner,$script:lastStatusUtc,$script:queuedQuickCall,$script:pendingQuickCall,$script:dynamicGroupStatusText)
     $failedRequest=$script:pendingQuickCall
     Update-UiChannelDisplays
     $pendingOne=Get-TestChannelButton -ChannelKey 'group:12345:2' -Action quick_call
@@ -1215,11 +1257,174 @@ return [pscustomobject]@{ operation='query'; status='cancelled'; port_name=[stri
         -ChannelKey 'group:12345:2' -Slot 2
     $mediaBusyDiagnostic=if([IO.File]::Exists($script:quickCallDiagnosticPath)){[IO.File]::ReadAllText($script:quickCallDiagnosticPath)}else{''}
     Assert-UiChannels ($null -eq $script:pendingQuickCall -and
-        $script:transientStatusLastMessage -match '本机 Native 拒绝：media_busy' -and -not $mediaBusyRequestSent) `
+        $script:transientStatusText -match '本机媒体仍忙' -and -not $mediaBusyRequestSent) `
         ('media_busy 拒绝没有显示本机具体原因，或失败结果被误记为已发送。 pending={0}, status={1}, sent={2}, stateRun={3}, diag={4}' -f `
-            [bool]$script:pendingQuickCall,[string]$script:transientStatusLastMessage,[bool]$mediaBusyRequestSent,
+            [bool]$script:pendingQuickCall,[string]$script:transientStatusText,[bool]$mediaBusyRequestSent,
             [string]$script:channelActivationState.run_id,$mediaBusyDiagnostic)
 
+    $script:latestStatus.media_owner='rx_active'; $script:lastStatusUtc=[DateTime]::UtcNow
+    $script:activeRouting.media_owner='rx_active'
+    Update-UiChannelDisplays
+    $queueCommandCount=$script:supervisor.Commands.Count
+    $queueButton=Get-TestChannelButton -ChannelKey 'group:12345:2' -Action quick_call
+    $queueButton.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))
+    $queueButton=Get-TestChannelButton -ChannelKey 'group:12345:2' -Action quick_call
+    $otherQueuedButton=Get-TestChannelButton -ChannelKey 'group:23456:2' -Action quick_call
+    Assert-UiChannels ($script:queuedQuickCall -and $script:queuedQuickCall.channel_key -ceq 'group:12345:2' -and
+        $script:supervisor.Commands.Count -eq $queueCommandCount -and $queueButton.Content -ceq '取消排队' -and
+        $queueButton.IsEnabled -and $otherQueuedButton -and -not $otherQueuedButton.IsEnabled -and
+        $script:transientStatusText -match '等待当前通话结束') ('媒体 RX 活跃时应明确排队、允许取消且不发送 Native 请求。 queued={0}, commands={1}/{2}, button={3}/{4}, other={5}/{6}, status={7}, media={8}, age={9}' -f `
+            [bool]$script:queuedQuickCall,$script:supervisor.Commands.Count,$queueCommandCount,$queueButton.Content,$queueButton.IsEnabled,
+            $otherQueuedButton.Content,$otherQueuedButton.IsEnabled,$script:transientStatusText,$script:latestStatus.media_owner,
+            ([DateTime]::UtcNow-$script:lastStatusUtc).TotalSeconds)
+    $queueButton.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))
+    Assert-UiChannels (-not $script:queuedQuickCall -and $script:supervisor.Commands.Count -eq $queueCommandCount -and
+        $script:transientStatusText -match '已取消.*排队') '再次点击取消排队没有清除请求，或取消时发送了请求。'
+
+    Update-UiChannelDisplays
+    $queueButton=Get-TestChannelButton -ChannelKey 'group:12345:2' -Action quick_call
+    $queueButton.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))
+    $script:latestStatus.media_owner='idle'; $script:lastStatusUtc=[DateTime]::UtcNow
+    [void](Process-UiQueuedQuickCall)
+    Assert-UiChannels (-not $script:queuedQuickCall -and $script:supervisor.Commands.Count -eq ($queueCommandCount+1) -and
+        $script:supervisor.Commands[-1].command -ceq 'network_subscription.quick_call_join') ('fresh idle 状态到达后，排队请求没有只派发一次。 queued={0}, count={1}/{2}, latest={3}, age={4}, routePending={5}, channelPending={6}, stopPending={7}, stopTask={8}, status={9}, lastCommand={10}' -f `
+            [bool]$script:queuedQuickCall,$script:supervisor.Commands.Count,$queueCommandCount,$script:latestStatus.media_owner,
+            ([DateTime]::UtcNow-$script:lastStatusUtc).TotalSeconds,[bool]$script:pendingRoutingMutation,[bool]$script:pendingChannelMutation,
+            [bool]$script:pendingChannelStopMutation,[bool]$script:stopTask,$script:transientStatusText,$script:supervisor.Commands[-1].command)
+    $queuedDispatchRequest=$script:pendingQuickCall
+    Receive-TestQuickCallResult -Request $queuedDispatchRequest -Result rejected -ErrorCode media_busy
+    [void](Process-UiQueuedQuickCall)
+    Assert-UiChannels ($script:supervisor.Commands.Count -eq ($queueCommandCount+1) -and -not $script:queuedQuickCall -and
+        $script:transientStatusText -match '本机媒体仍忙') 'Native 报告 media_busy 的竞态触发了自动重试。'
+
+    $script:latestStatus.media_owner='rx_active'; $script:lastStatusUtc=[DateTime]::UtcNow
+    $script:activeRouting.media_owner='rx_active'
+    Update-UiChannelDisplays
+    $queueButton=Get-TestChannelButton -ChannelKey 'group:12345:2' -Action quick_call
+    $queueButton.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))
+    $timeoutQueue=$script:queuedQuickCall
+    $timeoutQueue.expires_utc=[DateTime]::UtcNow.AddSeconds(-1)
+    [void](Process-UiQueuedQuickCall)
+    Assert-UiChannels (-not $script:queuedQuickCall -and $script:supervisor.Commands.Count -eq ($queueCommandCount+1) -and
+        $script:transientStatusText -match '超时') '排队超过60秒后没有明确过期，或错误发送了请求。'
+
+    Update-UiChannelDisplays
+    $queueButton=Get-TestChannelButton -ChannelKey 'group:12345:2' -Action quick_call
+    $queueButton.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))
+    $mutationQuickCountBefore=@($script:supervisor.Commands | Where-Object { $_.command -ceq 'network_subscription.quick_call_join' }).Count
+    $mutePolicyProbe=Get-UiNativeRxPolicyForChannels -Channels $script:channels -MutedKeys @{ 'group:12345:2'=$true }
+    $mutePolicyProbeValid=Test-UiRxPolicy -Policy $mutePolicyProbe -LocalSourceId ([uint64]$script:portableConfig.connection.source_id)
+    Set-UiChannelMuted -Channel $dynamicOne
+    Assert-UiChannels (-not $script:queuedQuickCall -and $script:pendingChannelMutation -and
+        $script:pendingRoutingMutation.command -ceq 'rx_policy.replace') ('开始静音/收听路由更新时没有立即取消排队激活。 queued={0}, channelMutation={1}, route={2}, status={3}, muted={4}, policyValid={5}, policy={6}' -f `
+            [bool]$script:queuedQuickCall,[bool]$script:pendingChannelMutation,
+            $(if($script:pendingRoutingMutation){$script:pendingRoutingMutation.command}else{''}),$script:transientStatusText,
+            ($script:mutedChannelKeys.Keys -join ','),$mutePolicyProbeValid,(ConvertTo-Json -InputObject $mutePolicyProbe -Depth 5 -Compress))
+    $completedMutation=$script:pendingChannelMutation
+    $mutationRoutingRequest=$script:pendingRoutingMutation
+    [void]$script:pendingControlRequests.Remove([string]$mutationRoutingRequest.request_id)
+    $script:pendingRoutingMutation=$null
+    $mutedRouting=[pscustomobject]@{
+        media_owner='idle';rx_policy_revision=[uint64]($script:activeRouting.rx_policy_revision+1)
+        tx_policy_revision=[uint64]$script:activeRouting.tx_policy_revision;tx_target=$script:activeRouting.tx_target
+        rx_policy=(Get-UiNativeRxPolicyForChannels -Channels $script:channels -MutedKeys $completedMutation.muted_keys)
+        transmit_enabled=$true
+    }
+    $script:activeRouting=$mutedRouting
+    $savedMutationActiveProfile=$script:activeProfile
+    $script:activeProfile=$null
+    [void](Complete-UiChannelMutation -Mutation $mutationRoutingRequest -Routing $mutedRouting)
+    $script:activeProfile=$savedMutationActiveProfile
+    $script:latestStatus.media_owner='idle'; $script:lastStatusUtc=[DateTime]::UtcNow
+    $script:activeRouting.media_owner='idle'
+    $quickCountAfterMutation=@($script:supervisor.Commands | Where-Object { $_.command -ceq 'network_subscription.quick_call_join' }).Count
+    [void](Process-UiQueuedQuickCall)
+    Assert-UiChannels ($quickCountAfterMutation -eq $mutationQuickCountBefore -and
+        @($script:supervisor.Commands | Where-Object { $_.command -ceq 'network_subscription.quick_call_join' }).Count -eq $mutationQuickCountBefore -and
+        -not $script:queuedQuickCall -and $script:mutedChannelKeys.ContainsKey('group:12345:2')) `
+        '静音路由快速完成且媒体转为 idle 后，旧排队目标仍然被激活。'
+    $script:mutedChannelKeys=@{}
+    $script:activeRouting.rx_policy=Get-UiNativeRxPolicyForChannels -Channels $script:channels
+    Update-UiChannelDisplays
+    $script:latestStatus.media_owner='idle'; $script:lastStatusUtc=[DateTime]::UtcNow
+
+    $quickCallsBeforeStop=@($script:supervisor.Commands | Where-Object { $_.command -ceq 'network_subscription.quick_call_join' }).Count
+    [void](Start-TestQueuedQuickCall -Channel $dynamicOne)
+    Request-StopAndExit
+    $script:latestStatus.media_owner='idle'; $script:lastStatusUtc=[DateTime]::UtcNow
+    [void](Process-UiQueuedQuickCall)
+    Assert-UiChannels (-not $script:queuedQuickCall -and $script:closingAfterStop -and $script:stopTask -and
+        @($script:supervisor.Commands | Where-Object { $_.command -ceq 'network_subscription.quick_call_join' }).Count -eq $quickCallsBeforeStop) `
+        '退出 StopAsync 尚未完成时，fresh idle tick 仍发送了旧排队激活。'
+    $script:closingAfterStop=$false; $script:stopTask=$null
+    Update-UiChannelDisplays
+
+    $savedLifecycleChannels=@($script:channels); $savedLifecycleTxKey=$script:txChannelKey
+    $savedLifecycleMuted=$script:mutedChannelKeys; $savedLifecycleRouting=$script:activeRouting
+    $script:channels=@((New-UiChannelRecord -Id 11111 -Kind group -Slot 2))
+    $script:txChannelKey='group:11111:2'; $script:mutedChannelKeys=@{}
+    $script:activeRouting=[pscustomobject]@{
+        media_owner='rx_active';rx_policy_revision=[uint64]30;tx_policy_revision=[uint64]40
+        tx_target=[pscustomobject]@{destination_id=[uint64]11111;kind='group';slot=[uint64]2;transmit_enabled=$true}
+        rx_policy=(Get-UiNativeRxPolicyForChannels -Channels $script:channels);transmit_enabled=$true
+    }
+    $script:latestStatus.media_owner='rx_active'; $script:lastStatusUtc=[DateTime]::UtcNow
+    $lastChannel=$script:channels[0]
+    [void](Start-TestQueuedQuickCall -Channel $lastChannel)
+    $quickCallsBeforeLastRemove=@($script:supervisor.Commands | Where-Object { $_.command -ceq 'network_subscription.quick_call_join' }).Count
+    Remove-UiChannel -Channel $lastChannel
+    $script:latestStatus.media_owner='idle'; $script:lastStatusUtc=[DateTime]::UtcNow
+    [void](Process-UiQueuedQuickCall)
+    Assert-UiChannels (-not $script:queuedQuickCall -and $script:pendingChannelStopMutation -and $script:stopTask -and
+        @($script:supervisor.Commands | Where-Object { $_.command -ceq 'network_subscription.quick_call_join' }).Count -eq $quickCallsBeforeLastRemove) `
+        '删除最后一个频道后，StopAsync等待期间仍发送了旧排队激活。'
+    $script:stopTask=$null; $script:pendingChannelStopMutation=$null
+    $script:channels=$savedLifecycleChannels; $script:txChannelKey=$savedLifecycleTxKey
+    $script:mutedChannelKeys=$savedLifecycleMuted; $script:activeRouting=$savedLifecycleRouting
+    $script:latestStatus.media_owner='idle'; $script:lastStatusUtc=[DateTime]::UtcNow
+    Update-UiChannelDisplays
+
+    $script:bmConnectionNativeCapability=$true
+    $script:bmConnectionRevision=[uint64]0; $script:bmConnectionPendingRequest=$null
+    $script:bmConnectionSnapshot=[pscustomobject]@{requested_enabled=$true;resolving=$false;transport_open=$true;bm_state='ready'}
+    $script:supervisor.RejectCommands=@('bm.connection.set')
+    [void](Start-TestQueuedQuickCall -Channel $dynamicOne)
+    $quickCallsBeforeBmDisconnect=@($script:supervisor.Commands | Where-Object { $_.command -ceq 'network_subscription.quick_call_join' }).Count
+    $bmDisconnectSent=Set-UiBmConnectionEnabled -Enabled:$false
+    $script:latestStatus.media_owner='idle'; $script:lastStatusUtc=[DateTime]::UtcNow
+    [void](Process-UiQueuedQuickCall)
+    Assert-UiChannels (-not $bmDisconnectSent -and -not $script:queuedQuickCall -and
+        @($script:supervisor.Commands | Where-Object { $_.command -ceq 'network_subscription.quick_call_join' }).Count -eq $quickCallsBeforeBmDisconnect) `
+        '独立 BM 断开请求遭拒后，idle tick 仍恢复了旧队列。'
+
+    $script:supervisor.RejectCommands=@()
+    $script:latestStatus.media_owner='rx_active'; $script:lastStatusUtc=[DateTime]::UtcNow
+    [void](Start-TestQueuedQuickCall -Channel $dynamicOne)
+    $quickCallsBeforeSerialDisconnect=@($script:supervisor.Commands | Where-Object { $_.command -ceq 'network_subscription.quick_call_join' }).Count
+    $script:bmConnectionPendingRequest=$null
+    $script:bmConnectionSnapshot=[pscustomobject]@{requested_enabled=$true;resolving=$false;transport_open=$true;bm_state='ready'}
+    [void](Disconnect-UiSerialCombo)
+    $serialDisconnectRequest=$script:bmConnectionPendingRequest
+    $script:serialDisconnectDeadlineUtc=[DateTime]::UtcNow.AddSeconds(-1)
+    [void](Update-UiBmConnectionPoll)
+    $script:latestStatus.media_owner='idle'; $script:lastStatusUtc=[DateTime]::UtcNow
+    [void](Process-UiQueuedQuickCall)
+    Assert-UiChannels (-not $script:queuedQuickCall -and -not $script:serialDisconnectPending -and
+        $serialDisconnectRequest -and -not [bool]$serialDisconnectRequest.enabled -and
+        @($script:supervisor.Commands | Where-Object { $_.command -ceq 'network_subscription.quick_call_join' }).Count -eq $quickCallsBeforeSerialDisconnect) `
+        '串口断开超时复位标记后，旧排队激活重新派发。'
+    if ($serialDisconnectRequest) { [void]$script:pendingControlRequests.Remove([string]$serialDisconnectRequest.request_id) }
+    $script:bmConnectionPendingRequest=$null; $script:bmConnectionNativeCapability=$false
+    $script:bmConnectionSnapshot=$null; $script:serialDisconnectPending=$false
+    $script:serialDisconnectCoreStopIssued=$false; $script:serialDisconnectCatStopRequested=$false
+    $script:serialDisconnectDeadlineUtc=[DateTime]::MinValue; $script:supervisor.RejectCommands=@()
+    Update-UiChannelDisplays
+
+    $restoredDynamicOne=Get-UiChannelByKey -Key 'group:12345:2'
+    Assert-UiChannels ($restoredDynamicOne -and -not $script:mutedChannelKeys.ContainsKey('group:12345:2')) `
+        ('静音用例结束后激活目标应仍在监听列表且已恢复。 channels={0}; muted={1}' -f `
+            (@($script:channels | ForEach-Object { Get-UiChannelKey -Channel $_ }) -join ','),($script:mutedChannelKeys.Keys -join ','))
+    $script:lastStatusUtc=[DateTime]::UtcNow
     Assert-UiChannels (Invoke-UiChannelQuickCall -Channel $dynamicOne) 'Native 拒绝后没有允许新请求。'
     $shortSendRequest=$script:pendingQuickCall
     Receive-TestQuickCallResult -Request $shortSendRequest -Result ok -ActivationStatus request_sent `
@@ -1228,6 +1433,7 @@ return [pscustomobject]@{ operation='query'; status='cancelled'; port_name=[stri
             -ChannelKey 'group:12345:2' -Slot 2) -and $script:transientStatusLastMessage -match '未确认两帧已发送') `
         'Native 返回单帧结果时被误记为成功，或没有释放请求以供手动重试。'
 
+    $script:lastStatusUtc=[DateTime]::UtcNow
     Assert-UiChannels (Invoke-UiChannelQuickCall -Channel $dynamicOne) '失败后允许用户手动重试的组呼请求没有提交。'
     $successfulRequest=$script:pendingQuickCall
     Receive-TestQuickCallResult -Request $successfulRequest -Result ok -ActivationStatus request_sent `
@@ -1235,7 +1441,7 @@ return [pscustomobject]@{ operation='query'; status='cancelled'; port_name=[stri
     $sentOne=Get-WirexChannelActivationRequestSent -State $script:channelActivationState -RunId $script:controlRunId `
         -ChannelKey 'group:12345:2' -Slot 2
     Assert-UiChannels ($sentOne -and $sentOne.activation_status -ceq 'request_sent' -and $sentOne.frames_sent -eq 2 -and
-        $script:transientStatusLastMessage -match 'BM持续状态未确认' -and
+        $script:transientStatusLastMessage -match '激活请求已发送' -and
         -not (Get-WirexChannelActivationRequestSent -State $script:channelActivationState -RunId '9999-1234567' `
             -ChannelKey 'group:12345:2' -Slot 2)) 'Native 两帧确认后没有按 run ID 标记 request_sent，或界面声称已确认 BM 持续状态。'
     Update-UiChannelDisplays
@@ -1248,29 +1454,44 @@ return [pscustomobject]@{ operation='query'; status='cancelled'; port_name=[stri
         $_ -is [System.Windows.Controls.TextBlock] -and [string]$_.Name -ceq 'ChannelCardTitle'
     } | Select-Object -First 1)
     $afterSuccessCount=$script:supervisor.Commands.Count
-    Assert-UiChannels ($sentButton -and -not $sentButton.IsEnabled -and $sentButton.Content -ceq '已发送' -and
+    Assert-UiChannels ($sentButton -and $sentButton.IsEnabled -and $sentButton.Content -ceq '再次激活' -and
         $sentPresentation.source -ceq '动态组' -and $sentPresentation.title -ceq '组呼 12345 · 动态组' -and
-        [string]$sentPresentation.tooltip -match 'TG 12345 TS2；激活请求已发送' -and
-        [string]$sentPresentation.tooltip -notmatch 'Native|回读|request_sent|两帧' -and
+        [string]$sentPresentation.tooltip -match 'TG 12345 TS2；本机已发送上一条激活请求' -and
+        [string]$sentPresentation.tooltip -match 'BM 当前动态组状态未知' -and
         $sentTitle -and $sentTitle.Text -ceq '组呼 12345 · 动态组' -and
-        [string]$sentTitle.ToolTip -match '激活请求已发送' -and $sentTitle.Tag.request_sent -and
-        -not (Invoke-UiChannelQuickCall -Channel $dynamicOne) -and $script:supervisor.Commands.Count -eq $afterSuccessCount) `
-        '本机会话 request_sent 后仍可重复发送，或卡片没有显示本地请求状态。'
+        [string]$sentTitle.ToolTip -match '本机已发送上一条激活请求' -and $sentTitle.Tag.request_sent -and
+        $sentButton.Content -ceq '再次激活' -and $script:supervisor.Commands.Count -eq $afterSuccessCount) `
+        ('本机会话 request_sent 后没有保留显式重试入口，或卡片没有显示本地请求状态。 button={0}/{1}/{2}, presentation={3}/{4}/{5}, tooltip={6}, title={7}/{8}/{9}' -f `
+            [bool]$sentButton.IsEnabled,$sentButton.Content,$afterSuccessCount,$sentPresentation.source,$sentPresentation.title,$sentPresentation.request_sent,
+            [string]$sentPresentation.tooltip,$sentTitle.Text,$sentTitle.ToolTip,[bool]$sentTitle.Tag.request_sent)
+    $script:lastStatusUtc=[DateTime]::UtcNow
+    $sentButton.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))
+    Assert-UiChannels ($script:pendingQuickCall -and $script:pendingQuickCall.destination_id -eq 12345 -and
+        $script:supervisor.Commands.Count -eq ($afterSuccessCount+1)) '再次点击“再次激活”没有发起一条新的显式本机请求。'
+    $explicitRetry=$script:pendingQuickCall
+    Receive-TestQuickCallResult -Request $explicitRetry -Result ok -ActivationStatus request_sent `
+        -DestinationId 12345 -Slot 2 -FramesSent 2
 
-    Assert-UiChannels (Invoke-UiChannelQuickCall -Channel $dynamicThree) '同槽新组请求没有获准替换旧本地 request_sent 标记。'
-    Assert-UiChannels (-not (Get-WirexChannelActivationRequestSent -State $script:channelActivationState -RunId $script:controlRunId `
-            -ChannelKey 'group:12345:2' -Slot 2)) '同槽新组请求后旧目标的本地 request_sent 标记没有清除。'
+    $script:lastStatusUtc=[DateTime]::UtcNow
+    Assert-UiChannels (Invoke-UiChannelQuickCall -Channel $dynamicThree) '同槽新组请求没有获准开始。'
+    Assert-UiChannels ((Get-WirexChannelActivationRequestSent -State $script:channelActivationState -RunId $script:controlRunId `
+            -ChannelKey 'group:12345:2' -Slot 2) -and
+        -not (Get-WirexChannelActivationRequestSent -State $script:channelActivationState -RunId $script:controlRunId `
+            -ChannelKey 'group:22222:2' -Slot 2)) '待处理的新组请求开始时提前清除了旧TG标记或伪造了新目标状态。'
     $supersededRequest=$script:pendingQuickCall
     [void](Set-WirexChannelActivationRequestTimedOut -State $script:channelActivationState `
         -RunId $script:controlRunId -RequestId ([string]$supersededRequest.request_id))
     $script:pendingQuickCall.timed_out=$true
-    Assert-UiChannels (Invoke-UiChannelQuickCall -Channel $dynamicTwo) '超时后用户不能重试同一 slot 的另一个频道。'
+    $script:lastStatusUtc=[DateTime]::UtcNow
+    Assert-UiChannels (Invoke-UiChannelQuickCall -Channel $dynamicTwo) '旧请求超时后用户不能发起新的同槽目标请求。'
     $newGroupRequest=$script:pendingQuickCall
     Receive-TestQuickCallResult -Request $supersededRequest -Result ok -ActivationStatus request_sent `
         -DestinationId 22222 -Slot 2 -FramesSent 2
     Assert-UiChannels ($script:pendingQuickCall.request_id -ceq $newGroupRequest.request_id -and
+        (Get-WirexChannelActivationRequestSent -State $script:channelActivationState -RunId $script:controlRunId `
+            -ChannelKey 'group:12345:2' -Slot 2) -and
         -not (Get-WirexChannelActivationRequestSent -State $script:channelActivationState -RunId $script:controlRunId `
-            -ChannelKey 'group:22222:2' -Slot 2)) '超时旧请求的迟到成功覆盖了同槽新请求状态。'
+            -ChannelKey 'group:22222:2' -Slot 2)) '旧请求的迟到成功清除了旧sent记录或覆盖了新请求状态。'
     Receive-TestQuickCallResult -Request $newGroupRequest -Result ok -ActivationStatus request_sent `
         -DestinationId 23456 -Slot 2 -FramesSent 2
     $script:activeRouting=[pscustomobject]@{tx_target=[pscustomobject]@{destination_id=[uint64]23456;kind='group';slot=[uint64]2}}
@@ -1279,8 +1500,9 @@ return [pscustomobject]@{ operation='query'; status='cancelled'; port_name=[stri
     $sameTgButton=Get-TestChannelButton -ChannelKey 'group:23456:2' -Action quick_call
     $sameTgRequestSent=Get-WirexChannelActivationRequestSent -State $script:channelActivationState -RunId $script:controlRunId `
         -ChannelKey 'group:23456:2' -Slot 2
-    Assert-UiChannels (-not $sameTgCleared -and $sameTgRequestSent -and $sameTgButton -and -not $sameTgButton.IsEnabled) `
-        '同一 TG、同一 slot 的组呼 PTT 清除了 request_sent 或重新启用了按钮。'
+    Assert-UiChannels (-not $sameTgCleared -and $sameTgRequestSent -and $sameTgButton -and
+        $sameTgButton.IsEnabled -and $sameTgButton.Content -ceq '再次激活') `
+        '同一 TG、同一 slot 的组呼 PTT 清除了 request_sent，或移除了显式重试入口。'
 
     $script:activeRouting=[pscustomobject]@{tx_target=[pscustomobject]@{destination_id=[uint64]460997;kind='private';slot=[uint64]2}}
     $privatePttCleared=Clear-UiChannelActivationAfterGroupPtt -RunId $script:controlRunId -EventName 'tx_started_from_radio_ptt_down'
@@ -1295,6 +1517,9 @@ return [pscustomobject]@{ operation='query'; status='cancelled'; port_name=[stri
     Assert-UiChannels (-not $unknownPttCleared -and $unknownPttRequestSent) '缺少 destination_id 的组呼 PTT 清除了 request_sent。'
 
     $slotOneGroup=New-UiChannelRecord -Id 33333 -Kind group -Slot 1
+    $script:channels=@($script:channels)+@($slotOneGroup)
+    Update-UiChannelDisplays
+    $script:lastStatusUtc=[DateTime]::UtcNow
     Assert-UiChannels (Invoke-UiChannelQuickCall -Channel $slotOneGroup) 'slot 1 测试组请求没有通过正常 quick_call 流程启动。'
     $slotOneRequest=$script:pendingQuickCall
     Receive-TestQuickCallResult -Request $slotOneRequest -Result ok -ActivationStatus request_sent `
@@ -1312,6 +1537,7 @@ return [pscustomobject]@{ operation='query'; status='cancelled'; port_name=[stri
     Assert-UiChannels ($pttCleared -and -not $pttRequestSent -and $otherSlotRequestSent) `
         '不同 TG 的合法同槽组呼 PTT 没有清除旧标记，或误清了另一 slot 的请求标记。'
 
+    $script:lastStatusUtc=[DateTime]::UtcNow
     Assert-UiChannels (Invoke-UiChannelQuickCall -Channel $dynamicOne) 'PTT 清除本地标记后没有允许再次手动请求。'
     $reconnectRequest=$script:pendingQuickCall
     Receive-TestQuickCallResult -Request $reconnectRequest -Result ok -ActivationStatus request_sent `
@@ -1320,6 +1546,7 @@ return [pscustomobject]@{ operation='query'; status='cancelled'; port_name=[stri
     $reconnectedRequestSent=Get-WirexChannelActivationRequestSent -State $script:channelActivationState -RunId $script:controlRunId `
         -ChannelKey 'group:12345:2' -Slot 2
     Assert-UiChannels ($reconnectCleared -and -not $reconnectedRequestSent) 'BM 离开 ready 后没有清除本会话请求状态。'
+    $script:lastStatusUtc=[DateTime]::UtcNow
     Assert-UiChannels (Invoke-UiChannelQuickCall -Channel $dynamicOne) '重连清状态后没有允许用户重新请求。'
     $lateRequest=$script:pendingQuickCall
     [void](Reset-UiChannelActivationForBmReconnect -RunId $script:controlRunId)
@@ -1340,6 +1567,13 @@ return [pscustomobject]@{ operation='query'; status='cancelled'; port_name=[stri
     Assert-UiChannels ($quickCallRows.Count -ge 8 -and $quickCallBadRows.Count -eq 0 -and -not $quickCallDiagnosticIncludesKey) `
         ('Quick Call 有界诊断日志缺少结果阶段，或记录了凭据/未授权字段。 count={0}, badRows={1}, keyInEarlierCommands={2}, firstFields={3}' -f `
             $quickCallRows.Count,$quickCallBadRows.Count,$quickCallDiagnosticIncludesKey,(@($quickCallRows[0].PSObject.Properties.Name) -join ','))
+    $quickCallObservedResults=@($quickCallRows | ForEach-Object { [string]$_.result } | Select-Object -Unique)
+    $quickCallRequiredResults=@('clicked','queued','cancelled','submitted','ok','rejected','timeout')
+    $quickCallMissingResults=@($quickCallRequiredResults | Where-Object { $quickCallObservedResults -cnotcontains $_ })
+    Assert-UiChannels ($quickCallMissingResults.Count -eq 0 -and
+        @($quickCallRows | Where-Object { [string]$_.run_id -ceq $script:controlRunId -and [string]$_.result -ceq 'clicked' }).Count -gt 0) `
+        ('隔离 JSONL 未记录完整的真实点击/排队/取消/发送/结果阶段。 missing={0}; observed={1}' -f `
+            ($quickCallMissingResults -join ','),($quickCallObservedResults -join ','))
     $quickCallCommandJson=[string]::Join("`n",@($script:supervisor.Commands | ForEach-Object { [string]$_.parameters_json }))
     Assert-UiChannels ($quickCallCommandJson -notmatch 'api-key-fixture-only|different-api-key|synthetic-password-7a91' -and
         $script:txChannelKey -ceq 'group:12345:2') 'Quick Call 命令携带了凭据，或激活操作更改了已保存的 PTT 目标。'
