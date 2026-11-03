@@ -34,3 +34,4 @@ __pycache__/
 *.iobj
 *.ipdb
 /tools/wirex/wirex.exe
+/.claude/
