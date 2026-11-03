@@ -6705,15 +6705,18 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 const bool waveout_cleanup_ok = radio_output.close();
                 radio_output_open = radio_output.is_open();
                 record_routed_rx_waveout_cleanup(waveout_cleanup_ok);
+                const bool aggregate_waveout_cleanup_ok = routed_rx_waveout_cleanup_attempted &&
+                    routed_rx_waveout_cleanup_succeeded;
                 if (!waveout_cleanup_ok) set_failure("waveout_rx_call_cleanup_failed");
                 const bool hri_t0_confirmed = state.stop_write_succeeded && state.stop_t_record_observed;
                 const bool routed_rx_cleanup_incomplete =
                     wirex::hri_stream_session::routed_rx_cleanup_incomplete(
-                        state, routed_rx_hri_start_attempted, waveout_cleanup_ok);
+                        state, routed_rx_hri_start_attempted, aggregate_waveout_cleanup_ok);
                 report_routed_rx_cleanup(hri_t0_confirmed);
                 clear_lcd_source_identity();
                 ++counters.calls_ended;
-                if (state.reason == StreamReason::none && hri_t0_confirmed && waveout_cleanup_ok) {
+                if (state.reason == StreamReason::none && hri_t0_confirmed &&
+                    aggregate_waveout_cleanup_ok) {
                     status("downlink_call_drained_t0_observed");
                 } else if (routed_rx_cleanup_incomplete) {
                     if (!state.stop_write_succeeded || !state.stop_t_record_observed ||
