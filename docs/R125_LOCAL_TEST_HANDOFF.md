@@ -28,7 +28,7 @@
 | status | Windows PowerShell 5.1 STA 下 87 项断言通过；同步修正一条频道标题 regex，使其匹配当前 `组呼 91` 显示文案 |
 | RenderOnly | Windows PowerShell 5.1 STA 最终回归 6,155 项通过；六张主窗图为 1360×900，gain 1/8/16 各重复两次（UI owner 提供） |
 | 中文 UI 截图与独立审查 | root 已接受 UI owner 最终截图；独立 UI 生命周期审查没有 P1/P2 项 |
-| local-test pack producer | 两个 PowerShell 文件语法解析通过；脏源码树门禁此前按预期拒绝，未创建测试目录；需在 clean source commit 后运行 producer |
+| local-test pack producer | 首次 Windows PowerShell 5.1 `-File` 运行发现 UTF-8 无 BOM 按本机 ANSI 解码；给 producer 和验收脚本补 UTF-8 BOM 后，PS5.1 `ParseFile` 均为 0 errors；需在包含该兼容修复的 clean source commit 后运行 producer |
 | 实际测试目录、manifest 验收与旧 EXE 离线诊断 | 尚未执行；root 已授权在 clean source commit 后执行 |
 | Native rebuild | 未执行；相对 c12 的 Native/third-party/CMake/Supervisor/launcher/build-input 改动为 0，计划复用已审核 v0.1.0 Native/launcher |
 
