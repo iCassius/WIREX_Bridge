@@ -592,8 +592,11 @@ if(WIN32)
         wirex_hri_lcd_identity_candidate wirex_radio_identity_cache wirex_ui_control_protocol
         wirex_pcm_gain wirex_direct_frame wirex_direct_stream wirex_console_lifecycle
         winmm bcrypt ws2_32)
+    add_executable(engine_test tests/engine_test.cpp)
+    target_link_libraries(engine_test PRIVATE wirex_engine)
     if(MSVC)
         target_compile_options(wirex_engine PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(engine_test PRIVATE /W4 /permissive- /utf-8)
     endif()
 
     add_executable(wirex_bridge src/probe_main.cpp src/engine/ui_pipe_adapter.cpp)
@@ -665,3 +668,6 @@ if(WIN32)
     add_test(NAME bm_routing_lifecycle_test COMMAND bm_routing_lifecycle_test)
 endif()
 add_test(NAME routing_state_test COMMAND routing_state_test)
+if(WIN32)
+    add_test(NAME engine_test COMMAND engine_test)
+endif()

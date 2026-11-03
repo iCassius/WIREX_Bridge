@@ -193,11 +193,13 @@ Assert-True (@($expectedTests | Select-Object -Unique).Count -eq $expectedTests.
 $builderTestLines = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'build-bm-bridge.ps1') -Encoding UTF8 |
     Where-Object { $_ -match "^\s*@\{\s*Name='[^']+';\s*Source='tests\\" })
 $builderTestNames = @($builderTestLines | ForEach-Object { [regex]::Match($_, "Name='([^']+)'").Groups[1].Value })
-Assert-Equal ([string]::Join('|', $builderTestNames)) ([string]::Join('|', $expectedTests)) `
-    'v0.1.0 fixed test sequence matches the current builder test list and order'
+# R128：builder 在 v0.1.0 的 40 项之后追加 engine_test；v0.1.0 序列本身保持不变。
+$currentBuilderTests = @($expectedTests) + @('engine_test')
+Assert-Equal ([string]::Join('|', $builderTestNames)) ([string]::Join('|', $currentBuilderTests)) `
+    'current builder test list is the fixed v0.1.0 sequence followed by engine_test'
 foreach ($zipVersion in @('v0.1.1-test.2', 'v0.1.1')) {
-    Assert-Equal ([string]::Join('|', (Get-ReleaseProfile -Version $zipVersion).TestNames)) ([string]::Join('|', $expectedTests)) `
-        ($zipVersion + ' reuses the v0.1.0 Native test sequence')
+    Assert-Equal ([string]::Join('|', (Get-ReleaseProfile -Version $zipVersion).TestNames)) ([string]::Join('|', $currentBuilderTests)) `
+        ($zipVersion + ' uses the current builder Native test sequence')
 }
 Assert-Equal ([string]$stableProfile.PackageReadme) 'docs\releases\v0.1.0-package-README.md' 'v0.1.0 profile selects its package README'
 Assert-True ([System.IO.File]::Exists((Join-Path $repositoryRoot $stableProfile.PackageReadme))) 'v0.1.0 package README source exists'
