@@ -373,10 +373,24 @@ func TestMatchesFilter(t *testing.T) {
 }
 
 func TestWindowsPowerShellEnv(t *testing.T) {
-	in := []string{"PATH=C:\\x", "PSModulePath=C:\\pwsh7", "Psmodulepath=y", "PSModulePathX=keep"}
-	want := []string{"PATH=C:\\x", "PSModulePathX=keep"}
-	if got := windowsPowerShellEnv(in); !reflect.DeepEqual(got, want) {
-		t.Fatalf("got %v, want %v", got, want)
+	installer := filepath.Dir(vswherePath())
+	tests := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"drops PSModulePath and extends PATH",
+			[]string{"Path=C:\\x", "PSModulePath=C:\\pwsh7", "Psmodulepath=y", "PSModulePathX=keep"},
+			[]string{"Path=C:\\x;" + installer, "PSModulePathX=keep"}},
+		{"PATH already has installer", []string{"PATH=" + installer}, []string{"PATH=" + installer}},
+		{"PATHEXT untouched", []string{"PATHEXT=.EXE"}, []string{"PATHEXT=.EXE"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := windowsPowerShellEnv(tt.in); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

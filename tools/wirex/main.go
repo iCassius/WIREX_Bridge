@@ -247,16 +247,24 @@ func powershellFile(ctx context.Context, root string, sta bool, script string, a
 	return cmd
 }
 
-// windowsPowerShellEnv drops PSModulePath: when wirex is launched from pwsh 7,
-// the inherited value puts PowerShell 7 modules first and Windows PowerShell 5.1
-// then fails to load core cmdlets such as Get-FileHash. Unset, 5.1 rebuilds its
-// own default module path.
+// windowsPowerShellEnv prepares the environment for powershell.exe 5.1:
+//   - drops PSModulePath: inherited from pwsh 7 it puts PowerShell 7 modules first
+//     and 5.1 then fails to load core cmdlets such as Get-FileHash;
+//   - appends the VS Installer directory to PATH: vcvarsall.bat probes vswhere.exe
+//     on PATH and prints a stderr warning when absent, which build-bm-bridge.ps1
+//     (2>&1 with ErrorActionPreference=Stop) turns into a fatal error.
 func windowsPowerShellEnv(env []string) []string {
+	installer := filepath.Dir(vswherePath())
 	out := make([]string, 0, len(env))
 	for _, kv := range env {
-		if !strings.HasPrefix(strings.ToUpper(kv), "PSMODULEPATH=") {
-			out = append(out, kv)
+		upper := strings.ToUpper(kv)
+		switch {
+		case strings.HasPrefix(upper, "PSMODULEPATH="):
+			continue
+		case strings.HasPrefix(upper, "PATH=") && !strings.Contains(upper, strings.ToUpper(installer)):
+			kv += ";" + installer
 		}
+		out = append(out, kv)
 	}
 	return out
 }
