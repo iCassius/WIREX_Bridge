@@ -1,6 +1,6 @@
 #include "wirex/app/bm_api.hpp"
 
-#include "wirex/strict_json.hpp"
+#include "wirex/app/json.hpp"
 
 #include <fstream>
 #include <iterator>
@@ -53,17 +53,12 @@ Error make_error(ErrorKind kind, std::string message, int http_status = 0)
 }
 
 // PS 版对 talkgroup/slot 使用 [string] 转换后匹配正则，因此数字与十进制字符串都被接受。
-bool decimal_field(const strict_json::Value* value, std::size_t max_digits, std::uint64_t& output) noexcept
+bool decimal_field(const json::Value* value, std::size_t max_digits, std::uint64_t& output) noexcept
 {
     if (value == nullptr) return false;
-    if (value->type == strict_json::Value::Type::unsigned_integer) {
-        output = value->integer_value;
-        std::uint64_t digits = 1U;
-        for (auto n = output; n >= 10U; n /= 10U) ++digits;
-        return digits <= max_digits;
-    }
-    if (value->type != strict_json::Value::Type::string) return false;
-    const auto& text = value->string_value;
+    if (value->type != json::Value::Type::number && value->type != json::Value::Type::string) return false;
+    // number 只接受非负整数字面量；string 只接受十进制数字串。两者都与 PS 的 [string] 正则匹配一致。
+    const auto& text = value->text;
     if (text.empty() || text.size() > max_digits) return false;
     std::uint64_t number = 0U;
     for (const char ch : text) {
@@ -74,10 +69,12 @@ bool decimal_field(const strict_json::Value* value, std::size_t max_digits, std:
     return true;
 }
 
-bool parse_body(std::string_view json, strict_json::Value& root)
+constexpr json::ParseOptions response_options{false};
+
+bool parse_body(std::string_view body, json::Value& root)
 {
-    const auto text = trim(strip_bom(trim(json)));
-    return strict_json::parse(text, root);
+    const auto text = trim(strip_bom(trim(body)));
+    return json::parse(text, root, response_options).ok();
 }
 
 } // namespace
@@ -293,16 +290,16 @@ bool parse_static_group_list(std::string_view json, std::uint32_t device_id, std
     };
     const auto text = trim(strip_bom(trim(json)));
     if (text.size() < 2U || text.front() != '[' || text.back() != ']') return fail("BM API 静态组列表必须是 JSON 数组。");
-    strict_json::Value root{};
-    if (!strict_json::parse(text, root) || root.type != strict_json::Value::Type::array) {
+    json::Value root{};
+    if (!json::parse(text, root, response_options).ok() || root.type != json::Value::Type::array) {
         return fail("BM API 返回的静态组列表不是有效 JSON。");
     }
     std::vector<StaticGroup> parsed;
-    parsed.reserve(root.array_value.size());
-    for (const auto& item : root.array_value) {
+    parsed.reserve(root.items.size());
+    for (const auto& item : root.items) {
         const auto* talkgroup = item.find("talkgroup");
         const auto* slot = item.find("slot");
-        if (item.type != strict_json::Value::Type::object || talkgroup == nullptr || slot == nullptr) {
+        if (item.type != json::Value::Type::object || talkgroup == nullptr || slot == nullptr) {
             return fail("BM API 静态组项目缺少 TG 或时隙。");
         }
         std::uint64_t tg = 0U;
@@ -325,19 +322,19 @@ bool parse_static_group_list(std::string_view json, std::uint32_t device_id, std
 AddContext parse_add_context(std::string_view json, std::uint32_t device_id)
 {
     AddContext context{};
-    strict_json::Value root{};
-    if (!parse_body(json, root) || root.type != strict_json::Value::Type::object) return context;
+    json::Value root{};
+    if (!parse_body(json, root) || root.type != json::Value::Type::object) return context;
     const auto* id = root.find("id");
     const auto* status = root.find("status");
     if (id == nullptr || status == nullptr) return context;
     std::uint64_t returned_id = 0U;
     if (!decimal_field(id, 10U, returned_id) || returned_id != device_id) return context;
-    if (status->type != strict_json::Value::Type::unsigned_integer) return context;
-    if (status->integer_value > static_cast<std::uint64_t>(INT64_MAX)) return context;
-    context.status = static_cast<std::int64_t>(status->integer_value);
-    if (status->integer_value > 4U) return context;
+    const auto status_value = status->type == json::Value::Type::number ? status->as_uint64() : std::nullopt;
+    if (!status_value || *status_value > static_cast<std::uint64_t>(INT64_MAX)) return context;
+    context.status = static_cast<std::int64_t>(*status_value);
+    if (*status_value > 4U) return context;
     context.success = true;
-    context.add_slot = status->integer_value == 4U ? 0 : 2;
+    context.add_slot = *status_value == 4U ? 0 : 2;
     return context;
 }
 

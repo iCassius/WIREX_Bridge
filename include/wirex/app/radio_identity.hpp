@@ -25,7 +25,7 @@ inline constexpr std::string_view user_agent = "WIREX Bridge/0.1 (contact: https
 inline constexpr std::string_view official_base_uri = "https://radioid.net/api/dmr/user/";
 inline constexpr std::string_view cache_file_name = "radio-identity-cache.json";
 inline constexpr std::uint32_t max_radio_id = 16777215U;
-inline constexpr std::size_t max_response_bytes = 262144U;   // PS 上限；strict_json 实际只解析 ≤64 KiB
+inline constexpr std::size_t max_response_bytes = 262144U;   // 与 PS 版上限一致
 inline constexpr std::uintmax_t max_cache_file_bytes = 1048576U;
 inline constexpr std::size_t cache_entry_limit = 128U;
 inline constexpr std::chrono::hours positive_ttl{24 * 30};

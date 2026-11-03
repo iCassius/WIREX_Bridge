@@ -68,8 +68,13 @@ struct ParseResult {
 
 inline constexpr std::size_t max_depth = 64U;
 
+struct ParseOptions {
+    // PortableConfig.psm1 rejects escaped member names; server responses (BM API, radioid.net) may use them.
+    bool reject_escaped_keys{true};
+};
+
 // Parses one RFC 8259 document (optionally preceded by a UTF-8 BOM).
-[[nodiscard]] ParseResult parse(std::string_view input, Value& output);
+[[nodiscard]] ParseResult parse(std::string_view input, Value& output, ParseOptions options = {});
 [[nodiscard]] bool is_number_literal(std::string_view literal) noexcept;
 [[nodiscard]] bool valid_utf8(std::string_view input) noexcept;
 // UTF-16 code unit count (what .NET String.Length reports); nullopt on invalid UTF-8.

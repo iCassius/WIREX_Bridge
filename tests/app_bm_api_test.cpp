@@ -201,7 +201,11 @@ void test_list_parsing()
         {"TG above 24-bit rejected", R"([{"talkgroup":16777216,"slot":2}])", false, 0U},
         {"duplicates rejected", R"([{"talkgroup":91,"slot":2},{"talkgroup":91,"slot":2}])", false, 0U},
         {"invalid json", "[{", false, 0U},
-        {"negative number (strict_json limit) rejected", R"([{"talkgroup":91,"slot":2,"x":-1}])", false, 0U},
+        {"unrelated negative/decimal fields accepted", R"([{"talkgroup":91,"slot":2,"x":-1,"y":1.5}])", true, 1U},
+        {"negative TG rejected", R"([{"talkgroup":-91,"slot":2}])", false, 0U},
+        {"decimal TG rejected", R"([{"talkgroup":91.0,"slot":2}])", false, 0U},
+        {"exponent slot rejected", R"([{"talkgroup":91,"slot":2e0}])", false, 0U},
+        {"escaped member name accepted", R"([{"talkgroup":91,"slot":2}])", true, 1U},
     };
     for (const auto& c : cases) {
         std::vector<StaticGroup> groups;
@@ -233,8 +237,10 @@ void test_add_context()
         {"missing status", R"({"id":461135501})", false, std::nullopt, std::nullopt},
         {"mismatched id", R"({"id":461135502,"status":4})", false, std::nullopt, std::nullopt},
         {"array body", "[]", false, std::nullopt, std::nullopt},
-        // strict_json 不支持负数/小数：真实设备响应若含此类字段，整体降级为 success=false。
-        {"negative field degrades", R"({"id":461135501,"status":4,"lat":-33.5})", false, std::nullopt, std::nullopt},
+        // 真实设备响应含经纬度等负数/小数字段：与 PS ConvertFrom-Json 一致，不影响 id/status 解析。
+        {"negative/decimal fields ignored", R"({"id":461135501,"status":4,"lat":-33.5,"lng":151.2})", true, 4, 0},
+        {"negative status rejected", R"({"id":461135501,"status":-1})", false, std::nullopt, std::nullopt},
+        {"decimal status rejected", R"({"id":461135501,"status":4.0})", false, std::nullopt, std::nullopt},
     };
     for (const auto& c : cases) {
         const auto ctx = parse_add_context(c.json, 461135501U);

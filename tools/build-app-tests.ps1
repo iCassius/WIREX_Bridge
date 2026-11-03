@@ -1,5 +1,5 @@
 ﻿#requires -Version 5.1
-# Builds and runs the wirex::app config/device tests with VS 2019 x64 cl.exe.
+# Builds and runs all wirex::app service tests with VS 2019 x64 cl.exe.
 # Output goes to build\app-tests (git-ignored); test scratch files go to tmp\.
 [CmdletBinding()]
 param(
@@ -23,10 +23,13 @@ $vcvars = Join-Path ([string]$vsPath).Trim() 'VC\Auxiliary\Build\vcvars64.bat'
 if (-not (Test-Path -LiteralPath $vcvars -PathType Leaf)) { throw "缺少 vcvars64.bat：$vcvars" }
 
 $common = '/nologo /EHsc /std:c++17 /W4 /WX /permissive- /utf-8 /MT /O2 /I include'
-$libraries = 'advapi32.lib setupapi.lib winmm.lib ole32.lib icuuc.lib'
+$libraries = 'advapi32.lib setupapi.lib winmm.lib ole32.lib icuuc.lib winhttp.lib'
 $tests = @(
     @{ Name = 'app_config_test'; Sources = @('tests\app_config_test.cpp', 'src\app\config.cpp', 'src\app\json.cpp') },
-    @{ Name = 'app_devices_test'; Sources = @('tests\app_devices_test.cpp', 'src\app\devices.cpp') }
+    @{ Name = 'app_devices_test'; Sources = @('tests\app_devices_test.cpp', 'src\app\devices.cpp') },
+    @{ Name = 'app_radio_cat_test'; Sources = @('tests\app_radio_cat_test.cpp', 'src\app\radio_cat.cpp') },
+    @{ Name = 'app_bm_api_test'; Sources = @('tests\app_bm_api_test.cpp', 'src\app\bm_api.cpp', 'src\app\bm_servers.cpp', 'src\app\http_client.cpp', 'src\app\json.cpp') },
+    @{ Name = 'app_radio_identity_test'; Sources = @('tests\app_radio_identity_test.cpp', 'src\app\radio_identity.cpp', 'src\app\http_client.cpp', 'src\app\json.cpp', 'src\radio_identity_cache.cpp') }
 )
 
 $env:PATH = (Split-Path -Parent $vswhere) + ';' + $env:PATH  # vcvars64.bat looks up vswhere.exe on PATH

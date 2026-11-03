@@ -77,7 +77,7 @@ std::wstring fold_key(std::string_view key)
 
 class Parser {
 public:
-    explicit Parser(std::string_view input) : input_(input) {}
+    Parser(std::string_view input, ParseOptions options) : input_(input), options_(options) {}
 
     ParseResult run(Value& output)
     {
@@ -238,7 +238,7 @@ private:
             std::string key;
             bool had_escape = false;
             if (!parse_string(key, &had_escape)) return false;
-            if (had_escape) { pos_ = key_start; return fail(ParseError::escaped_key); }
+            if (had_escape && options_.reject_escaped_keys) { pos_ = key_start; return fail(ParseError::escaped_key); }
             if (!seen.insert(fold_key(key)).second) { pos_ = key_start; return fail(ParseError::duplicate_key); }
             skip_ws();
             if (peek() != ':') return fail(ParseError::syntax);
@@ -255,6 +255,7 @@ private:
     }
 
     std::string_view input_;
+    ParseOptions options_{};
     std::size_t pos_{};
     ParseError error_{ParseError::syntax};
 };
@@ -370,10 +371,10 @@ bool operator==(const Value& left, const Value& right)
     return false;
 }
 
-ParseResult parse(std::string_view input, Value& output)
+ParseResult parse(std::string_view input, Value& output, ParseOptions options)
 {
     Value parsed;
-    Parser parser(input);
+    Parser parser(input, options);
     const ParseResult result = parser.run(parsed);
     if (result.ok()) output = std::move(parsed);
     return result;

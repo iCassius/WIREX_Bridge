@@ -1,7 +1,7 @@
 #include "wirex/app/radio_identity.hpp"
 
 #include "wirex/radio_identity_cache.hpp"
-#include "wirex/strict_json.hpp"
+#include "wirex/app/json.hpp"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -21,7 +21,8 @@
 namespace wirex::app::radio_identity {
 namespace {
 
-using strict_json::Value;
+using json::Value;
+constexpr json::ParseOptions response_options{false};
 
 bool is_space(char ch) noexcept
 {
@@ -49,12 +50,16 @@ char ascii_lower(char ch) noexcept
     return ch >= 'A' && ch <= 'Z' ? static_cast<char>(ch - 'A' + 'a') : ch;
 }
 
-// PowerShell 的 [string]$value：字符串原样，整数转十进制；其它类型视为缺失。
+// PowerShell 的 [string]$value：字符串原样；整数/小数字面量保持原文（PS 5.1 实测 460997.0 → "460997.0"，
+// -3 → "-3"）；指数写法会被 PS 规范化（1e2 → "100"），此处视为缺失；bool → True/False。
 std::optional<std::string> value_text(const Value* value)
 {
     if (value == nullptr) return std::nullopt;
-    if (value->type == Value::Type::string) return value->string_value;
-    if (value->type == Value::Type::unsigned_integer) return std::to_string(value->integer_value);
+    if (value->type == Value::Type::string) return value->text;
+    if (value->type == Value::Type::number) {
+        if (value->text.find_first_of("eE") != std::string::npos) return std::nullopt;
+        return value->text;
+    }
     if (value->type == Value::Type::boolean) return std::string(value->boolean_value ? "True" : "False");
     return std::nullopt;
 }
@@ -138,7 +143,7 @@ void append_optional(std::string& out, const char* key, const std::optional<std:
     out += last ? "\n" : ",\n";
 }
 
-enum class ReadOutcome { missing, ok, unreadable, too_large_for_parser };
+enum class ReadOutcome { missing, ok, unreadable };
 
 ReadOutcome read_cache_file(const std::filesystem::path& path, std::vector<CacheEntry>& entries)
 {
@@ -157,7 +162,6 @@ ReadOutcome read_cache_file(const std::filesystem::path& path, std::vector<Cache
         return ReadOutcome::unreadable;
     }
     const auto text = trim(strip_bom(content));
-    if (text.size() > strict_json::max_input_bytes) return ReadOutcome::too_large_for_parser;
     return parse_cache_document(text, entries) ? ReadOutcome::ok : ReadOutcome::unreadable;
 }
 
@@ -402,18 +406,17 @@ ParseResult parse_response(std::string_view body, std::uint32_t requested_id)
     ParseResult result{};
     if (body.size() > max_response_bytes) return result;
     Value root{};
-    // strict_json 上限 64 KiB；更大的合法响应在这里被判为 invalid。
-    if (!strict_json::parse(trim(strip_bom(body)), root)) return result;
+    if (!json::parse(trim(strip_bom(body)), root, response_options).ok()) return result;
 
     std::vector<const Value*> records;
     if (root.type == Value::Type::null_value) {
         return result;
     } else if (root.type == Value::Type::array) {
-        for (const auto& item : root.array_value) records.push_back(&item);
+        for (const auto& item : root.items) records.push_back(&item);
     } else if (root.type == Value::Type::object && root.find("results") != nullptr) {
         const auto* results = root.find("results");
         if (results->type == Value::Type::array) {
-            for (const auto& item : results->array_value) records.push_back(&item);
+            for (const auto& item : results->items) records.push_back(&item);
         } else if (results->type != Value::Type::null_value) {
             return result;
         }
@@ -524,14 +527,14 @@ bool parse_cache_document(std::string_view json, std::vector<CacheEntry>& entrie
 {
     entries.clear();
     Value root{};
-    if (!strict_json::parse(trim(strip_bom(json)), root) || root.type != Value::Type::object) return false;
+    if (!json::parse(trim(strip_bom(json)), root, response_options).ok() || root.type != Value::Type::object) return false;
     const auto schema = value_uint32(root.find("schema_version"));
     if (!schema || *schema != 1U) return false;
     const auto* list = root.find("entries");
     if (list == nullptr || list->type == Value::Type::null_value) return false;
     std::vector<const Value*> items;
     if (list->type == Value::Type::array) {
-        for (const auto& item : list->array_value) items.push_back(&item);
+        for (const auto& item : list->items) items.push_back(&item);
     } else {
         items.push_back(list);   // PS 的 @($document.entries) 会把单个对象包成数组
     }
@@ -610,10 +613,7 @@ bool save_cache_entry(const std::filesystem::path& path, const CacheEntry& entry
         if (ec) return fail("无法创建缓存目录。");
 
         std::vector<CacheEntry> existing;
-        // 文件合法但超出 strict_json 的 64 KiB 上限时拒绝覆盖，避免丢失 PS 写入的条目。
-        if (read_cache_file(full, existing) == ReadOutcome::too_large_for_parser) {
-            return fail("缓存文件超过本机解析上限；为避免丢失条目，未覆盖。");
-        }
+        (void)read_cache_file(full, existing);
         std::vector<CacheEntry> all;
         all.reserve(existing.size() + 1U);
         all.push_back(entry);
