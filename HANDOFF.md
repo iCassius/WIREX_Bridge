@@ -18,6 +18,20 @@ Alpha 19 本机目录、7 个 R124 launcher 旧构建目录、R123 `b102cd6` Nat
 
 根目录原忽略入口 `start-my-bridge.cmd` 长 103 字节，内容指向已归档的 Alpha 19 启动器；已用 `File.Move` 移到 `private/build-retired/R124/legacy-entrypoints/start-my-bridge.cmd`，移动前后逐字节相同。没有新增 CMD 启动入口。stable `build/releases/v0.1.0/config.json` 保留在原位；其 launcher `--validate-config` 只读校验退出码为 0，文件长度和修改时间未变，且没有与归档中的 Alpha 19 配置比较或覆盖。
 
+## R125 本机测试包与 UI 运行改动交接（2026-11-03）
+
+R125 UI、动态频道激活、运行状态、整数增益和本机测试打包工具已冻结。产品/运行时代码及 UI 文档提交为 `fac3faaa39c7622d51607364ec606022e5827d24`；Windows PowerShell 5.1 对 UTF-8 无 BOM 的 `-File` 脚本按本机 ANSI 解码，随后给 producer 与验收脚本补 UTF-8 BOM，兼容性修复提交为 `654dfb3f96c9c5f860f75e739bbf18559b77dbe3`。这些提交已推送到 `codex/r124-stable-release`；R125 未创建 tag、ZIP 或 GitHub Release，stable `v0.1.0` 源码 tag、资产和 Release 未修改。
+
+Root 独立审核并通过本机 generic 测试目录：42 项 manifest 资产、43 个 generic 文件、8 个目录、36 个源码映射，逐项长度、SHA-256 和 source mapping 均通过，无 reparse 路径。测试版本目录为 `build/releases/v0.1.1-test.1`；source commit 是 `654dfb3f96c9c5f860f75e739bbf18559b77dbe3`，manifest SHA-256 为 `c2e2a7fd296c8e88adf284551dbb0a654496af2ae762be44a03e17d2811a69fd`。它是本机测试目录，不是正式 release。
+
+Root 审核 generic 目录后，才将 stable `build/releases/v0.1.0/config.json` 的最新原始字节复制到测试版本根目录。stable 源与副本各 5,091 字节，逐字节相等，stable 源仍在原位；使用测试目录 `PortableConfig.psm1` 的 `Get-WirexPortableConfig` 只读校验公开 schema 成功。没有读取、输出或计算实际配置哈希。配置副本不在 generic manifest 的 42 条资产记录中。
+
+Native 与 launcher 沿用 c12 `c12b50a9f339417ffd49d37b7acab6057fa51bcf` 的实际二进制和构建 provenance；Native 原记录 40 项通过，Native 和 launcher 的受保护构建输入相对 c12 改动为 0，本轮没有重建 Native。复用的 Native SHA-256 为 `8f629aefbaaba3b865f09b3d1cb4b012e6b1953a7ec58d340edbec460225ca32`，launcher SHA-256 为 `de4d0b113cd7a25a907b3fe96a0a4b1579730c1a884175930ad6db9412b60638`。
+
+离线回归通过：ChannelActivationState 348、gain 92、channels 186、console 121、status 87、RenderOnly 6,155、真实 generic 测试目录 199 项检查。旧 launcher `--routing-diagnostic` 对 R125 新 WPF/runtime 全链 exit 0，QuickCall 两帧进入内存 sink、`bm_connected=false`，并正常关闭。Root 接受最终 UI 截图，独立 UI lifecycle review 没有 P1/P2 项。没有启动正常 UI、设备、BM/API、CAT/COM、音频、PTT 或 RF；实际 TG46001 动态激活及收发仍待后续实机 BM 联测。
+
+集成回归汇总见 `build/_work/r125-local-test-evidence-654dfb3.txt`。当前 `build/releases/` 只保留回退 `v0.1.0` 与本机测试 `v0.1.1-test.1`。
+
 ## R123 / Alpha 19 最终交接（2026-11-02）
 
 源码提交 `b102cd630d49839eb99869f87958909cd365094d` 已推送至 `origin/main`。基于该干净提交在 `build/_work/wirex-bridge-b102cd6-20261102-153831` 完成 Native full40，40/40 通过，`source_tree_clean=true`、`compile_only=false`，编译 warning/error 均为 0。EXE 长 999,936 字节，SHA-256 为 `aad6ce7d48c616215b5979f0c7bba3e4da0eb33dee56f26554e84f3f85e640a7`。首个全量构建在链接 `session_timing_test.exe` 时报告 LNK1105；检查时没有发现仍在运行的 link、cl 或测试进程。随后在新目录重跑 full40 并通过；仅记录观察结果，不推断失败原因。失败目录及日志已可恢复归档。

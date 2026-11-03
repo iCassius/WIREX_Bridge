@@ -1,19 +1,19 @@
 # R125 本机测试包集成记录
 
-> 状态：所有 owners 已冻结源码；root 已审核 UI 截图和 UI reviewer 生命周期审查。本文记录提交前的集成证据；本机测试目录、真实 producer 验收和旧 EXE 离线诊断将在 clean source commit 后执行。
+> 状态：源码提交 `654dfb3f96c9c5f860f75e739bbf18559b77dbe3` 已推送；root 已审核 generic 测试目录并批准随后迁移当前 stable 配置原字节。本文件更新只改交接文档，不改 pack 映射、runtime 或 manifest。
 
 ## 范围和交付边界
 
-计划生成 `app/build/releases/v0.1.1-test.1/` 本机测试目录。它不对应 Git tag 或 GitHub Release，不生成 ZIP，不调用正式 publisher 或 downloader。只有 root 审核 generic 目录后，才可另行把当前 stable 配置原字节迁入测试目录；本轮打包工具不会读取、复制或输出配置字段，也不会计算配置哈希。
+`app/build/releases/v0.1.1-test.1/` 是本机测试目录，不对应 Git tag 或 GitHub Release，不生成 ZIP，不调用正式 publisher 或 downloader。root 先审核了 43 文件、8 目录的 generic 目录，之后才批准从 stable `v0.1.0/config.json` 把当前配置原字节复制到测试目录根目录。两份配置长度均为 5,091 字节且逐字节相同；包内 `PortableConfig.psm1` 的 `Get-WirexPortableConfig` 只读 schema 校验通过。没有读取、输出或计算配置哈希，stable 源文件仍保留。
 
-打包器固定写入 main app 下的 `build/releases/v0.1.1-test.1`，发现目标已存在就停止，不覆盖。它从已审核的 v0.1.0 generic 清单复用 43 文件布局、8 个目录和 36 条 source mapping；Native/launcher 及各自 provenance 从 stable 目录按清单校验后复用。打包期间不连接设备、BM、音频、PTT 或 RF。
+打包器固定写入 main app 下的 `build/releases/v0.1.1-test.1`，发现目标已存在就停止，不覆盖。它从已审核的 v0.1.0 generic 清单复用 42 条文件记录、8 个目录和 36 条 source mapping；Native/launcher 及各自 provenance 从 stable 目录按清单校验后复用。root 审核后复制的 `config.json` 不在 manifest 记录内，所以当前本机测试目录有 44 个物理文件（42 项资产、manifest、配置）和 8 个目录。打包和验证没有连接设备、BM、音频、PTT 或 RF。
 
 ## 固定输入与 provenance
 
 - v0.1.0 `manifest.json` 原始字节 SHA-256 固定为 `1bdc80890cd8aa0b51b19c8f6385d312014b11c006b4643e2b31862cd980cc0e`。打包器先核对该值，之后才解析 manifest 并读取 36 条 source mapping。
 - Native 与 launcher 的原始 source commit 都是 `c12b50a9f339417ffd49d37b7acab6057fa51bcf`。Native SHA-256 为 `8f629aefbaaba3b865f09b3d1cb4b012e6b1953a7ec58d340edbec460225ca32`，原记录有 40 项通过；launcher SHA-256 为 `de4d0b113cd7a25a907b3fe96a0a4b1579730c1a884175930ad6db9412b60638`。本地 manifest 保留原 build records，并另列复用理由，不把它们改写成 R125 构建。
 - 获准的 HRI 模板限定为 `runtime/private/device-y.bin`，长度 100 字节，SHA-256 `82e0085ccaccb769a83362c5b335ce6b9a0e3ae93afdf2ad4f46eb81f908577f`。
-- R125 UI source commit 与最终 source diff 尚未冻结。打包前必须确认 Native C++、third-party、`BridgeSupervisor.cs`、C# launcher 和相关构建输入相对 `c12b50a` 均无变化；否则停止复用流程并重新评估构建证据。
+- R125 source commit 为 `654dfb3f96c9c5f860f75e739bbf18559b77dbe3`。相对 `c12b50a` 的 Native、include、third-party、CMake、Supervisor、launcher 和 Native/launcher build-input 改动均为 0；本轮复用 stable 二进制，没有重建 Native。
 
 测试 manifest 使用 `package_kind=wirex_bridge_local_test_directory`、`package_status=local_test_only`、`version=v0.1.1-test.1`，不设置 v0.1.0 tag，也不声称已发布。正式 publisher 要求稳定包 kind、`root_audit_passed`、`v0.1.0` version 和 tag；本地测试 manifest 不满足这些条件。
 
@@ -28,15 +28,17 @@
 | status | Windows PowerShell 5.1 STA 下 87 项断言通过；同步修正一条频道标题 regex，使其匹配当前 `组呼 91` 显示文案 |
 | RenderOnly | Windows PowerShell 5.1 STA 最终回归 6,155 项通过；六张主窗图为 1360×900，gain 1/8/16 各重复两次（UI owner 提供） |
 | 中文 UI 截图与独立审查 | root 已接受 UI owner 最终截图；独立 UI 生命周期审查没有 P1/P2 项 |
-| local-test pack producer | 首次 Windows PowerShell 5.1 `-File` 运行发现 UTF-8 无 BOM 按本机 ANSI 解码；给 producer 和验收脚本补 UTF-8 BOM 后，PS5.1 `ParseFile` 均为 0 errors；需在包含该兼容修复的 clean source commit 后运行 producer |
-| 实际测试目录、manifest 验收与旧 EXE 离线诊断 | 尚未执行；root 已授权在 clean source commit 后执行 |
-| Native rebuild | 未执行；相对 c12 的 Native/third-party/CMake/Supervisor/launcher/build-input 改动为 0，计划复用已审核 v0.1.0 Native/launcher |
+| local-test pack producer | Windows PowerShell 5.1 `-File` 成功生成目标目录：42 项 manifest 资产、43 个 generic 文件、8 个目录；UTF-8 BOM 修复记录在提交 `654dfb3` |
+| 实际 generic 目录与 manifest 验收 | 配置迁移前对真实 producer 目录通过 199 项检查；manifest SHA-256 为 `c2e2a7fd296c8e88adf284551dbb0a654496af2ae762be44a03e17d2811a69fd` |
+| 旧 launcher 离线路由诊断 | 对上述 generic 目录调用旧 `WirexBridge.exe --routing-diagnostic`，PS5.1 exit 0；WPF/Native QuickCall 使用两帧内存 sink，BM=false，正常关闭 |
+| stable 配置迁移 | root 审核 generic 目录后，从 stable 原字节复制；源和目标均 5,091 字节、逐字节相同，public schema 只读验证通过，未计算配置 hash |
+| Native rebuild | 未执行；无受保护构建输入差异，复用已审核 v0.1.0 Native/launcher |
 
-`tools/test-package-local-test.ps1` 会在真实 producer 生成测试目录后检查该目录中的 manifest、全部文件记录与哈希、36 条 source mapping、8 个目录、二进制复用记录、受保护输入差异，以及配置和日志排除状态。它不构造 synthetic 镜像；测试只能在获准生成真实本机测试目录后运行。
+`tools/test-package-local-test.ps1` 在 stable 配置迁移前对真实 producer 目录检查 manifest、全部资产记录与哈希、36 条 source mapping、8 个目录、二进制复用记录和受保护输入差异，共 199 项通过。它不构造 synthetic 镜像。配置之后按 root 授权单独原字节迁入，未重写 manifest。
 
-## 当前工作树 exact-path 快照
+## R125 implementation exact-path 快照
 
-以下清单来自冻结前工作树状态；最终提交前必须重新核对并按实际 diff 更新。
+R125 产品与打包实现提交为 `fac3faaa39c7622d51607364ec606022e5827d24`；PS5.1 UTF-8 BOM 兼容修复提交为 `654dfb3f96c9c5f860f75e739bbf18559b77dbe3`。这两个提交的 exact path 清单如下：
 
 已修改：
 
@@ -49,14 +51,15 @@
 - `ui/windows/MainWindow.xaml`
 - `ui/windows/bridge-ui.ps1`
 
-未跟踪：
+其余 6 项为新增文件：
 
 - `docs/R125_UI.md`（UI owner 文档）
+- `docs/R125_RUNTIME.md`（runtime/state owner 文档）
 - `docs/releases/v0.1.1-test.1-local-README.md`
 - `tools/package-local-test.ps1`
 - `tools/test-package-local-test.ps1`
 - `docs/R125_LOCAL_TEST_HANDOFF.md`（本文）
 
-提交前核对：R125 exact paths 共 14 项；路径名未包含 config、log、credential、secret 或 API key 文件。相对 c12 的 Native、include、third-party、CMake、Supervisor、launcher 和 Native/launcher build input 差异均为空。正式 stable Native 与 launcher 仍分别是 `8f629aefbaaba3b865f09b3d1cb4b012e6b1953a7ec58d340edbec460225ca32` 和 `de4d0b113cd7a25a907b3fe96a0a4b1579730c1a884175930ad6db9412b60638`。
+generic manifest 中的 Native 和 launcher SHA-256 仍分别是 `8f629aefbaaba3b865f09b3d1cb4b012e6b1953a7ec58d340edbec460225ca32` 和 `de4d0b113cd7a25a907b3fe96a0a4b1579730c1a884175930ad6db9412b60638`；两项 build provenance 都指向 c12。通用 manifest 仍不包含配置、日志、凭据或缓存；本机配置文件只额外存在于测试目录根部，且不属于 manifest。
 
-以上 console/status 与 owners 回归均使用离线合成数据；未读取、输出或计算用户实际配置字段或哈希。尚未运行正常应用、连接设备/BM、启动音频/PTT/RF，亦未迁移 stable 配置。本机测试目录生成后须由 root 独立审核；本文件不将测试目录称为正式发行。
+所有 WPF/Native 诊断均使用隔离 synthetic fixture；没有启动正常 app、设备、BM/API、CAT/COM、音频、PTT 或 RF。实际 TG46001 动态组激活及收发仍待后续用户授权的实机 BM 联测。stable `v0.1.0` 目录、配置、tag 与已发布 Release 均保留；R125 测试目录不是正式发行。
