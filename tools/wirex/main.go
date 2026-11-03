@@ -243,7 +243,22 @@ func powershellFile(ctx context.Context, root string, sta bool, script string, a
 	base = append(base, "-File", script)
 	cmd := exec.CommandContext(ctx, "powershell.exe", append(base, args...)...)
 	cmd.Dir = root
+	cmd.Env = windowsPowerShellEnv(os.Environ())
 	return cmd
+}
+
+// windowsPowerShellEnv drops PSModulePath: when wirex is launched from pwsh 7,
+// the inherited value puts PowerShell 7 modules first and Windows PowerShell 5.1
+// then fails to load core cmdlets such as Get-FileHash. Unset, 5.1 rebuilds its
+// own default module path.
+func windowsPowerShellEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if !strings.HasPrefix(strings.ToUpper(kv), "PSMODULEPATH=") {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 func powershellEncoded(ctx context.Context, root, script string) *exec.Cmd {
@@ -255,6 +270,7 @@ func powershellEncoded(ctx context.Context, root, script string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
 		"-ExecutionPolicy", "Bypass", "-EncodedCommand", base64.StdEncoding.EncodeToString(b))
 	cmd.Dir = root
+	cmd.Env = windowsPowerShellEnv(os.Environ())
 	return cmd
 }
 

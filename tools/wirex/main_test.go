@@ -372,6 +372,14 @@ func TestMatchesFilter(t *testing.T) {
 	}
 }
 
+func TestWindowsPowerShellEnv(t *testing.T) {
+	in := []string{"PATH=C:\\x", "PSModulePath=C:\\pwsh7", "Psmodulepath=y", "PSModulePathX=keep"}
+	want := []string{"PATH=C:\\x", "PSModulePathX=keep"}
+	if got := windowsPowerShellEnv(in); !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
 func TestPsQuote(t *testing.T) {
 	if got := psQuote(`C:\it's dir`); got != `'C:\it''s dir'` {
 		t.Fatalf("got %s", got)
