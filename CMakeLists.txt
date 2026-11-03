@@ -580,13 +580,33 @@ if(WIN32)
         wirex_bm_session wirex_bm_udp wirex_bm_connection_control wirex_bm_voice_pipeline wirex_bm_test_profile
         wirex_hri_stream_session wirex_hri_lcd_identity_candidate ws2_32)
 
-    add_executable(wirex_bridge src/probe_main.cpp)
+    # R128：进程内引擎（原 run_bm_bridge 主循环）。
+    add_library(wirex_engine
+        src/engine/engine.cpp src/engine/engine_loop.cpp
+        src/engine/engine_status.cpp src/engine/engine_devices_win.cpp)
+    target_include_directories(wirex_engine PUBLIC include)
+    target_compile_features(wirex_engine PUBLIC cxx_std_17)
+    target_link_libraries(wirex_engine PUBLIC
+        wirex_bm_connection_control wirex_bm_voice_pipeline wirex_bm_test_profile
+        wirex_hri_session wirex_hri_ptt_gate wirex_hri_stream_session wirex_hri_t_payload
+        wirex_hri_lcd_identity_candidate wirex_radio_identity_cache wirex_ui_control_protocol
+        wirex_pcm_gain wirex_direct_frame wirex_direct_stream wirex_console_lifecycle
+        winmm bcrypt ws2_32)
+    add_executable(engine_test tests/engine_test.cpp)
+    target_link_libraries(engine_test PRIVATE wirex_engine)
+    if(MSVC)
+        target_compile_options(wirex_engine PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(engine_test PRIVATE /W4 /permissive- /utf-8)
+    endif()
+
+    add_executable(wirex_bridge src/probe_main.cpp src/engine/ui_pipe_adapter.cpp)
     target_compile_features(wirex_bridge PRIVATE cxx_std_17)
     target_compile_definitions(wirex_bridge PRIVATE WIREX_ENABLE_BM_BRIDGE)
     if(MSVC)
         target_compile_options(wirex_bridge PRIVATE /W4 /permissive- /utf-8)
     endif()
     target_link_libraries(wirex_bridge PRIVATE
+        wirex_engine
         wirex_direct_stream wirex_direct_frame wirex_hri_session wirex_hri_downlink_session
         wirex_hri_radio_protocol wirex_ui_control_protocol wirex_hri_t_payload wirex_hri_call_header wirex_hri_t_record wirex_hri_lcd_identity_candidate wirex_radio_identity_cache wirex_hri_ptt_gate wirex_wave_file wirex_pcm_gain
         wirex_console_lifecycle wirex_session_report wirex_bm_session wirex_bm_udp
@@ -648,3 +668,6 @@ if(WIN32)
     add_test(NAME bm_routing_lifecycle_test COMMAND bm_routing_lifecycle_test)
 endif()
 add_test(NAME routing_state_test COMMAND routing_state_test)
+if(WIN32)
+    add_test(NAME engine_test COMMAND engine_test)
+endif()

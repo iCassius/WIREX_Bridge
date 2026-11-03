@@ -181,7 +181,11 @@ try {
         'src\session_report.cpp',
         'src\ui_control_protocol.cpp',
         'src\strict_json.cpp',
-        'src\routing_state.cpp'
+        'src\routing_state.cpp',
+        'src\engine\engine.cpp',
+        'src\engine\engine_loop.cpp',
+        'src\engine\engine_status.cpp',
+        'src\engine\engine_devices_win.cpp'
     )
     $upstreamSources = @($manifest.files | Where-Object {
         [string]$_.path -match '^upstream/(imbe_vocoder/.*\.cc|mbe/.*\.cpp)$'
@@ -193,7 +197,7 @@ try {
     $upstreamObjects = Invoke-CompileGroup -Name '固定 DroidStar MBE/IMBE 实现' -Sources $upstreamSources `
         -ObjectDirectory 'objects\upstream' -WarningLevel 'W0' -Definitions @('_USE_MATH_DEFINES')
 
-    $bridgeMain = Invoke-CompileGroup -Name 'native BM bridge entry' -Sources @('src\probe_main.cpp') `
+    $bridgeMain = Invoke-CompileGroup -Name 'native BM bridge entry' -Sources @('src\probe_main.cpp', 'src\engine\ui_pipe_adapter.cpp') `
         -ObjectDirectory 'objects\bridge-entry' -WarningLevel 'W4' -Definitions @('WIREX_ENABLE_BM_BRIDGE')
     Invoke-LinkExecutable -Name 'wirex_bridge' -Objects (@($bridgeMain) + @($coreObjects) + @($upstreamObjects))
 
@@ -248,7 +252,8 @@ try {
         @{ Name='ui_control_protocol_v2_test'; Source='tests\ui_control_protocol_v2_test.cpp' },
         @{ Name='talkgroup_routing_test'; Source='tests\talkgroup_routing_test.cpp' },
         @{ Name='bm_routing_lifecycle_test'; Source='tests\bm_routing_lifecycle_test.cpp' },
-        @{ Name='routing_state_test'; Source='tests\routing_state_test.cpp' }
+        @{ Name='routing_state_test'; Source='tests\routing_state_test.cpp' },
+        @{ Name='engine_test'; Source='tests\engine_test.cpp' }
     )
     $testObjects = @()
     foreach ($test in $testSpecs) {

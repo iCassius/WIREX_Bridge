@@ -30,6 +30,8 @@ $script:v010TestNames = @(
     'pcm_resampler_test', 'bm_voice_pipeline_test', 'bm_test_profile_test', 'bm_connection_config_test', 'hri_stream_session_test',
     'bm_bridge_loopback_test', 'ui_control_protocol_v2_test', 'talkgroup_routing_test', 'bm_routing_lifecycle_test', 'routing_state_test'
 )
+# v0.1.0 已发布的 40 项保持不变；ZIP-only profile 由 R128 起的 builder 构建，追加 engine_test。
+$script:zipOnlyTestNames = @($script:v010TestNames) + @('engine_test')
 $script:publishIsPrerelease = $true
 
 function Set-PublishProfile {
@@ -54,7 +56,7 @@ function Set-PublishProfile {
             $script:assetPathMap = [ordered]@{}
             $script:assetPathMap[$zip.ArchiveName] = $zip.ArchiveName
             $script:expectedDirectories = @($zip.Directories)
-            $script:expectedTestNames = $script:v010TestNames
+            $script:expectedTestNames = $script:zipOnlyTestNames
         }
         'v0.1.1' {
             $zip = Get-WirexZipOnlyReleaseProfile -Version $Tag
@@ -63,7 +65,7 @@ function Set-PublishProfile {
             $script:assetPathMap = [ordered]@{}
             $script:assetPathMap[$zip.ArchiveName] = $zip.ArchiveName
             $script:expectedDirectories = @($zip.Directories)
-            $script:expectedTestNames = $script:v010TestNames
+            $script:expectedTestNames = $script:zipOnlyTestNames
         }
         default { throw 'Only registered v0.1.0, v0.1.1-test.2, and v0.1.1 profiles are supported.' }
     }
