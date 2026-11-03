@@ -37,3 +37,36 @@ UI 线程 (ImGui/DX11, MsgWaitForMultipleObjects, 空闲 ≤10 fps)
 - 原有离线回归（PS 侧）在退役前保持通过。
 - GUI 离线截图（中/英）人工视检；空闲 CPU 与内存给出实测值。
 - 实机：TODO 第一节各项要用新 GUI 重新验收一遍，才能删除旧 UI。
+
+## 进度（2026-11-04）
+
+步骤 1–4 的代码已全部合入 `feat/r128-native-gui`。真实设备、BM 网络和 RF 都还没实机验收，所以步骤 5（退役旧 UI）暂不进行。
+
+| 项 | 结果（主 checkout 实测） |
+| --- | --- |
+| 引擎 | `src/engine/`；`probe_main.cpp` 由 8321 行降到约 4670 行。`--ui-pipe` 适配层的 `status.jsonl` 与 R127 exe 对比逐字节一致（run_id/时间戳规范化后）；`--control-diagnostic`/`--routing-diagnostic` 输出逐行一致 |
+| Native 测试 | full40 + `engine_test` = 41/41，0 warning |
+| app 服务测试 | `tools/build-app-tests.ps1`：config 392、devices 83、CAT 163、BM API 285、RadioID 234、gui_config_bridge 83，0 warning |
+| 离线回归 | `wirex test --offline` 53 项（Native 41 + PowerShell 12）通过；`test-ui-console` 偶发失败一次（真实串口枚举相关，连续重跑 3 次均通过） |
+| GUI | `wirex build --gui` 产出单个 `WirexBridge.exe`（约 2.1 MB，/MT 静态链接，引擎在进程内，0 warning） |
+| 资源 | 真实引擎、未连接设备时：空闲 CPU 0.00%，工作集约 86 MiB（主要是 D3D11 与中文字体图集） |
+
+### GUI 启动参数
+
+- 无参数：真实引擎 + 真实服务；`config.json` 放在 exe 同目录，首次运行自动生成。HRI 模板从 `<exe>/private/device-y.bin` 或 `<exe>/runtime/private/` 读取。
+- `--fake`：模拟引擎 + 真实服务。`--fake --fake-services`：完全离线。
+- `--screenshot <png>`、`--open-settings`、`--config <json>`、`--check-config`。
+
+### 与旧版的行为差异（实机验收时确认）
+
+- CAT 设置模式/频率：要求核心**已停止**（app::radio_cat 门控）；旧版只要求核心空闲。
+- CAT 功率的“接收队列为空”条件：快照里没有队列深度，暂时用 `media_owner==idle` 代替。
+- `Snapshot::levels` 是累计峰值，不是实时电平。
+- 窗口大小可调整（最小 1180×780）；连接配置、Wires-X 串口和音频端点移到了设置弹窗里。
+
+### 待办
+
+1. 实机：不带 `--fake` 启动，依次验证连接串口 → 连接 BM → TG 收听/发射 → Quick Call → CAT 门控 → 身份写回 → 关闭窗口时有界收尾。
+2. 打包：在 `ZipOnlyRelease.psm1` 新增 GUI profile（`WirexBridge.exe` + `private/device-y.bin` + `licenses/`），替代 launcher + `runtime/` 的结构。
+3. IME 中文输入人工验证一次；中英文截图视检。
+4. 实机通过后进入步骤 5：删除 WPF/PowerShell UI、launcher 和 control-v2 适配层。
