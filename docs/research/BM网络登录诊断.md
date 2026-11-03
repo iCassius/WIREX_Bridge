@@ -91,4 +91,4 @@ DMRHost 的网络对象构造函数会把 RX/TX frequency、power、color code�
 
 ## 独立诊断工具
 
-[`tools/bm_network_probe.cpp`](../tools/bm_network_probe.cpp) 与 native 共用 `apply_network_metadata(Profile&)`，以免两处 RPTC 参数漂移；调用方单独给定 CC。它固定指向 BM 4602，最多运行 15 秒，只发送唯一的 RPTL/RPTK/RPTC；只有生产 Session 确认 `ready` 时才发送 RPTCL。此前工具把 RPTCL 按 RPTC 前缀归类的问题已修复：现在先检查完整 9 字节关闭包，并记录每个控制包本机 UDP send 成败；只有 RPTCL 实际 send 成功才返回成功退出码。无参数或 `--help` 只显示用法，不读取密码、不创建 socket；只有显式传入 `--run-network-only` 才会开始真实网络诊断。它只读取本机私有密码文件，不接受密码命令行参数，不能由通用 builder、自动测试或默认启动流程调用。
+[`tools/bm_network_probe.cpp`](../../tools/bm_network_probe.cpp) 与 native 共用 `apply_network_metadata(Profile&)`，以免两处 RPTC 参数漂移；调用方单独给定 CC。它固定指向 BM 4602，最多运行 15 秒，只发送唯一的 RPTL/RPTK/RPTC；只有生产 Session 确认 `ready` 时才发送 RPTCL。此前工具把 RPTCL 按 RPTC 前缀归类的问题已修复：现在先检查完整 9 字节关闭包，并记录每个控制包本机 UDP send 成败；只有 RPTCL 实际 send 成功才返回成功退出码。无参数或 `--help` 只显示用法，不读取密码、不创建 socket；只有显式传入 `--run-network-only` 才会开始真实网络诊断。它只读取本机私有密码文件，不接受密码命令行参数，不能由通用 builder、自动测试或默认启动流程调用。

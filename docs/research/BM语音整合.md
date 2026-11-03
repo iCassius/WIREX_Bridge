@@ -50,4 +50,4 @@ pipeline 测试使用真实 codec 与 `dmr_call`，但虚拟单调时钟和合�
 
 `tests/bm_bridge_loopback_test.cpp` 将生产 BM Session、WinSock UDP transport、声码器、DMR call、pipeline 和 HRI T3/T0 session 串在一起。localhost fake Master 完成真实 UDP 登录，接收 TX 编码语音与 EOT，并向 production session 回送合成 DMRD；fake HRI 记录 T3/T0 写入，PCM sink 逐帧模拟 `WHDR_DONE`。测试覆盖 EOT 在 T3 许可前到达、等 1 秒 T3 后完整播放和最后一帧 ack 后才发 T0、private-call Echo 目标 ID 筛选、丢 EOT watchdog、断线后旧 generation ack 被拒绝，以及用户取消 TX 后先发 EOT 再发 RPTCL。测试只使用 localhost UDP、合成 PCM 和假 HRI/音频回执，没有运行真实 WinMM、COM、BM 服务或 RF。
 
-`acknowledge_playback()` 本身只验证外层报告的完成帧数量和 generation；MSVC 离线测试以函数调用模拟该回执，没有运行 WinMM。该模块切片撰写时尚未接入 native；当前 native 组合及正式构建结果见 [BM 联调推进](BM联调推进.md)。localhost loopback 不证明真实 HRI、BM 服务器、COM、音频播放设备或 RF 联调通过。
+`acknowledge_playback()` 本身只验证外层报告的完成帧数量和 generation；MSVC 离线测试以函数调用模拟该回执，没有运行 WinMM。该模块切片撰写时尚未接入 native；当前 native 组合及正式构建结果见 BM 联调推进。localhost loopback 不证明真实 HRI、BM 服务器、COM、音频播放设备或 RF 联调通过。

@@ -54,7 +54,7 @@ struct RfRouteInputs {
 };
 ```
 
-其中 `RadioRfState` 和 `AudioRouteState` 必须来自能对应到官方软件/设备状态字段的真实 provider；若字段含义仍未知，就不创建能把该未知字段强制归类为 RX/TX 的适配器。首轮应先追清[外层 RF 路由研究报告](../../research/rf/RF路由官方资料与实现边界.md)中的官方路径，再决定这些类型的字段。
+其中 `RadioRfState` 和 `AudioRouteState` 必须来自能对应到官方软件/设备状态字段的真实 provider；若字段含义仍未知，就不创建能把该未知字段强制归类为 RX/TX 的适配器。首轮应先追清[外层 RF 路由研究报告](../../../research/rf/RF路由官方资料与实现边界.md)中的官方路径，再决定这些类型的字段。
 
 决策规则：
 

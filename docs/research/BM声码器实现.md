@@ -4,7 +4,7 @@
 
 ## 接口与数据边界
 
-第一方接口位于 [`include/wirex/dmr_vocoder.hpp`](../include/wirex/dmr_vocoder.hpp)，实现位于 [`src/dmr_vocoder.cpp`](../src/dmr_vocoder.cpp)：
+第一方接口位于 [`include/wirex/dmr_vocoder.hpp`](../../include/wirex/dmr_vocoder.hpp)，实现位于 [`src/dmr_vocoder.cpp`](../../src/dmr_vocoder.cpp)：
 
 - 输入是 8 kHz、单声道、signed PCM16，每帧 160 个样本，正好 20 ms。
 - `Encoder::encode` 输出 9 字节，即 AMBE+2 2450x1150 的 72-bit DMR 语音码字，包含语音参数和信道 FEC。它不是只有 49-bit 的语音参数。
@@ -17,7 +17,7 @@
 
 ## 固定来源与许可证
 
-固定上游为 [`nostar/DroidStar`](https://github.com/nostar/DroidStar/tree/becf1dede57c4a70a865e9cb4cac9247e505599a)，commit `becf1dede57c4a70a865e9cb4cac9247e505599a`。具体 57 个源文件/头文件、各文件上游与本地 SHA-256、URL 和本地补丁说明见 [`source-manifest.json`](../third_party/droidstar_mbe/source-manifest.json)。源码位于 `third_party/droidstar_mbe/upstream/`；完整 GPL v3 文本附于 [`COPYING.GPL-3.0.txt`](../third_party/droidstar_mbe/COPYING.GPL-3.0.txt)。
+固定上游为 [`nostar/DroidStar`](https://github.com/nostar/DroidStar/tree/becf1dede57c4a70a865e9cb4cac9247e505599a)，commit `becf1dede57c4a70a865e9cb4cac9247e505599a`。具体 57 个源文件/头文件、各文件上游与本地 SHA-256、URL 和本地补丁说明见 [`source-manifest.json`](../../third_party/droidstar_mbe/source-manifest.json)。源码位于 `third_party/droidstar_mbe/upstream/`；完整 GPL v3 文本附于 [`COPYING.GPL-3.0.txt`](../../third_party/droidstar_mbe/COPYING.GPL-3.0.txt)。
 
 上游 `mbe/` 文件头逐个附有 ISC 许可文本。`imbe_vocoder/` 中 46 个文件带有 GPL-3.0-or-later 正文；其余 5 个固定提交文件分别保留了开发者/项目归属说明但没有 GPL 正文，`imbe_vocoder.cc` 也没有许可证头。上游 README 将该库说明为来自 OP25；因此本实现按包含 GPL 编码器源的组件处理，并在逐文件清单中标出缺少许可证正文的文件。分发前需要完成逐文件许可证审查，不能仅凭目录名认定每个文件的许可范围。
 
@@ -67,6 +67,6 @@ encode_20ms: n=512 avg=246.838us p50=246.300us p99=282.200us max=389.500us
 decode_20ms: n=512 avg=94.701us p50=93.100us p99=116.400us max=254.100us
 ```
 
-测试文件 [`tests/dmr_vocoder_test.cpp`](../tests/dmr_vocoder_test.cpp) 覆盖连续静音与确定三角波的固定 9 字节黄金序列、与直接调用固定上游 `MBEVocoder` decoder 的 PCM 逐样本比较、独立 TX 状态、TX/RX reset、单 bit FEC 修正、不可纠错 `R` conceal、连续错误后 `M` 静音和 `E` erasure 静音。测试向量来自固定上游源码的本地源代码对照和合成错误帧，不是空口录制或独立 DVSI 编码器参考；这些测试不作为 BrandMeister、设备互通或语音听感证据。
+测试文件 [`tests/dmr_vocoder_test.cpp`](../../tests/dmr_vocoder_test.cpp) 覆盖连续静音与确定三角波的固定 9 字节黄金序列、与直接调用固定上游 `MBEVocoder` decoder 的 PCM 逐样本比较、独立 TX 状态、TX/RX reset、单 bit FEC 修正、不可纠错 `R` conceal、连续错误后 `M` 静音和 `E` erasure 静音。测试向量来自固定上游源码的本地源代码对照和合成错误帧，不是空口录制或独立 DVSI 编码器参考；这些测试不作为 BrandMeister、设备互通或语音听感证据。
 
-声码器独立切片当时没有修改 `CMakeLists.txt`，也没有把声码器接入 native 主程序、HRI 或 BM 网络；当前集成范围和正式构建结果见 [BM 联调推进](BM联调推进.md)。整合候选的离线测试仍不证明真实 BM、COM/WinMM 音频或 FTX-1 实机通过。
+声码器独立切片当时没有修改 `CMakeLists.txt`，也没有把声码器接入 native 主程序、HRI 或 BM 网络；当前集成范围和正式构建结果见 BM 联调推进。整合候选的离线测试仍不证明真实 BM、COM/WinMM 音频或 FTX-1 实机通过。

@@ -14,7 +14,7 @@ WIRES-X 2.010 的 `FUN_10014b50` 空头分支生成 mode4 和空 AMBE 占位。�
 
 `FUN_10014070` 从 68 字节头的偏移 `+8` 与 `+0x12` 读取十字节字段，并以 `DestCallSign`、`Src CallSign` 写入缓存日志。`FUN_1000d370` 把 HRI 本机呼号复制到头部偏移 `+0x1c`。这些证据定位了字段来源和宽度，没有说明 FTX-1 LCD 如何显示它们，也没有证明电台接受本实验正文。
 
-函数依据见 [WIRES-X 屏幕与路由软件研究](WIRESX屏幕与路由软件研究.md)：空头构造函数 Evidence `ev_0b9ed8732ace5fbca14b93278f85c286ae2354053325a9da2b7c36b1e0c320b4`，呼号读取 Evidence `ev_af377ccbc045e89e9964c53d4ab86c39d7534f358fda167ec8bf64bfc7435d28`，本机呼号配置 Evidence `ev_872f6848966086fe1393376f10eb179c48305a1cb4bb8a541d52f14b9878c888`。空头 mode4 的字段/偏移 fixture 见 [R63 记录](../../research/planning/R63_T候选空载构造与应答映射.md)。
+函数依据见 [WIRES-X 屏幕与路由软件研究](WIRESX屏幕与路由软件研究.md)：空头构造函数 Evidence `ev_0b9ed8732ace5fbca14b93278f85c286ae2354053325a9da2b7c36b1e0c320b4`，呼号读取 Evidence `ev_af377ccbc045e89e9964c53d4ab86c39d7534f358fda167ec8bf64bfc7435d28`，本机呼号配置 Evidence `ev_872f6848966086fe1393376f10eb179c48305a1cb4bb8a541d52f14b9878c888`。空头 mode4 的字段/偏移 fixture 见 [R63 记录](../../../research/planning/R63_T候选空载构造与应答映射.md)。
 
 BrandMeister 当前来话的 DMR Source ID 不是经验证的 WIRES-X 呼号，不能把 DMR 数字 ID 填进 `source` 呼号字段。为测试 LCD 字段位置，可以把本机实际配置的呼号用于 `destination`、`source` 或 `local` 任意一个位置；这只检查位置，不能称为 BM 当前远端发话者身份。后续要显示真实 BM 呼号时再接入已验证映射。程序报告只记录所选字段，不记录呼号正文。
 

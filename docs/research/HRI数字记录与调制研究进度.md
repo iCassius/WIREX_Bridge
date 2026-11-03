@@ -41,13 +41,13 @@ RIGDATAIF.DLL 的 `ToHriFrameAdd`（VA `0x100028e0`）把输入字符串和第�
 
 同一 DLL 的 `ToHriAmbeGet`（VA `0x10002950`）读取 head `0x1016830c`、count `0x1016831c`，与 `ToHriFrameAdd` 使用的队列对象地址相同。`ToAnaAmbeGet`（VA `0x10002a40`）读取 head `0x10168324`、count `0x10168334`，属于独立队列。Get 参数非零时各自把 head 移至旧节点 `+0x324` 的 next；参数为零时仅窥读 head。由此，R95 中的 G/H 输入→`ToHriFrameAdd`→HRI Get 队首链在静态对象指针上闭合；HRI consumer 选择 ANA Get 时会读另一队列。
 
-完整 R99 摘要位于 [`research/rf/R99_ToHriFrameAdd与HRI队列闭合.md`](../../research/rf/R99_ToHriFrameAdd与HRI队列闭合.md)，私有静态 Evidence bundle 为 `research/rea/v2.010/r99_rigdataif_frameadd_queue_20261027.json`，SHA-256 `069c5a9287a9ed3d7d2d01cfd508a341cd4e794e1c6cb1c8203cd281a0fde092`。这些结果来自固定 DLL 的静态指令，没有运行时读取队列；`param_2` 语义、节点释放责任及 Get 的上游条件仍未知。
+完整 R99 摘要位于 [`research/rf/R99_ToHriFrameAdd与HRI队列闭合.md`](../../../research/rf/R99_ToHriFrameAdd与HRI队列闭合.md)，私有静态 Evidence bundle 为 `research/rea/v2.010/r99_rigdataif_frameadd_queue_20261027.json`，SHA-256 `069c5a9287a9ed3d7d2d01cfd508a341cd4e794e1c6cb1c8203cd281a0fde092`。这些结果来自固定 DLL 的静态指令，没有运行时读取队列；`param_2` 语义、节点释放责任及 Get 的上游条件仍未知。
 
 ### 与现有 Bridge 代码的关系
 
 `hri_call_header` 已提供 68 字节头和目的/源 10 字节字段的纯内存访问；`hri_t_record` 已按静态证据构造内部 T 正文和尾文本。它们没有把头字段写入 FTX-1 屏幕的证据。旧的 `hri_lcd_identity_candidate` 固定 WAV 工具仍可用于了解已定位字段的位置；R100 的 BM 来话身份处理会自动更新每通已接受来话的核心路径。Bridge 的 WPF 来话卡片显示 pipeline 接受的 DMR Source ID/TG 等状态，与电台 LCD 是两类输出。
 
-R98 已提交源码曾把数字 Source ID 标签放在默认关闭的开关后，并针对该版本做过 COM999 启动失败状态 smoke。R100 源码提交 `ddeee3105002e5f923c9f727f8ad2811f61a829a` 已改为每通已接受 BM 来话自动生成标签：`ID` 加十进制 DMR Source ID，写入 mode4 起始正文的 10 字节 source 字段；T0 与 PCM 下行收尾保持现有顺序。标签不是 WIRES-X callsign，也不依赖呼号查询。Native 状态字段为 `lcd_source_identity.prepared`、`source_id`、`receive_generation`、`label` 和 `display`；`display` 固定为 `unknown`，直到有实际屏幕观察。R100 clean build 通过 35 项 C++ 测试，warning/error 为 0；COM999 smoke 的两条实际 JSON 事件含空闲身份对象，详细构建和 smoke 回执见[BM 来话身份显示](BM来话身份显示.md)。该 smoke 不覆盖来话映射或电台显示。WPF 当前仍只读取 R94 的 `current_call_*`，尚未读取 `lcd_source_identity`。本机默认入口仍指向 alpha.2，该发布包没有 R100 代码。
+R98 已提交源码曾把数字 Source ID 标签放在默认关闭的开关后，并针对该版本做过 COM999 启动失败状态 smoke。R100 源码提交 `ddeee3105002e5f923c9f727f8ad2811f61a829a` 已改为每通已接受 BM 来话自动生成标签：`ID` 加十进制 DMR Source ID，写入 mode4 起始正文的 10 字节 source 字段；T0 与 PCM 下行收尾保持现有顺序。标签不是 WIRES-X callsign，也不依赖呼号查询。Native 状态字段为 `lcd_source_identity.prepared`、`source_id`、`receive_generation`、`label` 和 `display`；`display` 固定为 `unknown`，直到有实际屏幕观察。R100 clean build 通过 35 项 C++ 测试，warning/error 为 0；COM999 smoke 的两条实际 JSON 事件含空闲身份对象，详细构建和 smoke 回执见[BM 来话身份显示](../BM来话身份显示.md)。该 smoke 不覆盖来话映射或电台显示。WPF 当前仍只读取 R94 的 `current_call_*`，尚未读取 `lcd_source_identity`。本机默认入口仍指向 alpha.2，该发布包没有 R100 代码。
 
 没有远端 DMR ID→WIRES-X Callsign 数据源。R100 把 `ID` 加十进制 DMR Source ID 作为数字身份标签写入头部的 10 字节 source 字段；例如 `ID1234` 是 DMR 数字身份标签，不是已映射出的真实呼号。实际 FTX-1 显示内容仍待设备观察。
 

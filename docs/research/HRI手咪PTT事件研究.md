@@ -6,7 +6,7 @@
 
 安装目录中的 `HRI-UART.dll` SHA-256 为 `56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed`，与 WIRES-X 2.010 研究样本一致。`Wires-X.exe` SHA-256 为 `8f05dc26794144438566b880ce775f5178d62eb3c4deb8c053089216342bc671`；`RigDataIf.dll` 为 `94d1217feb047288329e79e0d5de2167c79450f1945119b2ed6c6376b02a7410`。本文只引用这些 2.010 样本，不把旧版 1.5.1.0 结果混入。
 
-本轮新增 REA 证据见 [R70 静态证据包](../../research/rea/v2.010/r70_hri_ptt_event_evidence_bundle.json)。它只包含上述安装 DLL 的静态地址、伪代码和机器指令观察，没有设备原始载荷、音频或厂商二进制。
+本轮新增 REA 证据见 [R70 静态证据包](../../../research/rea/v2.010/r70_hri_ptt_event_evidence_bundle.json)。它只包含上述安装 DLL 的静态地址、伪代码和机器指令观察，没有设备原始载荷、音频或厂商二进制。
 
 ## 最强候选：主程序收到的 X 状态记录
 
@@ -34,7 +34,7 @@ R47 的既有手咪按键窗口摘要比较了 25 次自然生成的 Y 正文；
 
 这些回调说明 DLL 中存在名为“接收 PTT 开关指示”的状态事件和基于内部接口的 PTT 检查。它们没有恢复串口记录的外层类型、长度、状态正文或 0/1 映射。回调内出现的 `0x1431` 和发送错误消息 `0x0650` 也没有被证实是手咪 PTT 的通知协议。
 
-与之相反，`SendTrcvPttCmd`（`0x10002670`）是主机向 DLL 提交一个软件状态值的导出函数：第二参数写入 DLL 对象 `+0x44` 的 `PttSw` 字段，某些内部条件下进入 S/T 候选队列。它不证明电台手咪事件，也未证明值 `1`/`0` 在线上分别表示开始/结束发射。详见 [R5](../../research/planning/R5_Ghidra_HRI控制与PTT.md)、[R63](../../research/planning/R63_T候选空载构造与应答映射.md) 和 [R68](../../research/planning/R68_SendTrcvPttCmd调用与状态边界.md)。
+与之相反，`SendTrcvPttCmd`（`0x10002670`）是主机向 DLL 提交一个软件状态值的导出函数：第二参数写入 DLL 对象 `+0x44` 的 `PttSw` 字段，某些内部条件下进入 S/T 候选队列。它不证明电台手咪事件，也未证明值 `1`/`0` 在线上分别表示开始/结束发射。详见 [R5](../../../research/planning/R5_Ghidra_HRI控制与PTT.md)、[R63](../../../research/planning/R63_T候选空载构造与应答映射.md) 和 [R68](../../../research/planning/R68_SendTrcvPttCmd调用与状态边界.md)。
 
 ## 结论与实现边界
 
@@ -61,4 +61,4 @@ R47 的既有手咪按键窗口摘要比较了 25 次自然生成的 Y 正文；
 
 五轮用户动作记录（此前三轮缺少 X[11]，本次两轮已确认 X[11]=`0x31`）支持当前 FTX1 + HRI DIRECT 的 X[12] 按住/松开映射。当前 Session 在 Y/0 ready 后从所有有效 X/100 记录独立提取 X[12] PTT 状态；非配置导入分支仍单独负责更新 Y 模板。聚焦 HRI Session 测试通过。源码提交 `005c5e8e6d95a3ce2f29cf928d59e90c7551ffb1` 的正式 clean build 与 26 项测试已通过，构建目录为 `build/_work/wirex-bridge-005c5e8-20261024-203101`，日志为 `build/_work/bm-ptt-config-005c5e8-build.log`。修复后 120 秒 idle observer 于 120006 ms 正常退出，记录 119 个 Y/0、119 个 X/100；这些 X/100 都标记为配置分支，Session 对每条产生一个 PTT observation，传输未失败。该次是 idle 对照，没有用户按键动作，不能用来确认新 Session 对物理按下/松开的实时判定。便携候选 `build/bm-radio-bridge-005c5e8` 已通过 root 独立审计，核对 11 项非秘密文件、实际文件清单和 EXE 来源；包审计核对文件与启动入口，本次实机运行另有状态报告。旧便携包 `build/bm-radio-bridge-1c8c6fd` 未更改。首轮实际联测已完成：native 记录一次手咪上行、BM 回声接收和 HRI 音频播放/收尾，用户确认电台回声清晰。该会话持续 33,475 ms；计数与日志定位见 [DIRECT 首轮联测验收](DIRECT首轮联测验收.md)。长时间待机和断网恢复仍待后续实测。独立观察器仅按白名单发送 HRI 握手、Y 心跳和空 X 确认，不会发送 S/T/PTT/CAT 命令或触发网络发话。
 
-完整记录格式的可复用解析入口为 [R37 观察器设计与离线验证](../../research/planning/R37_Direct完整记录观察器离线验证.md)；真实 COM5 历史观察及其边界见 [R30](../../research/planning/R30_官方启动会话COM5观察.md)。本次三轮按键记录由用户确认操作，观察器只保留候选字节和控制元数据，没有把 X/100 正文、私有 Y fixture 或语音加入 Git。
+完整记录格式的可复用解析入口为 [R37 观察器设计与离线验证](../../../research/planning/R37_Direct完整记录观察器离线验证.md)；真实 COM5 历史观察及其边界见 [R30](../../../research/planning/R30_官方启动会话COM5观察.md)。本次三轮按键记录由用户确认操作，观察器只保留候选字节和控制元数据，没有把 X/100 正文、私有 Y fixture 或语音加入 Git。

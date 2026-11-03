@@ -19,7 +19,7 @@
 | `HRI-UART.dll` | 2.0.1.0 | `56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed` | HRI 配置字段、内部面板、文本解析和队列 |
 | `RigDataIf.dll` | 2.0.1.0 | `94d1217feb047288329e79e0d5de2167c79450f1945119b2ed6c6376b02a7410` | 名为 AMBE 的数据队列 |
 
-REA 静态分析使用 Ghidra 12.1.4 x86。三份官方文件均与外层 `research/inputs/v2.010/payload/` 中已校验的同名样本具有相同 SHA-256。新增证据摘要在 [`r71_hri_screen_route_followup_20261025.json`](../../research/rea/v2.010/r71_hri_screen_route_followup_20261025.json)。本轮尝试从 REA 会话导出全量证据时，`get_evidence_bundle` 返回 0 条保留记录，因此 R71 JSON 仅是摘要，不能代替完整反编译。完整的 `FUN_10023eb0` 分析已保存在 [`r31_usb_branch_evidence_bundle.json`](../../research/rea/v2.010/r31_usb_branch_evidence_bundle.json)，Evidence `ev_01d61fb7cb4474099c6b033fac4464466ccef9e2d3bf36ad936a95d9f54c77dd`，覆盖函数 3,007 字节并包含伪代码、汇编和限制说明。EXE 字段记录在 [`wiresx-exe-ui-followups-20261025.evidence.json`](../../research/rea/v2.010/wiresx-exe-ui-followups-20261025.evidence.json)。
+REA 静态分析使用 Ghidra 12.1.4 x86。三份官方文件均与外层 `research/inputs/v2.010/payload/` 中已校验的同名样本具有相同 SHA-256。新增证据摘要在 [`r71_hri_screen_route_followup_20261025.json`](../../../research/rea/v2.010/r71_hri_screen_route_followup_20261025.json)。本轮尝试从 REA 会话导出全量证据时，`get_evidence_bundle` 返回 0 条保留记录，因此 R71 JSON 仅是摘要，不能代替完整反编译。完整的 `FUN_10023eb0` 分析已保存在 [`r31_usb_branch_evidence_bundle.json`](../../../research/rea/v2.010/r31_usb_branch_evidence_bundle.json)，Evidence `ev_01d61fb7cb4474099c6b033fac4464466ccef9e2d3bf36ad936a95d9f54c77dd`，覆盖函数 3,007 字节并包含伪代码、汇编和限制说明。EXE 字段记录在 [`wiresx-exe-ui-followups-20261025.evidence.json`](../../../research/rea/v2.010/wiresx-exe-ui-followups-20261025.evidence.json)。
 
 ## 软件保存的本机资料与 HRI 配置
 
@@ -40,7 +40,7 @@ HRI 的 `FUN_1000d370` 通过配置接口从 `DGRP_COMMON` 读取以下键并写
 | `DGKEY_STR_CALL_SIGN`、`DGKEY_STR_ROOM_NAM` | 本机 Call Sign 和 Room Name 字符串 |
 | `DGKEY_NUM_ACKFLAG`、`DGKEY_NUM_DIVIDEINFO`、`DGKEY_STR_MYPOSITION` | 其他本机配置字段 |
 
-关键偏移与代码路径见 HRI REA `ev_b79c7e…db0d65d2`、`ev_872f684…9878c888`，以及外层 [`R14_HRI初始化与模式状态.md`](../../research/planning/R14_HRI初始化与模式状态.md)。这些是 HRI 配置载入事实，不证明字段会发到电台屏幕或远端节点列表。
+关键偏移与代码路径见 HRI REA `ev_b79c7e…db0d65d2`、`ev_872f684…9878c888`，以及外层 [`R14_HRI初始化与模式状态.md`](../../../research/planning/R14_HRI初始化与模式状态.md)。这些是 HRI 配置载入事实，不证明字段会发到电台屏幕或远端节点列表。
 
 ### HRI 自己的 DigiPanel
 
@@ -52,7 +52,7 @@ HRI 构造函数 `FUN_1000c3d0` 创建资源 ID `0xF3` 的 `CDigiPanelDlg`；`FU
 
 ### `FrameTrxDataToTrcvFrame`
 
-HRI 导出 `FrameTrxDataToTrcvFrame` 位于 VA `0x100020B0`，导出 ordinal 31。REA 反编译 `ev_282fad…47bc2cfe` 显示它调用 `UdpComFuncs.dll!CutOutString`，再按稀疏字段码 `C0–C5`、`D1–D8`、`DA–DD`、`DE–E1`、`E3–E6` 写入 `param_2` 结构。`CutOutString` 把前两位 ASCII 十六进制字符解为字段码，后两位解为字符数，再复制后续字符；完整复核见 [`R10_HRI语音文本与载荷.md`](../../research/planning/R10_HRI语音文本与载荷.md)。
+HRI 导出 `FrameTrxDataToTrcvFrame` 位于 VA `0x100020B0`，导出 ordinal 31。REA 反编译 `ev_282fad…47bc2cfe` 显示它调用 `UdpComFuncs.dll!CutOutString`，再按稀疏字段码 `C0–C5`、`D1–D8`、`DA–DD`、`DE–E1`、`E3–E6` 写入 `param_2` 结构。`CutOutString` 把前两位 ASCII 十六进制字符解为字段码，后两位解为字符数，再复制后续字符；完整复核见 [`R10_HRI语音文本与载荷.md`](../../../research/planning/R10_HRI语音文本与载荷.md)。
 
 例如，`C0` 与 `C1–C5` 会向 `param_2+0x87` 拼接文本；`DA–DD` 分别写入四个最多 10 字节、先以空格填充的区域；`DE–E1` 分别写入四个最多 5 字节的区域。这些偏移没有已验证的业务名称。该导出在 DLL 内没有已解析直接调用者，未确认其输入来自串口、网络或其他模块，也未把其输出连到 FTX-1 显示器。
 
@@ -60,13 +60,13 @@ HRI 导出 `FrameTrxDataToTrcvFrame` 位于 VA `0x100020B0`，导出 ordinal 31�
 
 HRI 内部通用分派 `FUN_10022730` 按字符类型把 `M`/`W` 送到 `FUN_10022fe0`，把 `X` 送到 `FUN_10023eb0`。`FUN_10022fe0` 将 `param_1+1+iVar4` 处的四个 ASCII 十六进制字符解成长度值；可见接受值为 `0x43`、`0x45`、`0x6B`、`0x48`。`0x48` 分支会校验若干配置值；`DGKEY_NUM_NDDIRECT` 只接受 ASCII `'0'` 或 `'1'`，写回当前 HRI 配置组，然后调用 `FUN_10007b40` 刷新 DigiPanel。`FUN_10023eb0` 的 `X` 分支也把 `local_15f` 限定为 ASCII `'0'`/`'1'` 后写入同一配置键；X 入口输入是否来自 UART 仍未知。
 
-这证明 HRI DLL 内有接收解析候选、配置值校验和 PC 面板刷新，不证明 `M`、`W`、`X` 是 UART 线上命令类型或这些消息由电台屏幕产生。R57 的既有静态字段恢复将 X 配置处理函数 `FUN_10023eb0` 检查的 `local_15f` 定位到 100 字节正文偏移 `0x05`；结合 R49 已记录的 6 字节 parser 前缀，对应完整记录偏移 `0x0B`。X 输入是否来自 UART 仍未知。对应 REA 记录为 `ev_e85c52…2806ca2`、`ev_ed6ea7…b5fec7`、`ev_ae4eeb…c49c812` 和调用者记录 `ev_0db3c3…87acffe`，字段表见 [`R57_X配置接收字段与只读校验.md`](../../research/planning/R57_X配置接收字段与只读校验.md)。
+这证明 HRI DLL 内有接收解析候选、配置值校验和 PC 面板刷新，不证明 `M`、`W`、`X` 是 UART 线上命令类型或这些消息由电台屏幕产生。R57 的既有静态字段恢复将 X 配置处理函数 `FUN_10023eb0` 检查的 `local_15f` 定位到 100 字节正文偏移 `0x05`；结合 R49 已记录的 6 字节 parser 前缀，对应完整记录偏移 `0x0B`。X 输入是否来自 UART 仍未知。对应 REA 记录为 `ev_e85c52…2806ca2`、`ev_ed6ea7…b5fec7`、`ev_ae4eeb…c49c812` 和调用者记录 `ev_0db3c3…87acffe`，字段表见 [`R57_X配置接收字段与只读校验.md`](../../../research/planning/R57_X配置接收字段与只读校验.md)。
 
 ### DIRECT 配置与 100 字节 Y 正文候选
 
 HRI `FUN_1000cc80` 将 `DGKEY_NUM_NDDIRECT` 注册到配置接口，传入参数 `(1,1)`；配置接口的函数实现不在该 DLL 内，不能据这两个参数推导初值或三态模式含义。
 
-`CDigiPanelDlg` 的 Y 正文候选处理函数 `FUN_100095c0` 先将目的区域填为 100 个 ASCII `'0'`，再调用 getter 读取 **`DGKEY_NUM_NDDIRECT`**：零值写到偏移 `0x05` 的字符为 `'1'`，非零值为 `'2'`。这部分由 REA `ev_e7404…791c2c4` 直接确认。HRI 的消息表将 `0x1435` 指向该 handler，消息表属于 `CDigiPanelDlg`；R36 仍未闭合发送侧 HWND 与实际接收窗口实例，也未证明该正文最终进入串口或被电台 LCD 显示。见 [`R34_Y正文生成函数与字段表.md`](../../research/planning/R34_Y正文生成函数与字段表.md) 和 [`R36_Y消息表与发送窗口关联.md`](../../research/planning/R36_Y消息表与发送窗口关联.md)。
+`CDigiPanelDlg` 的 Y 正文候选处理函数 `FUN_100095c0` 先将目的区域填为 100 个 ASCII `'0'`，再调用 getter 读取 **`DGKEY_NUM_NDDIRECT`**：零值写到偏移 `0x05` 的字符为 `'1'`，非零值为 `'2'`。这部分由 REA `ev_e7404…791c2c4` 直接确认。HRI 的消息表将 `0x1435` 指向该 handler，消息表属于 `CDigiPanelDlg`；R36 仍未闭合发送侧 HWND 与实际接收窗口实例，也未证明该正文最终进入串口或被电台 LCD 显示。见 [`R34_Y正文生成函数与字段表.md`](../../../research/planning/R34_Y正文生成函数与字段表.md) 和 [`R36_Y消息表与发送窗口关联.md`](../../../research/planning/R36_Y消息表与发送窗口关联.md)。
 
 这个 key 的 `Direct:OFF/ON` 文本和 Y 字符映射只是在 HRI 软件内部彼此一致。FTX-1 手册第 29 页另列 AP RADIO、AP PC、DIRECT 三种 Node Mode，并描述 DIRECT 为经连接 PC 与 FTX-1 通信、不经空中发送/接收；默认模式为 AP RADIO。用户已确认电台当前 Node Mode 为 DIRECT，但静态代码没有证明 `DGKEY_NUM_NDDIRECT` 就是该三态 Node Mode 中的 DIRECT，也没有证明这个布尔字段控制普通 VFO 的 RF 接收。用户澄清，145.1 MHz RF 音频在 Bridge 关闭后出现；S 表指示与该音频的时间关系尚未确认。Bridge 运行期间是否仍接收 RF 尚无结果。
 
@@ -74,7 +74,7 @@ HRI `FUN_1000cc80` 将 `DGKEY_NUM_NDDIRECT` 注册到配置接口，传入参数
 
 HRI `SetDigiTrcvData` 导出 `0x10001D00` 进入 `FUN_10001d20`，将输入交给对象的 `+0x1d8f8` 队列，再向该对象记录的线程 ID 投递 `0x1401`。R61 已确认 `0x1401` 处理器向状态分派器提交 event 1；它与 event `0x11` 是两个事件。旧 R60/R61 尚未连通队列与 UART；R77 补齐了对象索引和条件发送路径，细节见下节。原导出名本身不能确定电台 LCD 字段含义。
 
-`RigDataIf.dll` 的 `ToHriAmbeAdd` / `ToHriAmbeGet` 是名为 AMBE 的字符串节点队列。HRI 内部 `FUN_10014600` 在 `+0x28f8 == 2` 时取一组 HRI AMBE 队列槽，在其他值时取另一组槽；未证明该字段等于 `DGKEY_NUM_NDDIRECT`，也未证明两路队列对应 AP/DIRECT、RF 接收或电台扬声器。队列布局和调用路径见 [`R62_RigDataIf队列消费与HRI绑定.md`](../../research/planning/R62_RigDataIf队列消费与HRI绑定.md) 及 REA `ev_7e3f0a…062091`、`ev_63dd0e…b7564e`、`ev_75021a…9bcb8a`。
+`RigDataIf.dll` 的 `ToHriAmbeAdd` / `ToHriAmbeGet` 是名为 AMBE 的字符串节点队列。HRI 内部 `FUN_10014600` 在 `+0x28f8 == 2` 时取一组 HRI AMBE 队列槽，在其他值时取另一组槽；未证明该字段等于 `DGKEY_NUM_NDDIRECT`，也未证明两路队列对应 AP/DIRECT、RF 接收或电台扬声器。队列布局和调用路径见 [`R62_RigDataIf队列消费与HRI绑定.md`](../../../research/planning/R62_RigDataIf队列消费与HRI绑定.md) 及 REA `ev_7e3f0a…062091`、`ev_63dd0e…b7564e`、`ev_75021a…9bcb8a`。
 
 S/T 控制路径另有 HRI 语音活动状态记录；已经看到的 `T3` 启播与 `T0` 收尾不能据此归类为 RF 节点模式切换，也不用于补足上面未闭合的 LCD 路径。
 
@@ -89,7 +89,7 @@ R77 将 EXE 调用点、HRI 对象表、event 17 回调、HRI outgoing queue 和
 
 **R77 当时的缺口，已由 R78 部分闭合：** event `0x11` 通过 timer 2 / WM_TIMER / message `0x1411` 进入状态分派器的路径已恢复，具体见下一节。内部 `F` 记录和 EXE 的 D1–E4 输入字段仍没有 LCD 业务名称；静态证据没有把这些字节对应到 FTX-1 的呼号、房间/节点列表、软键文字或屏幕刷新动作。已恢复软件条件路径的输入、计时门控和 `WriteFile` 出口，尚未恢复设备端显示协议。
 
-本轮新增 HRI 全量 REA bundle：[`r77_hri_lcd_chain_20261026.evidence.json`](../../research/rea/v2.010/r77_hri_lcd_chain_20261026.evidence.json)（target SHA 和每条 Evidence 记录均在 bundle 中）。它合并加载的 R61/R76 HRI 静态记录和本轮直接函数分析；EXE 侧 R22、R51、R8 证据仍引用各自完整 bundle。
+本轮新增 HRI 全量 REA bundle：[`r77_hri_lcd_chain_20261026.evidence.json`](../../../research/rea/v2.010/r77_hri_lcd_chain_20261026.evidence.json)（target SHA 和每条 Evidence 记录均在 bundle 中）。它合并加载的 R61/R76 HRI 静态记录和本轮直接函数分析；EXE 侧 R22、R51、R8 证据仍引用各自完整 bundle。
 
 ### R78：timer 2 驱动 event `0x11`
 
@@ -101,7 +101,7 @@ R77 已闭合对象槽 0 和同一队列；R78 找到 state 6/event `0x11` 的�
 4. `0x10022d40` 读取 `this+0x1d8dc`：计数为正时减 1 并返回；计数为 0 或负时，以 `param_1=0x11,param_2=0,param_3=0` 调用 `FUN_100152c0`。相对调用机器码 `E8 5E 25 FF FF` 位于 `0x10022D5D`，完整字节搜索证据 `ev_ee3b9ee46546a28375514e9d178125168f6ff2caad3d78033583ddecb5733c37`。
 5. `SetDigiTrcvData(0, ...)` 路径将对象 `+0x1d8dc` 清零并投递 `0x1401`。所以在 timer 2 处于运行状态时，下一次 `0x1411` 处理可以通过计数门控进入 event `0x11`；随后 state 6 的 `FUN_10017ee0` 读取同一对象的 `+0x1d8f8` 队列，符合 R77 恢复的同实例数据流。
 
-R78 的新证据并未观察任何实际定时器、线程或电台运行；它闭合的是官方代码中的消息表、计数器与状态分派调用关系。完整新增记录合并在 [`r78_hri_event11_timer_20261026.evidence.json`](../../research/rea/v2.010/r78_hri_event11_timer_20261026.evidence.json)。
+R78 的新证据并未观察任何实际定时器、线程或电台运行；它闭合的是官方代码中的消息表、计数器与状态分派调用关系。完整新增记录合并在 [`r78_hri_event11_timer_20261026.evidence.json`](../../../research/rea/v2.010/r78_hri_event11_timer_20261026.evidence.json)。
 
 ### R79：EXE D/E 字段中的本机身份来源
 
@@ -120,11 +120,11 @@ R78 的新证据并未观察任何实际定时器、线程或电台运行；它�
 
 其余字段仍有明确来源缺口：`D7` 来自全局 `DAT_007bff04`，本轮没有追到该全局的配置键；`DD` 来自 `this+0x1b5c8+0x11a`，所属对象及字段名未识别；`DE` 可被同一对象的 `+0x12f` 字符串覆盖；`E3` 由表项 `+0x38` 的函数指针填写，`E4` 的 `pcVar11` 来源还未映射。`D1`、`D2`、`D4`–`D6` 是固定短文本，`D3` 根据 `TRANSV1/TrcvKind` 是否为 1 选择字符 `2` 或 `0`，`DA` 传入固定十个星号。没有证据把这些值命名为远端节点名、房间名、呼号列表或 LCD 控件内容。
 
-新增 EXE Evidence：`FUN_004e5580` 为 `ev_5131b0c70d73a5f6b72c69e23fb4ff735ce3e5d673ac8d5c9bd16a32e39d8ef9`；`FUN_004bdb50` 为 `ev_69c0d7a75eeb03b5c49eed4754457f21bde1e9eea5b38a659ed5a88df7b9afa9`；`FUN_004b38d0` 为 `ev_459b683155f93cac683fe76c8ba0738df62dd045d310b7ae8ec8113059e2ca53`；`FUN_004b3350` 为 `ev_199862d7adfbb45f0ef5d253a87f59d9951043c7e67809eaa5fc513920075727`。完整 EXE 会话证据包位于 [`r79_exe_hri_identity_fields_20261026.evidence.json`](../../research/rea/v2.010/r79_exe_hri_identity_fields_20261026.evidence.json)。`FUN_004184f0` 的配置写入侧记录仍见既有 Evidence `ev_682a085bde8acbeda5e36bb8b31c3d2d73bf6bc7a1552b0eb50864813298aba8`。
+新增 EXE Evidence：`FUN_004e5580` 为 `ev_5131b0c70d73a5f6b72c69e23fb4ff735ce3e5d673ac8d5c9bd16a32e39d8ef9`；`FUN_004bdb50` 为 `ev_69c0d7a75eeb03b5c49eed4754457f21bde1e9eea5b38a659ed5a88df7b9afa9`；`FUN_004b38d0` 为 `ev_459b683155f93cac683fe76c8ba0738df62dd045d310b7ae8ec8113059e2ca53`；`FUN_004b3350` 为 `ev_199862d7adfbb45f0ef5d253a87f59d9951043c7e67809eaa5fc513920075727`。完整 EXE 会话证据包位于 [`r79_exe_hri_identity_fields_20261026.evidence.json`](../../../research/rea/v2.010/r79_exe_hri_identity_fields_20261026.evidence.json)。`FUN_004184f0` 的配置写入侧记录仍见既有 Evidence `ev_682a085bde8acbeda5e36bb8b31c3d2d73bf6bc7a1552b0eb50864813298aba8`。
 
 ## R82：68 字符呼叫头进入 T 记录的静态路径
 
-本轮使用 HRI-UART.dll 2.0.1.0，SHA-256 `56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed`。REA Ghidra 12.1.4 x86 全量证据包为 [`r82_hri_t_header_callsign_20261026.evidence.json`](../../research/rea/v2.010/r82_hri_t_header_callsign_20261026.evidence.json)；bundle 包含本节引用的函数伪代码、汇编和目标身份。
+本轮使用 HRI-UART.dll 2.0.1.0，SHA-256 `56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f81146b897b58ae4effed`。REA Ghidra 12.1.4 x86 全量证据包为 [`r82_hri_t_header_callsign_20261026.evidence.json`](../../../research/rea/v2.010/r82_hri_t_header_callsign_20261026.evidence.json)；bundle 包含本节引用的函数伪代码、汇编和目标身份。
 
 ### 头缓冲区来源和呼号字段
 
@@ -136,7 +136,7 @@ R83 追到 `FUN_10014330` 的两个直接调用者 `FUN_10014600`、`FUN_10014dd
 
 本机 HRI 配置也有一个单独的呼号槽。`FUN_1000d370` 从 `DGRP_COMMON/DGKEY_STR_CALL_SIGN` 读取文本，经 `StrFixSizeCopy` 保存到对象 `+0x322`；`FUN_10014330` 再把 10 字节复制到头部相对偏移 `+0x1c`（对象 `+0x143c`）。头部因此包含不同位置的目的呼号 `+8`、源呼号 `+0x12` 和 HRI 本机呼号 `+0x1c`。这只确认了配置到 HRI 缓冲区的复制关系；它没有证明 `DGKEY_STR_CALL_SIGN` 与 EXE 的 `USER_INF/CallSign` 是同一配置来源，也没有证明 `+0x1c` 在电台 LCD 上的呈现方式。`FUN_1000d370` 的完整静态记录为 R14 Evidence `ev_872f6848966086fe1393376f10eb179c48305a1cb4bb8a541d52f14b9878c888`；头部复制位置见本节 R82 Evidence `ev_dd4741e6a283be5d7a5c88c8e35f4a98f22825de30ac56f6d3e015d8ee702ad9`。
 
-同一配置函数还从 `DGRP_COMMON/DGKEY_STR_NODE_RADIO_ID` 读取本机 Node Radio ID。输入长度正好为 5 时，HRI 原样复制到对象 `+0x2f9`；其他非负长度会交给 `FUN_1000f660`，该函数对纯十进制文本作格式转换：小于 100000 时写为 5 位十进制文本；在 1000000 到 `1000000+0x834e0` 范围时按 `0123456789ABCD` 字符表编码为 5 位。`FUN_10014330` 把对象 `+0x2f9` 的 5 字节复制到头部 `+0x30`。`FUN_1000f7e0` 会依据对象 `+0x1d900` 的转换模式选择 `FUN_1000f660`、`FUN_1000f4e0` 或 `FUN_1000f2d0`；当前没有把该模式映射到电台 Node Mode 的证据。函数证据见 R14 `ev_872f6848966086fe1393376f10eb179c48305a1cb8a541d52f14b9878c888` 与本轮 R83 的 `ev_e5ea93510aac680beb57e163f5abf9ebec9b22fbd8c1bd3fca6328630a1047e`、`ev_848f27e53e6881e3629cc52e26242b1b1356f2a57745cc50f9e60d3140504f3b`。R83 全量证据包为 [`r83_hri_header_identity_conversion_20261026.evidence.json`](../../research/rea/v2.010/r83_hri_header_identity_conversion_20261026.evidence.json)（43 条记录，目标 SHA 与函数内容均在包内）。这 5 字节是本机 Node Radio ID 编码字段；不能据此把 BrandMeister DMR Source ID 直接转成 WIRES-X 呼号。
+同一配置函数还从 `DGRP_COMMON/DGKEY_STR_NODE_RADIO_ID` 读取本机 Node Radio ID。输入长度正好为 5 时，HRI 原样复制到对象 `+0x2f9`；其他非负长度会交给 `FUN_1000f660`，该函数对纯十进制文本作格式转换：小于 100000 时写为 5 位十进制文本；在 1000000 到 `1000000+0x834e0` 范围时按 `0123456789ABCD` 字符表编码为 5 位。`FUN_10014330` 把对象 `+0x2f9` 的 5 字节复制到头部 `+0x30`。`FUN_1000f7e0` 会依据对象 `+0x1d900` 的转换模式选择 `FUN_1000f660`、`FUN_1000f4e0` 或 `FUN_1000f2d0`；当前没有把该模式映射到电台 Node Mode 的证据。函数证据见 R14 `ev_872f6848966086fe1393376f10eb179c48305a1cb8a541d52f14b9878c888` 与本轮 R83 的 `ev_e5ea93510aac680beb57e163f5abf9ebec9b22fbd8c1bd3fca6328630a1047e`、`ev_848f27e53e6881e3629cc52e26242b1b1356f2a57745cc50f9e60d3140504f3b`。R83 全量证据包为 [`r83_hri_header_identity_conversion_20261026.evidence.json`](../../../research/rea/v2.010/r83_hri_header_identity_conversion_20261026.evidence.json)（43 条记录，目标 SHA 与函数内容均在包内）。这 5 字节是本机 Node Radio ID 编码字段；不能据此把 BrandMeister DMR Source ID 直接转成 WIRES-X 呼号。
 
 `FUN_1000bee0` 另把队列节点的 68 字节头复制到 scratch `+8`，并把头部相对偏移 `+4` 固定为 ASCII `'1'`。它按记录标志保留后续正文原字节或从 ASCII HEX 解码，在正文前另加入 3 个记录字节，再追加 `0x03`；输出时将这一段逐字节编码为 ASCII HEX，并对整段（包括 `0x03`）求低 8 位和作为两位 HEX 校验值。非空 T 路径由 `FUN_1000adb0` 处理 AMBE 二进制块：它也按字节转 ASCII HEX，追加 `03`，再对该块与 `0x03` 的和取低 8 位作为校验值。两段代码分别提供头部/记录边界和语音块尾部格式的静态证据，没有把这些字段接到某个 LCD 控件。`FUN_1000adb0` 记录为 R83 Evidence `ev_130fa47a6bbaa0c2b88fa89cbd51d4005c8f482ddc51ac167ddb5417e2b61739`，`FUN_1000bee0` 记录为 R82 Evidence `ev_3ca4f025b37919a32d0df5dad3ece722ff905e56d06ef89cd0fc8b3920579047`。
 
@@ -156,7 +156,7 @@ HRI-UART.dll 目标仍为 SHA-256 `56e0050ef6afc53ba9c68ea51c7a13ec263f580b609f8
 
 纯模块 `include/wirex/hri_t_record.hpp` / `src/hri_t_record.cpp` 只构造上述内部 T 文本正文，并提供与 `FUN_100139f0` 一致的 raw-tail HEX、ASCII `03`、sum8-plus-3 helper。它不添加 Direct/COM 或 USB 外层帧封装。C 的 R31 证据恢复了特定外层 vtable serializer，但尚未证明 HRI T 项在所有设备类型上都调用该 serializer；因此本模块没有自行追加第二个终止符或校验。模式、计数和尾部的离线边界样例位于 `tests/hri_t_record_test.cpp`，使用合成字符/字节，不是电台捕获，也没有发送到设备。原 `build_empty_header_empty_ambe_candidate_body` 的 90 字节 mode `'4'` PCM 候选保持不变。
 
-R84 全量 bundle 为 [`r84_hri_t_mode_payload_chain_20261026.evidence.json`](../../research/rea/v2.010/r84_hri_t_mode_payload_chain_20261026.evidence.json)；R85 补充尾文本函数，见 [`r85_hri_host_to_t_trailer_20261026.evidence.json`](../../research/rea/v2.010/r85_hri_host_to_t_trailer_20261026.evidence.json)。R84/R85 保留了目标 DLL 身份和完整函数反编译；文档中的 YSF 布局比较仍是候选，不能据 `96/136/186` 长度宣布 HRI 与 YSF payload 兼容。
+R84 全量 bundle 为 [`r84_hri_t_mode_payload_chain_20261026.evidence.json`](../../../research/rea/v2.010/r84_hri_t_mode_payload_chain_20261026.evidence.json)；R85 补充尾文本函数，见 [`r85_hri_host_to_t_trailer_20261026.evidence.json`](../../../research/rea/v2.010/r85_hri_host_to_t_trailer_20261026.evidence.json)。R84/R85 保留了目标 DLL 身份和完整函数反编译；文档中的 YSF 布局比较仍是候选，不能据 `96/136/186` 长度宣布 HRI 与 YSF payload 兼容。
 
 ### 当前可以实现与仍未知的范围
 
