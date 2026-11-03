@@ -34,11 +34,13 @@
 ### 3.1 阶段一：现有核心资产锁定与代码库深度瘦身（Clean & Audit）
 - [ ] **核心 C++ 算法与协议资产锁定**：
   - 保护并审计已通过验证的 Native 核心模块（`dmrd` 封装、`hri` 协议解析、`direct_frame`、`ui_control_protocol` 及对应 golden 离线测试用例）。
-- [ ] **历史归档剥离主树**：
+- [x] **历史归档剥离主树**：
   - 将 `app/private/build-retired/`（含 299 个历史版本 `.ps1` 副本）与 `build-history/` 移出日常 Git 工作区，转为离线独立压缩归档或归档分支存储。
   - 清理根目录下散落的 `*.obj` 临时编译产物和冗余目录。
-- [ ] **规范工程配置与 `.gitignore`**：
+  - 已完成（R127）：两目录已压缩为 `FTX1_project/_archive/wirex-private-history-R110-R124.7z` 并校验后删除，散落的 `*.obj` 已清理。
+- [x] **规范工程配置与 `.gitignore`**：
   - 重构 `.gitignore`，严禁任何 `*.obj`、`build/` 中间目录和临时测试日志再次污染主树。
+  - 已完成（R127，`1283f86`）：`.gitignore` 在任意层级忽略 `build/`、`tmp/`、`*.obj`、`__pycache__/` 等中间产物。
 
 ### 3.2 阶段二：Go 运维工具链收敛（Tools Modernization）
 - [ ] **构建单一 Go CLI 工具（`tools/wirex.exe`）**：
