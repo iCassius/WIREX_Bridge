@@ -8,8 +8,10 @@
 
 #include "wirex/bm_session.hpp"
 #include "wirex/dmr_call.hpp"
+#include "wirex/engine_diagnostics.hpp"
 #include "wirex/talkgroup_routing.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -20,6 +22,8 @@
 #include <vector>
 
 namespace wirex::engine {
+
+class Devices;  // wirex/engine_devices.hpp（R128 增补）
 
 // ---------- 启动配置 ----------
 
@@ -48,6 +52,14 @@ struct StartConfig {
     std::uint32_t radio_playback_gain_milli{1000U};  // 250..16000
     std::uint32_t mic_transmit_gain_milli{16000U};
     std::filesystem::path diagnostics_log{};          // 可空；非空时追加 JSONL 诊断（替代 status-file 的取证用途）
+
+    // R128 增补（只增不改）：
+    // 已在调用方解析好的 Master 地址；bm_start_disconnected=false 时优先使用，省略则在引擎线程有界解析。
+    std::optional<bm::Endpoint> resolved_master{};
+    // CLI 键盘诊断模式（原 --manual-ptt）：PTT 由 manual_ptt_toggle() 驱动，运行窗口限 120 s。
+    bool manual_ptt{false};
+    // 原始诊断钩子（status.jsonl 兼容输出、控制台提示、收尾通知）；GUI 可留空。
+    DiagnosticsHooks diagnostics{};
 };
 
 // ---------- 状态快照（只读、不可变） ----------
@@ -105,6 +117,14 @@ struct Snapshot {
     std::uint64_t audio_gains_revision{};
     AudioLevels levels{};
     Counters counters{};
+
+    // R128 增补（只增不改）：原 control-v2 status / routing.status 需要的原始状态。
+    bm::State bm_state{bm::State::stopped};
+    hri_session::Phase hri_phase{hri_session::Phase::not_started};
+    bool bm_transport_open{};
+    bool bm_resolving{};
+    std::string routing_json{};            // routing_state::routing_json 视图；未启用路由时为空
+    // failure_reason 在 phase==stopping 且本次运行已失败时也会填写（有界收尾进行中）。
 };
 
 // ---------- 离散事件 ----------
@@ -179,6 +199,18 @@ public:
 
     // UI 可注册唤醒回调（例如 PostMessage 唤醒消息循环）；在引擎线程调用，必须非阻塞。
     void set_wakeup(std::function<void()> wakeup);
+
+    // ---------- R128 增补（只增不改） ----------
+    // 注入设备实现（离线测试用假设备）；nullptr 等同默认的 Windows 设备。
+    explicit Engine(std::shared_ptr<Devices> devices);
+    // 与 stop() 相同，但把非空 failure_reason 记为本次运行失败（原 ui_control_* 失败路径）。
+    std::future<CommandResult> stop_with_reason(std::string failure_reason);
+    // 跳过剩余的有界媒体收尾，立即释放资源（原控制台关闭等待超时路径）。非阻塞。
+    void force_stop_now(std::string failure_reason);
+    // 有界等待引擎线程结束（结束则回收线程）；超时返回 false，可再次调用。
+    [[nodiscard]] bool wait_stopped(std::chrono::milliseconds timeout);
+    // 键盘诊断模式（StartConfig::manual_ptt）：等价于原 T 键。
+    std::future<CommandResult> manual_ptt_toggle();
 
 private:
     struct Impl;
