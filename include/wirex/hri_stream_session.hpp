@@ -93,6 +93,17 @@ struct Snapshot {
     std::uint64_t unmatched_t_records{};
 };
 
+// 只有 T0 收尾或音频输出关闭失败时，才将一次接收结束标记为清理未完成。
+[[nodiscard]] inline bool routed_rx_cleanup_incomplete(
+    const Snapshot& state, bool hri_start_attempted, bool waveout_cleanup_succeeded) noexcept
+{
+    if (!waveout_cleanup_succeeded || state.reason == Reason::stop_write_failed ||
+        state.reason == Reason::stop_record_timeout) {
+        return true;
+    }
+    return hri_start_attempted && (!state.stop_write_succeeded || !state.stop_t_record_observed);
+}
+
 struct Update {
     std::vector<Action> actions;
     Snapshot state{};

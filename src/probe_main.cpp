@@ -6707,13 +6707,15 @@ int run_bm_bridge(const std::wstring& port_name, const std::filesystem::path& bo
                 record_routed_rx_waveout_cleanup(waveout_cleanup_ok);
                 if (!waveout_cleanup_ok) set_failure("waveout_rx_call_cleanup_failed");
                 const bool hri_t0_confirmed = state.stop_write_succeeded && state.stop_t_record_observed;
+                const bool routed_rx_cleanup_incomplete =
+                    wirex::hri_stream_session::routed_rx_cleanup_incomplete(
+                        state, routed_rx_hri_start_attempted, waveout_cleanup_ok);
                 report_routed_rx_cleanup(hri_t0_confirmed);
                 clear_lcd_source_identity();
                 ++counters.calls_ended;
-                if (state.reason == StreamReason::none && state.stop_write_succeeded &&
-                    state.stop_t_record_observed) {
+                if (state.reason == StreamReason::none && hri_t0_confirmed && waveout_cleanup_ok) {
                     status("downlink_call_drained_t0_observed");
-                } else {
+                } else if (routed_rx_cleanup_incomplete) {
                     if (!state.stop_write_succeeded || !state.stop_t_record_observed ||
                         state.reason == StreamReason::stop_write_failed ||
                         state.reason == StreamReason::stop_record_timeout) {

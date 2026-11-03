@@ -125,6 +125,49 @@ void test_start_timeout_sends_one_bounded_t0()
           "missing T0 observation incorrectly blocked the listener or claimed radio state");
 }
 
+void test_routed_rx_cleanup_classification()
+{
+    using namespace wirex::hri_stream_session;
+    Snapshot state{};
+    state.reason = Reason::cancelled;
+    state.stop_write_attempted = true;
+    state.stop_write_succeeded = true;
+    state.stop_t_record_observed = true;
+    check(!routed_rx_cleanup_incomplete(state, true, true),
+          "a cancelled call with confirmed T0 and closed audio must not report incomplete cleanup");
+
+    state.reason = Reason::network_lost;
+    check(!routed_rx_cleanup_incomplete(state, true, true),
+          "a non-cleanup end reason with confirmed T0 and closed audio must not report incomplete cleanup");
+
+    state.reason = Reason::start_write_failed;
+    check(!routed_rx_cleanup_incomplete(state, true, true),
+          "a failed T3 write followed by confirmed T0 and closed audio must not report incomplete cleanup");
+
+    state.reason = Reason::stop_write_failed;
+    check(routed_rx_cleanup_incomplete(state, true, true),
+          "a failed T0 write must report incomplete cleanup");
+
+    state.reason = Reason::stop_record_timeout;
+    check(routed_rx_cleanup_incomplete(state, true, true),
+          "a bounded T0 record timeout must report incomplete cleanup");
+
+    state.reason = Reason::none;
+    state.stop_write_succeeded = false;
+    state.stop_t_record_observed = false;
+    check(routed_rx_cleanup_incomplete(state, true, true),
+          "a started HRI stream without a successful T0 write must report incomplete cleanup");
+
+    state.stop_write_succeeded = true;
+    check(routed_rx_cleanup_incomplete(state, true, true),
+          "a started HRI stream without an observed T0 record must report incomplete cleanup");
+
+    check(routed_rx_cleanup_incomplete(state, false, false),
+          "a WaveOut close failure must report incomplete cleanup even when HRI was not started");
+    check(!routed_rx_cleanup_incomplete(state, false, true),
+          "a call that never started HRI must not require T0 during successful audio cleanup");
+}
+
 void test_cancel_before_and_after_t3_attempt()
 {
     using namespace wirex::hri_stream_session;
@@ -303,6 +346,7 @@ int main()
     try {
         test_streamed_call_waits_for_audio_tail_before_t0();
         test_start_timeout_sends_one_bounded_t0();
+        test_routed_rx_cleanup_classification();
         test_cancel_before_and_after_t3_attempt();
         test_t0_observation_timeout_allows_reentry();
         test_short_call_waits_for_late_t3_before_draining();
