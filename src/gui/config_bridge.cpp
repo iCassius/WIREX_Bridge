@@ -345,11 +345,6 @@ std::optional<engine::StartConfig> make_start_config(const services::GuiConfig& 
         error = "本机 WinMM 未返回所选 WaveIn/WaveOut 的 endpoint ID；请检查 Windows 音频端点后重试。";
         return std::nullopt;
     }
-    if (inputs.body_file.empty()) {
-        error = "缺少本机 Y 模板 private/device-y.bin。";
-        return std::nullopt;
-    }
-
     engine::StartConfig sc;
     sc.hri_port = widen(*port);
     sc.hri_body_file = inputs.body_file;

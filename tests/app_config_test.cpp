@@ -137,6 +137,12 @@ void test_defaults()
         "default ui");
     check(c.window.is_object() && c.window.members.empty(), "default window is empty object");
 
+    auto partial = default_doc();
+    partial.find("devices")->erase("cat_baud_rate");
+    const auto from_partial = wirex::app::from_document(partial);
+    check(from_partial.ok() && from_partial.value().devices.cat_baud_rate == 38400U,
+          "from_document fills an omitted CAT baud from the 38400 default");
+
     // Byte layout matches what PS 5.1 ConvertTo-Json -Depth 24 + "`n" produces for the defaults.
     const std::string expected =
         "{\r\n"
@@ -287,6 +293,7 @@ void test_device_fields()
             }},
         {"serial_port invalid", set("serial_port", str("COM0")), E::invalid_format},
         {"cat_port COM12", set("cat_port", str("COM12")), std::nullopt},
+        {"stored config missing CAT baud", [](json::Value& d) { d.find("devices")->erase("cat_baud_rate"); }, E::incomplete_section},
         {"cat_port number", set("cat_port", num("5")), E::invalid_format},
         {"wave_in whitespace", set("wave_in_endpoint_id", str(" \t")), E::invalid_format},
         {"wave_in 4096", set("wave_in_endpoint_id", json::Value::string(std::string(4096, 'e'))), std::nullopt},

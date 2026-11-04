@@ -5,7 +5,6 @@
 //   --fake-services        与 --fake 合用：服务也用内存模拟（离线截图，不读写 config.json、不访问串口/网络）
 //   --config <json>        config.json 路径（默认 exe 同目录；不存在时生成默认配置）
 //   --screenshot <png>     渲染若干帧后把后台缓冲区保存为 PNG 并退出（离线验收）
-//   --open-settings        启动时打开设置弹窗（配合 --screenshot 检查弹窗布局）
 //   --check-config         只做 config.json 生成/读取检查并退出（退出码 0 = 成功；不打开窗口）
 // 不带 --fake 时使用真实引擎（需以 WIREX_GUI_REAL_ENGINE=1 编译；否则提示“真实引擎尚未接入”）。
 //
@@ -220,11 +219,12 @@ std::filesystem::path fonts_dir() {
     return std::filesystem::path(windir) / L"Fonts";
 }
 
-ImFont* add_font(const std::filesystem::path& file, int index) {
+ImFont* add_font(const std::filesystem::path& file, int index, bool merge = false) {
     std::error_code ec;
     if (!std::filesystem::is_regular_file(file, ec)) return nullptr;
     ImFontConfig cfg;
     cfg.FontNo = static_cast<ImU32>(index);
+    cfg.MergeMode = merge;
     cfg.Flags |= ImFontFlags_NoLoadError;
     cfg.OversampleH = 1; // 1.92 动态字形：CJK 无需水平过采样，降低图集内存
     const std::string utf8 = file.u8string();
@@ -235,15 +235,26 @@ ImFont* add_font(const std::filesystem::path& file, int index) {
 wirex::gui::Fonts load_fonts(wirex::gui::FontStatus& status) {
     const auto dir = fonts_dir();
     wirex::gui::Fonts fonts;
-    // msyh.ttc：0 = Microsoft YaHei，1 = Microsoft YaHei UI（与 WPF FontFamily 一致）。
-    fonts.regular = add_font(dir / L"msyh.ttc", 1);
-    if (fonts.regular == nullptr) fonts.regular = add_font(dir / L"msyh.ttc", 0);
+    // Latin UI 字符使用 Segoe UI；CJK 字符合并 Windows 等线，粗体分别使用对应粗体文件。
+    fonts.regular = add_font(dir / L"segoeui.ttf", 0);
     if (fonts.regular != nullptr) {
-        status = wirex::gui::FontStatus::yahei;
-        fonts.bold = add_font(dir / L"msyhbd.ttc", 1);
-        if (fonts.bold == nullptr) fonts.bold = add_font(dir / L"msyhbd.ttc", 0);
+        if (add_font(dir / L"Deng.ttf", 0, true) != nullptr) {
+            status = wirex::gui::FontStatus::segoe_deng;
+        } else if (add_font(dir / L"simhei.ttf", 0, true) != nullptr) {
+            status = wirex::gui::FontStatus::segoe_simhei;
+        } else {
+            status = wirex::gui::FontStatus::fallback_default;
+        }
+        fonts.bold = add_font(dir / L"segoeuib.ttf", 0);
+        if (fonts.bold != nullptr) {
+            if (status == wirex::gui::FontStatus::segoe_deng) {
+                (void)add_font(dir / L"Dengb.ttf", 0, true);
+            } else if (status == wirex::gui::FontStatus::segoe_simhei) {
+                (void)add_font(dir / L"simhei.ttf", 0, true);
+            }
+        }
     } else if ((fonts.regular = add_font(dir / L"simhei.ttf", 0)) != nullptr) {
-        status = wirex::gui::FontStatus::simhei;
+        status = wirex::gui::FontStatus::segoe_simhei;
     } else {
         status = wirex::gui::FontStatus::fallback_default;
         fonts.regular = ImGui::GetIO().Fonts->AddFontDefault();
@@ -334,7 +345,6 @@ bool save_back_buffer_png(const std::wstring& path, std::string& error) {
 struct Options {
     bool fake{};
     bool fake_services{};
-    bool open_settings{};
     bool check_config{};
     std::optional<std::wstring> screenshot{};
     std::optional<std::filesystem::path> config{};
@@ -355,8 +365,6 @@ Options parse_args() {
             o.fake = true;
         } else if (a == L"--fake-services") {
             o.fake_services = true;
-        } else if (a == L"--open-settings") {
-            o.open_settings = true;
         } else if (a == L"--check-config") {
             o.check_config = true;
         } else if (a == L"--config") {
@@ -386,7 +394,7 @@ Options parse_args() {
         } else {
             o.error = L"未知参数：" + a +
                       L"\n用法：WirexBridge.exe [--fake [--fake-services]] [--config <json>] [--screenshot <png>] "
-                      L"[--open-settings] [--check-config]";
+                      L"[--check-config]";
             break;
         }
     }
@@ -594,8 +602,6 @@ int run(HINSTANCE instance) {
             vm.set_font_status(font_status);
             vm.set_wakeup([wake]() { SetEvent(wake); });
             wirex::gui::AppView view(vm, fonts);
-            if (opts.open_settings) view.open_settings();
-
             const ImVec4 clear = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];
             bool dirty = true;
             bool input = false;

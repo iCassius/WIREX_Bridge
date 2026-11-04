@@ -43,6 +43,7 @@ enum class CommandKind : std::uint8_t {
     replace_tx_policy,
     quick_call_join,
     set_audio_gains,
+    set_audio_endpoints,
     upsert_radio_identity,
     manual_ptt_toggle,
 };
@@ -53,6 +54,7 @@ struct Command {
     std::uint64_t revision{};
     std::uint32_t first{};                         // source_id / radio gain
     std::uint32_t second{};                        // mic gain
+    AudioEndpoints audio_endpoints{};
     talkgroup_routing::RxPolicy rx_policy{};
     talkgroup_routing::TxTarget tx_target{};
     talkgroup_routing::GroupRoute group{};

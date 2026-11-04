@@ -77,7 +77,7 @@ struct StaticGroupsView {
     std::string tg_input{};
 };
 
-enum class FontStatus : std::uint8_t { yahei, simhei, fallback_default };
+enum class FontStatus : std::uint8_t { segoe_deng, segoe_simhei, fallback_default };
 
 struct CatForm {
     std::string port{};
@@ -154,6 +154,7 @@ public:
     void add_channel();                          // engine.replace_rx_policy
     void quick_call(const ChannelKey& key);      // engine.quick_call_join
     void commit_gains();                         // engine.set_audio_gains
+    void set_audio_devices(std::wstring wave_in_endpoint_id, std::wstring wave_out_endpoint_id);
     void set_history_target();                   // engine.replace_tx_policy（来话历史所选条目）
 
     // ---------- 其它服务 ----------
@@ -225,6 +226,7 @@ private:
     std::map<std::uint32_t, std::string> callsigns_{};     // RadioID 查询得到的呼号
     std::set<std::uint32_t> identity_requested_{};
     std::uint64_t identity_revision_{};                    // 每次引擎进入 running 从 0 开始
+    std::uint64_t radio_connection_generation_{};            // 取消过期的并行 CAT 连接回调
     std::vector<std::future<engine::CommandResult>> identity_ops_{};
     engine::Phase last_phase_{engine::Phase::stopped};
     std::deque<CallRecord> history_{};
@@ -235,8 +237,9 @@ private:
     std::string transient_text_{};
     bool transient_failed_{};
     std::chrono::steady_clock::time_point transient_until_{};
-    FontStatus font_status_{FontStatus::yahei};
+    FontStatus font_status_{FontStatus::segoe_deng};
     bool exit_requested_{};
+    bool suppress_cancelled_start_report_{};
 
     std::shared_ptr<Mailbox> mailbox_{std::make_shared<Mailbox>()};
 };

@@ -60,6 +60,7 @@ struct DeviceLog {
     std::atomic<int> serial_closed{0};
     std::atomic<int> output_opened{0};
     std::atomic<int> output_closed{0};
+    std::atomic<bool> output_drained{true};
     std::atomic<int> input_closed{0};
     std::atomic<int> version_queries{0};
     std::atomic<int> y_records{0};
@@ -160,23 +161,26 @@ private:
 
 class FakeOutput final : public wirex::engine::AudioOutput {
 public:
-    explicit FakeOutput(std::shared_ptr<DeviceLog> log) : log_(std::move(log)) {}
-    bool open() noexcept override { ++log_->output_opened; open_ = true; return true; }
+    FakeOutput(std::shared_ptr<DeviceLog> log, bool can_open, bool close_succeeds)
+        : log_(std::move(log)), can_open_(can_open), close_succeeds_(close_succeeds) {}
+    bool open() noexcept override { ++log_->output_opened; open_ = can_open_; return open_; }
     bool is_open() const noexcept override { return open_; }
     bool completion_overflowed() noexcept override { return false; }
     bool take_completed(std::uint64_t&, std::size_t&) noexcept override { return false; }
     bool has_capacity() noexcept override { return open_; }
     bool submit(const std::int16_t*, std::size_t, std::uint64_t) noexcept override { return open_; }
-    bool all_drained() noexcept override { return true; }
+    bool all_drained() noexcept override { return log_->output_drained.load(); }
     bool close() noexcept override
     {
         if (open_) ++log_->output_closed;
         open_ = false;
-        return true;
+        return close_succeeds_;
     }
 
 private:
     std::shared_ptr<DeviceLog> log_;
+    bool can_open_{};
+    bool close_succeeds_{true};
     bool open_{};
 };
 
@@ -213,9 +217,10 @@ public:
         return std::make_unique<FakeInput>(log_);
     }
 
-    std::unique_ptr<wirex::engine::AudioOutput> make_audio_output(const wirex::engine::AudioEndpoints&) override
+    std::unique_ptr<wirex::engine::AudioOutput> make_audio_output(const wirex::engine::AudioEndpoints& endpoints) override
     {
-        return std::make_unique<FakeOutput>(log_);
+        return std::make_unique<FakeOutput>(log_, endpoints.expected_wave_out_endpoint_id != L"bad-output",
+            endpoints.expected_wave_out_endpoint_id != L"old-close-false");
     }
 
 private:
@@ -228,6 +233,8 @@ wirex::engine::StartConfig base_config()
     wirex::engine::StartConfig config{};
     config.hri_port = L"COM99";
     config.hri_body_file = "C:/fake/device-y.bin";
+    config.audio.expected_wave_in_endpoint_id = L"fake-input-1";
+    config.audio.expected_wave_out_endpoint_id = L"fake-output-1";
     config.bm.master_host = "127.0.0.1";
     config.bm.master_port = 62031U;
     config.bm.profile.callsign = "TEST";
@@ -283,6 +290,10 @@ void test_commands_before_start()
     const auto result = get_within(engine.set_audio_gains(1000U, 1000U), 1s, "command before start");
     check(result.status == CommandStatus::not_ready && result.detail == "engine_not_running",
           "commands before start resolve immediately as not_ready");
+    const auto audio = get_within(engine.set_audio_endpoints(wirex::engine::AudioEndpoints{}), 1s,
+                                  "audio endpoint command before start");
+    check(audio.status == CommandStatus::not_ready && audio.detail == "engine_not_running",
+          "audio endpoint commands before start resolve immediately as not_ready");
     const auto stop = get_within(engine.stop(), 1s, "stop before start");
     check(stop.status == CommandStatus::idempotent, "stop before start is idempotent");
     check(engine.snapshot()->phase == wirex::engine::Phase::stopped, "initial snapshot phase is stopped");
@@ -367,6 +378,10 @@ void test_running_engine()
     check(wait_for_snapshot(engine, 5s, [](const wirex::engine::Snapshot& s) {
               return s.hri_ready && s.wave_out_open && s.phase == wirex::engine::Phase::running;
           }), "fake HRI handshake makes the engine running with WaveOut open");
+    check(engine.snapshot()->wave_in_endpoint_id == L"fake-input-1" &&
+          engine.snapshot()->wave_out_endpoint_id == L"fake-output-1",
+          "snapshot reports stable audio endpoint IDs selected at startup");
+    check(engine.snapshot()->hri_port == L"COM99", "snapshot reports the actual selected HRI COM port");
     check(log->version_queries >= 1 && log->y_records >= 1, "engine writes V and Y records to the serial port");
 
     // 快照发布：至少每 100 ms 一次（心跳），seq 单调递增。
@@ -382,6 +397,70 @@ void test_running_engine()
     auto snapshot = engine.snapshot();
     check(snapshot->radio_playback_gain_milli == 2000U && snapshot->mic_transmit_gain_milli == 8000U &&
           snapshot->audio_gains_revision == 1U, "snapshot reflects gains when the future resolves");
+
+    auto new_audio = config.audio;
+    new_audio.wave_in_id = 1U;
+    new_audio.wave_out_id = 2U;
+    new_audio.expected_wave_in_endpoint_id = L"fake-input-2";
+    new_audio.expected_wave_out_endpoint_id = L"fake-output-2";
+    const auto switched = get_within(engine.set_audio_endpoints(new_audio), 2s, "switch audio endpoints");
+    snapshot = engine.snapshot();
+    check(switched.status == CommandStatus::accepted && switched.revision == 1U,
+          "idle engine accepts a live audio endpoint switch");
+    check(snapshot->wave_in_endpoint_id == L"fake-input-2" &&
+          snapshot->wave_out_endpoint_id == L"fake-output-2" && snapshot->audio_endpoints_revision == 1U,
+          "snapshot confirms both new endpoints before the command future resolves");
+
+    auto rejected_audio = new_audio;
+    rejected_audio.expected_wave_in_endpoint_id = L"fake-input-3";
+    rejected_audio.expected_wave_out_endpoint_id = L"bad-output";
+    const auto audio_failure = get_within(engine.set_audio_endpoints(rejected_audio), 2s, "reject unavailable output");
+    snapshot = engine.snapshot();
+    check(audio_failure.status == CommandStatus::failed && audio_failure.detail == "waveout_open_failed",
+          "unavailable output rejects the entire endpoint switch");
+    check(snapshot->wave_in_endpoint_id == L"fake-input-2" && snapshot->wave_out_endpoint_id == L"fake-output-2" &&
+          snapshot->audio_endpoints_revision == 1U,
+          "failed switch preserves both previously active endpoints and the revision");
+
+    auto deferred_audio = new_audio;
+    deferred_audio.wave_in_id = 4U;
+    deferred_audio.wave_out_id = 4U;
+    deferred_audio.expected_wave_in_endpoint_id = L"fake-input-4";
+    deferred_audio.expected_wave_out_endpoint_id = L"fake-output-4";
+    log->output_drained = false;
+    auto deferred_switch = engine.set_audio_endpoints(deferred_audio);
+    std::this_thread::sleep_for(180ms);
+    check(deferred_switch.wait_for(0ms) == std::future_status::timeout,
+          "audio endpoint request remains pending while playback is busy");
+    log->output_drained = true;
+    const auto deferred_result = get_within(std::move(deferred_switch), 2s, "deferred audio endpoint switch");
+    snapshot = engine.snapshot();
+    check(deferred_result.status == CommandStatus::accepted && deferred_result.revision == 2U &&
+          snapshot->wave_in_endpoint_id == L"fake-input-4" && snapshot->wave_out_endpoint_id == L"fake-output-4" &&
+          snapshot->audio_endpoints_revision == 2U,
+          "queued endpoint switch applies after the current audio route drains");
+
+    auto old_close_error = deferred_audio;
+    old_close_error.expected_wave_out_endpoint_id = L"old-close-false";
+    const auto arm_close_failure = get_within(engine.set_audio_endpoints(old_close_error), 2s,
+                                               "select output that later reports close failure");
+    check(arm_close_failure.status == CommandStatus::accepted && arm_close_failure.revision == 3U,
+          "test route with close-failure behavior opens successfully");
+
+    auto after_close_error = old_close_error;
+    after_close_error.wave_in_id = 5U;
+    after_close_error.wave_out_id = 5U;
+    after_close_error.expected_wave_in_endpoint_id = L"fake-input-5";
+    after_close_error.expected_wave_out_endpoint_id = L"fake-output-5";
+    const auto close_warning = get_within(engine.set_audio_endpoints(after_close_error), 2s,
+                                          "switch after old output close warning");
+    snapshot = engine.snapshot();
+    check(close_warning.status == CommandStatus::accepted && close_warning.detail ==
+          "waveout_old_endpoint_closed_with_cleanup_warning" && close_warning.revision == 4U,
+          "old output close failure with a released handle accepts the new route with a warning");
+    check(snapshot->wave_in_endpoint_id == L"fake-input-5" && snapshot->wave_out_endpoint_id == L"fake-output-5" &&
+          snapshot->wave_out_open && snapshot->audio_endpoints_revision == 4U,
+          "snapshot reports the new live endpoint after old output close failure");
     auto low = get_within(engine.set_audio_gains(249U, 1000U), 2s, "low gain");
     check(low.status == CommandStatus::invalid && low.detail == "invalid_audio_gains", "gain 249 is invalid");
     auto high = get_within(engine.set_audio_gains(1000U, 16001U), 2s, "high gain");
@@ -588,12 +667,22 @@ void test_destructor_stops_running_engine()
     check(log->serial_closed == 1, "destructor closes the serial port");
 }
 
+void test_embedded_hri_template()
+{
+    std::vector<std::uint8_t> body;
+    const auto devices = wirex::engine::make_windows_devices();
+    check(devices && devices->load_hri_template({}, body), "approved HRI Y template loads from the executable");
+    check(body.size() == wirex::hri_session::y_body_size && body[5] == '2',
+          "embedded HRI Y template passes size and marker checks");
+}
+
 } // namespace
 
 int main()
 {
     try {
         test_event_queue_overflow();
+        test_embedded_hri_template();
         test_commands_before_start();
         test_start_failures();
         test_running_engine();

@@ -42,7 +42,7 @@ struct BmTarget {
 
 struct StartConfig {
     std::wstring hri_port{};               // "COM5"
-    std::filesystem::path hri_body_file{}; // device-y.bin 模板
+    std::filesystem::path hri_body_file{}; // 空路径使用内置已批准模板；非空路径可显式覆盖
     AudioEndpoints audio{};
     BmTarget bm{};
     bool bm_start_disconnected{true};      // 先接 HRI，BM 由 set_bm_connection 单独开关
@@ -77,7 +77,7 @@ struct CallInfo {
 };
 
 struct AudioLevels {
-    float rx_peak{};                       // 0..1，最近一帧
+    float rx_peak{};                       // 0..1，最近 200 ms 的输出峰值
     float tx_peak{};
     std::uint64_t rx_clipped_samples{};
     std::uint64_t tx_clipped_samples{};
@@ -102,9 +102,13 @@ struct Snapshot {
     Phase phase{Phase::stopped};
     std::string failure_reason{};          // phase==failed 时的机器可读原因
     bool serial_open{};
+    std::wstring hri_port{};                // 本次运行实际打开的 HRI COM 端口
     bool hri_ready{};
     bool wave_in_open{};
     bool wave_out_open{};
+    std::wstring wave_in_endpoint_id{};
+    std::wstring wave_out_endpoint_id{};
+    std::uint64_t audio_endpoints_revision{};
     BmLink bm_link{BmLink::disabled};
     bool bm_requested_enabled{};
     std::uint64_t bm_connection_revision{};
@@ -193,6 +197,7 @@ public:
     std::future<CommandResult> quick_call_join(talkgroup_routing::GroupRoute route);
     std::future<CommandResult> set_audio_gains(std::uint32_t radio_playback_gain_milli,
                                                std::uint32_t mic_transmit_gain_milli);
+    std::future<CommandResult> set_audio_endpoints(AudioEndpoints audio);
     std::future<CommandResult> upsert_radio_identity(std::uint32_t source_id, std::uint64_t revision,
                                                      std::optional<std::string> callsign);
 

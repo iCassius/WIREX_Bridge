@@ -1,8 +1,8 @@
 #pragma once
 
 // 主控制台视图（Dear ImGui）。只依赖 ViewModel：读取其状态并调用其命令。
-// 布局对应 ui/windows/MainWindow.xaml（R126）：标题栏状态 / 频道卡片 3×2 / 来话历史 + 当前来话 + 最近来话 /
-// 电台控制 + 日常控制 / 底部操作行；设置为模态弹窗。
+// 深色控制台布局：对齐标题/状态栏 / 频道卡片 3×2 / 来话三卡 / 电台与音频控制 + 频道/增益面板；
+// 串口和 BM 账户配置直接在主界面编辑。
 
 #include "services.hpp"
 #include "view_model.hpp"
@@ -27,7 +27,6 @@ public:
 
     // 绘制一帧（在 ImGui::NewFrame 与 ImGui::Render 之间调用）。
     void draw(float dpi_scale);
-    void open_settings();
     // 有需要持续重绘的交互（拖动滑块、弹窗动画等）时返回 true。
     [[nodiscard]] bool wants_continuous() const noexcept { return continuous_; }
 
@@ -41,24 +40,28 @@ private:
     void draw_recent_calls(float width, float height);
     void draw_radio_panel(float width, float height);
     void draw_daily_panel(float width, float height);
+    void draw_audio_devices(float inner_w);
     void draw_static_groups(float inner_w);
-    void draw_footer();
-    void draw_settings();
+    void toggle_language();
+    void toggle_radio();
+    void toggle_bm();
+    void save_bm_config();
     [[nodiscard]] float px(float logical) const noexcept { return logical * scale_; }
 
     ViewModel& vm_;
     Fonts fonts_;
     float scale_{1.0F};
     bool continuous_{};
-    bool settings_requested_{};
-    float daily_slack_{};   // 日常控制区上一帧的剩余高度（均分到段间距）
-
-    // 设置弹窗草稿
+    // 主界面 BM 配置草稿
     services::GuiConfig draft_{};
     std::string draft_dmr_id_{};
     std::string draft_master_port_{};
-    std::string draft_hri_port_{};
     std::string settings_error_{};
+    std::string language_notice_{};
+    std::string audio_notice_{};
+    std::wstring pending_wave_in_{};
+    std::wstring pending_wave_out_{};
+    bool audio_selection_pending_{};
 };
 
 } // namespace wirex::gui

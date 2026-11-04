@@ -7,7 +7,7 @@
 // - 启动参数：ConvertFrom-UiPortableConfigToProfile + Get-UiNativeRxPolicyForChannels（bridge-ui.ps1）、
 //   tools/start-bm-radio-bridge.ps1 -PrepareOnly（Read-PortSelection -RequireHri -NoInteractive、
 //   Get-CompatibleAutoAudioPair、Test-ApprovedBody、Get-ProfileConnectionArgs、New-RoutingStateDocument）。
-// 文件/设备 I/O 不在这里做：调用方枚举设备、定位 device-y.bin 后把结果传进来，便于表驱动测试。
+// 文件/设备 I/O 不在这里做：调用方枚举设备；空 body_file 使用源码内置的已批准 HRI Y 模板。
 
 #include "services.hpp"
 
@@ -69,7 +69,7 @@ struct StartInputs {
     app::devices::SerialCatalog serial{};
     std::vector<app::devices::WaveDevice> wave_inputs{};
     std::vector<app::devices::WaveDevice> wave_outputs{};
-    std::filesystem::path body_file{};                    // 已通过长度与 SHA-256 校验
+    std::filesystem::path body_file{};                    // 可选外部覆盖；留空使用内置模板
 };
 
 [[nodiscard]] std::optional<engine::StartConfig> make_start_config(const services::GuiConfig& gui,

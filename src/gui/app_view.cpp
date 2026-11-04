@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <string>
@@ -142,6 +143,22 @@ std::string known_name_for_static(std::uint32_t tg) {
     return channel_display_name(e);
 }
 
+const char* bm_short_text(BmLink link) {
+    if (link == BmLink::resolving) return tr(Str::bm_connecting);
+    return bm_link_text(link);
+}
+
+const char* phase_short_text(Phase phase) {
+    switch (phase) {
+    case Phase::stopped: return tr(Str::phase_short_stopped);
+    case Phase::starting: return tr(Str::phase_short_starting);
+    case Phase::running: return tr(Str::phase_short_running);
+    case Phase::stopping: return tr(Str::phase_short_stopping);
+    case Phase::failed: return tr(Str::phase_short_failed);
+    }
+    return tr(Str::phase_short_stopped);
+}
+
 // 只保留 A-Z0-9/ 的呼号，用于构造资料页链接。
 std::string safe_callsign(const std::string& raw) {
     std::string out;
@@ -180,7 +197,7 @@ struct FieldColumn {
 };
 
 bool begin_fields(const char* id, std::initializer_list<FieldColumn> columns) {
-    if (!ImGui::BeginTable(id, static_cast<int>(columns.size()), ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoPadOuterX)) {
+    if (!ImGui::BeginTable(id, static_cast<int>(columns.size()), ImGuiTableFlags_SizingStretchProp)) {
         return false;
     }
     for (const auto& c : columns) {
@@ -356,22 +373,15 @@ void apply_theme(float dpi_scale) {
 
     style.ScaleAllSizes(dpi_scale);
     style.FontScaleDpi = dpi_scale;
-    // ImGui 的字号是 ascent+descent 像素高度，WPF FontSize 是 em 尺寸；微软雅黑 ascent+descent ≈ 1.32 em。
-    // 乘上该系数后，代码中的字号可直接沿用 XAML 中的数值。
+    // ImGui 的字号是字体实际字高，WPF FontSize 是 em 尺寸；此系数使代码字号接近 XAML 中的数值。
     style.FontScaleMain = 1.3F;
 }
 
 // ---------------------------------------------------------------- 视图
 
-AppView::AppView(ViewModel& vm, Fonts fonts) : vm_(vm), fonts_(fonts) {}
-
-void AppView::open_settings() {
-    draft_ = vm_.config();
-    draft_dmr_id_ = draft_.dmr_id != 0U ? std::to_string(draft_.dmr_id) : std::string{};
+AppView::AppView(ViewModel& vm, Fonts fonts) : vm_(vm), fonts_(fonts), draft_(vm.config()) {
+    draft_dmr_id_ = draft_.dmr_id == 0U ? std::string{} : std::to_string(draft_.dmr_id);
     draft_master_port_ = std::to_string(draft_.master_port);
-    draft_hri_port_ = to_utf8(draft_.hri_port);
-    settings_error_.clear();
-    settings_requested_ = true;
 }
 
 void AppView::draw(float dpi_scale) {
@@ -385,14 +395,13 @@ void AppView::draw(float dpi_scale) {
                                             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
     ImGui::Begin("##root", nullptr, root_flags);
 
-    const float gap = px(6.0F);
-    const float footer_h = ImGui::GetFrameHeight() + px(16.0F);
+    const float gap = px(4.0F);
     draw_header();
     const ImVec2 avail = ImGui::GetContentRegionAvail();
-    const float body_h = avail.y - footer_h - gap;
-    // 频道卡片 : 来话 : 控制区 ≈ 35% : 20% : 剩余（来话区刚好容纳 5 行历史；控制区含 BM 静态组）
-    const float cards_h = std::max(px(230.0F), body_h * 0.35F);
-    const float calls_h = std::max(px(150.0F), body_h * 0.205F);
+    const float body_h = std::max(0.0F, avail.y - gap);
+    // 保持频道卡片完整显示；把设备选择提前放到电台区上方，减少滚动才能调整音频的情况。
+    const float cards_h = std::max(px(185.0F), body_h * 0.31F);
+    const float calls_h = std::max(px(130.0F), body_h * 0.15F);
     const float panels_h = body_h - cards_h - calls_h - gap * 2.0F;
 
     draw_channels(cards_h);
@@ -403,9 +412,6 @@ void AppView::draw(float dpi_scale) {
     draw_radio_panel(half, panels_h);
     ImGui::SameLine(0.0F, gap);
     draw_daily_panel(half, panels_h);
-    draw_footer();
-    draw_settings();
-
     ImGuiIO& io = ImGui::GetIO();
     if (ImGui::IsAnyItemActive() || ImGui::IsMouseDown(ImGuiMouseButton_Left) || io.MouseWheel != 0.0F) continuous_ = true;
     ImGui::End();
@@ -414,82 +420,83 @@ void AppView::draw(float dpi_scale) {
 void AppView::draw_header() {
     const auto& s = vm_.snapshot();
     const float row_h = px(32.0F);
-    const ImVec2 start = ImGui::GetCursorPos();
+    if (ImGui::BeginTable("##header", 3, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoPadOuterX |
+                                           ImGuiTableFlags_NoBordersInBody)) {
+        ImGui::TableSetupColumn("##title", ImGuiTableColumnFlags_WidthStretch, 1.0F);
+        ImGui::TableSetupColumn("##status", ImGuiTableColumnFlags_WidthStretch, 1.1F);
+        ImGui::TableSetupColumn("##actions", ImGuiTableColumnFlags_WidthFixed, px(348.0F));
+        ImGui::TableNextRow(ImGuiTableRowFlags_None, row_h);
 
-    ImGui::PushFont(fonts_.bold, 19.0F);
-    ImGui::SetCursorPosY(start.y + (row_h - ImGui::GetTextLineHeight()) * 0.5F);
-    ImGui::TextUnformatted(tr(Str::app_title));
-    ImGui::PopFont();
-    if (vm_.fake()) {
-        ImGui::SameLine(0.0F, px(10.0F));
-        ImGui::SetCursorPosY(start.y + (row_h - ImGui::GetTextLineHeight()) * 0.5F);
-        ImGui::PushStyleColor(ImGuiCol_Text, vec(color::warn));
-        ImGui::Text("[%s]", tr(Str::fake_banner));
-        ImGui::PopStyleColor();
-    }
-
-    // 中部状态：BrandMeister · 核心 · 提示（从窗口宽度的 32% 处开始，接近 WPF 的居中状态卡）
-    ImGui::SameLine(std::max(ImGui::GetCursorPosX() + px(24.0F), ImGui::GetWindowWidth() * 0.32F));
-    ImGui::SetCursorPosY(start.y + (row_h - ImGui::GetTextLineHeight()) * 0.5F);
-    caption(tr(Str::brandmeister));
-    ImGui::SameLine();
-    ImGui::PushFont(fonts_.bold, 13.0F);
-    const bool bm_ok = s.bm_link == BmLink::connected;
-    const bool bm_bad = s.bm_link == BmLink::failed || s.bm_link == BmLink::backoff;
-    ImGui::PushStyleColor(ImGuiCol_Text, bm_ok ? vec(color::green) : bm_bad ? vec(color::warn) : vec(color::text));
-    ImGui::TextUnformatted(bm_link_text(s.bm_link));
-    ImGui::PopStyleColor();
-    ImGui::PopFont();
-    ImGui::SameLine(0.0F, px(14.0F));
-    caption(tr(Str::rtt));
-    ImGui::SameLine();
-    ImGui::TextUnformatted("—"); // TODO(engine): Snapshot 暂无 RTT 字段
-    ImGui::SameLine(0.0F, px(18.0F));
-    caption(tr(Str::core));
-    ImGui::SameLine();
-    ImGui::PushFont(fonts_.bold, 13.0F);
-    const bool core_ok = s.phase == Phase::running;
-    ImGui::PushStyleColor(ImGuiCol_Text,
-                          core_ok ? vec(color::green) : s.phase == Phase::failed ? vec(color::error) : vec(color::text));
-    ImGui::TextUnformatted(phase_text(s));
-    ImGui::PopStyleColor();
-    ImGui::PopFont();
-    if (s.phase == Phase::failed && !s.failure_reason.empty()) ImGui::SetItemTooltip("%s", s.failure_reason.c_str());
-
-    // 右侧按钮
-    const float stop_w = px(120.0F);
-    const float settings_w = px(64.0F);
-    const float right = ImGui::GetWindowContentRegionMax().x;
-    const float text_x = ImGui::GetCursorPosX();
-    std::string hint;
-    ImU32 hint_color = rgb(color::warn);
-    if (vm_.transient_visible()) {
-        hint = vm_.transient_text();
-        hint_color = vm_.transient_failed() ? rgb(color::warn) : rgb(color::green);
-    } else if (vm_.font_status() == FontStatus::simhei) {
-        hint = tr(Str::font_simhei);
-    } else if (vm_.font_status() == FontStatus::fallback_default) {
-        hint = tr(Str::font_default);
-    }
-    if (!hint.empty()) {
-        ImGui::SameLine(0.0F, px(16.0F));
-        const float w = right - stop_w - settings_w - px(24.0F) - (text_x + px(16.0F));
-        if (w > px(40.0F)) {
-            ImGui::PushFont(nullptr, 12.0F);
-            text_ellipsis(hint.c_str(), w, hint_color);
-            ImGui::PopFont();
-            ImGui::SetItemTooltip("%s", hint.c_str());
+        ImGui::TableSetColumnIndex(0);
+        ImGui::PushFont(fonts_.bold, 19.0F);
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (row_h - ImGui::GetTextLineHeight()) * 0.5F);
+        ImGui::TextUnformatted(tr(Str::app_title));
+        ImGui::PopFont();
+        if (vm_.fake()) {
+            ImGui::SameLine(0.0F, px(8.0F));
+            ImGui::PushStyleColor(ImGuiCol_Text, vec(color::warn));
+            ImGui::Text("[%s]", tr(Str::fake_banner));
+            ImGui::PopStyleColor();
         }
+
+        ImGui::TableSetColumnIndex(1);
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (row_h - ImGui::GetTextLineHeight()) * 0.5F);
+        const float status_w = px(390.0F);
+        const float status_x = ImGui::GetCursorPosX() + std::max(0.0F, (ImGui::GetContentRegionAvail().x - status_w) * 0.5F);
+        ImGui::SetCursorPosX(status_x);
+        caption(tr(Str::brandmeister));
+        ImGui::SameLine(0.0F, px(5.0F));
+        ImGui::PushFont(fonts_.bold, 13.0F);
+        const bool bm_ok = s.bm_link == BmLink::connected;
+        const bool bm_bad = s.bm_link == BmLink::failed || s.bm_link == BmLink::backoff;
+        ImGui::PushStyleColor(ImGuiCol_Text, bm_ok ? vec(color::green) : bm_bad ? vec(color::warn) : vec(color::text));
+        ImGui::TextUnformatted(bm_short_text(s.bm_link));
+        ImGui::PopStyleColor();
+        ImGui::PopFont();
+        ImGui::SameLine(0.0F, px(12.0F));
+        caption(tr(Str::rtt));
+        ImGui::SameLine(0.0F, px(5.0F));
+        ImGui::PushStyleColor(ImGuiCol_Text, vec(color::muted));
+        ImGui::TextUnformatted(tr(Str::rtt_no_data));
+        ImGui::PopStyleColor();
+        ImGui::SameLine(0.0F, px(12.0F));
+        caption(tr(Str::core));
+        ImGui::SameLine(0.0F, px(5.0F));
+        ImGui::PushFont(fonts_.bold, 13.0F);
+        const bool core_ok = s.phase == Phase::running;
+        ImGui::PushStyleColor(ImGuiCol_Text,
+                              core_ok ? vec(color::green) : s.phase == Phase::failed ? vec(color::error) : vec(color::text));
+        ImGui::TextUnformatted(phase_short_text(s.phase));
+        ImGui::PopStyleColor();
+        ImGui::PopFont();
+        if (s.phase == Phase::failed && !s.failure_reason.empty()) ImGui::SetItemTooltip("%s", s.failure_reason.c_str());
+        else ImGui::SetItemTooltip("%s", phase_text(s));
+
+        ImGui::TableSetColumnIndex(2);
+        const float btn_h = px(26.0F);
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (row_h - btn_h) * 0.5F);
+        if (button(language() == Language::zh_cn ? tr(Str::language_english) : tr(Str::language_chinese),
+                   ImVec2(px(76.0F), btn_h))) toggle_language();
+        if (!language_notice_.empty()) {
+            ImGui::SetItemTooltip("%s", language_notice_.c_str());
+        } else if (vm_.font_status() == FontStatus::segoe_simhei) {
+            ImGui::SetItemTooltip("%s", tr(Str::font_simhei));
+        } else if (vm_.font_status() == FontStatus::fallback_default) {
+            ImGui::SetItemTooltip("%s", tr(Str::font_default));
+        }
+        ImGui::SameLine(0.0F, px(5.0F));
+        if (button(tr(Str::relay_unknown), ImVec2(px(100.0F), btn_h), Tone::normal, false)) {}
+        ImGui::SetItemTooltip("%s", tr(Str::relay_unavailable_reason));
+        ImGui::SameLine(0.0F, px(5.0F));
+        if (button(tr(Str::stop_exit), ImVec2(px(126.0F), btn_h), Tone::stop)) {
+            if (vm_.snapshot().phase != Phase::stopped || vm_.cat().connected || vm_.cat().busy) vm_.stop();
+            vm_.request_exit();
+        }
+        ImGui::EndTable();
     }
-    const float btn_h = px(26.0F);
-    ImGui::SetCursorPos(ImVec2(right - stop_w - settings_w - px(6.0F), start.y + (row_h - btn_h) * 0.5F));
-    if (button(tr(Str::settings), ImVec2(settings_w, btn_h))) open_settings();
-    ImGui::SameLine(0.0F, px(6.0F));
-    if (button(tr(Str::stop_exit), ImVec2(stop_w, btn_h), Tone::stop)) {
-        if (vm_.snapshot().phase != Phase::stopped) vm_.stop();
-        vm_.request_exit();
-    }
-    ImGui::SetCursorPos(ImVec2(start.x, start.y + row_h + px(4.0F)));
+
+    const ImVec2 pos = ImGui::GetCursorPos();
+    ImGui::SetCursorPos(ImVec2(pos.x, pos.y + px(4.0F)));
 }
 
 void AppView::draw_channels(float height) {
@@ -588,7 +595,7 @@ void AppView::draw_channel_card(const ChannelView& ch, float width, float height
 
     // 来话区（左）+ 操作按钮 2×2（右）
     const float content_h = ImGui::GetContentRegionAvail().y;
-    const float buttons_w = std::min(px(170.0F), inner.x * 0.36F);
+    const float buttons_w = std::min(px(190.0F), inner.x * 0.42F);
     const float call_w = inner.x - buttons_w - px(5.0F);
     ImGui::PushStyleColor(ImGuiCol_ChildBg, vec(call_bg));
     ImGui::PushStyleColor(ImGuiCol_Border, vec(color::call_border));
@@ -630,23 +637,23 @@ void AppView::draw_channel_card(const ChannelView& ch, float width, float height
     ImGui::PushFont(nullptr, 14.0F);
     const bool can_mutate = vm_.can_mutate_channels();
     const bool tx_busy = vm_.snapshot().tx_active;
-    if (button(ch.is_tx_target ? tr(Str::btn_tx_target) : tr(Str::btn_set_tx), bsize,
+    if (button(ch.is_tx_target ? tr(Str::btn_tx_target_short) : tr(Str::btn_set_tx_short), bsize,
                ch.is_tx_target ? Tone::ok : Tone::normal, can_mutate && !ch.is_tx_target && !tx_busy)) {
         vm_.set_tx_target(ch.key);
     }
     ImGui::SetItemTooltip("%s", ch.is_tx_target ? tr(Str::tip_tx_selected) : tr(Str::tip_set_tx));
     ImGui::SameLine();
-    if (button(tr(Str::btn_remove), bsize, Tone::normal, can_mutate)) vm_.remove_channel(ch.key);
-    if (button(ch.is_muted ? tr(Str::btn_unmute) : tr(Str::btn_mute), bsize, Tone::normal, can_mutate)) {
+    if (button(tr(Str::btn_remove_short), bsize, Tone::normal, can_mutate)) vm_.remove_channel(ch.key);
+    if (button(ch.is_muted ? tr(Str::btn_unmute_short) : tr(Str::btn_mute_short), bsize, Tone::normal, can_mutate)) {
         vm_.toggle_mute(ch.key);
     }
     ImGui::SameLine();
     if (ch.quick_call_allowed) {
         const bool any_pending = vm_.pending(Str::op_quick_call);
         const char* label = ch.is_static            ? tr(Str::static_group)
-                            : ch.quick_call_pending ? tr(Str::btn_joining)
-                            : ch.quick_call_sent    ? tr(Str::btn_rejoin)
-                                                    : tr(Str::btn_join);
+                            : ch.quick_call_pending ? tr(Str::btn_joining_short)
+                            : ch.quick_call_sent    ? tr(Str::btn_rejoin_short)
+                                                    : tr(Str::btn_join_short);
         const bool bm_ready = vm_.snapshot().bm_link == BmLink::connected;
         if (button(label, bsize, Tone::normal, !ch.is_static && !any_pending && bm_ready && !ch.is_muted)) {
             vm_.quick_call(ch.key);
@@ -720,9 +727,13 @@ void AppView::draw_history(float width, float height) {
                               : fmt(tr(Str::history_private), clock.c_str(), rec.call.destination_id, from.c_str());
         ImGui::PushID(static_cast<int>(i));
         const bool selected = vm_.selected_history() == i;
-        if (ImGui::Selectable(text.c_str(), selected, ImGuiSelectableFlags_None, ImVec2(inner_w, 0.0F))) {
-            vm_.select_history(selected ? std::nullopt : std::optional<std::size_t>(i));
-        }
+        const float row_h = ImGui::GetTextLineHeightWithSpacing();
+        const bool clicked = ImGui::Selectable("##history-row", selected, ImGuiSelectableFlags_None, ImVec2(inner_w, row_h));
+        const ImVec2 row_pos = ImGui::GetItemRectMin();
+        ImGui::SetCursorScreenPos(row_pos);
+        text_ellipsis(text.c_str(), inner_w, rgb(color::text));
+        ImGui::SetItemTooltip("%s", text.c_str());
+        if (clicked) vm_.select_history(selected ? std::nullopt : std::optional<std::size_t>(i));
         ImGui::PopID();
     }
     ImGui::PopStyleVar();
@@ -817,36 +828,98 @@ void AppView::draw_recent_calls(float width, float height) {
 }
 
 void AppView::draw_radio_panel(float width, float height) {
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(10.0F), px(8.0F)));
-    ImGui::BeginChild("##radio", ImVec2(width, height), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(10.0F), px(2.0F)));
+    ImGui::BeginChild("##radio", ImVec2(width, height), ImGuiChildFlags_Borders,
+                      ImGuiWindowFlags_AlwaysVerticalScrollbar);
     ImGui::PopStyleVar();
+    const ImVec2 item_spacing = ImGui::GetStyle().ItemSpacing;
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(item_spacing.x, px(2.0F)));
     const float inner_w = ImGui::GetContentRegionAvail().x;
-    const float gap = ImGui::GetStyle().ItemSpacing.x;
     section_title(tr(Str::radio_control), fonts_.bold);
-    ImGui::Spacing();
+    const auto& s = vm_.snapshot();
+    const auto& cfg = vm_.config();
 
-    // CAT 串口 / 波特率 / 连接
+    // 单一按钮协调 HRI 与 CAT；两种真实状态仍分别显示，不把单边成功当作整体成功。
     const auto& cat = vm_.cat();
-    std::vector<std::string> ports;
-    for (const auto& p : vm_.devices().serial_ports) ports.push_back(to_utf8(p.port));
-    if (begin_fields("##catrow", {{tr(Str::cat_port), 1.0F, 0.0F}, {tr(Str::baud_rate), 1.0F, 0.0F}, {" ", 1.0F, 0.0F}})) {
+    std::vector<std::string> serial_ports;
+    for (const auto& p : vm_.devices().serial_ports) serial_ports.push_back(to_utf8(p.port));
+    std::vector<std::string> hri_port_options{tr(Str::auto_select)};
+    hri_port_options.insert(hri_port_options.end(), serial_ports.begin(), serial_ports.end());
+    std::vector<std::string> cat_port_labels{tr(Str::auto_select)};
+    cat_port_labels.insert(cat_port_labels.end(), serial_ports.begin(), serial_ports.end());
+    const bool radio_idle = s.phase == Phase::stopped && !cat.connected && !cat.busy;
+    const bool radio_active = s.phase == Phase::starting || s.phase == Phase::running ||
+                              s.phase == Phase::stopping || cat.connected || cat.busy;
+    const char* radio_label = s.phase == Phase::stopping ? tr(Str::disconnecting_serial)
+                              : (s.phase == Phase::starting || (s.phase == Phase::stopped && cat.busy))
+                                  ? tr(Str::connecting_radio)
+                              : radio_active ? tr(Str::disconnect_serial) : tr(Str::connect_serial);
+    const bool radio_button_enabled = s.phase != Phase::stopping &&
+                                      !vm_.pending(Str::op_start) && !vm_.pending(Str::op_stop);
+    if (begin_fields("##serials", {{tr(Str::radio_link), 0.0F, px(104.0F)}, {tr(Str::wiresx_port), 1.0F, 0.0F},
+                                    {tr(Str::cat_port), 1.0F, 0.0F}, {tr(Str::baud_rate), 0.0F, px(84.0F)}})) {
         ImGui::TableNextColumn();
-        ImGui::BeginDisabled(cat.connected || cat.busy);
-        if (const int picked = editable_combo("##catport", vm_.cat_form.port, ports, ImGui::GetContentRegionAvail().x); picked >= 0) {
-            vm_.cat_form.port = ports[static_cast<std::size_t>(picked)];
+        if (button(radio_label, ImVec2(-FLT_MIN, 0.0F), radio_active ? Tone::normal : Tone::ok,
+                   radio_button_enabled)) toggle_radio();
+        ImGui::SetItemTooltip("%s", tr(Str::radio_link_hint));
+        ImGui::TableNextColumn();
+        std::string hri_port = cfg.hri_port.empty() ? std::string(tr(Str::auto_select)) : to_utf8(cfg.hri_port);
+        ImGui::BeginDisabled(!radio_idle || vm_.pending(Str::op_start) || vm_.pending(Str::op_stop));
+        if (const int picked = editable_combo("##hriport", hri_port, hri_port_options, ImGui::GetContentRegionAvail().x); picked >= 0) {
+            auto next = cfg;
+            next.hri_port = picked == 0 ? std::wstring{} : from_utf8(hri_port_options[static_cast<std::size_t>(picked)]);
+            std::string error;
+            if (!vm_.save_config(next, error)) settings_error_ = fmt(tr(Str::settings_save_failed), error.c_str());
+        }
+        ImGui::EndDisabled();
+        ImGui::TableNextColumn();
+        ImGui::BeginDisabled(!radio_idle || vm_.pending(Str::op_start) || vm_.pending(Str::op_stop));
+        int cat_port_index = 0;
+        if (!cfg.cat_port.empty() && cfg.cat_port != L"auto") {
+            const auto selected = to_utf8(cfg.cat_port);
+            const auto it = std::find(serial_ports.begin(), serial_ports.end(), selected);
+            if (it != serial_ports.end()) {
+                cat_port_index = static_cast<int>(std::distance(serial_ports.begin(), it)) + 1;
+            } else {
+                cat_port_labels.emplace_back(fmt(tr(Str::port_missing_fmt), selected.c_str()));
+                cat_port_index = static_cast<int>(cat_port_labels.size()) - 1;
+            }
+        }
+        std::vector<const char*> cat_port_items;
+        for (const auto& label : cat_port_labels) cat_port_items.push_back(label.c_str());
+        if (simple_combo("##catport", cat_port_index, cat_port_items.data(),
+                         static_cast<int>(cat_port_items.size()), -FLT_MIN)) {
+            const std::size_t selected_index = static_cast<std::size_t>(cat_port_index);
+            const std::string next_port = cat_port_index == 0 ? "auto"
+                : selected_index < serial_ports.size() + 1U ? serial_ports[selected_index - 1U]
+                                                              : to_utf8(cfg.cat_port);
+            auto next = vm_.config();
+            next.cat_port = from_utf8(next_port);
+            std::string error;
+            if (vm_.save_config(next, error)) {
+                vm_.cat_form.port = next_port;
+            } else {
+                cat_port_index = cfg.cat_port.empty() || cfg.cat_port == L"auto" ? 0 : cat_port_index;
+                settings_error_ = fmt(tr(Str::settings_save_failed), error.c_str());
+            }
         }
         ImGui::TableNextColumn();
         static const char* const baud_labels[] = {"4800", "9600", "19200", "38400", "115200"};
-        simple_combo("##baud", vm_.cat_form.baud_index, baud_labels, 5, -FLT_MIN);
-        ImGui::EndDisabled();
-        ImGui::TableNextColumn();
-        if (button(cat.connected ? tr(Str::disconnect_cat) : tr(Str::connect_cat), ImVec2(-FLT_MIN, 0.0F),
-                   cat.connected ? Tone::normal : Tone::ok, vm_.cat_available() && !cat.busy && !vm_.cat_form.port.empty())) {
-            vm_.cat_toggle_connection();
+        if (simple_combo("##baud", vm_.cat_form.baud_index, baud_labels, 5, -FLT_MIN)) {
+            auto next = vm_.config();
+            next.cat_baud_rate = vm_.cat_form.baud_index >= 0 && vm_.cat_form.baud_index < 5
+                                     ? kBaudRates[vm_.cat_form.baud_index] : next.cat_baud_rate;
+            std::string error;
+            if (!vm_.save_config(next, error)) {
+                for (int i = 0; i < 5; ++i) if (kBaudRates[i] == cfg.cat_baud_rate) vm_.cat_form.baud_index = i;
+                settings_error_ = fmt(tr(Str::settings_save_failed), error.c_str());
+            }
         }
+        ImGui::EndDisabled();
         ImGui::EndTable();
     }
-    ImGui::Spacing();
+
+    draw_audio_devices(inner_w);
 
     // MAIN 模式 / 频率 / 功率 / 应用
     ImGui::BeginDisabled(!cat.connected || cat.busy);
@@ -868,9 +941,13 @@ void AppView::draw_radio_panel(float width, float height) {
     }
     ImGui::EndDisabled();
 
-    // 读取值
+    // CAT 的读数来自 CAT 查询；HRI 电台状态和 CAT 状态分别展示。
     ImGui::PushFont(nullptr, 12.0F);
-    if (cat.connected && cat.observed_mode && cat.observed_frequency_hz && cat.observed_power_w) {
+    if (cat.busy) {
+        ImGui::PushStyleColor(ImGuiCol_Text, vec(color::muted));
+        ImGui::TextUnformatted(tr(Str::cat_connecting));
+        ImGui::PopStyleColor();
+    } else if (cat.connected && cat.observed_mode && cat.observed_frequency_hz && cat.observed_power_w) {
         ImGui::PushStyleColor(ImGuiCol_Text, vec(color::green));
         ImGui::Text(tr(Str::cat_observed), kCatModes[static_cast<int>(*cat.observed_mode)],
                     static_cast<double>(*cat.observed_frequency_hz) / 1'000'000.0, *cat.observed_power_w);
@@ -880,45 +957,231 @@ void AppView::draw_radio_panel(float width, float height) {
         ImGui::TextUnformatted(cat.error.empty() ? tr(Str::cat_disconnected) : cat.error.c_str());
         ImGui::PopStyleColor();
     }
+    if (s.serial_open || cat.connected || cat.busy) {
+        const std::string hri_port = s.serial_open && !s.hri_port.empty() ? to_utf8(s.hri_port) : "—";
+        const std::string cat_port = cat.connected && !cat.port.empty() ? to_utf8(cat.port)
+                                     : cat.busy ? std::string(tr(Str::cat_connecting)) : "—";
+        ImGui::TextDisabled("%s", fmt(tr(Str::active_serials_fmt), hri_port.c_str(), cat_port.c_str()).c_str());
+    }
     ImGui::PopFont();
 
-    // 连接概况贴底（4 行），中间留白在 CAT 区与概况之间。
-    const float overview_h = ImGui::GetTextLineHeightWithSpacing() * 4.0F + ImGui::GetStyle().ItemSpacing.y * 2.0F + px(2.0F);
-    const float overview_y = ImGui::GetCursorPosY() + ImGui::GetContentRegionAvail().y - overview_h;
-    ImGui::SetCursorPosY(std::max(ImGui::GetCursorPosY() + ImGui::GetStyle().ItemSpacing.y, overview_y));
-    ImGui::Separator();
-    ImGui::Spacing();
+    const bool bm_connecting = s.bm_requested_enabled && s.bm_link != BmLink::connected;
+    const char* bm_label = !s.bm_requested_enabled ? tr(Str::connect_bm)
+                           : bm_connecting ? tr(Str::connecting_bm) : tr(Str::disconnect_bm);
+    if (vm_.pending(Str::op_bm)) bm_label = s.bm_requested_enabled ? tr(Str::disconnecting_bm) : tr(Str::connecting_bm);
+    section_title(tr(Str::bm_account), fonts_.bold);
+    if (begin_fields("##bm-identity", {{tr(Str::callsign), 1.0F, 0.0F},
+                                        {tr(Str::manual_dmr_id), 1.0F, 0.0F},
+                                        {tr(Str::device_no), 1.0F, 0.0F}})) {
+        ImGui::TableNextColumn();
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        input_text("##bm-callsign", draft_.callsign,
+                   ImGuiInputTextFlags_CharsUppercase | ImGuiInputTextFlags_CharsNoBlank);
+        ImGui::TableNextColumn();
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        input_text("##bm-dmr-id", draft_dmr_id_, ImGuiInputTextFlags_CharsDecimal);
+        ImGui::SetItemTooltip("%s", tr(Str::manual_dmr_id_hint));
+        ImGui::TableNextColumn();
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        input_text("##bm-device-no", draft_.device_number, ImGuiInputTextFlags_CharsDecimal);
+        ImGui::EndTable();
+    }
 
-    // 连接概况：Wires-X 串口、音频端点、核心各项状态
-    const auto& s = vm_.snapshot();
-    const auto& cfg = vm_.config();
-    auto endpoint_name = [](const std::vector<services::AudioEndpointInfo>& list, const std::wstring& id) {
-        for (const auto& e : list) {
-            if (e.endpoint_id == id) return e.name;
+    std::vector<std::string> server_labels;
+    int preset = static_cast<int>(app::bm_servers::catalog.size());
+    for (std::size_t i = 0; i < app::bm_servers::catalog.size(); ++i) {
+        const auto& e = app::bm_servers::catalog[i];
+        server_labels.emplace_back(e.label);
+        if (draft_.master_preset == e.selection_id) preset = static_cast<int>(i);
+    }
+    server_labels.emplace_back(tr(Str::custom));
+    std::vector<const char*> server_items;
+    for (const auto& label : server_labels) server_items.push_back(label.c_str());
+    if (begin_fields("##bm-server", {{tr(Str::bm_server), 1.0F, 0.0F},
+                                      {tr(Str::udp_port), 0.65F, 0.0F},
+                                      {tr(Str::host_ipv4), 1.35F, 0.0F}})) {
+        ImGui::TableNextColumn();
+        if (simple_combo("##bm-preset", preset, server_items.data(), static_cast<int>(server_items.size()), -FLT_MIN)) {
+            if (preset == static_cast<int>(app::bm_servers::catalog.size())) {
+                draft_.master_preset = "custom";
+            } else {
+                const auto& e = app::bm_servers::catalog[static_cast<std::size_t>(preset)];
+                draft_.master_preset = std::string(e.selection_id);
+                if (!app::bm_servers::address_matches(e, draft_.master_host)) draft_.master_host = std::string(e.hostname);
+                draft_master_port_ = std::to_string(e.port);
+            }
         }
-        return id.empty() ? std::string(tr(Str::auto_select)) : to_utf8(id);
-    };
-    const float label_w = px(96.0F);
-    auto row = [&](const char* label, const std::string& value) {
-        caption(label);
-        ImGui::SameLine(label_w);
-        text_ellipsis(value.c_str(), inner_w - label_w, rgb(color::text));
-    };
-    row(tr(Str::wiresx_port), cfg.hri_port.empty() ? std::string(tr(Str::auto_select)) : to_utf8(cfg.hri_port));
-    row(tr(Str::input), endpoint_name(vm_.devices().wave_in, cfg.wave_in_endpoint_id));
-    row(tr(Str::output), endpoint_name(vm_.devices().wave_out, cfg.wave_out_endpoint_id));
-    caption(tr(Str::core));
-    ImGui::SameLine(label_w);
-    status_dot(s.serial_open, "Serial");
-    ImGui::SameLine(0.0F, px(12.0F));
-    status_dot(s.hri_ready, "HRI");
-    ImGui::SameLine(0.0F, px(12.0F));
-    status_dot(s.wave_in_open, "WaveIn");
-    ImGui::SameLine(0.0F, px(12.0F));
-    status_dot(s.wave_out_open, "WaveOut");
-    ImGui::SameLine(0.0F, px(12.0F));
-    status_dot(s.bm_link == BmLink::connected, "BM");
+        ImGui::TableNextColumn();
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (input_text("##bm-port", draft_master_port_, ImGuiInputTextFlags_CharsDecimal)) draft_.master_preset = "custom";
+        ImGui::TableNextColumn();
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (input_text("##bm-host", draft_.master_host, ImGuiInputTextFlags_CharsNoBlank)) draft_.master_preset = "custom";
+        ImGui::EndTable();
+    }
+
+    const std::string saved_id = cfg.dmr_id == 0U ? std::string{} : std::to_string(cfg.dmr_id);
+    const bool bm_config_dirty = draft_.callsign != cfg.callsign || draft_dmr_id_ != saved_id ||
+        draft_.device_number != cfg.device_number || draft_.master_preset != cfg.master_preset ||
+        draft_.master_host != cfg.master_host || draft_master_port_ != std::to_string(cfg.master_port) ||
+        draft_.bm_password != cfg.bm_password || draft_.bm_api_key != cfg.bm_api_key;
+    const bool bm_config_complete = cfg.dmr_id != 0U && !cfg.callsign.empty() &&
+                                    !cfg.bm_password.empty() && !cfg.master_host.empty();
+    if (begin_fields("##bm-secrets", {{tr(Str::bm_password), 1.0F, 0.0F},
+                                       {tr(Str::bm_api_key), 1.0F, 0.0F},
+                                       {" ", 0.0F, px(94.0F)}, {" ", 0.0F, px(104.0F)}})) {
+        ImGui::TableNextColumn();
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        input_text("##bm-password", draft_.bm_password, ImGuiInputTextFlags_Password);
+        ImGui::TableNextColumn();
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        input_text("##bm-api-key", draft_.bm_api_key, ImGuiInputTextFlags_Password);
+        ImGui::TableNextColumn();
+        if (button(tr(Str::save_settings), ImVec2(-FLT_MIN, 0.0F), Tone::normal)) save_bm_config();
+        ImGui::TableNextColumn();
+        if (button(bm_label, ImVec2(-FLT_MIN, 0.0F), s.bm_requested_enabled ? Tone::normal : Tone::ok,
+                   s.phase == Phase::running && !vm_.pending(Str::op_bm) &&
+                       (s.bm_requested_enabled || (!bm_config_dirty && bm_config_complete)))) toggle_bm();
+        if (!s.bm_requested_enabled && (bm_config_dirty || !bm_config_complete)) {
+            ImGui::SetItemTooltip("%s", tr(Str::bm_save_before_connect));
+        }
+        ImGui::EndTable();
+    }
+    ImGui::PushFont(nullptr, 11.0F);
+    ImGui::PushStyleColor(ImGuiCol_Text, vec(settings_error_.empty() ? color::muted : color::warn));
+    ImGui::TextWrapped("%s", settings_error_.empty() ? tr(Str::bm_changes_next_connection) : settings_error_.c_str());
+    ImGui::PopStyleColor();
+    ImGui::PopFont();
+    if (vm_.pending(Str::op_start) || vm_.pending(Str::op_bm) || s.phase == Phase::starting ||
+        s.bm_link == BmLink::resolving || s.bm_link == BmLink::connecting) continuous_ = true;
+
+    // 发送增益留在左侧音频控制区；播放增益与接收/发送 meter 放在右侧日常区。
+    const float tx_gain_w = std::max(px(90.0F), inner_w - px(8.0F));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(px(4.0F), px(3.0F)));
+    caption(tr(Str::transmit_gain));
+    ImGui::SameLine(inner_w - px(58.0F));
+    ImGui::PushStyleColor(ImGuiCol_Text, vec(color::green));
+    ImGui::Text("%d×", vm_.transmit_step);
+    ImGui::PopStyleColor();
+    if (gain_slider("##transmit-left", vm_.transmit_step, tx_gain_w, scale_)) vm_.commit_gains();
+    ImGui::PopStyleVar();
+
+    ImGui::Separator();
+    caption(tr(Str::status));
+    ImGui::SameLine(0.0F, px(10.0F));
+    status_dot(s.serial_open, tr(Str::status_serial));
+    ImGui::SameLine(0.0F, px(8.0F));
+    status_dot(s.hri_ready, tr(Str::status_hri));
+    ImGui::SameLine(0.0F, px(8.0F));
+    status_dot(cat.connected, tr(Str::status_cat));
+    ImGui::SameLine(0.0F, px(8.0F));
+    status_dot(s.wave_in_open, tr(Str::status_wave_in));
+    ImGui::SameLine(0.0F, px(8.0F));
+    status_dot(s.wave_out_open, tr(Str::status_wave_out));
+    ImGui::SameLine(0.0F, px(8.0F));
+    status_dot(s.bm_link == BmLink::connected, tr(Str::status_bm));
+    ImGui::SameLine(0.0F, px(8.0F));
+    caption(phase_short_text(s.phase));
+    ImGui::PopStyleVar();
     ImGui::EndChild();
+}
+
+void AppView::draw_audio_devices(float inner_w) {
+    const bool running = vm_.snapshot().phase == Phase::running;
+    const auto& config = vm_.config();
+    auto selected_in = running && !vm_.snapshot().wave_in_endpoint_id.empty()
+                           ? vm_.snapshot().wave_in_endpoint_id : config.wave_in_endpoint_id;
+    auto selected_out = running && !vm_.snapshot().wave_out_endpoint_id.empty()
+                            ? vm_.snapshot().wave_out_endpoint_id : config.wave_out_endpoint_id;
+    if (audio_selection_pending_) {
+        if (!vm_.pending(Str::op_audio_devices)) {
+            const bool confirmed = vm_.snapshot().wave_in_endpoint_id == pending_wave_in_ &&
+                                   vm_.snapshot().wave_out_endpoint_id == pending_wave_out_;
+            audio_selection_pending_ = false;
+            if (confirmed) {
+                selected_in = pending_wave_in_;
+                selected_out = pending_wave_out_;
+                audio_notice_ = tr(Str::audio_devices_applied);
+            } else {
+                audio_notice_ = vm_.transient_visible() ? vm_.transient_text() : tr(Str::audio_devices_failed);
+            }
+        } else {
+            selected_in = pending_wave_in_;
+            selected_out = pending_wave_out_;
+            continuous_ = true;
+        }
+    }
+
+    ImGui::PushFont(fonts_.bold, 13.0F);
+    ImGui::TextUnformatted(tr(Str::audio_devices));
+    ImGui::PopFont();
+    if (!audio_notice_.empty()) {
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Text, vec(audio_selection_pending_ ? color::warn : color::muted));
+        const float notice_w = std::max(0.0F, ImGui::GetContentRegionAvail().x - px(4.0F));
+        text_ellipsis(audio_notice_.c_str(), notice_w, rgb(audio_selection_pending_ ? color::warn : color::muted));
+        ImGui::SetItemTooltip("%s", audio_notice_.c_str());
+        ImGui::PopStyleColor();
+    }
+
+    auto endpoint_combo = [&](const char* id, const std::vector<services::AudioEndpointInfo>& devices,
+                              std::wstring& selected, const std::wstring& current) {
+        ImGui::TableNextColumn();
+        std::string preview = current.empty() ? std::string(tr(Str::auto_select)) : to_utf8(current);
+        for (const auto& endpoint : devices) {
+            if (endpoint.endpoint_id == current) preview = endpoint.name;
+        }
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::BeginDisabled(audio_selection_pending_);
+        if (ImGui::BeginCombo(id, preview.c_str())) {
+            if (!running && ImGui::Selectable(tr(Str::auto_select), current.empty())) selected.clear();
+            for (const auto& endpoint : devices) {
+                if (ImGui::Selectable(endpoint.name.c_str(), endpoint.endpoint_id == current)) selected = endpoint.endpoint_id;
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::EndDisabled();
+    };
+
+    if (begin_fields("##audio-main", {{tr(Str::input), 1.0F, 0.0F}, {tr(Str::output), 1.0F, 0.0F},
+                                       {" ", 0.0F, px(104.0F)}})) {
+        std::wstring next_in = selected_in;
+        std::wstring next_out = selected_out;
+        endpoint_combo("##wavein-main", vm_.devices().wave_in, next_in, selected_in);
+        endpoint_combo("##waveout-main", vm_.devices().wave_out, next_out, selected_out);
+        ImGui::TableNextColumn();
+        if (button(tr(Str::refresh_devices), ImVec2(-FLT_MIN, 0.0F), Tone::normal, !audio_selection_pending_)) {
+            vm_.refresh_devices();
+        }
+        ImGui::EndTable();
+
+        if (next_in != selected_in || next_out != selected_out) {
+            if (running) {
+                // 运行中只允许显式 endpoint；auto 无法与实际 WinMM 设备一一确认。
+                if (!next_in.empty() && !next_out.empty()) {
+                    pending_wave_in_ = next_in;
+                    pending_wave_out_ = next_out;
+                    audio_selection_pending_ = true;
+                    audio_notice_ = tr(Str::audio_devices_switching);
+                    vm_.set_audio_devices(next_in, next_out);
+                }
+            } else {
+                auto next = config;
+                next.wave_in_endpoint_id = next_in;
+                next.wave_out_endpoint_id = next_out;
+                std::string error;
+                if (vm_.save_config(next, error)) {
+                    audio_notice_ = tr(Str::audio_devices_next_connection);
+                } else {
+                    audio_notice_ = fmt(tr(Str::settings_save_failed), error.c_str());
+                }
+            }
+        }
+    }
+    if (audio_selection_pending_) {
+        ImGui::SetItemTooltip("%s", tr(Str::audio_devices_switching));
+    }
+    (void)inner_w;
 }
 
 void AppView::draw_daily_panel(float width, float height) {
@@ -926,14 +1189,7 @@ void AppView::draw_daily_panel(float width, float height) {
     ImGui::BeginChild("##daily", ImVec2(width, height), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar);
     ImGui::PopStyleVar();
     const float inner_w = ImGui::GetContentRegionAvail().x;
-    const float gap = ImGui::GetStyle().ItemSpacing.x;
-    // 上一帧测得的剩余高度均分到 4 处段间距，避免底部空白（窗口变高时各段一起拉开）。
-    const float spread = std::max(0.0F, daily_slack_) / 4.0F;
-    auto vgap = [&]() {
-        if (spread > 0.5F) ImGui::Dummy(ImVec2(0.0F, spread - ImGui::GetStyle().ItemSpacing.y));
-    };
     section_title(tr(Str::daily_controls), fonts_.bold);
-    vgap();
 
     // 增加动态组 频道ID / 类型 / 加入监听
     static const std::vector<std::string> presets = {"460997 中国鹦鹉", "46001 组呼", "91 组呼"};
@@ -953,76 +1209,39 @@ void AppView::draw_daily_panel(float width, float height) {
         ImGui::EndTable();
     }
 
-    vgap();
     ImGui::Separator();
     draw_static_groups(inner_w);
     ImGui::Separator();
-    vgap();
-
-    // 音量：每列“标题 + 数值”一行，滑块一行。
-    bool commit = false;
-    if (ImGui::BeginTable("##gains", 2, ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoPadOuterX)) {
-        // 标题行与滑块行分开：同一表格行内各列共享文本基线，滑块的 FramePadding 会把另一列的标题推低。
-        auto label_cell = [&](const char* label, int value) {
-            ImGui::TableNextColumn();
-            const float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x - px(8.0F);
-            caption(label);
-            const auto v = fmt("%d×", value);
-            ImGui::SameLine();
-            // 表格列内 SameLine(x) 的 x 相对列起点，这里直接用屏幕坐标右对齐。
-            ImGui::SetCursorScreenPos(ImVec2(right - ImGui::CalcTextSize(v.c_str()).x, ImGui::GetCursorScreenPos().y));
-            ImGui::PushStyleColor(ImGuiCol_Text, vec(color::green));
-            ImGui::TextUnformatted(v.c_str());
-            ImGui::PopStyleColor();
-        };
-        auto slider_cell = [&](const char* id, int& value) {
-            ImGui::TableNextColumn();
-            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(px(4.0F), px(4.0F)));
-            commit = gain_slider(id, value, ImGui::GetContentRegionAvail().x - px(8.0F), scale_) || commit;
-            ImGui::PopStyleVar();
-        };
-        ImGui::TableNextRow();
-        label_cell(tr(Str::playback_gain), vm_.playback_step);
-        label_cell(tr(Str::transmit_gain), vm_.transmit_step);
-        ImGui::TableNextRow();
-        slider_cell("##playback", vm_.playback_step);
-        slider_cell("##transmit", vm_.transmit_step);
-        ImGui::EndTable();
-    }
-    if (commit) vm_.commit_gains();
-
-    // 接收电平与计数：贴在面板底部。
+    // 右侧保留播放增益及实时 RX/TX 峰值 meter。
     const auto& s = vm_.snapshot();
-    ImGui::PushFont(nullptr, 12.0F);
-    const float level_h = ImGui::GetTextLineHeight() + ImGui::GetStyle().ItemSpacing.y;
-    const float bottom = ImGui::GetCursorPosY() + ImGui::GetContentRegionAvail().y;
-    const float slack_now = bottom - level_h - ImGui::GetCursorPosY(); // 本帧剩余（已扣除 4 处间距）
-    const float next_slack = std::max(0.0F, spread * 4.0F + slack_now);
-    if (std::abs(next_slack - daily_slack_) > 1.0F) {
-        daily_slack_ = next_slack;
-        continuous_ = true; // 下一帧用新的间距重排一次（之后稳定，不再连续重绘）
-    }
-    ImGui::SetCursorPosY(std::max(ImGui::GetCursorPosY(), bottom - level_h));
-    caption(tr(Str::rx_level));
-    ImGui::SameLine();
-    const auto counters = fmt("RX %llu · TX %llu · Reconnect %llu · Rejected %llu",
-                              static_cast<unsigned long long>(s.counters.calls_started),
-                              static_cast<unsigned long long>(s.counters.ptt_tx_starts),
-                              static_cast<unsigned long long>(s.counters.reconnects),
-                              static_cast<unsigned long long>(s.counters.rejected_calls));
-    const float counters_w = ImGui::CalcTextSize(counters.c_str()).x;
-    const float bar_w = std::max(px(40.0F), ImGui::GetContentRegionAvail().x - counters_w - px(10.0F));
-    const float y = ImGui::GetCursorPosY();
-    ImGui::SetCursorPosY(y + (ImGui::GetTextLineHeight() - px(8.0F)) * 0.5F);
-    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, vec(s.levels.rx_peak > 0.9F ? color::warn : color::green));
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, vec(color::inset));
-    ImGui::ProgressBar(std::clamp(s.levels.rx_peak, 0.0F, 1.0F), ImVec2(bar_w, px(8.0F)), "");
-    ImGui::PopStyleColor(2);
-    ImGui::SameLine(0.0F, px(10.0F));
-    ImGui::SetCursorPosY(y);
-    ImGui::PushStyleColor(ImGuiCol_Text, vec(color::muted));
-    ImGui::TextUnformatted(counters.c_str());
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(px(4.0F), px(3.0F)));
+    caption(tr(Str::playback_gain));
+    ImGui::SameLine(inner_w - px(54.0F));
+    ImGui::PushStyleColor(ImGuiCol_Text, vec(color::green));
+    ImGui::Text("%d×", vm_.playback_step);
     ImGui::PopStyleColor();
+    if (gain_slider("##playback", vm_.playback_step, std::max(px(90.0F), inner_w - px(8.0F)), scale_)) {
+        vm_.commit_gains();
+    }
+    ImGui::PopStyleVar();
+
+    ImGui::Separator();
+    ImGui::PushFont(nullptr, 12.0F);
+    auto meter = [&](const char* label, float value) {
+        ImGui::PushStyleColor(ImGuiCol_Text, vec(color::muted));
+        ImGui::TextUnformatted(label);
+        ImGui::PopStyleColor();
+        ImGui::SameLine(px(106.0F));
+        const float meter_w = std::max(px(40.0F), ImGui::GetContentRegionAvail().x - px(42.0F));
+        ImGui::PushStyleColor(ImGuiCol_PlotHistogram, vec(value > 0.9F ? color::warn : color::green));
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, vec(color::inset));
+        ImGui::ProgressBar(std::clamp(value, 0.0F, 1.0F), ImVec2(meter_w, px(9.0F)), "");
+        ImGui::PopStyleColor(2);
+        ImGui::SameLine();
+        ImGui::Text("%d%%", static_cast<int>(std::lround(std::clamp(value, 0.0F, 1.0F) * 100.0F)));
+    };
+    meter(tr(Str::rx_live_peak), s.levels.rx_peak);
+    meter(tr(Str::tx_live_peak), s.levels.tx_peak);
     ImGui::PopFont();
     ImGui::EndChild();
 }
@@ -1107,9 +1326,12 @@ void AppView::draw_static_groups(float inner_w) {
             if (!name.empty()) label += " · " + name;
             ImGui::PushID(static_cast<int>(i));
             const bool selected = sg.selected == i;
-            if (ImGui::Selectable(label.c_str(), selected, ImGuiSelectableFlags_None, ImVec2(list_w, 0.0F))) {
-                vm_.static_select(selected ? std::nullopt : std::optional<std::size_t>(i));
-            }
+            const bool clicked = ImGui::Selectable("##static-row", selected, ImGuiSelectableFlags_None, ImVec2(list_w, row_h));
+            const ImVec2 row_pos = ImGui::GetItemRectMin();
+            ImGui::SetCursorScreenPos(row_pos);
+            text_ellipsis(label.c_str(), list_w, rgb(color::text));
+            ImGui::SetItemTooltip("%s", label.c_str());
+            if (clicked) vm_.static_select(selected ? std::nullopt : std::optional<std::size_t>(i));
             ImGui::PopID();
         }
     }
@@ -1137,225 +1359,82 @@ void AppView::draw_static_groups(float inner_w) {
     if (sg.busy) continuous_ = true;
 }
 
-void AppView::draw_footer() {
-    const auto& s = vm_.snapshot();
-    ImGui::Dummy(ImVec2(0.0F, px(2.0F)));
-    const float bw = px(150.0F);
-
-    const char* serial_label = tr(Str::connect_serial);
-    Tone serial_tone = Tone::ok;
-    bool serial_enabled = !vm_.pending(Str::op_start) && !vm_.pending(Str::op_stop);
-    switch (s.phase) {
-    case Phase::stopped:
-    case Phase::failed: break;
-    case Phase::starting:
-        serial_label = tr(Str::disconnect_serial);
-        serial_tone = Tone::normal;
-        break;
-    case Phase::running:
-        serial_label = tr(Str::disconnect_serial);
-        serial_tone = Tone::normal;
-        break;
-    case Phase::stopping:
-        serial_label = tr(Str::disconnecting_serial);
-        serial_tone = Tone::normal;
-        serial_enabled = false;
-        break;
-    }
-    if (button(serial_label, ImVec2(bw, 0.0F), serial_tone, serial_enabled)) {
-        if (s.phase == Phase::stopped || s.phase == Phase::failed) {
-            vm_.start();
-        } else {
-            vm_.stop();
-        }
-    }
-    ImGui::SameLine();
-    const bool connecting = s.bm_requested_enabled && s.bm_link != BmLink::connected;
-    const char* bm_label = !s.bm_requested_enabled ? tr(Str::connect_bm)
-                           : connecting            ? tr(Str::connecting_bm)
-                                                   : tr(Str::disconnect_bm);
-    if (vm_.pending(Str::op_bm)) bm_label = s.bm_requested_enabled ? tr(Str::disconnecting_bm) : tr(Str::connecting_bm);
-    if (button(bm_label, ImVec2(bw, 0.0F), s.bm_requested_enabled ? Tone::normal : Tone::ok,
-               s.phase == Phase::running && !vm_.pending(Str::op_bm))) {
-        vm_.toggle_bm();
-    }
-    if (vm_.pending(Str::op_start) || vm_.pending(Str::op_bm) || s.phase == Phase::starting ||
-        s.bm_link == BmLink::resolving || s.bm_link == BmLink::connecting) {
-        continuous_ = true; // 显示等待动画
-        ImGui::SameLine(0.0F, px(12.0F));
-        static const char* const spinner[] = {"·  ", "·· ", "···"};
-        const int frame = static_cast<int>(ImGui::GetTime() * 4.0) % 3;
-        ImGui::AlignTextToFramePadding();
-        caption(spinner[frame]);
-    }
-
-    const auto& cfg = vm_.config();
-    const auto ident = cfg.callsign.empty() ? std::string("—") : fmt("%s · DMR ID %u", cfg.callsign.c_str(), cfg.dmr_id);
-    const float ident_w = ImGui::CalcTextSize(ident.c_str()).x;
-    ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - ident_w);
-    ImGui::AlignTextToFramePadding();
-    ImGui::PushStyleColor(ImGuiCol_Text, vec(color::muted));
-    ImGui::TextUnformatted(ident.c_str());
-    ImGui::PopStyleColor();
+void AppView::toggle_language() {
+    auto next = vm_.config();
+    const auto selected = language() == Language::zh_cn ? Language::en_us : Language::zh_cn;
+    set_language(selected);
+    next.ui_language = selected == Language::en_us ? "en-US" : "zh-CN";
+    std::string error;
+    language_notice_.clear();
+    if (!vm_.save_config(next, error)) language_notice_ = fmt(tr(Str::settings_save_failed), error.c_str());
 }
 
-void AppView::draw_settings() {
-    const std::string popup_label = std::string(tr(Str::settings_title)) + "##settings";
-    const char* popup_id = popup_label.c_str();
-    if (settings_requested_) {
-        ImGui::OpenPopup(popup_id);
-        settings_requested_ = false;
+void AppView::toggle_radio() {
+    const auto& s = vm_.snapshot();
+    const bool active = s.phase == Phase::starting || s.phase == Phase::running ||
+                        s.phase == Phase::stopping || vm_.cat().connected || vm_.cat().busy;
+    if (!active) {
+        if (!vm_.pending(Str::op_start) && !vm_.pending(Str::op_stop)) vm_.start();
+    } else if (s.phase != Phase::stopping && !vm_.pending(Str::op_stop)) {
+        vm_.stop();
     }
-    const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5F, 0.5F));
-    ImGui::SetNextWindowSize(ImVec2(px(620.0F), 0.0F), ImGuiCond_Appearing);
-    ImGui::PushStyleColor(ImGuiCol_PopupBg, vec(color::panel));
-    ImGui::PushStyleColor(ImGuiCol_Border, vec(color::input_border));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0F);
-    if (!ImGui::BeginPopupModal(popup_id, nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings)) {
-        ImGui::PopStyleVar();
-        ImGui::PopStyleColor(2);
+}
+
+void AppView::toggle_bm() {
+    const auto& s = vm_.snapshot();
+    if (s.phase == Phase::running && !vm_.pending(Str::op_bm)) vm_.toggle_bm();
+}
+
+void AppView::save_bm_config() {
+    auto next = vm_.config();
+    next.callsign = draft_.callsign;
+    next.device_number = draft_.device_number;
+    next.master_preset = draft_.master_preset;
+    next.master_host = draft_.master_host;
+    next.bm_password = draft_.bm_password;
+    next.bm_api_key = draft_.bm_api_key;
+
+    auto parse_u = [](const std::string& text, std::uint32_t max, std::uint32_t& out) {
+        if (text.empty()) return false;
+        try {
+            std::size_t used = 0U;
+            const auto value = std::stoul(text, &used);
+            if (used != text.size() || value > max) return false;
+            out = static_cast<std::uint32_t>(value);
+            return true;
+        } catch (const std::exception&) {
+            return false;
+        }
+    };
+
+    if (!parse_u(draft_dmr_id_, 16777215U, next.dmr_id) || next.dmr_id == 0U) {
+        settings_error_ = fmt(tr(Str::settings_save_failed), tr(Str::dmr_id));
         return;
     }
-    continuous_ = true;
-    const float w = ImGui::GetContentRegionAvail().x;
-    const float gap = ImGui::GetStyle().ItemSpacing.x;
-    auto input = [](const char* id, std::string& value, ImGuiInputTextFlags flags = 0) {
-        ImGui::TableNextColumn();
-        ImGui::SetNextItemWidth(-FLT_MIN);
-        input_text(id, value, flags);
-    };
-    // 空值 = "auto"（启动时自动选唯一的 USB Audio 端点）。
-    auto endpoint_combo = [](const char* id, const std::vector<services::AudioEndpointInfo>& list, std::wstring& value) {
-        ImGui::TableNextColumn();
-        std::string preview = value.empty() ? std::string(tr(Str::auto_select)) : to_utf8(value);
-        for (const auto& e : list) {
-            if (e.endpoint_id == value) preview = e.name;
-        }
-        ImGui::SetNextItemWidth(-FLT_MIN);
-        if (ImGui::BeginCombo(id, preview.c_str())) {
-            if (ImGui::Selectable(tr(Str::auto_select), value.empty())) value.clear();
-            for (const auto& e : list) {
-                if (ImGui::Selectable(e.name.c_str(), e.endpoint_id == value)) value = e.endpoint_id;
-            }
-            ImGui::EndCombo();
-        }
-    };
-
-    if (begin_fields("##ident", {{tr(Str::callsign), 1.0F, 0.0F}, {tr(Str::dmr_id), 1.0F, 0.0F}, {tr(Str::device_no), 1.0F, 0.0F}})) {
-        input("##cs", draft_.callsign, ImGuiInputTextFlags_CharsUppercase | ImGuiInputTextFlags_CharsNoBlank);
-        input("##id", draft_dmr_id_, ImGuiInputTextFlags_CharsDecimal);
-        input("##devno", draft_.device_number, ImGuiInputTextFlags_CharsDecimal);
-        ImGui::EndTable();
+    std::uint32_t port = 0U;
+    if (!parse_u(draft_master_port_, 65535U, port) || port == 0U) {
+        settings_error_ = fmt(tr(Str::settings_save_failed), tr(Str::udp_port));
+        return;
     }
-    // BM 服务器：离线目录（BmServers.psm1）+ 自定义。选目录项时主机名/端口取目录值（4602 保留已保存的 IPv4 别名）。
-    std::vector<std::string> server_labels;
-    int preset = static_cast<int>(app::bm_servers::catalog.size());
-    for (std::size_t i = 0; i < app::bm_servers::catalog.size(); ++i) {
-        const auto& e = app::bm_servers::catalog[i];
-        server_labels.emplace_back(e.label);
-        if (draft_.master_preset == e.selection_id) preset = static_cast<int>(i);
-    }
-    server_labels.emplace_back(tr(Str::custom));
-    const bool custom = preset == static_cast<int>(app::bm_servers::catalog.size());
-    if (begin_fields("##server", {{tr(Str::bm_server), 1.0F, 0.0F}, {tr(Str::udp_port), 1.0F, 0.0F}, {tr(Str::host_ipv4), 1.0F, 0.0F}})) {
-        ImGui::TableNextColumn();
-        std::vector<const char*> items;
-        for (const auto& l : server_labels) items.push_back(l.c_str());
-        if (simple_combo("##preset", preset, items.data(), static_cast<int>(items.size()), -FLT_MIN)) {
-            if (preset == static_cast<int>(app::bm_servers::catalog.size())) {
-                draft_.master_preset = "custom";
-            } else {
-                const auto& e = app::bm_servers::catalog[static_cast<std::size_t>(preset)];
-                draft_.master_preset = std::string(e.selection_id);
-                if (!app::bm_servers::address_matches(e, draft_.master_host)) draft_.master_host = std::string(e.hostname);
-                draft_master_port_ = std::to_string(e.port);
-            }
-        }
-        ImGui::BeginDisabled(!custom);
-        input("##mport", draft_master_port_, ImGuiInputTextFlags_CharsDecimal);
-        input("##mhost", draft_.master_host, ImGuiInputTextFlags_CharsNoBlank);
-        ImGui::EndDisabled();
-        ImGui::EndTable();
-    }
-    if (begin_fields("##secrets", {{tr(Str::bm_password), 1.0F, 0.0F}, {tr(Str::bm_api_key), 1.0F, 0.0F}})) {
-        input("##pw", draft_.bm_password, ImGuiInputTextFlags_Password);
-        input("##api", draft_.bm_api_key, ImGuiInputTextFlags_Password);
-        ImGui::EndTable();
+    next.master_port = static_cast<std::uint16_t>(port);
+    std::string error;
+    if (!vm_.save_config(next, error)) {
+        settings_error_ = fmt(tr(Str::settings_save_failed), error.c_str());
+        return;
     }
 
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-    section_title(tr(Str::audio_devices), fonts_.bold);
-    if (begin_fields("##ports", {{tr(Str::wiresx_port), 1.0F, 0.0F}, {" ", 1.0F, 0.0F}})) {
-        ImGui::TableNextColumn();
-        std::vector<std::string> ports;
-        for (const auto& p : vm_.devices().serial_ports) ports.push_back(to_utf8(p.port));
-        if (const int picked = editable_combo("##hri", draft_hri_port_, ports, ImGui::GetContentRegionAvail().x); picked >= 0) {
-            draft_hri_port_ = ports[static_cast<std::size_t>(picked)];
-        }
-        ImGui::TableNextColumn();
-        if (button(tr(Str::refresh_devices), ImVec2(-FLT_MIN, 0.0F))) vm_.refresh_devices();
-        ImGui::EndTable();
-    }
-    if (begin_fields("##audio", {{tr(Str::input), 1.0F, 0.0F}, {tr(Str::output), 1.0F, 0.0F}})) {
-        endpoint_combo("##wavein", vm_.devices().wave_in, draft_.wave_in_endpoint_id);
-        endpoint_combo("##waveout", vm_.devices().wave_out, draft_.wave_out_endpoint_id);
-        ImGui::EndTable();
-    }
-
-    ImGui::Spacing();
-    ImGui::PushFont(nullptr, 12.0F);
-    ImGui::PushStyleColor(ImGuiCol_Text, vec(settings_error_.empty() ? color::muted : color::warn));
-    ImGui::TextWrapped("%s", settings_error_.empty() ? tr(Str::settings_need_restart) : settings_error_.c_str());
-    ImGui::PopStyleColor();
-    ImGui::PopFont();
-    ImGui::Spacing();
-
-    const float bw = px(110.0F);
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + w - bw * 2.0F - gap);
-    if (button(tr(Str::save_settings), ImVec2(bw, 0.0F), Tone::ok)) {
-        auto next = draft_;
-        bool ok = true;
-        auto parse_u = [&](const std::string& text, std::uint32_t max, std::uint32_t& out) {
-            if (text.empty()) {
-                out = 0U;
-                return true;
-            }
-            try {
-                const auto v = std::stoul(text);
-                if (v > max) return false;
-                out = static_cast<std::uint32_t>(v);
-                return true;
-            } catch (const std::exception&) {
-                return false;
-            }
-        };
-        std::uint32_t port = 0U;
-        if (!parse_u(draft_dmr_id_, 16777215U, next.dmr_id)) {
-            settings_error_ = fmt(tr(Str::settings_save_failed), tr(Str::dmr_id));
-            ok = false;
-        } else if (!parse_u(draft_master_port_, 65535U, port) || port == 0U) {
-            settings_error_ = fmt(tr(Str::settings_save_failed), tr(Str::udp_port));
-            ok = false;
-        }
-        if (ok) {
-            next.master_port = static_cast<std::uint16_t>(port);
-            next.hri_port = from_utf8(draft_hri_port_);
-            std::string error;
-            if (vm_.save_config(next, error)) {
-                ImGui::CloseCurrentPopup();
-            } else {
-                settings_error_ = fmt(tr(Str::settings_save_failed), error.c_str());
-            }
-        }
-    }
-    ImGui::SameLine();
-    if (button(tr(Str::close), ImVec2(bw, 0.0F)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
-    ImGui::EndPopup();
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor(2);
+    const auto& saved = vm_.config();
+    draft_.callsign = saved.callsign;
+    draft_.dmr_id = saved.dmr_id;
+    draft_.device_number = saved.device_number;
+    draft_.master_preset = saved.master_preset;
+    draft_.master_host = saved.master_host;
+    draft_.master_port = saved.master_port;
+    draft_.bm_password = saved.bm_password;
+    draft_.bm_api_key = saved.bm_api_key;
+    draft_dmr_id_ = std::to_string(saved.dmr_id);
+    draft_master_port_ = std::to_string(saved.master_port);
+    settings_error_.clear();
 }
 
 } // namespace wirex::gui

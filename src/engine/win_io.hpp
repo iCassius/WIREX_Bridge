@@ -16,6 +16,7 @@
 
 #include "wirex/console_lifecycle.hpp"
 #include "wirex/hri_session.hpp"
+#include "wirex/approved_hri_y_template.hpp"
 #include "wirex/wave_output_open.hpp"
 
 #include <algorithm>
@@ -627,25 +628,36 @@ private:
 
 inline bool load_hri_y_template(const std::filesystem::path& path, std::vector<std::uint8_t>& body)
 {
-    if (!path.is_absolute()) {
-        std::wcerr << L"--body-file must be an absolute path.\n";
+    body.clear();
+    if (path.empty()) {
+        body.assign(wirex::approved_resources::hri_y_template.begin(),
+                    wirex::approved_resources::hri_y_template.end());
+    } else {
+        if (!path.is_absolute()) {
+            std::wcerr << L"--body-file must be an absolute path.\n";
+            return false;
+        }
+        std::ifstream file(path, std::ios::binary);
+        if (!file) {
+            std::wcerr << L"Could not read the external HRI body file.\n";
+            return false;
+        }
+        std::array<std::uint8_t, wirex::hri_session::y_body_size + 1> bytes{};
+        file.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        if (file.gcount() != static_cast<std::streamsize>(wirex::hri_session::y_body_size) ||
+            bytes[wirex::hri_session::y_body_size] != 0 || file.bad()) {
+            std::wcerr << L"The external HRI body must contain exactly 100 bytes.\n";
+            return false;
+        }
+        body.assign(bytes.begin(), bytes.begin() + wirex::hri_session::y_body_size);
+    }
+    if (body.size() != wirex::hri_session::y_body_size) {
+        std::wcerr << L"The bundled HRI body has an invalid length.\n";
+        body.clear();
         return false;
     }
-    std::ifstream file(path, std::ios::binary);
-    if (!file) {
-        std::wcerr << L"Could not read the external HRI body file.\n";
-        return false;
-    }
-    std::array<std::uint8_t, wirex::hri_session::y_body_size + 1> bytes{};
-    file.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-    if (file.gcount() != static_cast<std::streamsize>(wirex::hri_session::y_body_size) ||
-        bytes[wirex::hri_session::y_body_size] != 0 || file.bad()) {
-        std::wcerr << L"The external HRI body must contain exactly 100 bytes.\n";
-        return false;
-    }
-    body.assign(bytes.begin(), bytes.begin() + wirex::hri_session::y_body_size);
     if (body[5] != '2') {
-        std::wcerr << L"The external HRI body does not have ASCII '2' at byte offset 5.\n";
+        std::wcerr << L"The HRI body does not have ASCII '2' at byte offset 5.\n";
         body.clear();
         return false;
     }
@@ -686,7 +698,7 @@ inline bool load_hri_y_template(const std::filesystem::path& path, std::vector<s
         }
     }
     if (status < 0 || actual_hash_hex != expected_hash) {
-        std::wcerr << L"The external HRI body does not match the approved 100-byte fixture SHA-256.\n";
+        std::wcerr << L"The HRI body does not match the approved 100-byte template SHA-256.\n";
         body.clear();
         return false;
     }

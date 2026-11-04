@@ -39,6 +39,7 @@ public:
     std::future<engine::CommandResult> quick_call_join(talkgroup_routing::GroupRoute route) override;
     std::future<engine::CommandResult> set_audio_gains(std::uint32_t radio_playback_gain_milli,
                                                        std::uint32_t mic_transmit_gain_milli) override;
+    std::future<engine::CommandResult> set_audio_endpoints(engine::AudioEndpoints audio) override;
     std::future<engine::CommandResult> upsert_radio_identity(std::uint32_t source_id, std::uint64_t revision,
                                                              std::optional<std::string> callsign) override;
 

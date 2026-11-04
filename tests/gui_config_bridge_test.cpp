@@ -187,6 +187,12 @@ void test_start_config() {
     check(sc->rx_policy.allowed_groups.size() == 2U && sc->rx_policy.private_peers.size() == 1U, "start rx policy");
     check(sc->radio_playback_gain_milli == 4000U && sc->mic_transmit_gain_milli == 16000U, "start gains");
 
+    auto embedded = good_inputs();
+    embedded.body_file.clear();
+    error.clear();
+    sc = cb::make_start_config(sample_gui(), embedded, error);
+    check(sc && sc->hri_body_file.empty(), "empty body path selects the approved embedded template");
+
     // TX 目标不在频道表中 → 回落第一个频道（Normalize：tx_channel_id 默认第一项）。
     auto g = sample_gui();
     g.tx_target = wirex::talkgroup_routing::TxTarget{4000U, CallKind::group, Slot::ts2};
@@ -203,7 +209,6 @@ void test_start_config() {
         {"no_hri", [](auto&, auto& in) { in.serial = catalog({{"COM6", false}}); }},
         {"saved_endpoint_missing", [](auto& gg, auto&) { gg.wave_in_endpoint_id = L"{gone}"; }},
         {"usb_not_unique", [](auto&, auto& in) { in.wave_inputs.push_back(wave(3U, "USB Audio Device", "{in-usb2}")); }},
-        {"no_body", [](auto&, auto& in) { in.body_file.clear(); }},
     };
     for (const auto& b : bad) {
         auto gg = sample_gui();

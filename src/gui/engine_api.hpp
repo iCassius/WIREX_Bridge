@@ -36,6 +36,7 @@ public:
     virtual std::future<engine::CommandResult> quick_call_join(talkgroup_routing::GroupRoute route) = 0;
     virtual std::future<engine::CommandResult> set_audio_gains(std::uint32_t radio_playback_gain_milli,
                                                                std::uint32_t mic_transmit_gain_milli) = 0;
+    virtual std::future<engine::CommandResult> set_audio_endpoints(engine::AudioEndpoints audio) = 0;
     virtual std::future<engine::CommandResult> upsert_radio_identity(std::uint32_t source_id, std::uint64_t revision,
                                                                      std::optional<std::string> callsign) = 0;
 
@@ -71,6 +72,9 @@ public:
     std::future<engine::CommandResult> set_audio_gains(std::uint32_t radio_playback_gain_milli,
                                                        std::uint32_t mic_transmit_gain_milli) override {
         return engine_.set_audio_gains(radio_playback_gain_milli, mic_transmit_gain_milli);
+    }
+    std::future<engine::CommandResult> set_audio_endpoints(engine::AudioEndpoints audio) override {
+        return engine_.set_audio_endpoints(std::move(audio));
     }
     std::future<engine::CommandResult> upsert_radio_identity(std::uint32_t source_id, std::uint64_t revision,
                                                              std::optional<std::string> callsign) override {

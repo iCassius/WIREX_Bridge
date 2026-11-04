@@ -148,7 +148,7 @@ ViewModel::ViewModel(EngineApi& engine, services::Services services, bool fake)
             flash(fmt(tr(Str::settings_save_failed), error.c_str()), true);
         }
     }
-    // R126 决定：运行界面固定中文，ui.language 只读取不改写。启用切换时把 kHonorConfigLanguage 改为 true。
+    // 从用户配置恢复上次选择的界面语言；未知值由 parse_language 回落到简体中文。
     if constexpr (kHonorConfigLanguage) {
         set_language(parse_language(config_.ui_language));
     } else {
@@ -337,6 +337,10 @@ bool ViewModel::transient_visible() const {
 }
 
 void ViewModel::report(Str op, const CommandResult& r) {
+    if (op == Str::op_start && suppress_cancelled_start_report_) {
+        suppress_cancelled_start_report_ = false;
+        return;
+    }
     const bool ok = r.status == CommandStatus::accepted || r.status == CommandStatus::idempotent;
     // 成功由状态本身体现；Quick Call 的本机发送结果由 quick_call_result 事件文本提示。
     if (ok && op != Str::op_cat) return;
@@ -471,12 +475,44 @@ engine::CallInfo ViewModel::with_callsign(engine::CallInfo call) const {
 
 void ViewModel::start() {
     if (pending(Str::op_start) || pending(Str::op_stop)) return;
-    if (!services_.config.make_start_config) {
-        flash(tr(Str::engine_unavailable), true);
-        return;
+    const bool hri_active = snapshot_->phase == Phase::running || snapshot_->phase == Phase::starting ||
+                            snapshot_->phase == Phase::stopping;
+    const auto current_cat = services_.cat.state ? services_.cat.state() : cat_;
+    if (hri_active || current_cat.connected) return;
+
+    auto next_config = config_;
+    const bool cat_auto = cat_form.port.empty() || cat_form.port == "auto";
+    next_config.cat_port = cat_auto ? std::wstring{} : from_utf8(cat_form.port);
+    next_config.cat_baud_rate = kBaudRates[std::clamp(cat_form.baud_index, 0, 4)];
+    if (next_config.cat_port != config_.cat_port || next_config.cat_baud_rate != config_.cat_baud_rate) {
+        std::string save_error;
+        if (!save_config(next_config, save_error)) {
+            flash(fmt(tr(Str::settings_save_failed), save_error.c_str()), true);
+            return;
+        }
     }
+
+    // make_start_config 刷新本次 Windows 串口目录；CAT Auto 随后只允许使用唯一的已分类候选。
     std::string error;
-    auto sc = services_.config.make_start_config(config_, error);
+    std::optional<engine::StartConfig> sc;
+    if (services_.config.make_start_config) sc = services_.config.make_start_config(config_, error);
+    else error = "引擎启动服务不可用。";
+    const auto generation = ++radio_connection_generation_;
+    if (services_.cat.connect && !current_cat.connected && !current_cat.busy) {
+        services_.cat.connect(config_.cat_port, config_.cat_baud_rate,
+            [this, generation](CommandResult result) {
+                post_to_ui([this, generation, result = std::move(result)]() mutable {
+                    if (generation != radio_connection_generation_) {
+                        // stop() 先于连接完成时，清理可能刚完成的 CAT 查询，避免过期回调留下 CAT connected。
+                        if (services_.cat.state && services_.cat.state().connected && services_.cat.disconnect) {
+                            services_.cat.disconnect({});
+                        }
+                        return;
+                    }
+                    report(Str::op_cat, result);
+                });
+            });
+    }
     if (!sc) {
         flash(fmt(tr(Str::result_fmt), tr(Str::op_start), error.c_str()), true);
         return;
@@ -487,11 +523,25 @@ void ViewModel::start() {
     sc->radio_playback_gain_milli = gain_milli(playback_step);
     sc->mic_transmit_gain_milli = gain_milli(transmit_step);
     sc->bm_start_disconnected = true;
-    track(Str::op_start, engine_.start(std::move(*sc)));
+    track(Str::op_start, engine_.start(std::move(*sc)), [this, generation](const CommandResult& result) {
+        suppress_cancelled_start_report_ = generation != radio_connection_generation_ &&
+            result.status == CommandStatus::not_ready && result.detail == "start_cancelled";
+    });
 }
 
 void ViewModel::stop() {
     if (pending(Str::op_stop)) return;
+    const auto generation = ++radio_connection_generation_;
+    if (services_.cat.disconnect) {
+        services_.cat.disconnect([this, generation](CommandResult result) {
+            post_to_ui([this, generation, result = std::move(result)]() mutable {
+                if (generation == radio_connection_generation_ &&
+                    result.status != CommandStatus::accepted && result.status != CommandStatus::idempotent) {
+                    report(Str::op_cat, result);
+                }
+            });
+        });
+    }
     track(Str::op_stop, engine_.stop());
 }
 
@@ -612,6 +662,47 @@ void ViewModel::commit_gains() {
     persist();
     if (snapshot_->phase != Phase::running) return;
     track(Str::op_gains, engine_.set_audio_gains(gain_milli(playback_step), gain_milli(transmit_step)));
+}
+
+void ViewModel::set_audio_devices(std::wstring wave_in_endpoint_id, std::wstring wave_out_endpoint_id) {
+    if (wave_in_endpoint_id.empty() || wave_out_endpoint_id.empty()) {
+        flash(tr(Str::audio_devices_failed), true);
+        return;
+    }
+    const auto input = std::find_if(devices_.wave_in.begin(), devices_.wave_in.end(),
+        [&](const services::AudioEndpointInfo& endpoint) { return endpoint.endpoint_id == wave_in_endpoint_id; });
+    const auto output = std::find_if(devices_.wave_out.begin(), devices_.wave_out.end(),
+        [&](const services::AudioEndpointInfo& endpoint) { return endpoint.endpoint_id == wave_out_endpoint_id; });
+    if (input == devices_.wave_in.end() || output == devices_.wave_out.end()) {
+        flash(tr(Str::audio_devices_failed), true);
+        return;
+    }
+    if (pending(Str::op_audio_devices)) return;
+
+    engine::AudioEndpoints audio{};
+    audio.wave_in_id = input->wave_id;
+    audio.wave_out_id = output->wave_id;
+    audio.expected_wave_in_endpoint_id = wave_in_endpoint_id;
+    audio.expected_wave_out_endpoint_id = wave_out_endpoint_id;
+
+    if (snapshot_->phase == Phase::running || snapshot_->phase == Phase::starting) {
+        track(Str::op_audio_devices, engine_.set_audio_endpoints(audio),
+            [this, wave_in_endpoint_id = std::move(wave_in_endpoint_id),
+                  wave_out_endpoint_id = std::move(wave_out_endpoint_id)](const CommandResult& result) {
+                if (result.status != CommandStatus::accepted && result.status != CommandStatus::idempotent) return;
+                config_.wave_in_endpoint_id = wave_in_endpoint_id;
+                config_.wave_out_endpoint_id = wave_out_endpoint_id;
+                persist();
+                if (result.detail == "waveout_old_endpoint_closed_with_cleanup_warning") {
+                    flash("新音频设备已生效，但旧设备报告了清理警告。", true);
+                }
+            });
+        return;
+    }
+
+    config_.wave_in_endpoint_id = std::move(wave_in_endpoint_id);
+    config_.wave_out_endpoint_id = std::move(wave_out_endpoint_id);
+    persist();
 }
 
 void ViewModel::set_history_target() {

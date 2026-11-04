@@ -399,6 +399,14 @@ std::future<CommandResult> Engine::set_audio_gains(std::uint32_t radio_playback_
     return impl_->enqueue(std::move(command));
 }
 
+std::future<CommandResult> Engine::set_audio_endpoints(AudioEndpoints audio)
+{
+    Command command;
+    command.kind = CommandKind::set_audio_endpoints;
+    command.audio_endpoints = std::move(audio);
+    return impl_->enqueue(std::move(command));
+}
+
 std::future<CommandResult> Engine::upsert_radio_identity(std::uint32_t source_id, std::uint64_t revision,
                                                          std::optional<std::string> callsign)
 {

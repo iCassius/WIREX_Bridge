@@ -28,6 +28,7 @@ struct SerialPortInfo {
 struct AudioEndpointInfo {
     std::wstring endpoint_id{}; // MMDevice endpoint id
     std::string name{};         // UTF-8 友好名称
+    std::uint32_t wave_id{};    // 当前枚举对应的 WinMM 设备编号
 };
 
 struct DeviceInventory {
@@ -79,7 +80,7 @@ struct ChannelEntry {
 };
 
 struct GuiConfig {
-    std::string ui_language{"zh-CN"};           // 运行界面固定中文；保留字段供以后启用切换
+    std::string ui_language{"zh-CN"};           // zh-CN / en-US；未知值回落至简体中文
     std::string callsign{};
     std::uint32_t dmr_id{};                     // connection.source_id
     std::string device_number{};                // "00".."99" 或空（空：沿用 gateway_id）
@@ -114,7 +115,7 @@ struct GuiConfig {
 struct ConfigService {
     std::function<std::optional<GuiConfig>(std::string& error)> load{};
     std::function<bool(const GuiConfig& config, std::string& error)> save{};
-    // 由配置生成引擎启动参数（解析 endpoint id → WinMM 编号、device-y.bin 路径等）。
+    // 由配置生成引擎启动参数（解析串口与 endpoint ID → WinMM 编号）。
     // 在 UI 线程调用；会做一次设备枚举（约百毫秒级）。
     std::function<std::optional<engine::StartConfig>(const GuiConfig& config, std::string& error)> make_start_config{};
 };

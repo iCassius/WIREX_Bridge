@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <map>
@@ -72,6 +73,8 @@ struct FakeEngine::Impl {
     bool transmit_enabled{};
     std::uint32_t local_id{};
     std::uint64_t bm_epoch{};   // BM 断开/引擎停止时 +1，使旧的来话任务失效
+    std::atomic<std::uint64_t> radio_generation{};
+    std::atomic<bool> startup_pending{};
     std::uint64_t call_epoch{}; // 每通来话 +1
     std::uint32_t calls_until_tx{4U};
     std::unordered_map<std::uint32_t, std::string> identities{};
@@ -398,22 +401,43 @@ std::future<CommandResult> FakeEngine::start(engine::StartConfig config) {
     auto* s = impl_.get();
     auto promise = std::make_shared<std::promise<CommandResult>>();
     auto future = promise->get_future();
-    s->post_after(50ms, [s, promise, config = std::move(config)]() mutable {
+    bool expected = false;
+    if (!s->startup_pending.compare_exchange_strong(expected, true)) {
+        promise->set_value(result(CommandStatus::busy, 0U, "start_already_pending"));
+        return future;
+    }
+    const auto generation = s->radio_generation.fetch_add(1U) + 1U;
+    s->post_after(50ms, [s, promise, generation, config = std::move(config)]() mutable {
+        if (generation != s->radio_generation.load()) {
+            s->startup_pending = false;
+            promise->set_value(result(CommandStatus::not_ready, 0U, "start_cancelled"));
+            return;
+        }
         if (s->state.phase != Phase::stopped && s->state.phase != Phase::failed) {
+            s->startup_pending = false;
             promise->set_value(result(CommandStatus::busy, 0U, "already_running"));
             return;
         }
         if (config.hri_port.empty()) {
+            s->startup_pending = false;
             promise->set_value(result(CommandStatus::invalid, 0U, "hri_port_missing"));
             return;
         }
         s->state = engine::Snapshot{s->state.seq};
         s->state.phase = Phase::starting;
         s->state.serial_open = true;
+        s->state.hri_port = config.hri_port;
         s->publish();
-        s->post_after(600ms, [s, promise, config = std::move(config)]() {
+        s->post_after(600ms, [s, promise, generation, config = std::move(config)]() {
+            if (generation != s->radio_generation.load()) {
+                s->startup_pending = false;
+                promise->set_value(result(CommandStatus::not_ready, 0U, "start_cancelled"));
+                return;
+            }
             s->state.phase = Phase::running;
             s->state.hri_ready = s->state.wave_in_open = s->state.wave_out_open = true;
+            s->state.wave_in_endpoint_id = config.audio.expected_wave_in_endpoint_id;
+            s->state.wave_out_endpoint_id = config.audio.expected_wave_out_endpoint_id;
             s->state.radio_playback_gain_milli = config.radio_playback_gain_milli;
             s->state.mic_transmit_gain_milli = config.mic_transmit_gain_milli;
             s->state.tx_target = config.tx_policy.target;
@@ -421,6 +445,7 @@ std::future<CommandResult> FakeEngine::start(engine::StartConfig config) {
             s->rx_policy = config.rx_policy;
             s->local_id = config.local_source_id;
             s->state.bm_requested_enabled = !config.bm_start_disconnected;
+            s->startup_pending = false;
             promise->set_value(result(CommandStatus::accepted));
             s->publish();
         });
@@ -432,7 +457,13 @@ std::future<CommandResult> FakeEngine::stop() {
     auto* s = impl_.get();
     auto promise = std::make_shared<std::promise<CommandResult>>();
     auto future = promise->get_future();
-    s->post_after(30ms, [s, promise]() {
+    const auto generation = s->radio_generation.fetch_add(1U) + 1U;
+    s->startup_pending = false;
+    s->post_after(30ms, [s, promise, generation]() {
+        if (generation != s->radio_generation.load()) {
+            promise->set_value(result(CommandStatus::not_ready, 0U, "stop_cancelled"));
+            return;
+        }
         if (s->state.phase == Phase::stopped) {
             promise->set_value(result(CommandStatus::idempotent));
             return;
@@ -441,7 +472,11 @@ std::future<CommandResult> FakeEngine::stop() {
         s->state.bm_requested_enabled = false;
         s->state.phase = Phase::stopping;
         s->publish();
-        s->post_after(400ms, [s, promise]() {
+        s->post_after(400ms, [s, promise, generation]() {
+            if (generation != s->radio_generation.load()) {
+                promise->set_value(result(CommandStatus::not_ready, 0U, "stop_cancelled"));
+                return;
+            }
             const auto seq = s->state.seq;
             const auto bm_rev = s->state.bm_connection_revision;
             s->state = engine::Snapshot{};
@@ -536,6 +571,27 @@ std::future<CommandResult> FakeEngine::set_audio_gains(std::uint32_t radio_playb
     });
 }
 
+std::future<CommandResult> FakeEngine::set_audio_endpoints(engine::AudioEndpoints audio) {
+    auto* s = impl_.get();
+    return s->command(80ms, [s, audio = std::move(audio)]() mutable {
+        auto& st = s->state;
+        if (audio.expected_wave_in_endpoint_id.empty() || audio.expected_wave_out_endpoint_id.empty()) {
+            return result(CommandStatus::invalid, st.audio_endpoints_revision, "invalid_audio_endpoints");
+        }
+        if (st.phase != engine::Phase::running && st.phase != engine::Phase::starting) {
+            return result(CommandStatus::not_ready, st.audio_endpoints_revision, "engine_not_running");
+        }
+        if (st.wave_in_endpoint_id == audio.expected_wave_in_endpoint_id &&
+            st.wave_out_endpoint_id == audio.expected_wave_out_endpoint_id) {
+            return result(CommandStatus::idempotent, st.audio_endpoints_revision);
+        }
+        st.wave_in_endpoint_id = std::move(audio.expected_wave_in_endpoint_id);
+        st.wave_out_endpoint_id = std::move(audio.expected_wave_out_endpoint_id);
+        ++st.audio_endpoints_revision;
+        return result(CommandStatus::accepted, st.audio_endpoints_revision);
+    });
+}
+
 std::future<CommandResult> FakeEngine::upsert_radio_identity(std::uint32_t source_id, std::uint64_t revision,
                                                              std::optional<std::string> callsign) {
     auto* s = impl_.get();
@@ -576,6 +632,7 @@ namespace {
 struct FakeServiceState {
     std::mutex mutex;
     services::CatState cat{};
+    std::uint64_t cat_generation{};
     services::GuiConfig config{};
     std::vector<services::StaticGroup> static_groups{{46001U, 2}, {4600U, 2}, {91U, 2}, {46025U, 2}};
 };
@@ -631,35 +688,55 @@ services::Services make_fake_services(FakeEngine& engine) {
         return st->cat;
     };
     sv.cat.connect = [st, &engine](std::wstring port, std::uint32_t baud, services::Done done) {
+        std::uint64_t generation = 0U;
         {
             std::lock_guard<std::mutex> lock(st->mutex);
+            generation = ++st->cat_generation;
             st->cat.busy = true;
             ++st->cat.revision;
         }
-        engine.post_after(500ms, [st, port = std::move(port), baud, done = std::move(done)]() {
+        engine.post_after(500ms, [st, generation, port = std::move(port), baud, done = std::move(done)]() {
+            bool current = false;
             {
                 std::lock_guard<std::mutex> lock(st->mutex);
-                st->cat.busy = false;
-                st->cat.connected = true;
-                st->cat.port = port;
-                st->cat.baud_rate = baud;
-                st->cat.observed_mode = services::CatMode::fm;
-                st->cat.observed_frequency_hz = 145'000'000U;
-                st->cat.observed_power_w = 25U;
-                st->cat.error.clear();
-                ++st->cat.revision;
+                current = generation == st->cat_generation;
+                if (current) {
+                    st->cat.busy = false;
+                    st->cat.connected = true;
+                    st->cat.port = port.empty() || port == L"auto" ? L"COM6" : port;
+                    st->cat.baud_rate = baud;
+                    st->cat.observed_mode = services::CatMode::fm;
+                    st->cat.observed_frequency_hz = 145'000'000U;
+                    st->cat.observed_power_w = 25U;
+                    st->cat.error.clear();
+                    ++st->cat.revision;
+                }
             }
-            if (done) done(result(CommandStatus::accepted));
+            if (done) done(current ? result(CommandStatus::accepted)
+                                   : result(CommandStatus::not_ready, 0U, "cat_connection_cancelled"));
         });
     };
     sv.cat.disconnect = [st, &engine](services::Done done) {
-        engine.post_after(200ms, [st, done = std::move(done)]() {
+        std::uint64_t generation = 0U;
+        {
+            std::lock_guard<std::mutex> lock(st->mutex);
+            generation = ++st->cat_generation;
+            st->cat.busy = true;
+            ++st->cat.revision;
+        }
+        engine.post_after(200ms, [st, generation, done = std::move(done)]() {
+            bool current = false;
             {
                 std::lock_guard<std::mutex> lock(st->mutex);
-                st->cat = services::CatState{};
-                st->cat.revision = 1U;
+                current = generation == st->cat_generation;
+                if (current) {
+                    const auto revision = st->cat.revision + 1U;
+                    st->cat = services::CatState{};
+                    st->cat.revision = revision;
+                }
             }
-            if (done) done(result(CommandStatus::accepted));
+            if (done) done(current ? result(CommandStatus::accepted)
+                                   : result(CommandStatus::not_ready, 0U, "cat_disconnect_cancelled"));
         });
     };
     sv.cat.apply = [st, &engine](services::CatSettings settings, services::Done done) {

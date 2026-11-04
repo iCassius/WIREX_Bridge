@@ -16,16 +16,12 @@
 #endif
 #include <windows.h>
 
-#include <bcrypt.h>
-
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
 #include <deque>
-#include <fstream>
-#include <iterator>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -136,58 +132,6 @@ struct ConfigState {
     app::devices::SerialCatalog last_serial;   // 最近一次串口枚举（CAT 的 HRI 冲突判断）
 };
 
-std::optional<std::string> sha256_hex(const fs::path& path, std::string& error) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) {
-        error = "无法读取本机 Y 模板：" + narrow(path.wstring());
-        return std::nullopt;
-    }
-    const std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    BCRYPT_ALG_HANDLE alg = nullptr;
-    BCRYPT_HASH_HANDLE hash = nullptr;
-    unsigned char digest[32] = {};
-    bool ok = BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0));
-    ok = ok && BCRYPT_SUCCESS(BCryptCreateHash(alg, &hash, nullptr, 0, nullptr, 0, 0));
-    ok = ok && BCRYPT_SUCCESS(BCryptHashData(hash, reinterpret_cast<PUCHAR>(const_cast<char*>(bytes.data())),
-                                             static_cast<ULONG>(bytes.size()), 0));
-    ok = ok && BCRYPT_SUCCESS(BCryptFinishHash(hash, digest, sizeof(digest), 0));
-    if (hash != nullptr) BCryptDestroyHash(hash);
-    if (alg != nullptr) BCryptCloseAlgorithmProvider(alg, 0);
-    if (!ok) {
-        error = "无法计算 Y 模板 SHA-256。";
-        return std::nullopt;
-    }
-    std::string hex;
-    char buf[3];
-    for (const unsigned char b : digest) {
-        std::snprintf(buf, sizeof(buf), "%02x", b);
-        hex += buf;
-    }
-    return hex;
-}
-
-// Test-ApprovedBody：100 字节且 SHA-256 与批准值一致。
-fs::path find_body_file(const fs::path& exe_directory, std::string& error) {
-    const auto candidates = config_bridge::body_file_candidates(exe_directory);
-    for (const auto& candidate : candidates) {
-        std::error_code ec;
-        if (!fs::is_regular_file(candidate, ec)) continue;
-        if (fs::file_size(candidate, ec) != config_bridge::approved_body_length || ec) {
-            error = "Y 模板长度不符：" + narrow(candidate.wstring()) + "（必须为 100 字节）。";
-            return {};
-        }
-        const auto hex = sha256_hex(candidate, error);
-        if (!hex) return {};
-        if (*hex != config_bridge::approved_body_sha256) {
-            error = "Y 模板完整性校验失败：" + narrow(candidate.wstring()) + "；没有启动核心。";
-            return {};
-        }
-        return candidate;
-    }
-    error = "找不到本机 Y 模板：" + narrow(candidates.front().wstring()) + "（或 runtime\\private\\device-y.bin）。";
-    return {};
-}
-
 // --fake：真实检查未通过时给模拟引擎的最小启动参数。
 engine::StartConfig lenient_start_config(const services::GuiConfig& gui) {
     engine::StartConfig sc;
@@ -247,19 +191,15 @@ services::ConfigService make_config_service(const std::shared_ptr<ConfigState>& 
             lenient = st->lenient;
         }
         std::optional<engine::StartConfig> sc;
-        inputs.body_file = find_body_file(st->exe_directory, error);
-        if (!inputs.body_file.empty()) {
-            error.clear();
-            inputs.serial = app::devices::enumerate_serial_ports();
-            {
-                std::lock_guard<std::mutex> lock(st->mutex);
-                st->last_serial = inputs.serial;
-            }
-            auto audio = app::devices::enumerate_audio();
-            inputs.wave_inputs = std::move(audio.wave_inputs);
-            inputs.wave_outputs = std::move(audio.wave_outputs);
-            sc = config_bridge::make_start_config(gui, inputs, error);
+        inputs.serial = app::devices::enumerate_serial_ports();
+        {
+            std::lock_guard<std::mutex> lock(st->mutex);
+            st->last_serial = inputs.serial;
         }
+        auto audio = app::devices::enumerate_audio();
+        inputs.wave_inputs = std::move(audio.wave_inputs);
+        inputs.wave_outputs = std::move(audio.wave_outputs);
+        sc = config_bridge::make_start_config(gui, inputs, error);
         if (!sc && lenient) {
             // 返回参数并保留 error：ViewModel 把它作为提示显示。
             error = "模拟引擎：真实启动检查未通过（" + error + "）";
@@ -298,7 +238,7 @@ services::DeviceService make_device_service(const std::shared_ptr<ConfigState>& 
                         name = e.friendly_name;
                     }
                 }
-                out.push_back({widen(*w.endpoint_id), std::move(name)});
+                out.push_back({widen(*w.endpoint_id), std::move(name), w.id});
             }
         };
         add(audio.wave_inputs, audio.capture_endpoints, inv.wave_in);
@@ -380,15 +320,24 @@ public:
     CatRunner& operator=(const CatRunner&) = delete;
 
     void stop() {
+        std::deque<Task> canceled;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (stopping_) return;
             stopping_ = true;
-            tasks_.clear();
+            ++task_generation_;
+            canceled.swap(tasks_);
+            state_.connected = false;
+            state_.busy = false;
+            connection_.reset();
+            ++state_.revision;
         }
         worker_.disconnect(); // 取消进行中的串口操作，解除 runner 对 future 的等待
         wake_.notify_all();
         if (thread_.joinable()) thread_.join();
+        for (auto& task : canceled) {
+            if (task.on_cancel) task.on_cancel(make_result(CommandStatus::not_ready, "CAT 操作已停止。"));
+        }
     }
 
     void set_wakeup(std::function<void()> wakeup) {
@@ -402,37 +351,61 @@ public:
     }
 
     void connect(std::wstring port, std::uint32_t baud, services::Done done) {
-        post([this, port = std::move(port), baud, done]() { do_connect(port, baud, done); }, done);
+        post([this, port = std::move(port), baud, done](std::uint64_t generation) {
+            do_connect(port, baud, done, generation);
+        }, done);
     }
 
     void disconnect(services::Done done) {
-        worker_.disconnect();
-        update([](services::CatState& s) {
-            s.connected = false;
-            s.error.clear();
-        });
+        std::deque<Task> canceled;
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            ++task_generation_;
+            canceled.swap(tasks_);
+            state_.connected = false;
+            state_.busy = false;
+            state_.error.clear();
             connection_.reset();
+            ++state_.revision;
+        }
+        worker_.disconnect();
+        notify();
+        for (auto& task : canceled) {
+            if (task.on_cancel) task.on_cancel(make_result(CommandStatus::not_ready, "CAT 连接请求已取消。"));
         }
         if (done) done(make_result(CommandStatus::accepted));
     }
 
     void apply(services::CatSettings settings, services::Done done) {
-        post([this, settings, done]() { do_apply(settings, done); }, done);
+        post([this, settings, done](std::uint64_t generation) {
+            do_apply(settings, done, generation);
+        }, done);
     }
 
 private:
-    void post(std::function<void()> task, const services::Done& done) {
+    struct Task {
+        std::uint64_t generation{};
+        std::function<void(std::uint64_t)> run{};
+        services::Done on_cancel{};
+    };
+
+    void post(std::function<void(std::uint64_t)> task, const services::Done& done) {
+        bool accepted = false;
+        bool stopped = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            if (stopping_ || state_.busy || !tasks_.empty()) {
-                if (done) done(make_result(CommandStatus::busy, "CAT 操作正在进行。"));
-                return;
+            stopped = stopping_;
+            if (!stopping_ && !state_.busy && tasks_.empty()) {
+                tasks_.push_back(Task{task_generation_, std::move(task), done});
+                state_.busy = true;
+                ++state_.revision;
+                accepted = true;
             }
-            tasks_.push_back(std::move(task));
-            state_.busy = true;
-            ++state_.revision;
+        }
+        if (!accepted) {
+            if (done) done(make_result(stopped ? CommandStatus::not_ready : CommandStatus::busy,
+                                       stopped ? "CAT 服务已停止。" : "CAT 操作正在进行。"));
+            return;
         }
         wake_.notify_one();
         notify();
@@ -472,55 +445,90 @@ private:
 
     std::optional<app::CatConnection> make_connection(const std::wstring& port, std::uint32_t baud, std::string& error) {
         app::CatConnection c;
-        c.port_name = app::cat_normalize_port_name(port);
         c.baud_rate = baud;
         c.stop_bits = app::CatStopBits::two;
-        if (!app::cat_is_valid_port_name(c.port_name)) {
-            error = "CAT 串口必须是 COM1 到 COM999。";
-            return std::nullopt;
-        }
         if (!app::cat_is_supported_baud_rate(baud)) {
             error = "CAT 波特率无效。";
             return std::nullopt;
         }
-        // HRI 端口：配置中的显式端口，否则本次枚举中唯一的 HRI 口。CAT 不得与 HRI 共用。
-        std::lock_guard<std::mutex> lock(config_->mutex);
-        const auto& hri_ports = config_->last_serial.hri_ports;
-        if (config_->base && config_->base->devices.hri_port != "auto") {
-            c.hri_port_name = widen(config_->base->devices.hri_port);
-        } else if (hri_ports.size() == 1U) {
-            c.hri_port_name = widen(hri_ports.front().port_name);
-        }
-        for (const auto& p : hri_ports) {
-            if (app::cat_normalize_port_name(widen(p.port_name)) == c.port_name) {
-                error = "所选串口已识别为 HRI，不能用于 CAT。";
-                return std::nullopt;
+
+        // 使用一次新枚举，再按设备目录的唯一分类结果选择 CAT；Auto 不会尝试打开未分类端口。
+        const auto catalog = app::devices::enumerate_serial_ports();
+        std::string saved_hri = "auto";
+        std::string saved_cat = "auto";
+        {
+            std::lock_guard<std::mutex> lock(config_->mutex);
+            config_->last_serial = catalog;
+            if (config_->base) {
+                saved_hri = config_->base->devices.hri_port;
+                saved_cat = config_->base->devices.cat_port;
             }
         }
+        std::string requested = narrow(port);
+        const bool automatic = requested.empty() || requested == "auto" || requested == "AUTO";
+        app::devices::PortSelectionError selection_error{};
+        const auto selection = app::devices::resolve_port_selection(catalog, saved_hri, saved_cat,
+            automatic ? std::string_view{} : std::string_view(requested), selection_error);
+        if (selection_error != app::devices::PortSelectionError::none) {
+            error = "CAT 串口名称无效；请选择 COM1 到 COM999。";
+            return std::nullopt;
+        }
+        if (!selection.cat_port) {
+            error = selection.cat_conflict ? selection.cat_match_reason
+                : "没有唯一且未与 HRI 冲突的 CAT 串口；请在 CAT 端口中明确选择。";
+            return std::nullopt;
+        }
+        c.port_name = widen(*selection.cat_port);
+        if (selection.hri_port) c.hri_port_name = widen(*selection.hri_port);
         return c;
     }
 
-    app::CatResult run(const app::CatJob& job) { return worker_.submit(job).get(); }
+    app::CatResult canceled(const app::CatJob& job) const {
+        app::CatResult result;
+        result.operation = job.operation;
+        result.port_name = job.connection.port_name;
+        result.started_at = std::chrono::system_clock::now();
+        result.status = app::CatResultStatus::unknown;
+        result.error = app::CatError::cancelled;
+        result.error_message = "CAT 会话已断开或取消；没有执行该操作。";
+        return result;
+    }
 
-    void do_connect(const std::wstring& port, std::uint32_t baud, const services::Done& done) {
+    app::CatResult run(const app::CatJob& job, std::uint64_t generation) {
+        std::future<app::CatResult> future;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (stopping_ || generation != task_generation_) return canceled(job);
+            future = worker_.submit(job);
+        }
+        return future.get();
+    }
+
+    void do_connect(const std::wstring& port, std::uint32_t baud, const services::Done& done,
+                    std::uint64_t generation) {
         std::string error;
         const auto conn = make_connection(port, baud, error);
         if (!conn) {
-            finish(done, make_result(CommandStatus::invalid, error), [&](services::CatState& s) { s.error = error; });
+            finish(generation, done, make_result(CommandStatus::invalid, error),
+                   [&](services::CatState& s) { s.error = error; });
             return;
         }
         app::CatJob job;
         job.operation = app::CatOperation::query;
         job.connection = *conn;
-        const auto r = run(job);
+        const auto r = run(job, generation);
         absorb_observed();
-        const bool ok = r.status == app::CatResultStatus::confirmed;
+        bool ok = r.status == app::CatResultStatus::confirmed;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            if (ok) connection_ = conn;
-            last_poll_ = steady::now();
+            if (generation == task_generation_ && !stopping_) {
+                if (ok) connection_ = conn;
+                last_poll_ = steady::now();
+            } else {
+                ok = false;
+            }
         }
-        finish(done, to_command_result(r), [&](services::CatState& s) {
+        finish(generation, done, ok ? to_command_result(r) : make_result(CommandStatus::not_ready, "CAT 连接已取消。"), [&](services::CatState& s) {
             s.connected = ok;
             s.port = conn->port_name;
             s.baud_rate = baud;
@@ -529,35 +537,35 @@ private:
     }
 
     // Apply-UiRadioCatSettings：先读取一次，再按 模式 → 频率 → 功率 顺序只写有变化的项；每步读回确认，失败即停止。
-    void do_apply(const services::CatSettings& settings, const services::Done& done) {
+    void do_apply(const services::CatSettings& settings, const services::Done& done, std::uint64_t generation) {
         std::optional<app::CatConnection> conn;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             conn = connection_;
         }
         if (!conn) {
-            finish(done, make_result(CommandStatus::not_ready, "CAT 未连接。"), [](services::CatState&) {});
+            finish(generation, done, make_result(CommandStatus::not_ready, "CAT 未连接。"), [](services::CatState&) {});
             return;
         }
         if (settings.main_frequency_hz != 0U && (settings.main_frequency_hz < app::cat_min_frequency_hz ||
                                                  settings.main_frequency_hz > app::cat_max_frequency_hz)) {
-            finish(done, make_result(CommandStatus::invalid, "频率超出 FTX-1 CAT 允许范围。"), [](services::CatState&) {});
+            finish(generation, done, make_result(CommandStatus::invalid, "频率超出 FTX-1 CAT 允许范围。"), [](services::CatState&) {});
             return;
         }
         app::CatJob job;
         job.connection = *conn;
         job.operation = app::CatOperation::query;
-        auto r = run(job);
+        auto r = run(job, generation);
         absorb_observed();
         if (r.status != app::CatResultStatus::confirmed) {
-            finish(done, to_command_result(r), [&](services::CatState& s) { s.error = r.error_message; });
+            finish(generation, done, to_command_result(r), [&](services::CatState& s) { s.error = r.error_message; });
             return;
         }
         const auto observed = worker_.snapshot().observed;
         int steps = 0;
         const auto step = [&](app::CatJob next) {
             next.connection = *conn;
-            r = run(next);
+            r = run(next, generation);
             absorb_observed();
             ++steps;
             return r.status == app::CatResultStatus::confirmed;
@@ -588,27 +596,37 @@ private:
         if (!ok) {
             auto cr = to_command_result(r);
             if (steps > 1) cr.detail += "（已完成的步骤不回滚）";
-            finish(done, cr, [&](services::CatState& s) { s.error = r.error_message; });
+            finish(generation, done, cr, [&](services::CatState& s) { s.error = r.error_message; });
             return;
         }
-        finish(done, make_result(steps == 0 ? CommandStatus::idempotent : CommandStatus::accepted),
+        finish(generation, done, make_result(steps == 0 ? CommandStatus::idempotent : CommandStatus::accepted),
                [](services::CatState& s) { s.error.clear(); });
     }
 
     template <class F>
-    void finish(const services::Done& done, const CommandResult& result, F&& mutate) {
-        update([&](services::CatState& s) {
-            mutate(s);
-            s.busy = false;
-        });
-        if (done) done(result);
+    void finish(std::uint64_t generation, const services::Done& done, const CommandResult& result, F&& mutate) {
+        bool changed = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (generation == task_generation_ && !stopping_) {
+                mutate(state_);
+                state_.busy = false;
+                ++state_.revision;
+                changed = true;
+            }
+        }
+        if (changed) notify();
+        if (done) {
+            try { done(result); } catch (...) { /* 回调错误不影响 CAT 状态机 */ }
+        }
     }
 
     // 连接后每秒只读查询一次（RadioCatUi.ps1 轮询 1000 ms）；用户操作进行中时跳过。
-    void poll() {
+    void poll(std::uint64_t generation) {
         std::optional<app::CatConnection> conn;
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            if (generation != task_generation_ || stopping_) return;
             conn = connection_;
             last_poll_ = steady::now();
         }
@@ -616,10 +634,10 @@ private:
         app::CatJob job;
         job.operation = app::CatOperation::query;
         job.connection = *conn;
-        const auto r = run(job);
+        const auto r = run(job, generation);
         absorb_observed();
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!connection_) return; // 期间已断开
+        if (!connection_ || generation != task_generation_ || stopping_) return; // 期间已断开
         const std::string error = r.status == app::CatResultStatus::confirmed ? std::string{} : r.error_message;
         if (state_.error != error) {
             state_.error = error;
@@ -629,8 +647,9 @@ private:
 
     void loop() {
         for (;;) {
-            std::function<void()> task;
+            Task task;
             bool do_poll = false;
+            std::uint64_t poll_generation = 0U;
             {
                 std::unique_lock<std::mutex> lock(mutex_);
                 wake_.wait_for(lock, 250ms, [this]() { return stopping_ || !tasks_.empty(); });
@@ -640,19 +659,31 @@ private:
                     tasks_.pop_front();
                 } else if (connection_ && steady::now() - last_poll_ >= 1s) {
                     do_poll = true;
+                    poll_generation = task_generation_;
                 }
             }
             try {
-                if (task) task();
+                if (task.run) task.run(task.generation);
                 if (do_poll) {
-                    poll();
+                    poll(poll_generation);
                     notify();
                 }
             } catch (...) {
-                update([](services::CatState& s) {
-                    s.busy = false;
-                    s.error = "CAT 内部错误。";
-                });
+                if (task.run) {
+                    finish(task.generation, task.on_cancel, make_result(CommandStatus::failed, "CAT 内部错误。"),
+                           [](services::CatState& s) { s.error = "CAT 内部错误。"; });
+                } else if (do_poll) {
+                    bool changed = false;
+                    {
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        if (poll_generation == task_generation_ && !stopping_) {
+                            state_.error = "CAT 内部错误。";
+                            ++state_.revision;
+                            changed = true;
+                        }
+                    }
+                    if (changed) notify();
+                }
             }
         }
     }
@@ -660,7 +691,8 @@ private:
     std::shared_ptr<ConfigState> config_;
     std::mutex mutex_;
     std::condition_variable wake_;
-    std::deque<std::function<void()>> tasks_;
+    std::deque<Task> tasks_;
+    std::uint64_t task_generation_{};
     bool stopping_{};
     services::CatState state_{};
     std::optional<app::CatConnection> connection_{};

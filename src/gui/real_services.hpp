@@ -15,7 +15,7 @@
 namespace wirex::gui {
 
 struct RealServiceOptions {
-    std::filesystem::path exe_directory{};   // device-y.bin 查找位置；默认 config.json 所在目录
+    std::filesystem::path exe_directory{};   // 默认 config.json 所在目录
     std::filesystem::path config_path{};     // 空：<exe_directory>/config.json
     // --fake：真实启动参数校验失败时仍返回一份最小 StartConfig（并在 error 中给出原因），让模拟引擎可以连接。
     bool lenient_start{};

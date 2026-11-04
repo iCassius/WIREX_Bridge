@@ -15,6 +15,7 @@
 #include "wirex/bm_session.hpp"
 #include "wirex/bm_test_profile.hpp"
 #include "wirex/bm_voice_pipeline.hpp"
+#include "wirex/audio_peak_window.hpp"
 #include "wirex/direct_frame.hpp"
 #include "wirex/dmrd.hpp"
 #include "wirex/hri_lcd_identity_candidate.hpp"
@@ -51,6 +52,7 @@ namespace {
 constexpr std::uint64_t bm_bridge_window_ms = 120000U;
 constexpr std::uint64_t bm_bridge_cleanup_ms = 3000U;
 constexpr std::uint64_t snapshot_heartbeat_ms = 100U;
+constexpr auto audio_endpoint_wait = std::chrono::seconds{30};
 
 void wipe_string(std::string& value) noexcept
 {
@@ -69,9 +71,9 @@ bool random_stream_id(std::array<std::uint8_t, 4U>& stream_id) noexcept
         BCRYPT_USE_SYSTEM_PREFERRED_RNG) >= 0;
 }
 
-float peak_unit(const pcm_gain::SignalStats& stats) noexcept
+float peak_unit(std::uint32_t peak) noexcept
 {
-    return static_cast<float>(std::min<std::uint32_t>(stats.peak, 32768U)) / 32768.0F;
+    return static_cast<float>(std::min<std::uint32_t>(peak, 32768U)) / 32768.0F;
 }
 
 BmLink bm_link_from(const bm_connection::Snapshot& connection) noexcept
@@ -146,6 +148,9 @@ CommandResult run_loop(Shared& shared, StartConfig config)
     std::uint32_t radio_playback_gain_milli = config.radio_playback_gain_milli;
     std::uint32_t mic_transmit_gain_milli = config.mic_transmit_gain_milli;
     std::uint64_t audio_gains_revision = 0U;
+    std::uint64_t audio_endpoints_revision = 0U;
+    wirex::audio_meter::PeakWindow rx_peak_window;
+    wirex::audio_meter::PeakWindow tx_peak_window;
     if (!pcm_gain::supported_gain(radio_playback_gain_milli) || !pcm_gain::supported_gain(mic_transmit_gain_milli)) {
         return CommandResult{CommandStatus::invalid, 0U, "audio_gain_out_of_range"};
     }
@@ -346,9 +351,13 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             std::chrono::duration_cast<std::chrono::milliseconds>(run_started.time_since_epoch()).count());
         next.phase = shutdown_requested ? Phase::stopping : (hri_ready ? Phase::running : Phase::starting);
         next.serial_open = port != nullptr;
+        next.hri_port = config.hri_port;
         next.hri_ready = hri_ready;
         next.wave_in_open = radio_input_open;
         next.wave_out_open = radio_output_open;
+        next.wave_in_endpoint_id = config.audio.expected_wave_in_endpoint_id;
+        next.wave_out_endpoint_id = config.audio.expected_wave_out_endpoint_id;
+        next.audio_endpoints_revision = audio_endpoints_revision;
         const auto connection = bm_connection->snapshot();
         next.bm_link = bm_link_from(connection);
         next.bm_requested_enabled = connection.requested_enabled;
@@ -364,8 +373,9 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         next.radio_playback_gain_milli = radio_playback_gain_milli;
         next.mic_transmit_gain_milli = mic_transmit_gain_milli;
         next.audio_gains_revision = audio_gains_revision;
-        next.levels.rx_peak = peak_unit(counters.rx_pcm_gained_stats);
-        next.levels.tx_peak = peak_unit(counters.tx_pcm_gained_stats);
+        const auto meter_now = Clock::now();
+        next.levels.rx_peak = rx_peak_window.value(meter_now);
+        next.levels.tx_peak = tx_peak_window.value(meter_now);
         next.levels.rx_clipped_samples = counters.rx_pcm_clipped_samples;
         next.levels.tx_clipped_samples = counters.tx_pcm_clipped_samples;
         next.counters.calls_started = counters.calls_started;
@@ -704,6 +714,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         counters.tx_audio_samples += count;
         wirex::pcm_gain::accumulate(counters.tx_pcm_input_stats, gain.before);
         wirex::pcm_gain::accumulate(counters.tx_pcm_gained_stats, gain.after);
+        tx_peak_window.push(peak_unit(gain.after.peak), Clock::now());
         if (gain.clipped_samples >
             std::numeric_limits<std::uint64_t>::max() - counters.tx_pcm_clipped_samples) {
             counters.tx_pcm_clipped_samples = std::numeric_limits<std::uint64_t>::max();
@@ -1825,6 +1836,83 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             counters.tx_input_gain_milli = mic_transmit_gain_milli;
             ++audio_gains_revision;
             return CommandResult{CommandStatus::accepted, audio_gains_revision, ""};
+        case CommandKind::set_audio_endpoints: {
+            const AudioEndpoints& requested = command.audio_endpoints;
+            if (requested.expected_wave_in_endpoint_id.empty() || requested.expected_wave_out_endpoint_id.empty()) {
+                return CommandResult{CommandStatus::invalid, audio_endpoints_revision, "invalid_audio_endpoints"};
+            }
+            const bool input_changed = requested.expected_wave_in_endpoint_id != config.audio.expected_wave_in_endpoint_id ||
+                requested.wave_in_id != config.audio.wave_in_id;
+            const bool output_changed = requested.expected_wave_out_endpoint_id != config.audio.expected_wave_out_endpoint_id ||
+                requested.wave_out_id != config.audio.wave_out_id;
+            if (!input_changed && !output_changed) {
+                return CommandResult{CommandStatus::idempotent, audio_endpoints_revision, ""};
+            }
+            if (shutdown_requested) {
+                return CommandResult{CommandStatus::not_ready, audio_endpoints_revision, "engine_stopping"};
+            }
+            const auto media = pipeline->routing_snapshot().router.media_owner;
+            if (media != wirex::talkgroup_routing::MediaOwner::idle || radio_input_open ||
+                (radio_output_open && !radio_output->all_drained())) {
+                return CommandResult{CommandStatus::busy, audio_endpoints_revision, "audio_route_busy"};
+            }
+
+            std::unique_ptr<AudioInput> next_input;
+            std::unique_ptr<AudioOutput> next_output;
+            try {
+                if (input_changed) {
+                    next_input = devices.make_audio_input(requested);
+                    if (!next_input || !next_input->open()) {
+                        if (next_input) (void)next_input->close();
+                        return CommandResult{CommandStatus::failed, audio_endpoints_revision, "wavein_open_failed"};
+                    }
+                    if (!next_input->close() || next_input->is_open()) {
+                        return CommandResult{CommandStatus::failed, audio_endpoints_revision, "wavein_close_failed"};
+                    }
+                }
+                if (output_changed) {
+                    next_output = devices.make_audio_output(requested);
+                    if (!next_output || !next_output->open()) {
+                        if (next_output) (void)next_output->close();
+                        return CommandResult{CommandStatus::failed, audio_endpoints_revision, "waveout_open_failed"};
+                    }
+                }
+            } catch (...) {
+                return CommandResult{CommandStatus::failed, audio_endpoints_revision, "audio_device_allocation_failed"};
+            }
+
+            if (output_changed && radio_output_open) {
+                const bool old_output_closed = radio_output->close();
+                radio_output_open = radio_output->is_open();
+                if (radio_output_open) {
+                    // 旧端点仍打开：可以回退，新端点必须关闭并保留原配置。
+                    (void)next_output->close();
+                    return CommandResult{CommandStatus::failed, audio_endpoints_revision, "waveout_close_failed"};
+                }
+                if (!old_output_closed) {
+                    // 旧驱动报告清理失败，但设备句柄已经关闭，无法恢复旧端点。
+                    // 保持新端点，发布实际端点并返回失败提示，避免快照谎报仍在使用旧设备。
+                    radio_output = std::move(next_output);
+                    radio_output_open = radio_output->is_open();
+                    config.audio = requested;
+                    ++audio_endpoints_revision;
+                    return CommandResult{CommandStatus::accepted, audio_endpoints_revision,
+                                         "waveout_old_endpoint_closed_with_cleanup_warning"};
+                }
+            } else if (output_changed) {
+                if (!next_output->close() || next_output->is_open()) {
+                    return CommandResult{CommandStatus::failed, audio_endpoints_revision, "waveout_close_failed"};
+                }
+            }
+            if (input_changed) radio_input = std::move(next_input);
+            if (output_changed) {
+                radio_output = std::move(next_output);
+                radio_output_open = radio_output->is_open();
+            }
+            config.audio = requested;
+            ++audio_endpoints_revision;
+            return CommandResult{CommandStatus::accepted, audio_endpoints_revision, ""};
+        }
         case CommandKind::upsert_radio_identity: {
             using Update = wirex::radio_identity_cache::UpsertResult;
             const auto update = command.callsign.has_value()
@@ -1883,17 +1971,14 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         }
         return CommandResult{CommandStatus::invalid, 0U, "unknown_command"};
     };
+    struct DeferredAudioCommand {
+        Command command{};
+        Clock::time_point deadline{};
+    };
+    std::deque<DeferredAudioCommand> deferred_audio_commands;
     auto process_commands = [&]() {
         auto commands = shared.take_commands();
-        for (auto& command : commands) {
-            CommandResult result{CommandStatus::failed, 0U, "fatal"};
-            try {
-                // 与原管道路径一致：收尾期间命令仍交给同一回调（BM 开关、策略、增益等仍有效）。
-                result = apply_command(command);
-            } catch (...) {
-                result = CommandResult{CommandStatus::failed, 0U, "fatal"};
-            }
-            // 与原管道路径一致：每条命令处理后若发送许可被撤销，立即解除 PTT 并关闭录音。
+        const auto finish_command = [&](Command& command, CommandResult result) {
             if (!live_tx_permission()) {
                 (void)ptt_gate.set_ready(false);
                 ptt_gate.disarm_until_release();
@@ -1904,6 +1989,46 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             last_published_ms = elapsed_ms();
             publish_dirty = false;
             try { command.promise.set_value(std::move(result)); } catch (...) {}
+        };
+        for (auto& command : commands) {
+            CommandResult result{CommandStatus::failed, 0U, "fatal"};
+            try {
+                // 与原管道路径一致：收尾期间命令仍交给同一回调（BM 开关、策略、增益等仍有效）。
+                result = apply_command(command);
+            } catch (...) {
+                result = CommandResult{CommandStatus::failed, 0U, "fatal"};
+            }
+            if (command.kind == CommandKind::set_audio_endpoints &&
+                result.status == CommandStatus::busy && result.detail == "audio_route_busy" &&
+                !shutdown_requested) {
+                // 活跃媒体先完成；最多等待 30 秒，等待期间命令 future 保持 pending。
+                deferred_audio_commands.push_back(
+                    DeferredAudioCommand{std::move(command), Clock::now() + audio_endpoint_wait});
+                continue;
+            }
+            finish_command(command, std::move(result));
+        }
+
+        const auto now = Clock::now();
+        for (auto it = deferred_audio_commands.begin(); it != deferred_audio_commands.end();) {
+            CommandResult result{CommandStatus::failed, audio_endpoints_revision, "fatal"};
+            if (shutdown_requested) {
+                result = CommandResult{CommandStatus::not_ready, audio_endpoints_revision, "engine_stopping"};
+            } else if (now >= it->deadline) {
+                result = CommandResult{CommandStatus::busy, audio_endpoints_revision, "audio_route_busy_timeout"};
+            } else {
+                try {
+                    result = apply_command(it->command);
+                } catch (...) {
+                    result = CommandResult{CommandStatus::failed, audio_endpoints_revision, "fatal"};
+                }
+                if (result.status == CommandStatus::busy && result.detail == "audio_route_busy") {
+                    ++it;
+                    continue;
+                }
+            }
+            finish_command(it->command, std::move(result));
+            it = deferred_audio_commands.erase(it);
         }
     };
     bool stop_seen = false;
@@ -2195,6 +2320,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
                         }
                         wirex::pcm_gain::accumulate(counters.rx_pcm_input_stats, gain.before);
                         wirex::pcm_gain::accumulate(counters.rx_pcm_gained_stats, gain.after);
+                        rx_peak_window.push(peak_unit(gain.after.peak), Clock::now());
                         if (gain.clipped_samples >
                             std::numeric_limits<std::uint64_t>::max() - counters.rx_pcm_clipped_samples) {
                             counters.rx_pcm_clipped_samples = std::numeric_limits<std::uint64_t>::max();
