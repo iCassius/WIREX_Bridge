@@ -333,6 +333,47 @@ void test_device_selection_preview_and_reinsert() {
           "device catalog errors are distinguished from an empty or ambiguous catalog");
 }
 
+void test_bm_only_wave_out_resolution() {
+    using wirex::gui::services::DeviceResolutionState;
+    auto gui = sample_gui();
+    gui.hri_port.clear();
+    gui.wave_in_endpoint_id.clear();
+    gui.wave_out_endpoint_id.clear();
+    wirex::gui::services::DeviceInventory inventory;
+    inventory.serial_discovery_status = "empty";
+    inventory.wave_out.push_back({L"{speaker}", "Speakers (Realtek)", 4U, false});
+
+    std::string error;
+    auto output = cb::resolve_local_playback_output(gui, inventory, error);
+    check(output && output->wave_out_id == 4U && output->expected_wave_out_endpoint_id == L"{speaker}" &&
+              output->expected_wave_in_endpoint_id.empty() && error.empty(),
+          "BM-only output auto resolves one computer speaker without HRI or WaveIn");
+    auto preview = cb::resolve_device_selection(gui, inventory);
+    check(preview.hri.state == DeviceResolutionState::missing &&
+              preview.wave_in.state == DeviceResolutionState::missing &&
+              preview.wave_out.state == DeviceResolutionState::resolved && preview.wave_out.resolved_id == L"{speaker}",
+          "BM-only device preview can resolve local WaveOut while radio and WaveIn are absent");
+
+    inventory.wave_out.push_back({L"{headphones}", "Headphones (USB DAC)", 7U, false});
+    output = cb::resolve_local_playback_output(gui, inventory, error);
+    check(!output && !error.empty(), "multiple non-USB outputs require an explicit selection");
+    preview = cb::resolve_device_selection(gui, inventory);
+    check(preview.wave_out.state == DeviceResolutionState::ambiguous &&
+              preview.wave_out.resolved_id.empty(),
+          "multiple output candidates are not silently selected");
+
+    inventory.wave_out.insert(inventory.wave_out.begin(),
+        {L"{radio-usb}", "FTX-1 USB Audio Output", 2U, true});
+    output = cb::resolve_local_playback_output(gui, inventory, error);
+    check(output && output->expected_wave_out_endpoint_id == L"{radio-usb}",
+          "existing unique USB Audio auto choice remains preferred with computer speakers also present");
+
+    gui.wave_out_endpoint_id = L"{speaker}";
+    output = cb::resolve_local_playback_output(gui, inventory, error);
+    check(output && output->expected_wave_out_endpoint_id == L"{speaker}",
+          "manual computer speaker selection works independently of the radio USB input");
+}
+
 void test_start_config() {
     std::string error;
     const auto gui = sample_gui();
@@ -552,6 +593,7 @@ int main() {
     test_select_hri();
     test_active_device_ids();
     test_device_selection_preview_and_reinsert();
+    test_bm_only_wave_out_resolution();
     test_start_config();
     test_round_trip_preserves_unknown();
     std::cout << "gui_config_bridge_test: " << (checks - failures) << "/" << checks << " passed\n";

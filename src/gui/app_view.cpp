@@ -2,7 +2,9 @@
 
 #include "imgui.h"
 #include "imgui_internal.h"
+#include "item_id_scope.hpp"
 
+#include "wirex/bm_local_playback.hpp"
 #include "wirex/app/bm_servers.hpp"
 
 #include <algorithm>
@@ -13,6 +15,7 @@
 #include <cstdio>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 
 namespace wirex::gui {
@@ -175,6 +178,54 @@ const char* device_state_text(services::DeviceResolutionState state) {
     return tr(Str::device_unavailable);
 }
 
+const char* local_playback_state_text(wirex::bm_local_playback::AudioState state) {
+    using wirex::bm_local_playback::AudioState;
+    switch (state) {
+    case AudioState::inactive: return tr(Str::local_playback_inactive);
+    case AudioState::ready: return tr(Str::local_playback_ready);
+    case AudioState::playing: return tr(Str::local_playback_playing);
+    case AudioState::unavailable: return tr(Str::local_playback_unavailable);
+    case AudioState::failed: return tr(Str::local_playback_failed);
+    }
+    return tr(Str::local_playback_inactive);
+}
+
+const char* local_playback_route_text(wirex::bm_local_playback::Route route) {
+    using wirex::bm_local_playback::Route;
+    switch (route) {
+    case Route::inactive: return tr(Str::local_playback_inactive);
+    case Route::radio: return tr(Str::local_playback_route_radio);
+    case Route::local_output: return tr(Str::local_playback_route_output);
+    case Route::silent: return tr(Str::local_playback_route_silent);
+    }
+    return tr(Str::local_playback_inactive);
+}
+
+const char* local_playback_error_text(wirex::bm_local_playback::OutputError error) {
+    using wirex::bm_local_playback::OutputError;
+    switch (error) {
+    case OutputError::none: return "";
+    case OutputError::selection_unavailable: return tr(Str::local_playback_error_selection);
+    case OutputError::open_failed: return tr(Str::local_playback_error_open);
+    case OutputError::submit_failed: return tr(Str::local_playback_error_submit);
+    case OutputError::device_lost: return tr(Str::local_playback_error_lost);
+    case OutputError::close_failed: return tr(Str::local_playback_error_close);
+    }
+    return tr(Str::local_playback_error_open);
+}
+
+std::uint32_t local_playback_color(wirex::bm_local_playback::AudioState state) {
+    using wirex::bm_local_playback::AudioState;
+    switch (state) {
+    case AudioState::ready: return color::green;
+    case AudioState::playing: return color::green;
+    case AudioState::unavailable: return color::warn;
+    case AudioState::failed: return color::error;
+    case AudioState::inactive: return color::muted;
+    }
+    return color::muted;
+}
+
 std::string friendly_error_detail(Str source, const std::string& detail) {
     struct Mapping {
         Str source;
@@ -187,6 +238,10 @@ std::string friendly_error_detail(Str source, const std::string& detail) {
         {Str::radio_control, "y_template_invalid", Str::err_radio_template},
         {Str::radio_control, "serial_open_or_configure_failed", Str::err_radio_serial},
         {Str::radio_control, "radio_state_allocation_failed", Str::err_radio_resources},
+        {Str::radio_control, "hri_version_timeout", Str::err_hri_version_timeout},
+        {Str::radio_control, "hri_version_mismatch", Str::err_hri_version_mismatch},
+        {Str::radio_control, "hri_malformed_record", Str::err_hri_malformed_record},
+        {Str::radio_control, "hri_y_ack_timeout", Str::err_hri_y_ack_timeout},
         {Str::brandmeister, "password_required", Str::err_bm_password},
         {Str::brandmeister, "profile_invalid", Str::err_bm_profile},
         {Str::brandmeister, "master_resolution_failed", Str::err_bm_dns},
@@ -319,6 +374,17 @@ bool is_auto_selection(const std::wstring& value) {
     return normalized.empty() || normalized == "AUTO";
 }
 
+std::string uppercase_ascii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    return value;
+}
+
+void center_item_in_row(float row_height, float item_height) {
+    const float top = ImGui::GetCursorPosY();
+    ImGui::SetCursorPosY(std::round(top + (row_height - item_height) * 0.5F));
+}
+
 // 可编辑下拉：左侧输入框 + 右侧箭头下拉列表。返回选中的下拉项索引。
 int editable_combo(const char* id, std::string& text, const std::vector<std::string>& items, float width) {
     int picked = -1;
@@ -330,6 +396,8 @@ int editable_combo(const char* id, std::string& text, const std::vector<std::str
     ImGui::SetNextWindowSizeConstraints(ImVec2(width, 0.0F), ImVec2(FLT_MAX, FLT_MAX));
     if (ImGui::BeginCombo("##list", nullptr, ImGuiComboFlags_NoPreview | ImGuiComboFlags_PopupAlignLeft)) {
         for (std::size_t i = 0; i < items.size(); ++i) {
+            // Distinct choices can have the same visible name; the index is stable for this fixed preset list.
+            detail::ItemIdScope item_id(nullptr, static_cast<int>(i));
             if (ImGui::Selectable(items[i].c_str(), items[i] == text)) picked = static_cast<int>(i);
         }
         ImGui::EndCombo();
@@ -364,12 +432,14 @@ bool begin_fields(const char* id, std::initializer_list<FieldColumn> columns) {
 }
 
 bool simple_combo(const char* id, int& index, const char* const* items, int count, float width,
-                  const char* empty_preview = "") {
+                  const char* empty_preview = "", const char* const* item_ids = nullptr) {
     bool changed = false;
     ImGui::SetNextItemWidth(width);
     const char* preview = index >= 0 && index < count ? items[index] : empty_preview;
     if (ImGui::BeginCombo(id, preview)) {
         for (int i = 0; i < count; ++i) {
+            // Use device identity when supplied; otherwise a fixed option index is unique and stable.
+            detail::ItemIdScope item_id(item_ids != nullptr ? item_ids[i] : nullptr, i);
             if (ImGui::Selectable(items[i], i == index)) {
                 index = i;
                 changed = true;
@@ -524,8 +594,31 @@ void apply_theme(float dpi_scale) {
     c[ImGuiCol_BorderShadow] = ImVec4(0.0F, 0.0F, 0.0F, 0.0F);
 
     style.ScaleAllSizes(dpi_scale);
-    // WPF 的 SnapToDevicePixels 会让控件边缘贴近物理像素网格。
-    // ImGui 边框也取整为物理像素，减少非整数 DPI 下的半像素描边。
+    // ImGui backend 按物理像素布局。DPI 缩放后的间距和内边距取整，避免 125% 缩放时
+    // 文本起点、输入框边线落在半像素上。
+    const auto snap = [](float value) { return std::round(value); };
+    const auto snap_vec = [&snap](ImVec2& value) {
+        value.x = snap(value.x);
+        value.y = snap(value.y);
+    };
+    snap_vec(style.WindowPadding);
+    snap_vec(style.FramePadding);
+    snap_vec(style.ItemSpacing);
+    snap_vec(style.ItemInnerSpacing);
+    snap_vec(style.CellPadding);
+    snap_vec(style.TouchExtraPadding);
+    snap_vec(style.SeparatorTextPadding);
+    snap_vec(style.DisplayWindowPadding);
+    snap_vec(style.DisplaySafeAreaPadding);
+    style.IndentSpacing = snap(style.IndentSpacing);
+    style.ColumnsMinSpacing = snap(style.ColumnsMinSpacing);
+    style.ScrollbarSize = snap(style.ScrollbarSize);
+    style.ScrollbarRounding = snap(style.ScrollbarRounding);
+    style.GrabMinSize = snap(style.GrabMinSize);
+    style.GrabRounding = snap(style.GrabRounding);
+    style.FrameRounding = snap(style.FrameRounding);
+    style.ChildRounding = snap(style.ChildRounding);
+    style.PopupRounding = snap(style.PopupRounding);
     style.ChildBorderSize = std::max(1.0F, std::round(style.ChildBorderSize));
     style.FrameBorderSize = std::max(1.0F, std::round(style.FrameBorderSize));
     style.FontScaleDpi = dpi_scale;
@@ -551,7 +644,7 @@ void AppView::draw(float dpi_scale) {
                                             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
     ImGui::Begin("##root", nullptr, root_flags);
 
-    const auto snap_to_pixel = [this](float value) { return std::round(value * scale_) / scale_; };
+    const auto snap_to_pixel = [](float value) { return std::round(value); };
     const float gap = snap_to_pixel(px(4.0F));
     update_connection_log();
     draw_header();
@@ -598,12 +691,12 @@ void AppView::draw_header() {
                                            ImGuiTableFlags_NoBordersInBody)) {
         ImGui::TableSetupColumn("##title", ImGuiTableColumnFlags_WidthStretch, 1.0F);
         ImGui::TableSetupColumn("##status", ImGuiTableColumnFlags_WidthStretch, 1.1F);
-        ImGui::TableSetupColumn("##actions", ImGuiTableColumnFlags_WidthFixed, px(348.0F));
+        ImGui::TableSetupColumn("##actions", ImGuiTableColumnFlags_WidthFixed, px(356.0F));
         ImGui::TableNextRow(ImGuiTableRowFlags_None, row_h);
 
         ImGui::TableSetColumnIndex(0);
         ImGui::PushFont(fonts_.bold, 19.0F);
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (row_h - ImGui::GetTextLineHeight()) * 0.5F);
+        center_item_in_row(row_h, ImGui::GetTextLineHeight());
         ImGui::TextUnformatted(tr(Str::app_title));
         ImGui::PopFont();
         if (vm_.fake()) {
@@ -614,7 +707,7 @@ void AppView::draw_header() {
         }
 
         ImGui::TableSetColumnIndex(1);
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (row_h - ImGui::GetTextLineHeight()) * 0.5F);
+        center_item_in_row(row_h, ImGui::GetTextLineHeight());
         if (summary) {
             caption(tr(summary_error ? Str::log_error : Str::log_events));
             ImGui::SameLine(0.0F, px(6.0F));
@@ -663,7 +756,8 @@ void AppView::draw_header() {
 
         ImGui::TableSetColumnIndex(2);
         const float btn_h = px(26.0F);
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (row_h - btn_h) * 0.5F);
+        const float action_button_y = std::round(ImGui::GetCursorPosY() + (row_h - btn_h) * 0.5F);
+        ImGui::SetCursorPosY(action_button_y);
         if (button(language() == Language::zh_cn ? tr(Str::language_english) : tr(Str::language_chinese),
                    ImVec2(px(64.0F), btn_h))) toggle_language();
         if (!language_notice_.empty()) {
@@ -674,14 +768,17 @@ void AppView::draw_header() {
             ImGui::SetItemTooltip("%s", tr(Str::font_default));
         }
         ImGui::SameLine(0.0F, px(5.0F));
+        ImGui::SetCursorPosY(action_button_y);
         if (button(tr(Str::relay_enable), ImVec2(px(108.0F), btn_h), Tone::normal, false)) {}
         ImGui::SetItemTooltip("%s", tr(Str::relay_state_unknown));
         ImGui::SameLine(0.0F, px(5.0F));
+        ImGui::SetCursorPosY(action_button_y);
         if (button(tr(Str::stop_exit), ImVec2(px(108.0F), btn_h), Tone::stop)) {
             if (vm_.snapshot().phase != Phase::stopped || vm_.cat().connected || vm_.cat().busy) vm_.stop();
             vm_.request_exit();
         }
         ImGui::SameLine(0.0F, px(5.0F));
+        ImGui::SetCursorPosY(action_button_y);
         const auto log_label = fmt("≡ %zu##connection-log", connection_events_.size());
         if (button(log_label.c_str(), ImVec2(px(48.0F), btn_h), Tone::normal,
                    !connection_events_.empty())) {
@@ -699,6 +796,7 @@ void AppView::draw_header() {
 void AppView::update_connection_log() {
     const auto& s = vm_.snapshot();
     for (auto& event : vm_.drain_operation_events()) {
+        if (event.operation == Str::op_audio_devices && event.failed) audio_operation_failed_ = true;
         const Str source = operation_log_source(event.operation, event.message);
         add_connection_event(source, friendly_error_detail(source, event.message), event.failed);
     }
@@ -822,7 +920,40 @@ void AppView::update_connection_log() {
     }
     if (s.audio_endpoints_revision != last_audio_endpoints_revision_) {
         last_audio_endpoints_revision_ = s.audio_endpoints_revision;
-        resolve_connection_error(Str::audio_devices, tr(Str::log_audio_changed));
+        if (s.local_audio_error.empty() &&
+            s.local_audio.output_error == wirex::bm_local_playback::OutputError::none &&
+            last_local_audio_error_.empty() &&
+            last_local_audio_output_error_ == static_cast<std::uint8_t>(wirex::bm_local_playback::OutputError::none)) {
+            resolve_connection_error(Str::audio_devices, tr(Str::log_audio_changed));
+        } else {
+            add_connection_event(Str::audio_devices, tr(Str::log_audio_changed), false);
+        }
+    }
+    const bool local_audio_detail_changed = s.local_audio_error != last_local_audio_error_;
+    if (local_audio_detail_changed) {
+        const bool had_error = !last_local_audio_error_.empty();
+        last_local_audio_error_ = s.local_audio_error;
+        if (!s.local_audio_error.empty()) {
+            if (had_error) resolve_connection_error(Str::audio_devices, tr(Str::local_playback_failed));
+            const char* localized = local_playback_error_text(s.local_audio.output_error);
+            const std::string message = language() == Language::en_us && localized[0] != '\0'
+                                            ? localized : s.local_audio_error;
+            add_connection_event(Str::audio_devices, message, true);
+        } else if (had_error && s.local_audio.output_error == wirex::bm_local_playback::OutputError::none) {
+            resolve_connection_error(Str::audio_devices, tr(Str::local_playback_ready));
+        }
+    }
+    const auto output_error_value = static_cast<std::uint8_t>(s.local_audio.output_error);
+    if (output_error_value != last_local_audio_output_error_) {
+        if (!local_audio_detail_changed && s.local_audio.output_error != wirex::bm_local_playback::OutputError::none) {
+            add_connection_event(Str::audio_devices,
+                                local_playback_error_text(s.local_audio.output_error), true);
+        } else if (!local_audio_detail_changed && s.local_audio.output_error == wirex::bm_local_playback::OutputError::none &&
+                   last_local_audio_output_error_ != static_cast<std::uint8_t>(wirex::bm_local_playback::OutputError::none) &&
+                   s.local_audio_error.empty()) {
+            resolve_connection_error(Str::audio_devices, tr(Str::local_playback_ready));
+        }
+        last_local_audio_output_error_ = output_error_value;
     }
     if (vm_.cat().revision != last_cat_revision_) last_cat_revision_ = vm_.cat().revision;
 
@@ -907,8 +1038,8 @@ void AppView::draw_channels(float height) {
     const float gap = px(4.0F);
     const float nav_button_h = paged ? px(19.0F) : 0.0F;
     const float nav_gap = paged ? gap : 0.0F;
-    const auto snap_nearest = [this](float value) { return std::round(value * scale_) / scale_; };
-    const auto snap_down = [this](float value) { return std::floor(value * scale_) / scale_; };
+    const auto snap_nearest = [](float value) { return std::round(value); };
+    const auto snap_down = [](float value) { return std::floor(value); };
     const float card_w = snap_down((avail.x - gap * 2.0F) / 3.0F);
     const float card_h = snap_down((avail.y - gap - nav_gap - nav_button_h) / 2.0F);
     const ImVec2 cursor = ImGui::GetCursorPos();
@@ -1253,15 +1384,30 @@ void AppView::draw_radio_panel(float width, float height) {
     const auto selections = vm_.device_selection();
     std::vector<std::string> serial_ports;
     std::vector<std::string> serial_port_labels;
+    std::vector<std::string> serial_port_ids;
+    std::unordered_set<std::string> seen_serial_ports;
     for (const auto& p : vm_.devices().serial_ports) {
         const std::string port = to_utf8(p.port);
+        const std::string stable_id = uppercase_ascii(port);
+        if (!seen_serial_ports.insert(stable_id).second) continue;
         serial_ports.push_back(port);
         serial_port_labels.push_back(p.caption.empty() ? port : p.caption);
+        serial_port_ids.push_back(stable_id);
     }
-    std::vector<std::string> hri_port_labels{device_selection_text(selections.hri, true)};
+    const bool hri_auto_selected = is_auto_selection(cfg.hri_port);
+    const std::string hri_auto_label = hri_auto_selected ? device_selection_text(selections.hri, true)
+                                                          : std::string(tr(Str::auto_select));
+    std::vector<std::string> hri_port_labels{hri_auto_label};
+    std::vector<std::string> hri_port_ids{"auto"};
     hri_port_labels.insert(hri_port_labels.end(), serial_port_labels.begin(), serial_port_labels.end());
-    std::vector<std::string> cat_port_labels{tr(Str::auto_select)};
+    hri_port_ids.insert(hri_port_ids.end(), serial_port_ids.begin(), serial_port_ids.end());
+    const bool cat_auto_selected = is_auto_selection(cfg.cat_port);
+    const std::string cat_auto_label = cat_auto_selected ? device_selection_text(selections.cat, true)
+                                                          : std::string(tr(Str::auto_select));
+    std::vector<std::string> cat_port_labels{cat_auto_label};
+    std::vector<std::string> cat_port_ids{"auto"};
     cat_port_labels.insert(cat_port_labels.end(), serial_port_labels.begin(), serial_port_labels.end());
+    cat_port_ids.insert(cat_port_ids.end(), serial_port_ids.begin(), serial_port_ids.end());
     const bool radio_idle = !s.serial_open && !s.hri_ready && !cat.connected && !cat.busy;
     const bool radio_active = s.serial_open || s.hri_ready || cat.connected || cat.busy;
     const bool radio_start_pending = vm_.pending(Str::op_start);
@@ -1287,19 +1433,23 @@ void AppView::draw_radio_panel(float width, float height) {
         int hri_port_index = 0;
         if (!is_auto_selection(cfg.hri_port)) {
             const std::string selected = to_utf8(cfg.hri_port);
-            const auto it = std::find(serial_ports.begin(), serial_ports.end(), selected);
-            if (it != serial_ports.end()) {
-                hri_port_index = static_cast<int>(std::distance(serial_ports.begin(), it)) + 1;
+            const std::string stable_selected = uppercase_ascii(selected);
+            const auto it = std::find(serial_port_ids.begin(), serial_port_ids.end(), stable_selected);
+            if (it != serial_port_ids.end()) {
+                hri_port_index = static_cast<int>(std::distance(serial_port_ids.begin(), it)) + 1;
                 hri_port_labels[static_cast<std::size_t>(hri_port_index)] = device_selection_text(selections.hri, true);
             } else {
                 hri_port_labels.emplace_back(device_selection_text(selections.hri, true));
+                hri_port_ids.emplace_back("missing:" + stable_selected);
                 hri_port_index = static_cast<int>(hri_port_labels.size()) - 1;
             }
         }
         std::vector<const char*> hri_port_items;
+        std::vector<const char*> hri_port_item_ids;
         for (const auto& label : hri_port_labels) hri_port_items.push_back(label.c_str());
+        for (const auto& item_id : hri_port_ids) hri_port_item_ids.push_back(item_id.c_str());
         if (simple_combo("##hriport", hri_port_index, hri_port_items.data(),
-                         static_cast<int>(hri_port_items.size()), -FLT_MIN)) {
+                         static_cast<int>(hri_port_items.size()), -FLT_MIN, "", hri_port_item_ids.data())) {
             auto next = cfg;
             next.hri_port = hri_port_index == 0 ? std::wstring{}
                              : static_cast<std::size_t>(hri_port_index) <= serial_ports.size()
@@ -1317,22 +1467,27 @@ void AppView::draw_radio_panel(float width, float height) {
         ImGui::TableNextColumn();
         ImGui::BeginDisabled(!port_settings_enabled);
         int cat_port_index = 0;
-        cat_port_labels[0] = device_selection_text(selections.cat, true);
+        cat_port_labels[0] = cat_auto_selected ? device_selection_text(selections.cat, true)
+                                               : std::string(tr(Str::auto_select));
         if (!is_auto_selection(cfg.cat_port)) {
             const auto selected = to_utf8(cfg.cat_port);
-            const auto it = std::find(serial_ports.begin(), serial_ports.end(), selected);
-            if (it != serial_ports.end()) {
-                cat_port_index = static_cast<int>(std::distance(serial_ports.begin(), it)) + 1;
+            const std::string stable_selected = uppercase_ascii(selected);
+            const auto it = std::find(serial_port_ids.begin(), serial_port_ids.end(), stable_selected);
+            if (it != serial_port_ids.end()) {
+                cat_port_index = static_cast<int>(std::distance(serial_port_ids.begin(), it)) + 1;
                 cat_port_labels[static_cast<std::size_t>(cat_port_index)] = device_selection_text(selections.cat, true);
             } else {
                 cat_port_labels.emplace_back(device_selection_text(selections.cat, true));
+                cat_port_ids.emplace_back("missing:" + stable_selected);
                 cat_port_index = static_cast<int>(cat_port_labels.size()) - 1;
             }
         }
         std::vector<const char*> cat_port_items;
+        std::vector<const char*> cat_port_item_ids;
         for (const auto& label : cat_port_labels) cat_port_items.push_back(label.c_str());
+        for (const auto& item_id : cat_port_ids) cat_port_item_ids.push_back(item_id.c_str());
         if (simple_combo("##catport", cat_port_index, cat_port_items.data(),
-                         static_cast<int>(cat_port_items.size()), -FLT_MIN)) {
+                         static_cast<int>(cat_port_items.size()), -FLT_MIN, "", cat_port_item_ids.data())) {
             const std::size_t selected_index = static_cast<std::size_t>(cat_port_index);
             const std::string next_port = cat_port_index == 0 ? "auto"
                 : selected_index < serial_ports.size() + 1U ? serial_ports[selected_index - 1U]
@@ -1497,27 +1652,47 @@ void AppView::draw_radio_panel(float width, float height) {
 }
 
 void AppView::draw_audio_devices(float inner_w) {
-    const bool running = vm_.snapshot().phase == Phase::running;
+    const auto& snapshot = vm_.snapshot();
+    const bool radio_attached = snapshot.serial_open || snapshot.hri_ready;
     const auto& config = vm_.config();
-    auto selected_in = running && !vm_.snapshot().wave_in_endpoint_id.empty()
-                           ? vm_.snapshot().wave_in_endpoint_id : config.wave_in_endpoint_id;
-    auto selected_out = running && !vm_.snapshot().wave_out_endpoint_id.empty()
-                            ? vm_.snapshot().wave_out_endpoint_id : config.wave_out_endpoint_id;
+    auto selected_in = radio_attached && !snapshot.wave_in_endpoint_id.empty()
+                           ? snapshot.wave_in_endpoint_id : config.wave_in_endpoint_id;
+    auto selected_out = radio_attached && !snapshot.wave_out_endpoint_id.empty()
+                            ? snapshot.wave_out_endpoint_id : config.wave_out_endpoint_id;
+    // In BM-only mode the selector represents the saved request (including Auto).
+    // The preview still shows the resolved endpoint through device_selection().
+    auto output_selector = radio_attached ? selected_out : config.wave_out_endpoint_id;
     if (audio_selection_pending_) {
         if (!vm_.pending(Str::op_audio_devices)) {
-            const bool confirmed = vm_.snapshot().wave_in_endpoint_id == pending_wave_in_ &&
-                                   vm_.snapshot().wave_out_endpoint_id == pending_wave_out_;
+            const bool confirmed = !audio_operation_failed_ && (pending_radio_audio_change_
+                ? snapshot.wave_in_endpoint_id == pending_wave_in_ &&
+                  snapshot.wave_out_endpoint_id == pending_wave_out_
+                : (snapshot.local_audio.output_error == wirex::bm_local_playback::OutputError::none &&
+                   snapshot.local_audio.output_open &&
+                   (pending_wave_out_.empty() || snapshot.wave_out_endpoint_id == pending_wave_out_)));
             audio_selection_pending_ = false;
+            pending_radio_audio_change_ = false;
+            audio_operation_failed_ = false;
             if (confirmed) {
-                selected_in = pending_wave_in_;
-                selected_out = pending_wave_out_;
+                if (radio_attached) {
+                    selected_in = snapshot.wave_in_endpoint_id;
+                    selected_out = snapshot.wave_out_endpoint_id;
+                } else {
+                    selected_in = config.wave_in_endpoint_id;
+                    selected_out = config.wave_out_endpoint_id;
+                    output_selector = config.wave_out_endpoint_id;
+                }
                 audio_notice_ = tr(Str::audio_devices_applied);
             } else {
                 audio_notice_ = vm_.transient_visible() ? vm_.transient_text() : tr(Str::audio_devices_failed);
             }
         } else {
-            selected_in = pending_wave_in_;
-            selected_out = pending_wave_out_;
+            if (pending_radio_audio_change_) {
+                selected_in = pending_wave_in_;
+                selected_out = pending_wave_out_;
+            } else {
+                output_selector = pending_wave_out_;
+            }
             continuous_ = true;
         }
     }
@@ -1536,10 +1711,11 @@ void AppView::draw_audio_devices(float inner_w) {
 
     auto endpoint_combo = [&](const char* id, const std::vector<services::AudioEndpointInfo>& devices,
                               const services::ResolvedDeviceSelection& resolution,
-                              std::wstring& selected, const std::wstring& current) {
+                              std::wstring& selected, const std::wstring& current, bool allow_auto,
+                              bool show_pending_selection) {
         ImGui::TableNextColumn();
         std::string preview = device_selection_text(resolution, false);
-        if (audio_selection_pending_) {
+        if (audio_selection_pending_ && show_pending_selection) {
             preview = current.empty() ? std::string(tr(Str::auto_select)) : to_utf8(current);
             for (const auto& endpoint : devices) {
                 if (endpoint.endpoint_id == current) preview = endpoint.name;
@@ -1551,17 +1727,39 @@ void AppView::draw_audio_devices(float inner_w) {
         ImGui::SetNextItemWidth(-FLT_MIN);
         ImGui::BeginDisabled(audio_selection_pending_);
         if (ImGui::BeginCombo(id, preview.c_str())) {
-            if (!running && ImGui::Selectable(auto_label.c_str(), current.empty())) selected.clear();
-            for (const auto& endpoint : devices) {
+            if (allow_auto) {
+                detail::ItemIdScope item_id("auto", 0);
+                if (ImGui::Selectable(auto_label.c_str(), current.empty())) selected.clear();
+                if (ImGui::IsItemHovered() && auto_label != tr(Str::auto_select)) {
+                    ImGui::SetItemTooltip("%s", auto_label.c_str());
+                }
+            }
+            std::unordered_set<std::wstring> seen_endpoint_ids;
+            for (std::size_t i = 0; i < devices.size(); ++i) {
+                const auto& endpoint = devices[i];
+                if (!endpoint.endpoint_id.empty() && !seen_endpoint_ids.insert(endpoint.endpoint_id).second) continue;
                 const std::string label = endpoint.name.empty() ? to_utf8(endpoint.endpoint_id) : endpoint.name;
+                const std::string stable_id = to_utf8(endpoint.endpoint_id);
+                detail::ItemIdScope item_id(stable_id.empty() ? nullptr : stable_id.c_str(), static_cast<int>(i));
                 if (ImGui::Selectable(label.c_str(), endpoint.endpoint_id == current)) selected = endpoint.endpoint_id;
+                if (ImGui::IsItemHovered() && !label.empty()) {
+                    if (!stable_id.empty()) ImGui::SetItemTooltip("%s\n%s", label.c_str(), stable_id.c_str());
+                    else ImGui::SetItemTooltip("%s", label.c_str());
+                }
             }
             ImGui::EndCombo();
         }
-        if (!audio_selection_pending_ && !resolution.reason.empty() && language() == Language::zh_cn) {
-            ImGui::SetItemTooltip("%s", resolution.reason.c_str());
-        } else if (resolution.state != services::DeviceResolutionState::resolved) {
-            ImGui::SetItemTooltip("%s", device_state_text(resolution.state));
+        if (!audio_selection_pending_) {
+            if (!resolution.name.empty()) {
+                std::string tooltip = resolution.name;
+                if (!resolution.resolved_id.empty()) tooltip += "\n" + to_utf8(resolution.resolved_id);
+                if (!resolution.reason.empty()) tooltip += "\n" + resolution.reason;
+                ImGui::SetItemTooltip("%s", tooltip.c_str());
+            } else if (!resolution.reason.empty()) {
+                ImGui::SetItemTooltip("%s", resolution.reason.c_str());
+            } else if (resolution.state != services::DeviceResolutionState::resolved) {
+                ImGui::SetItemTooltip("%s", device_state_text(resolution.state));
+            }
         }
         ImGui::EndDisabled();
     };
@@ -1569,10 +1767,12 @@ void AppView::draw_audio_devices(float inner_w) {
     if (begin_fields("##audio-main", {{tr(Str::input), 1.0F, 0.0F}, {tr(Str::output), 1.0F, 0.0F},
                                        {" ", 0.0F, px(104.0F)}})) {
         std::wstring next_in = selected_in;
-        std::wstring next_out = selected_out;
+        std::wstring next_out = output_selector;
         const auto selection = vm_.device_selection();
-        endpoint_combo("##wavein-main", vm_.devices().wave_in, selection.wave_in, next_in, selected_in);
-        endpoint_combo("##waveout-main", vm_.devices().wave_out, selection.wave_out, next_out, selected_out);
+        endpoint_combo("##wavein-main", vm_.devices().wave_in, selection.wave_in, next_in, selected_in,
+                       !radio_attached, pending_radio_audio_change_);
+        endpoint_combo("##waveout-main", vm_.devices().wave_out, selection.wave_out, next_out, output_selector,
+                       !radio_attached, true);
         ImGui::TableNextColumn();
         if (button(tr(Str::refresh_devices), ImVec2(-FLT_MIN, 0.0F), Tone::normal, !audio_selection_pending_)) {
             vm_.refresh_devices();
@@ -1580,24 +1780,52 @@ void AppView::draw_audio_devices(float inner_w) {
         ImGui::EndTable();
 
         if (next_in != selected_in || next_out != selected_out) {
-            if (running) {
-                // 运行中只允许显式 endpoint；auto 无法与实际 WinMM 设备一一确认。
+            if (radio_attached) {
+                // HRI 已附着时，运行中的音频设备需要成对切换。
                 if (!next_in.empty() && !next_out.empty()) {
                     pending_wave_in_ = next_in;
                     pending_wave_out_ = next_out;
+                    pending_radio_audio_change_ = true;
+                    audio_operation_failed_ = false;
                     audio_selection_pending_ = true;
                     audio_notice_ = tr(Str::audio_devices_switching);
                     vm_.set_audio_devices(next_in, next_out);
+                    if (!vm_.pending(Str::op_audio_devices)) {
+                        audio_selection_pending_ = false;
+                        pending_radio_audio_change_ = false;
+                        audio_notice_ = vm_.transient_visible() ? vm_.transient_text() : tr(Str::audio_devices_failed);
+                    }
                 }
             } else {
-                auto next = config;
-                next.wave_in_endpoint_id = next_in;
-                next.wave_out_endpoint_id = next_out;
-                std::string error;
-                if (vm_.save_config(next, error)) {
-                    audio_notice_ = tr(Str::audio_devices_next_connection);
-                } else {
-                    audio_notice_ = fmt(tr(Str::settings_save_failed), error.c_str());
+                if (next_in != selected_in) {
+                    auto next = vm_.config();
+                    next.wave_in_endpoint_id = next_in == L"auto" || next_in == L"AUTO" ? std::wstring{} : next_in;
+                    std::string error;
+                    if (!vm_.save_config(next, error)) {
+                        audio_notice_ = fmt(tr(Str::settings_save_failed), error.c_str());
+                    } else {
+                        audio_notice_ = tr(Str::audio_devices_next_connection);
+                    }
+                }
+                if (next_out != output_selector) {
+                    pending_wave_out_ = next_out.empty() || next_out == L"auto" || next_out == L"AUTO"
+                                            ? std::wstring{} : next_out;
+                    // Auto has no configured ID. A successful output-only command must
+                    // publish an open WaveOut in the snapshot before the UI accepts it.
+                    pending_radio_audio_change_ = false;
+                    audio_operation_failed_ = false;
+                    audio_notice_ = tr(Str::audio_devices_switching);
+                    vm_.set_audio_output(next_out);
+                    audio_selection_pending_ = vm_.pending(Str::op_audio_devices);
+                    if (!audio_selection_pending_) {
+                        if (vm_.transient_visible() && vm_.transient_failed()) {
+                            audio_notice_ = vm_.transient_text();
+                        } else if (snapshot.phase == Phase::running || snapshot.phase == Phase::starting) {
+                            audio_notice_ = tr(Str::audio_devices_failed);
+                        } else {
+                            audio_notice_ = tr(Str::audio_devices_next_connection);
+                        }
+                    }
                 }
             }
         }
@@ -1706,6 +1934,31 @@ void AppView::draw_daily_panel(float width, float height) {
                                                    : cat.error.c_str());
     ImGui::SameLine(0.0F, px(7.0F));
     status_dot(s.bm_link == BmLink::connected, tr(Str::status_bm));
+    ImGui::SameLine(0.0F, px(10.0F));
+    const auto& local_audio = s.local_audio;
+    const auto audio_state = local_audio.audio_state;
+    const bool output_error = !s.local_audio_error.empty() ||
+        local_audio.output_error != wirex::bm_local_playback::OutputError::none;
+    const bool radio_route = local_audio.radio_ready && !output_error;
+    caption(tr(radio_route ? Str::local_audio_route_status : Str::local_playback));
+    ImGui::SameLine(0.0F, px(6.0F));
+    const char* playback_text = output_error ? tr(Str::local_playback_failed)
+        : radio_route ? local_playback_route_text(wirex::bm_local_playback::Route::radio)
+                      : local_playback_state_text(audio_state);
+    ImGui::PushStyleColor(ImGuiCol_Text,
+                          vec(output_error ? color::error : radio_route ? color::green : local_playback_color(audio_state)));
+    ImGui::TextUnformatted(playback_text);
+    ImGui::PopStyleColor();
+    if (output_error) {
+        const char* category = local_playback_error_text(local_audio.output_error);
+        const char* detail = !s.local_audio_error.empty() ? s.local_audio_error.c_str() : category;
+        if (language() == Language::en_us && category[0] != '\0') detail = category;
+        ImGui::SetItemTooltip("%s", detail);
+    } else {
+        const auto& resolved = device_status.wave_out;
+        const std::string tooltip = !resolved.name.empty() ? resolved.name : device_selection_text(resolved, true);
+        ImGui::SetItemTooltip("%s", tooltip.c_str());
+    }
     ImGui::NewLine();
     status_dot(s.wave_in_open, tr(Str::status_wave_in));
     ImGui::SetItemTooltip("%s", device_selection_text(device_status.wave_in, false).c_str());

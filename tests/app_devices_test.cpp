@@ -234,6 +234,30 @@ void test_audio_selection()
     const std::vector<dev::WaveDevice> two_usb{wave(0, "USB Audio 1", "{1}"), wave(1, "USB Audio 2", "{2}")};
     check(dev::default_endpoint_selection(two_usb, "auto") == "auto", "two USB Audio devices stay auto");
 
+    const auto only_speaker = dev::resolve_audio_output({outputs.front()}, "auto");
+    check(only_speaker.ok() && only_speaker.output.endpoint_id == std::string("{out-a}"),
+          "BM-only auto output resolves one usable computer speaker without an HRI/USB pair");
+    const auto unique_usb_output = dev::resolve_audio_output(outputs, "auto");
+    check(unique_usb_output.ok() && unique_usb_output.output.endpoint_id == std::string("{out-usb}"),
+          "BM-only auto output preserves the existing unique USB Audio preference");
+    const auto multiple_outputs = dev::resolve_audio_output(
+        {wave(0, "Speakers (Realtek)", "{out-a}"), wave(1, "Speakers (HDMI)", "{out-hdmi}")}, "auto");
+    check(multiple_outputs.error == dev::AudioResolveError::output_not_unique &&
+          !multiple_outputs.message.empty(), "BM-only auto output asks for manual choice when several candidates lack a unique USB Audio endpoint");
+    const auto explicit_output = dev::resolve_audio_output(outputs, "{OUT-A}");
+    check(explicit_output.ok() && explicit_output.output.endpoint_id == std::string("{out-a}"),
+          "BM-only explicit output resolves independently of any WaveIn selector");
+    const auto missing_output = dev::resolve_audio_output(outputs, "{gone}");
+    check(missing_output.error == dev::AudioResolveError::saved_output_missing &&
+          !missing_output.message.empty(), "BM-only missing saved output is reported without blocking receive");
+    const auto no_outputs = dev::resolve_audio_output({}, "auto");
+    check(no_outputs.error == dev::AudioResolveError::no_usable_output &&
+          !no_outputs.message.empty(), "BM-only missing output remains an explicit unavailable state");
+    const auto duplicate_output = dev::resolve_audio_output(
+        {wave(0, "Output A", "{same}"), wave(1, "Output A duplicate", "{SAME}")}, "{same}");
+    check(duplicate_output.error == dev::AudioResolveError::output_not_unique,
+          "BM-only endpoint ID must resolve exactly once");
+
     struct Case {
         const char* name;
         const char* in_sel;

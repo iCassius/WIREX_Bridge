@@ -7,6 +7,7 @@
 #include "services.hpp"
 #include "view_model.hpp"
 
+#include <cmath>
 #include <cstdint>
 #include <deque>
 #include <string>
@@ -60,7 +61,9 @@ private:
     void toggle_radio();
     void toggle_bm();
     void save_bm_config();
-    [[nodiscard]] float px(float logical) const noexcept { return logical * scale_; }
+    // ImGui coordinates and the DX11 back buffer are both in physical pixels here.
+    // Round scaled dimensions so 125%/150% DPI does not leave half-pixel widget edges.
+    [[nodiscard]] float px(float logical) const noexcept { return std::round(logical * scale_); }
 
     ViewModel& vm_;
     Fonts fonts_;
@@ -79,6 +82,8 @@ private:
     std::string last_radio_error_{};
     std::string last_core_failure_{};
     std::string last_cat_error_{};
+    std::string last_local_audio_error_{};
+    std::uint8_t last_local_audio_output_error_{};
     std::uint64_t last_bm_connection_revision_{};
     std::uint64_t last_audio_endpoints_revision_{};
     std::uint64_t last_cat_revision_{};
@@ -91,6 +96,8 @@ private:
     std::wstring pending_wave_in_{};
     std::wstring pending_wave_out_{};
     bool audio_selection_pending_{};
+    bool pending_radio_audio_change_{};
+    bool audio_operation_failed_{};
 };
 
 } // namespace wirex::gui

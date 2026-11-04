@@ -652,6 +652,16 @@ void ViewModel::start() {
     runtime->hri_port.clear();
     runtime->hri_body_file.clear();
     runtime->audio = {};
+    std::string local_output_error;
+    if (auto output = config_bridge::resolve_local_playback_output(config_, devices_, local_output_error)) {
+        runtime->audio = *output;
+        runtime->local_audio_start_error.clear();
+    } else {
+        // BM runtime remains available; the engine will keep admitted calls visible
+        // and drain their decoded media until a unique output is selected.
+        runtime->local_audio_start_error = local_output_error;
+        if (!local_output_error.empty()) flash(local_output_error, true, Str::audio_devices);
+    }
     runtime->radio_start_error = can_connect_radio ? std::string{} : radio_error;
     runtime->rx_policy = build_rx_policy();
     runtime->radio_playback_gain_milli = gain_milli(playback_step);
@@ -895,6 +905,20 @@ void ViewModel::commit_gains() {
 }
 
 void ViewModel::set_audio_devices(std::wstring wave_in_endpoint_id, std::wstring wave_out_endpoint_id) {
+    const bool radio_attached = snapshot_->serial_open || snapshot_->hri_ready;
+    if (!radio_attached) {
+        // Keep the WaveIn selector for a later HRI attach, but make WaveOut
+        // independently usable as the BM-only computer playback endpoint.
+        auto normalized_input = wave_in_endpoint_id;
+        if (normalized_input == L"auto" || normalized_input == L"AUTO") normalized_input.clear();
+        if (normalized_input != config_.wave_in_endpoint_id) {
+            config_.wave_in_endpoint_id = std::move(normalized_input);
+            persist();
+        }
+        set_audio_output(std::move(wave_out_endpoint_id));
+        return;
+    }
+
     if (wave_in_endpoint_id.empty() || wave_out_endpoint_id.empty()) {
         flash(tr(Str::audio_devices_failed), true);
         return;
@@ -932,6 +956,44 @@ void ViewModel::set_audio_devices(std::wstring wave_in_endpoint_id, std::wstring
 
     config_.wave_in_endpoint_id = std::move(wave_in_endpoint_id);
     config_.wave_out_endpoint_id = std::move(wave_out_endpoint_id);
+    persist();
+}
+
+void ViewModel::set_audio_output(std::wstring wave_out_endpoint_id) {
+    if (pending(Str::op_audio_devices)) return;
+    const bool automatic = wave_out_endpoint_id.empty() || wave_out_endpoint_id == L"auto" ||
+                          wave_out_endpoint_id == L"AUTO";
+    auto candidate = config_;
+    candidate.wave_out_endpoint_id = automatic ? std::wstring{} : wave_out_endpoint_id;
+    std::string error;
+    auto output = config_bridge::resolve_local_playback_output(candidate, devices_, error);
+    if (!output) {
+        if (automatic && snapshot_->phase != Phase::running && snapshot_->phase != Phase::starting) {
+            config_.wave_out_endpoint_id.clear();
+            persist();
+        }
+        flash(error.empty() ? tr(Str::audio_devices_failed) : std::move(error), true, Str::audio_devices);
+        return;
+    }
+
+    const std::wstring selector = automatic ? std::wstring{} : wave_out_endpoint_id;
+    if (snapshot_->phase == Phase::running || snapshot_->phase == Phase::starting) {
+        engine::AudioEndpoints audio{};
+        audio.wave_out_id = output->wave_out_id;
+        audio.expected_wave_out_endpoint_id = output->expected_wave_out_endpoint_id;
+        track(Str::op_audio_devices, engine_.set_audio_endpoints(audio),
+            [this, selector](const CommandResult& result) {
+                if (result.status != CommandStatus::accepted && result.status != CommandStatus::idempotent) return;
+                config_.wave_out_endpoint_id = selector;
+                persist();
+                if (result.detail == "waveout_old_endpoint_closed_with_cleanup_warning") {
+                    flash("新音频设备已生效，但旧设备报告了清理警告。", true, Str::audio_devices);
+                }
+            });
+        return;
+    }
+
+    config_.wave_out_endpoint_id = selector;
     persist();
 }
 

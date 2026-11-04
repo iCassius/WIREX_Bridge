@@ -233,8 +233,9 @@ ImFont* add_font(const std::filesystem::path& file, int index, bool merge = fals
     cfg.FontNo = static_cast<ImU32>(index);
     cfg.MergeMode = merge;
     cfg.Flags |= ImFontFlags_NoLoadError;
-    // 保留 ImGui 1.92 的自动水平过采样（常用小字号取 2），改善分数坐标下的字形边缘。
-    // 不启用 PixelSnapH：它会把字宽取整，并会破坏 1.3× 与非整数 DPI 下的分数字号。
+    // ImGui 1.92 会先把最终字号取整到物理像素；再对齐字形横向 advance，减少小字号字距抖动。
+    // PixelSnapH 下自动过采样为 1；垂直字号仍按当前 DPI 栅格化。
+    cfg.PixelSnapH = true;
     cfg.OversampleH = 0;
     const std::string utf8 = file.u8string();
     return ImGui::GetIO().Fonts->AddFontFromFileTTF(utf8.c_str(), 14.0F, &cfg);
@@ -575,6 +576,7 @@ int run(HINSTANCE instance) {
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr; // 不写 imgui.ini
     io.LogFilename = nullptr;
+    io.ConfigDebugHighlightIdConflicts = true;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     wirex::gui::apply_theme(g_shell.dpi_scale);
     const bool win32_ok = ImGui_ImplWin32_Init(hwnd);

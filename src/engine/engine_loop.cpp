@@ -90,6 +90,40 @@ BmLink bm_link_from(const bm_connection::Snapshot& connection) noexcept
     return BmLink::failed;
 }
 
+const char* hri_stop_reason_name(wirex::hri_session::StopReason reason) noexcept
+{
+    using wirex::hri_session::StopReason;
+    switch (reason) {
+    case StopReason::none: return "hri_session_stopped_unknown";
+    case StopReason::invalid_configuration: return "hri_session_invalid_configuration";
+    case StopReason::invalid_y_template: return "y_template_invalid";
+    case StopReason::already_started: return "hri_session_already_started";
+    case StopReason::time_overflow: return "hri_session_time_overflow";
+    case StopReason::clock_regressed: return "hri_session_clock_regressed";
+    case StopReason::deadline: return "hri_session_deadline";
+    case StopReason::version_timeout: return "hri_version_timeout";
+    case StopReason::cancelled: return "hri_session_cancelled";
+    case StopReason::malformed_record: return "hri_malformed_record";
+    case StopReason::version_mismatch: return "hri_version_mismatch";
+    case StopReason::unexpected_version_record: return "hri_unexpected_version_record";
+    case StopReason::receive_limit: return "hri_receive_limit";
+    case StopReason::record_limit: return "hri_record_limit";
+    case StopReason::transmit_limit: return "hri_transmit_limit";
+    case StopReason::y_write_limit: return "hri_y_write_limit";
+    case StopReason::y_ack_timeout: return "hri_y_ack_timeout";
+    case StopReason::x_ack_limit: return "hri_x_ack_limit";
+    case StopReason::write_failed: return "hri_serial_write_failed";
+    case StopReason::unexpected_write_completion: return "hri_unexpected_write_completion";
+    case StopReason::incomplete_record: return "hri_incomplete_record";
+    case StopReason::pending_write_limit: return "hri_pending_write_limit";
+    case StopReason::caller_stopped: return "hri_session_stopped";
+    case StopReason::transport_failure: return "hri_transport_failure";
+    case StopReason::audio_failure: return "hri_audio_failure";
+    case StopReason::report_failure: return "hri_report_failure";
+    }
+    return "hri_session_stopped_unknown";
+}
+
 CommandStatus policy_status(talkgroup_routing::PolicyUpdateStatus status) noexcept
 {
     using talkgroup_routing::PolicyUpdateStatus;
@@ -193,6 +227,15 @@ CommandResult run_loop(Shared& shared, StartConfig config)
     bool hri_ready = false;
     bool radio_input_open = false;
     bool radio_output_open = false;
+    bool radio_output_playback_blocked = false;
+    // CloseHandle failure is terminal for the wrapper's raw handle ownership: WindowsSerialPort
+    // relinquishes the value before CloseHandle, so retrying could target a recycled handle.
+    // Keep this latch until runtime shutdown and fail closed for a new HRI attach.
+    bool radio_serial_close_unconfirmed = false;
+    wirex::bm_local_playback::Session local_playback;
+    std::string local_audio_error = config.local_audio_start_error;
+    bool local_output_close_pending = false;
+    std::uint64_t discarded_local_output_generation = 0U;
     bool pending_receive_start = false;
     bool pending_receive_ended = false;
     bool pending_playback_drain = false;
@@ -286,6 +329,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             bm_connection->abort_initial_startup(0U);
         }
     }
+
     {
         const auto early = shared.stop_state();
         if (early.requested) {
@@ -310,6 +354,23 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         !bm_connection->open_initial_transport()) {
         // BM transport 故障只使 BM 保持断开；HRI 仍可进入独立运行态。
         (void)bm_connection->snapshot();
+    }
+
+    if (port == nullptr) {
+        if (!local_audio_error.empty() || config.audio.expected_wave_out_endpoint_id.empty()) {
+            local_playback.output_unavailable(
+                wirex::bm_local_playback::OutputError::selection_unavailable);
+            if (local_audio_error.empty()) local_audio_error = "尚未选择唯一的 WaveOut 输出设备。";
+        } else if (radio_output->open()) {
+            radio_output_open = radio_output->is_open();
+            local_playback.output_available();
+            local_audio_error.clear();
+        } else {
+            radio_output_open = radio_output->is_open();
+            local_playback.output_unavailable(wirex::bm_local_playback::OutputError::open_failed);
+            local_audio_error = "waveout_open_failed";
+        }
+        local_playback.set_environment(false, radio_output_open && !radio_output_playback_blocked);
     }
 
     auto emit_status = [&](std::string_view event) -> bool {
@@ -344,6 +405,10 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         shared.push_event(std::move(event));
     };
     auto build_snapshot = [&]() {
+        const auto local_audio_state = local_playback.snapshot();
+        const bool local_output_usable = radio_output_open && !radio_output_playback_blocked &&
+            local_audio_state.output_error == wirex::bm_local_playback::OutputError::none;
+        local_playback.set_environment(hri_ready && port != nullptr, local_output_usable);
         Snapshot next{};
         next.clock_origin_ms = static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::milliseconds>(run_started.time_since_epoch()).count());
@@ -357,6 +422,8 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         next.wave_in_endpoint_id = config.audio.expected_wave_in_endpoint_id;
         next.wave_out_endpoint_id = config.audio.expected_wave_out_endpoint_id;
         next.audio_endpoints_revision = audio_endpoints_revision;
+        next.local_audio = local_playback.snapshot();
+        next.local_audio_error = local_audio_error;
         const auto connection = bm_connection->snapshot();
         next.bm_link = bm_link_from(connection);
         next.bm_requested_enabled = connection.requested_enabled;
@@ -387,6 +454,9 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         next.counters.ptt_tx_timeouts = counters.ptt_tx_timeouts;
         next.bm_state = connection.bm_state;
         next.hri_phase = hri_state.phase;
+        const auto hri_stream = stream_session->snapshot();
+        next.hri_t3_record_observed = hri_stream.start_t_record_observed;
+        next.hri_t0_record_observed = hri_stream.stop_t_record_observed;
         next.bm_transport_open = connection.transport_open;
         next.bm_resolving = connection.resolving;
         if (failed) next.failure_reason = failure_reason;
@@ -452,6 +522,10 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             push_event(EventKind::warning, "运行状态报告写入失败");
         }
     };
+    if (port == nullptr) {
+        status(radio_output_open ? "bm_local_playback_output_ready"
+                                 : "bm_local_playback_output_unavailable");
+    }
     auto record_bm_disconnect_media_error = [&](std::string_view reason) {
         if (bm_connection->disable_pending()) {
             bm_connection->note_media_cleanup_timeout();
@@ -581,6 +655,13 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         const auto cleanup_event = !cleanup_succeeded ? "rx_waveout_or_hri_t0_cleanup_failed" :
             (generation_t0_confirmed ? "rx_waveout_reset_and_hri_t0_cleanup_completed"
                                      : "rx_audio_cleanup_hri_not_started_completed");
+        const auto local_snapshot = local_playback.snapshot();
+        if (local_snapshot.call_active &&
+            local_snapshot.generation == *active_routed_rx_pipeline_generation) {
+            (void)local_playback.end_call(*active_routed_rx_pipeline_generation);
+            local_playback.set_environment(hri_ready && port != nullptr,
+                radio_output_open && !radio_output_playback_blocked);
+        }
         status(cleanup_event);
     };
     auto maybe_show_operator_ready_instructions = [&]() {
@@ -964,13 +1045,27 @@ CommandResult run_loop(Shared& shared, StartConfig config)
                 break;
             case StreamActionKind::call_finished: {
                 const auto state = stream_session->snapshot();
-                const bool waveout_cleanup_ok = radio_output->close();
-                radio_output_open = radio_output->is_open();
+                const bool hri_t0_confirmed = state.stop_write_succeeded && state.stop_t_record_observed;
+                const auto pipeline_state = pipeline->snapshot();
+                const bool quarantined_waveout_drained = detail::quarantined_rx_output_cleanup_ready(
+                    radio_output_playback_blocked, radio_output_open,
+                    radio_output == nullptr || radio_output->all_drained(),
+                    pipeline_state.queued_playback_frames,
+                    pipeline_state.unconfirmed_playback_frames, hri_t0_confirmed);
+                bool waveout_cleanup_ok = false;
+                if (quarantined_waveout_drained && hri_t0_confirmed) {
+                    // 本次 RX 从未向该被隔离的输出设备提交 PCM，且 HRI T0 已确认。
+                    // 释放 Router 的媒体 lease，但保留尚未确认关闭的句柄、隔离状态和错误。
+                    waveout_cleanup_ok = true;
+                    status("rx_quarantined_waveout_retained_after_t0_and_drain");
+                } else {
+                    waveout_cleanup_ok = radio_output->close();
+                    radio_output_open = radio_output->is_open();
+                }
                 record_routed_rx_waveout_cleanup(waveout_cleanup_ok);
                 const bool aggregate_waveout_cleanup_ok = routed_rx_waveout_cleanup_attempted &&
                     routed_rx_waveout_cleanup_succeeded;
                 if (!waveout_cleanup_ok) set_failure("waveout_rx_call_cleanup_failed");
-                const bool hri_t0_confirmed = state.stop_write_succeeded && state.stop_t_record_observed;
                 const bool routed_rx_cleanup_incomplete =
                     wirex::hri_stream_session::routed_rx_cleanup_incomplete(
                         state, routed_rx_hri_start_attempted, aggregate_waveout_cleanup_ok);
@@ -1024,15 +1119,24 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             update.state.stop_reason != wirex::hri_session::StopReason::none &&
             update.state.stop_reason != wirex::hri_session::StopReason::caller_stopped) {
             radio_fault_pending = true;
-            radio_fault_reason = "hri_control_session_stopped";
+            radio_fault_reason = hri_stop_reason_name(update.state.stop_reason);
+            status(radio_fault_reason);
         }
         if (hri_state.y_zero_acknowledged && !hri_ready && hri_state.phase != HriPhase::stopped) {
-            if (!radio_output->open()) {
+            const bool opened = radio_output->open();
+            radio_output_open = radio_output->is_open();
+            if (!opened) {
+                radio_output_playback_blocked = radio_output_open;
+                (void)local_playback.output_failed(wirex::bm_local_playback::OutputError::open_failed);
+                local_audio_error = "radio_waveout_open_failed";
                 radio_fault_pending = true;
                 radio_fault_reason = "radio_waveout_open_failed";
             } else {
-                radio_output_open = true;
+                radio_output_playback_blocked = false;
                 hri_ready = true;
+                local_playback.output_available();
+                local_audio_error.clear();
+                local_playback.set_environment(true, true);
                 status("hri_y0_observed_radio_speaker_ready");
                 maybe_show_operator_ready_instructions();
             }
@@ -1072,6 +1176,20 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             (radio_input && radio_input->is_open()) || (radio_output && radio_output->is_open());
     };
 
+    auto close_serial_once = [&](std::unique_ptr<SerialPort>& candidate) noexcept {
+        if (!candidate) return true;
+        const bool closed = candidate->close();
+        // SerialPort::close consumes its native handle even when Windows cannot confirm the close.
+        // Drop the wrapper after exactly one attempt and latch the uncertainty; never retry a raw
+        // handle that may already have been invalidated or recycled by the OS.
+        candidate.reset();
+        if (!closed) {
+            radio_serial_close_unconfirmed = true;
+            serial_failed = true;
+        }
+        return closed;
+    };
+
     auto detach_radio = [&](std::string reason) {
         (void)ptt_gate.set_ready(false);
         ptt_gate.disarm_until_release();
@@ -1081,21 +1199,29 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             report_routed_tx_eot(false);
         }
         const auto stream_state = stream_session->snapshot();
+        const auto local_rx = local_playback.snapshot();
+        const bool preserve_local_rx = local_rx.call_active && !routed_rx_hri_start_attempted &&
+            (local_rx.route == wirex::bm_local_playback::Route::local_output ||
+             local_rx.route == wirex::bm_local_playback::Route::silent);
         if (stream_state.phase != StreamPhase::idle && stream_state.phase != StreamPhase::faulted) {
             service_stream_update(stream_session->cancel(StreamReason::transport_failed, elapsed_ms()));
-        } else if (pipeline->snapshot().rx_state != wirex::bm_voice::RxState::idle) {
+        } else if (pipeline->snapshot().rx_state != wirex::bm_voice::RxState::idle && !preserve_local_rx) {
             pipeline->cancel_rx();
         }
-        pending_receive_start = false;
-        pending_receive_ended = false;
-        pending_playback_drain = false;
-        bool close_failed = false;
-        std::string close_error;
+        if (!preserve_local_rx) {
+            pending_receive_start = false;
+            pending_receive_ended = false;
+            pending_playback_drain = false;
+        }
+        bool input_close_failed = false;
+        bool output_close_failed = false;
+        bool serial_close_failed = radio_serial_close_unconfirmed;
+        std::string close_error = radio_serial_close_unconfirmed ? "serial_close_unconfirmed" : std::string{};
         if (radio_input) {
             const bool closed = radio_input->close();
             radio_input_open = radio_input->is_open();
             if (!closed) {
-                close_failed = true;
+                input_close_failed = true;
                 close_error = "wavein_close_failed";
             }
             if (closed && !radio_input_open && active_routed_tx_lease_id &&
@@ -1109,7 +1235,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             const bool closed = radio_output->close();
             radio_output_open = radio_output->is_open();
             if (!closed) {
-                close_failed = true;
+                output_close_failed = true;
                 if (close_error.empty()) close_error = "waveout_close_failed";
             }
         } else {
@@ -1121,24 +1247,59 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         hri_session.reset();
         hri_active = false;
         hri_ready = false;
-        if (port) {
-            (void)port->close();
-            port.reset();
+        if (port && !radio_serial_close_unconfirmed) {
+            if (!close_serial_once(port)) {
+                serial_close_failed = true;
+                if (close_error.empty()) close_error = "serial_close_unconfirmed";
+            }
         }
-        serial_failed = false;
-        config.hri_port.clear();
-        if (!radio_audio_resource_retained()) config.audio = AudioEndpoints{};
+        if (port == nullptr) config.hri_port.clear();
+        if (!radio_input_open) {
+            config.audio.wave_in_id = 0U;
+            config.audio.expected_wave_in_endpoint_id.clear();
+        }
         config.hri_body_file.clear();
         config.start_radio = false;
         hri_state = wirex::hri_session::Snapshot{};
-        radio_error = close_failed ? std::move(close_error) : std::move(reason);
+        if (!output_close_failed && !radio_output_open && radio_output &&
+            !config.audio.expected_wave_out_endpoint_id.empty()) {
+            if (radio_output->open()) {
+                radio_output_open = radio_output->is_open();
+                radio_output_playback_blocked = false;
+                local_playback.output_available();
+                local_audio_error.clear();
+                status("bm_local_playback_output_restored_after_radio_detach");
+            } else {
+                radio_output_open = radio_output->is_open();
+                radio_output_playback_blocked = radio_output_open;
+                local_playback.output_unavailable(wirex::bm_local_playback::OutputError::open_failed);
+                local_audio_error = "waveout_open_failed";
+                status("bm_local_playback_output_restore_failed");
+            }
+        } else if (output_close_failed || radio_output_open) {
+            radio_output_playback_blocked = true;
+            local_playback.output_unavailable(wirex::bm_local_playback::OutputError::close_failed);
+            local_audio_error = "waveout_close_failed";
+        } else if (config.audio.expected_wave_out_endpoint_id.empty()) {
+            local_playback.output_unavailable(
+                wirex::bm_local_playback::OutputError::selection_unavailable);
+        }
+        local_playback.set_environment(false, radio_output_open && !radio_output_playback_blocked);
+        if (preserve_local_rx && pending_receive_start && active_routed_rx_pipeline_generation) {
+            (void)local_playback.retarget_pending_call(*active_routed_rx_pipeline_generation, false,
+                radio_output_open && !radio_output_playback_blocked && local_playback.snapshot().output_error ==
+                    wirex::bm_local_playback::OutputError::none);
+            status("bm_local_pending_receive_route_refreshed_after_radio_detach");
+        }
+        radio_error = (input_close_failed || output_close_failed || serial_close_failed)
+            ? std::move(close_error) : std::move(reason);
         radio_fault_pending = false;
         radio_fault_reason.clear();
         network_ready_seen = bm_session.snapshot().state == wirex::bm::State::ready &&
             bm_connection->snapshot().requested_enabled;
         publish_dirty = true;
         status("radio_detached_bm_runtime_preserved");
-        return !close_failed;
+        return !input_close_failed && !output_close_failed && !serial_close_failed;
     };
 
     auto connect_radio_runtime = [&](const RadioStartConfig& requested) -> CommandResult {
@@ -1148,7 +1309,15 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             radio_error = "radio_selection_unresolved";
             return CommandResult{CommandStatus::invalid, 0U, radio_error};
         }
-        if (port != nullptr || radio_audio_resource_retained()) {
+        const auto local_audio = local_playback.snapshot();
+        const bool local_output_only = port == nullptr && !hri_ready && !radio_input_open &&
+            radio_output_open && !local_audio.call_active &&
+            local_audio.output_error == wirex::bm_local_playback::OutputError::none;
+        if (radio_serial_close_unconfirmed) {
+            publish_dirty = true;
+            return CommandResult{CommandStatus::busy, 0U, "radio_serial_close_unconfirmed"};
+        }
+        if (port != nullptr || (radio_audio_resource_retained() && !local_output_only)) {
             if (port == nullptr) {
                 publish_dirty = true;
                 return CommandResult{CommandStatus::busy, 0U, "radio_cleanup_required"};
@@ -1197,6 +1366,21 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             return CommandResult{CommandStatus::failed, 0U, radio_error};
         }
 
+        if (local_output_only) {
+            const bool closed = radio_output->close();
+            radio_output_open = radio_output->is_open();
+            if (radio_output_open) {
+                (void)local_playback.output_failed(wirex::bm_local_playback::OutputError::close_failed);
+                local_audio_error = "waveout_close_failed";
+                const bool serial_closed = close_serial_once(next_port);
+                radio_error = serial_closed ? "waveout_close_failed" : "serial_close_unconfirmed";
+                publish_dirty = true;
+                return CommandResult{CommandStatus::failed, 0U, radio_error};
+            }
+            if (!closed) local_audio_error = "waveout_old_endpoint_closed_with_cleanup_warning";
+            local_playback.set_environment(false, false);
+        }
+
         radio_input = std::move(next_input);
         radio_output = std::move(next_output);
         port = std::move(next_port);
@@ -1225,6 +1409,17 @@ CommandResult run_loop(Shared& shared, StartConfig config)
     auto cleanup_routed_rx_without_hri_start = [&](std::string_view event) {
         if (!active_routed_rx_pipeline_generation) return;
         if (routed_rx_hri_start_attempted) return;
+        const auto local = local_playback.snapshot();
+        if (local.call_active && local.generation == *active_routed_rx_pipeline_generation &&
+            (local.route == wirex::bm_local_playback::Route::local_output ||
+             local.route == wirex::bm_local_playback::Route::silent)) {
+            // BM-only playback keeps its selected output open between calls; the Router lease
+            // can finish without sending an HRI T0 or closing that persistent WaveOut.
+            record_routed_rx_waveout_cleanup(true);
+            report_routed_rx_cleanup(false);
+            status(event);
+            return;
+        }
         const bool closed = radio_output->close();
         radio_output_open = radio_output->is_open();
         record_routed_rx_waveout_cleanup(closed);
@@ -1233,8 +1428,77 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         status(event);
     };
 
+    auto begin_local_playback_for_pending_rx = [&]() {
+        if (!pending_receive_start || shutdown_requested) return;
+        const auto pipeline_state = pipeline->snapshot();
+        if (pipeline_state.rx_state == wirex::bm_voice::RxState::idle ||
+            pipeline_state.rx_state == wirex::bm_voice::RxState::filtered ||
+            pipeline_state.rx_state == wirex::bm_voice::RxState::stopping) {
+            pending_receive_start = false;
+            pending_receive_ended = false;
+            pipeline->cancel_rx();
+            cleanup_routed_rx_without_hri_start("bm_local_receive_inactive_before_playback");
+            return;
+        }
+        const auto decision = wirex::bm_voice::receive_hri_start_decision(pipeline_state);
+        if (decision == wirex::bm_voice::ReceiveHriStartDecision::wait_for_voice) return;
+        if (decision == wirex::bm_voice::ReceiveHriStartDecision::discard_empty_ended_call) {
+            pending_receive_start = false;
+            pending_receive_ended = false;
+            pipeline->cancel_rx();
+            cleanup_routed_rx_without_hri_start("bm_local_empty_receive_ended");
+            return;
+        }
+        if (!network_ready_seen) {
+            ++counters.rejected_calls;
+            pending_receive_start = false;
+            pending_receive_ended = false;
+            pipeline->cancel_rx();
+            cleanup_routed_rx_without_hri_start("bm_local_receive_rejected_network_or_media_busy");
+            return;
+        }
+        const auto& receive_call = pipeline_state.receive_call;
+        const auto resolved_source_identity = source_identity_cache.find(receive_call.source_id);
+        if (pipeline->playback_ready(Clock::now()) != wirex::bm_voice::Error::none) {
+            ++counters.rejected_calls;
+            pending_receive_start = false;
+            pending_receive_ended = false;
+            pipeline->cancel_rx();
+            cleanup_routed_rx_without_hri_start("bm_local_pipeline_playback_start_failed");
+            status("bm_local_playback_admission_failed");
+            return;
+        }
+
+        pending_receive_start = false;
+        pending_receive_ended = false;
+        ++counters.calls_started;
+        finish_published_rx_call("replaced_by_new_stream");
+        CallInfo call_info{};
+        call_info.source_id = receive_call.source_id;
+        call_info.destination_id = receive_call.destination_id;
+        call_info.slot = receive_call.slot;
+        call_info.kind = receive_call.kind;
+        if (resolved_source_identity) {
+            call_info.callsign = resolved_source_identity->callsign;
+        }
+        call_info.started_ms = elapsed_ms();
+        published_rx_call = call_info;
+        push_event(EventKind::rx_call_started, {}, call_info);
+        publish_dirty = true;
+        const auto local = local_playback.snapshot();
+        status(local.route == wirex::bm_local_playback::Route::local_output
+            ? "bm_local_receive_playback_started" : "bm_local_receive_visible_audio_unavailable");
+    };
+
     auto begin_stream_for_pending_rx = [&]() {
-        if (!pending_receive_start || !hri_ready || shutdown_requested) return;
+        if (!pending_receive_start || shutdown_requested) return;
+        const auto route = local_playback.snapshot().route;
+        if (route == wirex::bm_local_playback::Route::local_output ||
+            route == wirex::bm_local_playback::Route::silent) {
+            begin_local_playback_for_pending_rx();
+            return;
+        }
+        if (!hri_ready) return;
         const auto pipeline_state = pipeline->snapshot();
         if (pipeline_state.rx_state == wirex::bm_voice::RxState::idle ||
             pipeline_state.rx_state == wirex::bm_voice::RxState::filtered ||
@@ -1292,6 +1556,9 @@ CommandResult run_loop(Shared& shared, StartConfig config)
                 return;
             }
             radio_output_open = true;
+            local_playback.output_available();
+            local_audio_error.clear();
+            local_playback.set_environment(true, true);
             status("radio_waveout_reopened_after_network_reconnect");
         }
         const auto now_ms = elapsed_ms();
@@ -1437,6 +1704,26 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         counters.rx_call_end_reason = "in_progress";
         counters.rx_call_missing_packets = 0U;
         counters.rx_call_accepted_voice_bursts = 0U;
+        local_playback.set_environment(hri_ready && port != nullptr,
+            radio_output_open && !radio_output_playback_blocked);
+        const auto route = local_playback.begin_call(mapping->pipeline_generation);
+        if (route == wirex::bm_local_playback::BeginResult::busy ||
+            route == wirex::bm_local_playback::BeginResult::invalid_generation ||
+            route == wirex::bm_local_playback::BeginResult::shutting_down) {
+            ++counters.rejected_calls;
+            pending_receive_start = false;
+            pending_receive_ended = false;
+            pipeline->cancel_rx();
+            record_routed_rx_waveout_cleanup(true);
+            report_routed_rx_cleanup(false);
+            status("bm_local_receive_route_unavailable");
+            return false;
+        }
+        if (route == wirex::bm_local_playback::BeginResult::local_output) {
+            status("bm_local_receive_route_selected_output");
+        } else if (route == wirex::bm_local_playback::BeginResult::silent) {
+            status("bm_local_receive_route_selected_silent");
+        }
         status("rx_owner_generation_reserved");
         return true;
     };
@@ -1474,8 +1761,20 @@ CommandResult run_loop(Shared& shared, StartConfig config)
                 status("bm_receive_ended");
                 break;
             case PipelineEventKind::playback_drained:
-                pending_playback_drain = true;
-                status("bm_receive_playback_drained");
+                if (active_routed_rx_pipeline_generation &&
+                    local_playback.snapshot().call_active &&
+                    local_playback.snapshot().generation == *active_routed_rx_pipeline_generation &&
+                    !routed_rx_hri_start_attempted) {
+                    pending_playback_drain = false;
+                    ++counters.calls_ended;
+                    finish_published_rx_call(counters.rx_call_end_reason);
+                    record_routed_rx_waveout_cleanup(true);
+                    report_routed_rx_cleanup(false);
+                    status("bm_local_receive_playback_drained");
+                } else {
+                    pending_playback_drain = true;
+                    status("bm_receive_playback_drained");
+                }
                 break;
             case PipelineEventKind::receive_cancelled:
                 if (counters.rx_call_end_reason == "in_progress") {
@@ -1535,6 +1834,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
     auto begin_shutdown = [&](std::string_view reason) {
         if (shutdown_requested) return;
         shutdown_requested = true;
+        local_playback.request_shutdown();
         (void)ptt_gate.set_ready(false);
         ptt_gate.disarm_until_release();
         shutdown_reason.assign(reason);
@@ -1620,7 +1920,10 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         pending_receive_start = false;
         pending_receive_ended = false;
         pending_playback_drain = false;
-        if (radio_output_open) {
+        const auto active_local_audio = local_playback.snapshot();
+        const bool bm_only_local_route = port == nullptr && !hri_ready &&
+            active_local_audio.route != wirex::bm_local_playback::Route::radio;
+        if (radio_output_open && !bm_only_local_route) {
             const bool closed = radio_output->close();
             radio_output_open = radio_output->is_open();
             record_routed_rx_waveout_cleanup(closed);
@@ -1751,9 +2054,11 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         const auto routing_state = pipeline->routing_snapshot().router;
         const auto hri_stream_state = stream_session->snapshot();
         const auto bm_state = bm_session.snapshot();
+        const auto local_audio_state = local_playback.snapshot();
         const bool cleanup_idle = (!active_routed_tx_lease_id || routed_tx_cleanup_reported) &&
             (!active_routed_rx_pipeline_generation || routed_rx_cleanup_reported) &&
-            !radio_input_open && !radio_output_open && !pending_receive_start &&
+            !radio_input_open && (!radio_output_open || radio_output->all_drained()) &&
+            !local_audio_state.call_active && !pending_receive_start &&
             !pending_receive_ended && !pending_playback_drain;
         // 原条件含 dispatcher->hello_seen()：协议层在 hello 之前不会转发本命令，引擎侧等价为真。
         const wirex::quick_call::Readiness readiness{
@@ -2021,13 +2326,34 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             return CommandResult{CommandStatus::accepted, audio_gains_revision, ""};
         case CommandKind::set_audio_endpoints: {
             const AudioEndpoints& requested = command.audio_endpoints;
-            if (requested.expected_wave_in_endpoint_id.empty() || requested.expected_wave_out_endpoint_id.empty()) {
+            const bool update_input = !requested.expected_wave_in_endpoint_id.empty();
+            const bool update_output = !requested.expected_wave_out_endpoint_id.empty();
+            if (!update_input && !update_output) {
                 return CommandResult{CommandStatus::invalid, audio_endpoints_revision, "invalid_audio_endpoints"};
             }
-            const bool input_changed = requested.expected_wave_in_endpoint_id != config.audio.expected_wave_in_endpoint_id ||
-                requested.wave_in_id != config.audio.wave_in_id;
-            const bool output_changed = requested.expected_wave_out_endpoint_id != config.audio.expected_wave_out_endpoint_id ||
-                requested.wave_out_id != config.audio.wave_out_id;
+            if (update_output && !update_input && (port != nullptr || hri_ready)) {
+                return CommandResult{CommandStatus::busy, audio_endpoints_revision, "radio_audio_pair_required"};
+            }
+            AudioEndpoints effective = config.audio;
+            if (update_input) {
+                effective.expected_wave_in_endpoint_id = requested.expected_wave_in_endpoint_id;
+                effective.wave_in_id = requested.wave_in_id;
+            }
+            if (update_output) {
+                effective.expected_wave_out_endpoint_id = requested.expected_wave_out_endpoint_id;
+                effective.wave_out_id = requested.wave_out_id;
+            }
+            const bool input_changed = update_input &&
+                (effective.expected_wave_in_endpoint_id != config.audio.expected_wave_in_endpoint_id ||
+                 effective.wave_in_id != config.audio.wave_in_id);
+            const bool local_output_mode = port == nullptr && !hri_ready;
+            const auto local_audio_before_change = local_playback.snapshot();
+            const bool retry_local_output = update_output && local_output_mode &&
+                (!radio_output_open || local_audio_before_change.output_error !=
+                    wirex::bm_local_playback::OutputError::none);
+            const bool output_changed = update_output &&
+                ((effective.expected_wave_out_endpoint_id != config.audio.expected_wave_out_endpoint_id ||
+                  effective.wave_out_id != config.audio.wave_out_id) || retry_local_output);
             if (!input_changed && !output_changed) {
                 return CommandResult{CommandStatus::idempotent, audio_endpoints_revision, ""};
             }
@@ -2036,16 +2362,21 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             }
             const auto media = pipeline->routing_snapshot().router.media_owner;
             if (media != wirex::talkgroup_routing::MediaOwner::idle || radio_input_open ||
-                (port == nullptr && radio_audio_resource_retained()) ||
+                local_playback.snapshot().call_active ||
                 (radio_output_open && !radio_output->all_drained())) {
                 return CommandResult{CommandStatus::busy, audio_endpoints_revision, "audio_route_busy"};
             }
 
             std::unique_ptr<AudioInput> next_input;
             std::unique_ptr<AudioOutput> next_output;
+            const auto commit_output_selection_only = [&]() {
+                config.audio.wave_out_id = effective.wave_out_id;
+                config.audio.expected_wave_out_endpoint_id = effective.expected_wave_out_endpoint_id;
+                ++audio_endpoints_revision;
+            };
             try {
                 if (input_changed) {
-                    next_input = devices.make_audio_input(requested);
+                    next_input = devices.make_audio_input(effective);
                     if (!next_input || !next_input->open()) {
                         if (next_input) (void)next_input->close();
                         return CommandResult{CommandStatus::failed, audio_endpoints_revision, "wavein_open_failed"};
@@ -2055,47 +2386,193 @@ CommandResult run_loop(Shared& shared, StartConfig config)
                     }
                 }
                 if (output_changed) {
-                    next_output = devices.make_audio_output(requested);
-                    if (!next_output || !next_output->open()) {
-                        if (next_output) (void)next_output->close();
-                        return CommandResult{CommandStatus::failed, audio_endpoints_revision, "waveout_open_failed"};
+                    next_output = devices.make_audio_output(effective);
+                    if (!next_output) {
+                        return CommandResult{CommandStatus::failed, audio_endpoints_revision,
+                                             "audio_device_allocation_failed"};
                     }
                 }
             } catch (...) {
                 return CommandResult{CommandStatus::failed, audio_endpoints_revision, "audio_device_allocation_failed"};
             }
 
+            bool local_output_close_warning = false;
+            if (output_changed && local_output_mode) {
+                const bool old_was_open = radio_output_open;
+                if (old_was_open) {
+                    const bool old_output_closed = radio_output->close();
+                    radio_output_open = radio_output->is_open();
+                    if (radio_output_open) {
+                        (void)local_playback.output_failed(wirex::bm_local_playback::OutputError::close_failed);
+                        local_audio_error = "waveout_close_failed";
+                        publish_dirty = true;
+                        return CommandResult{CommandStatus::failed, audio_endpoints_revision,
+                                             "waveout_close_failed"};
+                    }
+                    if (!old_output_closed) {
+                        (void)local_playback.output_failed(wirex::bm_local_playback::OutputError::close_failed);
+                        local_audio_error = "waveout_old_endpoint_closed_with_cleanup_warning";
+                        local_output_close_warning = true;
+                    }
+                }
+                if (!next_output->open()) {
+                    const bool candidate_closed = next_output->close();
+                    radio_output_open = radio_output && radio_output->is_open();
+                    if (next_output->is_open() || !candidate_closed) {
+                        // The former output was released; keep ownership of the candidate even
+                        // when its open/close pair cannot confirm cleanup.
+                        radio_output = std::move(next_output);
+                        radio_output_open = radio_output->is_open();
+                        radio_output_playback_blocked = radio_output_open;
+                        commit_output_selection_only();
+                        (void)local_playback.output_failed(wirex::bm_local_playback::OutputError::open_failed);
+                        local_audio_error = "waveout_open_failed_cleanup_unconfirmed";
+                        publish_dirty = true;
+                        return CommandResult{CommandStatus::failed, audio_endpoints_revision,
+                                             local_audio_error};
+                    }
+                    if (radio_output && radio_output->open()) {
+                        radio_output_open = radio_output->is_open();
+                        radio_output_playback_blocked = false;
+                        local_playback.output_available();
+                        local_audio_error.clear();
+                    } else {
+                        radio_output_open = radio_output && radio_output->is_open();
+                        radio_output_playback_blocked = radio_output_open;
+                        local_playback.output_unavailable(wirex::bm_local_playback::OutputError::open_failed);
+                        local_audio_error = "waveout_open_failed";
+                    }
+                    publish_dirty = true;
+                    return CommandResult{CommandStatus::failed, audio_endpoints_revision, "waveout_open_failed"};
+                }
+            }
+
             if (output_changed && radio_output_open) {
                 const bool old_output_closed = radio_output->close();
                 radio_output_open = radio_output->is_open();
                 if (radio_output_open) {
-                    // 旧端点仍打开：可以回退，新端点必须关闭并保留原配置。
-                    (void)next_output->close();
+                    // The candidate was not opened; retain only the old output handle.
+                    radio_error = "waveout_close_failed";
+                    publish_dirty = true;
                     return CommandResult{CommandStatus::failed, audio_endpoints_revision, "waveout_close_failed"};
+                }
+                if (!next_output->open()) {
+                    const bool candidate_closed = next_output->close();
+                    if (next_output->is_open() || !candidate_closed) {
+                        // The old output is closed and the candidate still owns a native handle.
+                        // Move it into the tracked slot and publish the endpoint it actually owns.
+                        radio_output = std::move(next_output);
+                        radio_output_open = radio_output->is_open();
+                        radio_output_playback_blocked = true;
+                        (void)local_playback.output_failed(
+                            wirex::bm_local_playback::OutputError::open_failed);
+                        local_audio_error = "waveout_open_failed_cleanup_unconfirmed";
+                        commit_output_selection_only();
+                        radio_error = "waveout_open_failed_cleanup_unconfirmed";
+                        publish_dirty = true;
+                        return CommandResult{CommandStatus::failed, audio_endpoints_revision, radio_error};
+                    }
+                    const bool old_reopened = radio_output->open();
+                    radio_output_open = radio_output->is_open();
+                    radio_output_playback_blocked = !old_reopened || !radio_output_open;
+                    if (radio_output_playback_blocked) {
+                        (void)local_playback.output_failed(
+                            wirex::bm_local_playback::OutputError::open_failed);
+                        local_audio_error = radio_output_open
+                            ? "waveout_open_failed_restore_unconfirmed"
+                            : "waveout_open_failed_restore_failed";
+                    }
+                    radio_error = old_reopened && radio_output_open
+                        ? "waveout_open_failed"
+                        : radio_output_open ? "waveout_open_failed_restore_unconfirmed"
+                                            : "waveout_open_failed_restore_failed";
+                    publish_dirty = true;
+                    return CommandResult{CommandStatus::failed, audio_endpoints_revision, radio_error};
                 }
                 if (!old_output_closed) {
                     // 旧驱动报告清理失败，但设备句柄已经关闭，无法恢复旧端点。
                     // 保持新端点，发布实际端点并返回失败提示，避免快照谎报仍在使用旧设备。
+                    if (input_changed) radio_input = std::move(next_input);
                     radio_output = std::move(next_output);
                     radio_output_open = radio_output->is_open();
-                    config.audio = requested;
+                    radio_output_playback_blocked = false;
+                    config.audio = effective;
                     ++audio_endpoints_revision;
-                    return CommandResult{CommandStatus::accepted, audio_endpoints_revision,
-                                         "waveout_old_endpoint_closed_with_cleanup_warning"};
+                    radio_error = "waveout_old_endpoint_closed_with_cleanup_warning";
+                    publish_dirty = true;
+                    return CommandResult{CommandStatus::accepted, audio_endpoints_revision, radio_error};
                 }
-            } else if (output_changed) {
-                if (!next_output->close() || next_output->is_open()) {
-                    return CommandResult{CommandStatus::failed, audio_endpoints_revision, "waveout_close_failed"};
+            } else if (output_changed && !local_output_mode) {
+                if (!next_output->open()) {
+                    const bool candidate_closed = next_output->close();
+                    if (next_output->is_open() || !candidate_closed) {
+                        radio_output = std::move(next_output);
+                        radio_output_open = radio_output->is_open();
+                        radio_output_playback_blocked = true;
+                        (void)local_playback.output_failed(
+                            wirex::bm_local_playback::OutputError::open_failed);
+                        local_audio_error = "waveout_open_failed_cleanup_unconfirmed";
+                        commit_output_selection_only();
+                        radio_error = "waveout_open_failed_cleanup_unconfirmed";
+                        publish_dirty = true;
+                        return CommandResult{CommandStatus::failed, audio_endpoints_revision, radio_error};
+                    }
+                    radio_error = "waveout_open_failed";
+                    radio_output_playback_blocked = true;
+                    (void)local_playback.output_failed(wirex::bm_local_playback::OutputError::open_failed);
+                    local_audio_error = "waveout_open_failed";
+                    publish_dirty = true;
+                    return CommandResult{CommandStatus::failed, audio_endpoints_revision, radio_error};
+                }
+                if (!(hri_ready && port != nullptr)) {
+                    const bool candidate_closed = next_output->close();
+                    if (!candidate_closed || next_output->is_open()) {
+                        if (next_output->is_open()) {
+                            radio_output = std::move(next_output);
+                            radio_output_open = radio_output->is_open();
+                            radio_output_playback_blocked = true;
+                            (void)local_playback.output_failed(
+                                wirex::bm_local_playback::OutputError::close_failed);
+                            local_audio_error = "waveout_close_failed";
+                            commit_output_selection_only();
+                        }
+                        else {
+                            radio_output_playback_blocked = true;
+                            (void)local_playback.output_failed(
+                                wirex::bm_local_playback::OutputError::close_failed);
+                            local_audio_error = "waveout_close_failed";
+                        }
+                        radio_error = "waveout_close_failed";
+                        publish_dirty = true;
+                        return CommandResult{CommandStatus::failed, audio_endpoints_revision, radio_error};
+                    }
                 }
             }
             if (input_changed) radio_input = std::move(next_input);
             if (output_changed) {
                 radio_output = std::move(next_output);
                 radio_output_open = radio_output->is_open();
+                radio_output_playback_blocked = false;
             }
-            config.audio = requested;
+            config.audio = effective;
+            if (output_changed && local_output_mode) {
+                local_playback.output_available();
+                local_audio_error.clear();
+                local_output_close_pending = false;
+            }
+            if (output_changed && !local_output_mode && hri_ready && port != nullptr && radio_output_open) {
+                local_playback.output_available();
+                local_audio_error.clear();
+                if (radio_error.rfind("waveout_", 0U) == 0U) radio_error.clear();
+            }
+            const auto local_audio = local_playback.snapshot();
+            local_playback.set_environment(hri_ready && port != nullptr,
+                radio_output_open && !radio_output_playback_blocked &&
+                    local_audio.output_error == wirex::bm_local_playback::OutputError::none);
+            publish_dirty = true;
             ++audio_endpoints_revision;
-            return CommandResult{CommandStatus::accepted, audio_endpoints_revision, ""};
+            return CommandResult{CommandStatus::accepted, audio_endpoints_revision,
+                local_output_close_warning ? "waveout_old_endpoint_closed_with_cleanup_warning" : ""};
         }
         case CommandKind::upsert_radio_identity: {
             using Update = wirex::radio_identity_cache::UpsertResult;
@@ -2561,13 +3038,6 @@ CommandResult run_loop(Shared& shared, StartConfig config)
                         ++counters.rejected_calls;
                         continue;
                     }
-                    if (!hri_ready || port == nullptr) {
-                        // BM-only runtime 保持协议连接与 Quick Call；没有电台时丢弃来话，
-                        // 不创建媒体 lease，也不打开音频或发送 HRI T3/PTT。
-                        ++counters.rejected_calls;
-                        status("bm_dmrd_dropped_radio_not_ready");
-                        continue;
-                    }
                     constexpr std::uint8_t dmr_flag_ts2 = 0x80U;
                     constexpr std::uint8_t dmr_flag_private_call = 0x40U;
                     const auto& datagram = decoded.datagram;
@@ -2585,7 +3055,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
                     const auto active_pipeline = pipeline->snapshot();
                     const auto active_hri = stream_session->snapshot();
                     const bool hri_busy = active_hri.phase != StreamPhase::idle;
-                    if (downlink_blocked || (hri_busy &&
+                    if ((hri_ready && downlink_blocked) || (hri_busy &&
                         (active_pipeline.rx_state == wirex::bm_voice::RxState::idle ||
                          decoded.datagram.stream_id != active_pipeline.receive_call.stream_id))) {
                         // HRI仍在T0收尾或上一通话播放时，不允许新网络流覆盖当前呼叫状态。
@@ -2666,13 +3136,42 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             if (transport.is_open()) (void)drain_bm_outbound();
 
             if (radio_output_open) {
-                if (radio_output->completion_overflowed()) {
-                    set_failure("waveout_completion_queue_overflow");
-                    begin_shutdown("waveout_completion_queue_overflow");
+                if (!radio_output_playback_blocked && radio_output->completion_overflowed()) {
+                    const auto local = local_playback.snapshot();
+                    const bool bm_local_output_mode = port == nullptr && !hri_ready &&
+                        !config.audio.expected_wave_out_endpoint_id.empty();
+                    if (bm_local_output_mode) {
+                        (void)local_playback.output_failed(wirex::bm_local_playback::OutputError::device_lost);
+                        local_audio_error = "waveout_completion_queue_overflow";
+                        if (local.call_active && active_routed_rx_pipeline_generation &&
+                            !routed_rx_hri_start_attempted) {
+                            discarded_local_output_generation = *active_routed_rx_pipeline_generation;
+                            const auto queued = pipeline->snapshot().unconfirmed_playback_frames;
+                            if (queued != 0U && pipeline->acknowledge_playback(
+                                    discarded_local_output_generation, queued, Clock::now()) !=
+                                    wirex::bm_voice::Error::none) {
+                                set_failure("silent_playback_frame_ack_failed");
+                            }
+                        }
+                        const bool closed = radio_output->close();
+                        radio_output_open = radio_output->is_open();
+                        local_output_close_pending = radio_output_open;
+                        if (!closed || radio_output_open) {
+                            (void)local_playback.output_failed(
+                                wirex::bm_local_playback::OutputError::close_failed);
+                            local_audio_error = "waveout_close_failed";
+                        }
+                        status(local.call_active ? "bm_local_playback_device_lost"
+                                                 : "bm_local_playback_idle_device_lost");
+                    } else {
+                        set_failure("waveout_completion_queue_overflow");
+                        begin_shutdown("waveout_completion_queue_overflow");
+                    }
                 }
                 std::uint64_t completed_generation = 0U;
                 std::size_t completed_count = 0U;
                 while (radio_output->take_completed(completed_generation, completed_count)) {
+                    if (completed_generation == discarded_local_output_generation) continue;
                     const auto acknowledged = pipeline->acknowledge_playback(
                         completed_generation, completed_count, Clock::now());
                     if (acknowledged != wirex::bm_voice::Error::none &&
@@ -2683,9 +3182,24 @@ CommandResult run_loop(Shared& shared, StartConfig config)
                         counters.pcm_playback_frames += completed_count;
                     }
                 }
-                for (std::size_t submitted = 0U; submitted < 3U && radio_output->has_capacity(); ++submitted) {
+                const auto local_route = local_playback.snapshot();
+                const bool draining_silently = radio_output_playback_blocked ||
+                    (local_route.call_active && !routed_rx_hri_start_attempted &&
+                     local_route.route == wirex::bm_local_playback::Route::silent);
+                for (std::size_t submitted = 0U; submitted < 3U &&
+                     (draining_silently || radio_output->has_capacity()); ++submitted) {
                     wirex::bm_voice::PlaybackFrame frame{};
                     if (!pipeline->take_playback_pcm(frame)) break;
+                    if (draining_silently) {
+                        const auto acknowledged = pipeline->acknowledge_playback(
+                            frame.generation, 1U, Clock::now());
+                        SecureZeroMemory(frame.pcm.data(), sizeof(frame.pcm));
+                        if (acknowledged != wirex::bm_voice::Error::none) {
+                            set_failure("silent_playback_frame_ack_failed");
+                            break;
+                        }
+                        continue;
+                    }
                     const auto gain = wirex::pcm_gain::apply(
                         frame.pcm.data(), frame.sample_count, radio_playback_gain_milli);
                     const bool queued = gain.valid &&
@@ -2710,6 +3224,38 @@ CommandResult run_loop(Shared& shared, StartConfig config)
                         continue;
                     }
                     SecureZeroMemory(frame.pcm.data(), sizeof(frame.pcm));
+                    const auto local = local_playback.snapshot();
+                    if (local.call_active &&
+                        local.route == wirex::bm_local_playback::Route::local_output &&
+                        !routed_rx_hri_start_attempted) {
+                        (void)local_playback.output_failed(gain.valid
+                            ? wirex::bm_local_playback::OutputError::submit_failed
+                            : wirex::bm_local_playback::OutputError::device_lost);
+                        local_audio_error = gain.valid ? "waveout_playback_submit_failed"
+                                                       : "waveout_playback_gain_invalid";
+                        local_output_close_pending = true;
+                        const auto discarded = pipeline->acknowledge_playback(
+                            frame.generation, 1U, Clock::now());
+                        if (discarded != wirex::bm_voice::Error::none) {
+                            set_failure("silent_playback_frame_ack_failed");
+                        }
+                        discarded_local_output_generation = frame.generation;
+                        const auto remaining_inflight = pipeline->snapshot().unconfirmed_playback_frames;
+                        if (remaining_inflight != 0U && pipeline->acknowledge_playback(
+                                frame.generation, remaining_inflight, Clock::now()) != wirex::bm_voice::Error::none) {
+                            set_failure("silent_playback_frame_ack_failed");
+                        }
+                        const bool closed = radio_output->close();
+                        radio_output_open = radio_output->is_open();
+                        local_output_close_pending = radio_output_open;
+                        if (!closed || radio_output_open) {
+                            (void)local_playback.output_failed(
+                                wirex::bm_local_playback::OutputError::close_failed);
+                            local_audio_error = "waveout_close_failed";
+                        }
+                        status("bm_local_playback_failed_calls_remain_visible");
+                        break;
+                    }
                     pipeline->cancel_rx();
                     const bool closed = radio_output->close();
                     radio_output_open = radio_output->is_open();
@@ -2724,6 +3270,39 @@ CommandResult run_loop(Shared& shared, StartConfig config)
                     pending_playback_drain = false;
                     service_stream_update(stream_session->playback_drained(elapsed_ms()));
                 }
+            }
+
+            const auto local_audio_snapshot = local_playback.snapshot();
+            if (local_audio_snapshot.call_active &&
+                ((local_audio_snapshot.route == wirex::bm_local_playback::Route::silent &&
+                  !routed_rx_hri_start_attempted) || radio_output_playback_blocked)) {
+                for (std::size_t discarded_frames = 0U; discarded_frames < 3U; ++discarded_frames) {
+                    wirex::bm_voice::PlaybackFrame frame{};
+                    if (!pipeline->take_playback_pcm(frame)) break;
+                    const auto acknowledged = pipeline->acknowledge_playback(
+                        frame.generation, 1U, Clock::now());
+                    SecureZeroMemory(frame.pcm.data(), sizeof(frame.pcm));
+                    if (acknowledged != wirex::bm_voice::Error::none) {
+                        set_failure("silent_playback_frame_ack_failed");
+                        break;
+                    }
+                }
+                drain_pipeline_events();
+            }
+
+            if (local_output_close_pending && radio_output_open && radio_output->all_drained()) {
+                const bool closed = radio_output->close();
+                radio_output_open = radio_output->is_open();
+                if (!closed || radio_output_open) {
+                    (void)local_playback.output_failed(wirex::bm_local_playback::OutputError::close_failed);
+                    local_audio_error = "waveout_close_failed";
+                    status("bm_local_playback_waveout_close_failed");
+                }
+                local_output_close_pending = false;
+                local_playback.set_environment(false,
+                    radio_output_open && local_playback.snapshot().output_error ==
+                        wirex::bm_local_playback::OutputError::none);
+                publish_dirty = true;
             }
 
             pump_tx_datagrams();
@@ -2810,8 +3389,8 @@ CommandResult run_loop(Shared& shared, StartConfig config)
     report_routed_rx_cleanup(
         final_stream_state.stop_write_succeeded && final_stream_state.stop_t_record_observed);
     finish_published_rx_call("cleanup");
-    const bool serial_cleanup_ok = port == nullptr || port->close();
-    port.reset();
+    bool serial_cleanup_ok = !radio_serial_close_unconfirmed;
+    if (port) serial_cleanup_ok = close_serial_once(port) && serial_cleanup_ok;
     if (!bm_ever_ready && bm_ever_requested) {
         status("bm_session_never_ready_no_connection_confirmed");
     } else if (!bm_ever_ready) {

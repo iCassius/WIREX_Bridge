@@ -313,6 +313,32 @@ ActiveDeviceIds active_device_ids(const engine::Snapshot& snapshot, const servic
     return active;
 }
 
+std::optional<engine::AudioEndpoints> resolve_local_playback_output(
+    const services::GuiConfig& gui, const services::DeviceInventory& inventory, std::string& error) {
+    error.clear();
+    std::vector<app::devices::WaveDevice> outputs;
+    outputs.reserve(inventory.wave_out.size());
+    for (const auto& endpoint : inventory.wave_out) {
+        app::devices::WaveDevice output;
+        output.id = endpoint.wave_id;
+        output.name = endpoint.usb_audio_auto_candidate ? "USB Audio" : endpoint.name;
+        output.endpoint_id = narrow(endpoint.endpoint_id);
+        output.pcm_48000_mono_s16_supported = true; // DeviceInventory includes only usable 48 kHz mono endpoints.
+        outputs.push_back(std::move(output));
+    }
+
+    const auto resolved = app::devices::resolve_audio_output(outputs, to_selector(gui.wave_out_endpoint_id));
+    if (!resolved.ok() || !resolved.output.endpoint_id) {
+        error = resolved.message.empty() ? "WaveOut 输出设备没有唯一解析结果；请手动选择。" : resolved.message;
+        return std::nullopt;
+    }
+
+    engine::AudioEndpoints audio;
+    audio.wave_out_id = resolved.output.id;
+    audio.expected_wave_out_endpoint_id = widen(*resolved.output.endpoint_id);
+    return audio;
+}
+
 services::DeviceSelectionSnapshot resolve_device_selection(const services::GuiConfig& gui,
                                                              const services::DeviceInventory& inventory,
                                                              const ActiveDeviceIds& active) {
@@ -567,8 +593,27 @@ services::DeviceSelectionSnapshot resolve_device_selection(const services::GuiCo
     if (!output_auto) {
         set_explicit_wave(result.wave_out, inventory.wave_out);
     } else {
-        set_auto_wave(result.wave_out, inventory.wave_out, inventory.wave_in, input_auto,
-                      gui.wave_in_endpoint_id, audio_selection.output, audio_selection.output.endpoint_id.has_value());
+        std::string output_error;
+        const auto local_output = resolve_local_playback_output(gui, inventory, output_error);
+        if (local_output && !local_output->expected_wave_out_endpoint_id.empty()) {
+            const auto matches = endpoint_matches(inventory.wave_out,
+                narrow(local_output->expected_wave_out_endpoint_id));
+            if (matches.size() == 1U) {
+                result.wave_out.state = DeviceResolutionState::resolved;
+                result.wave_out.resolved_id = matches.front()->endpoint_id;
+                result.wave_out.name = matches.front()->name;
+                result.wave_out.reason = "WaveOut 可独立选择；已按唯一 USB Audio 候选或唯一可用输出解析。";
+            } else {
+                result.wave_out.state = DeviceResolutionState::ambiguous;
+                result.wave_out.reason = "WaveOut 自动解析结果未在当前设备目录中唯一匹配；请手动选择。";
+            }
+        } else {
+            const auto has_output = std::any_of(inventory.wave_out.begin(), inventory.wave_out.end(),
+                [](const services::AudioEndpointInfo& endpoint) { return !endpoint.endpoint_id.empty(); });
+            result.wave_out.state = has_output ? DeviceResolutionState::ambiguous : DeviceResolutionState::missing;
+            result.wave_out.reason = output_error.empty()
+                ? "WaveOut 自动选择没有唯一结果；请手动选择。" : std::move(output_error);
+        }
     }
 
     const auto apply_active_serial = [&](services::ResolvedDeviceSelection& selection, const std::wstring& active_port) {

@@ -22,6 +22,15 @@ namespace wirex::engine::detail {
 
 inline constexpr std::size_t event_queue_capacity = 1024U;
 
+[[nodiscard]] inline bool quarantined_rx_output_cleanup_ready(
+    bool output_blocked, bool output_handle_open, bool output_drained,
+    std::size_t queued_playback_frames, std::size_t unconfirmed_playback_frames,
+    bool hri_t0_confirmed) noexcept
+{
+    return output_blocked && hri_t0_confirmed && queued_playback_frames == 0U &&
+        unconfirmed_playback_frames == 0U && (!output_handle_open || output_drained);
+}
+
 // 有界事件队列；不加锁，由 Shared::mutex 保护。溢出时丢弃最旧事件，下次 drain 先返回一条 warning。
 class EventQueue final {
 public:

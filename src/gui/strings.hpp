@@ -61,6 +61,14 @@ namespace wirex::gui {
                             "Could not open or configure the HRI port. Check the radio connection and whether another app is using the port, then retry.") /* new */ \
     X(err_radio_resources,  "无法分配电台连接资源；请重启应用后重试。", \
                             "Could not allocate radio connection resources. Restart the application and retry.") /* new */ \
+    X(err_hri_version_timeout,"电台未在等待时间内返回 HRI 版本信息；请检查 USB/串口连接后重试。", \
+                            "The radio did not return its HRI version in time. Check the USB/serial connection and retry.") /* new */ \
+    X(err_hri_version_mismatch,"HRI 协议版本与程序不匹配；请确认电台固件和程序版本后重试。", \
+                            "The HRI protocol version does not match this application. Check the radio firmware and application versions.") /* new */ \
+    X(err_hri_malformed_record,"电台返回的数据格式无效；请重新连接电台后重试。", \
+                            "The radio returned an invalid HRI data record. Reconnect the radio and retry.") /* new */ \
+    X(err_hri_y_ack_timeout,"电台未确认 HRI 初始化；请检查连接状态后重试。", \
+                            "The radio did not acknowledge HRI initialization. Check the connection and retry.") /* new */ \
     X(err_bm_password,      "BM 密码未填写；请完成 BM 账户配置并保存。", \
                             "BM password is missing. Complete and save the BM account settings.") /* new */ \
     X(err_bm_profile,       "BM 账户或服务器配置无效；请检查呼号、ID 和服务器设置。", \
@@ -189,6 +197,24 @@ namespace wirex::gui {
     X(audio_devices_applied,"音频设备已切换。",                   "Audio devices switched.") \
     X(audio_devices_failed, "音频设备切换失败，请检查设备后重试。", "Audio device switch failed. Check devices and retry.") \
     X(audio_devices_next_connection,"下次连接时使用所选设备。",    "Selected devices will be used on the next connection.") \
+    X(local_playback,       "电脑播放",                           "PC playback")                     /* new */ \
+    X(local_audio_route_status,"音频路由",                        "Audio route")                    /* new */ \
+    X(local_playback_inactive,"未启用",                            "Inactive")                        /* new */ \
+    X(local_playback_ready, "就绪",                                "Ready")                           /* new */ \
+    X(local_playback_playing,"播放中",                             "Playing")                         /* new */ \
+    X(local_playback_unavailable,"不可用",                         "Unavailable")                    /* new */ \
+    X(local_playback_failed,"失败",                                "Failed")                          /* new */ \
+    X(local_playback_route_radio,"电台音频",                       "Radio audio")                     /* new */ \
+    X(local_playback_route_output,"电脑输出",                      "PC output")                       /* new */ \
+    X(local_playback_route_silent,"未播放",                        "No playback")                    /* new */ \
+    X(local_playback_error_selection,"未找到可用的电脑音频输出设备；请选择 WaveOut 设备。", \
+                            "No usable PC audio output was found. Select a WaveOut device.") /* new */ \
+    X(local_playback_error_open,"无法打开电脑音频输出设备。",      "Could not open the PC audio output device.") /* new */ \
+    X(local_playback_error_submit,"电脑音频数据提交失败。",        "Could not submit PC audio data.") /* new */ \
+    X(local_playback_error_lost,"电脑音频设备已断开。",           "The PC audio device was disconnected.") /* new */ \
+    X(local_playback_error_close,"无法关闭旧的电脑音频输出设备。", "Could not close the previous PC audio output device.") /* new */ \
+    X(local_playback_switch_busy,"通话期间无法切换电脑音频输出；结束通话后重试。", \
+                            "PC audio output cannot be changed during a call. Retry after the call ends.") /* new */ \
     X(input,                "输入",                                "Input") \
     X(output,               "输出",                                "Output") \
     X(refresh_devices,      "刷新设备",                            "Refresh devices") \

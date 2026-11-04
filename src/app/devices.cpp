@@ -776,6 +776,50 @@ std::string default_endpoint_selection(const std::vector<WaveDevice>& devices, s
     return count == 1 ? *usb->endpoint_id : std::string("auto");
 }
 
+AudioOutputSelection resolve_audio_output(const std::vector<WaveDevice>& outputs, std::string_view selector)
+{
+    AudioOutputSelection result;
+    const bool automatic = selector.empty() || selector == "auto";
+    const WaveDevice* match = nullptr;
+    std::size_t count = 0U;
+    std::size_t usable_count = 0U;
+    const WaveDevice* unique_usable = nullptr;
+    for (const WaveDevice& output : outputs) {
+        if (!usable(output)) continue;
+        ++usable_count;
+        unique_usable = &output;
+        if (automatic && is_usb_audio_name(output.name)) {
+            match = &output;
+            ++count;
+        } else if (!automatic && iequals(*output.endpoint_id, selector)) {
+            match = &output;
+            ++count;
+        }
+    }
+    if (automatic && count == 0U && usable_count == 1U) {
+        match = unique_usable;
+        count = 1U;
+    }
+    if (count == 1U) {
+        result.output = *match;
+        return result;
+    }
+    if (automatic && usable_count == 0U) {
+        result.error = AudioResolveError::no_usable_output;
+        result.message = "没有可用的 48 kHz 单声道 WaveOut 端点；来话仍会显示，请手动选择输出设备后重试。";
+    } else if (automatic) {
+        result.error = AudioResolveError::output_not_unique;
+        result.message = "发现多个可用的 WaveOut 端点；来话仍会显示，请手动选择输出设备。";
+    } else if (count == 0U) {
+        result.error = AudioResolveError::saved_output_missing;
+        result.message = "已选择的 WaveOut endpoint 当前没有唯一枚举到；来话仍会显示，请刷新设备或手动选择。";
+    } else {
+        result.error = AudioResolveError::output_not_unique;
+        result.message = "选择的 WaveOut endpoint 对应多条设备记录；请刷新设备列表后手动选择。";
+    }
+    return result;
+}
+
 AudioPair resolve_audio_endpoints(const std::vector<WaveDevice>& inputs, const std::vector<WaveDevice>& outputs,
     std::string_view wave_in_selector, std::string_view wave_out_selector, bool hri_identified)
 {

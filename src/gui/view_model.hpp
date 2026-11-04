@@ -175,6 +175,7 @@ public:
     void quick_call(const ChannelKey& key);      // engine.quick_call_join
     void commit_gains();                         // engine.set_audio_gains
     void set_audio_devices(std::wstring wave_in_endpoint_id, std::wstring wave_out_endpoint_id);
+    void set_audio_output(std::wstring wave_out_endpoint_id); // BM-only output selection; no HRI/WaveIn required
     void set_history_target();                   // engine.replace_tx_policy（来话历史所选条目）
 
     // ---------- 其它服务 ----------

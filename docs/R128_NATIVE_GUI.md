@@ -1,6 +1,6 @@
 # R128 全原生 GUI 重构（设计决定）
 
-更新：2026-11-04。对应 TODO 3.3。分支 `feat/r128-native-gui`。
+更新：2026-11-05。对应 TODO 3.3。分支 `feat/r128-native-gui`。
 
 ## 决定
 
@@ -38,16 +38,16 @@ UI 线程 (ImGui/DX11, MsgWaitForMultipleObjects, 空闲 ≤10 fps)
 - GUI 离线截图（中/英）人工视检；空闲 CPU 与内存给出实测值。
 - 实机：TODO 第一节各项要用新 GUI 重新验收一遍，才能删除旧 UI。
 
-## 进度（2026-11-04）
+## 进度（2026-11-05）
 
-R128 的引擎拆分、原生界面、BM/HRI 分层连接、启动组呼自动激活和串口/音频设备显示已集成。最新 dirty tree 源码基于 `16caaa7`；Native 与 app 离线测试、GUI Release 构建以及中英文隔离截图均已通过。当前 EXE 仍是构建候选，正式打包、BM RTT 在 GUI 的显示、真实设备与 RF 验收仍未完成，因此不退役旧 UI，也不把当前 EXE 候选称为正式发布。
+R128 的原生界面、Engine/BM/HRI 分层连接、启动组呼自动激活、BM-only 本机来话播放和串口/音频设备显示均已进入当前 dirty tree。最新验证源码的 HEAD 基线是 `8e2ce8ea2dde08e452565645107675a4c489953a`；下列产物由该基线上的未提交改动生成，不是正式发布。Native、app 和 GUI 离线检查通过；真实 BM、HRI/CAT 串口、音频驱动、PTT 和 RF 验收仍未进行。用户报告的 HRI 实机握手失败根因尚未确认；ImGui 重复 ID 问题已单独修复，不能据此推断 HRI 握手根因。
 
 | 项 | 结果 |
 | --- | --- |
-| Native 与引擎 | 2026-11-04 最新 dirty tree 的 `tools/build-bm-bridge.ps1` 编译通过，清单中的 41 个离线测试全部通过；构建来源提交为 `16caaa7b6e9cdaa331e20af4b8b59a83e5a6089d`。`engine_test` 新增 BM/HRI 独立生命周期、音频句柄拒绝关闭后的恢复、BM 停止收尾、配置失败后禁止旧 profile 登录，以及拒绝命令先清密码再兑现 future 的覆盖。 |
-| app 服务测试 | 最新 `tools/build-app-tests.ps1`：13 个测试目标通过、0 warning；config 396、devices 83、CAT 163、fake CAT 生命周期 6、CAT 表单同步 22、BM API 285、RadioID 234、GUI config bridge 109；BM profile ViewModel 测试 16 项、operation-event queue 测试 9 项。GUI config bridge 检查 Auto 解析、候选歧义、拔出/重插、配置保持、预览 ID 与启动/CAT helper 一致，以及 CAT busy/断开时不把旧 COM 报成活动端口。 |
-| 音频 meter | `audio_peak_window_test` 的 6 项滑窗、过期、范围夹紧和 NaN 检查通过。 |
-| AP_PC GUI 构建 | 最新 GUI Release 来源为 dirty tree 提交 `16caaa7b6e9cdaa331e20af4b8b59a83e5a6089d`，项目代码 0 warning；EXE 位于 `build/_work/wirex-gui-16caaa7-dirty-20261104-113212/WirexBridge.exe`，SHA-256 `8cc039941fc7e688357c4cbc63f99b27ecff7fd77c94659f38d7262c7eabec7d`。中文、英文 FakeEngine 截图为 1360×900，人工视检通过，文件在 `build/_work/validation-16caaa7-20261104-113212/screenshots/`。截图使用模拟引擎和模拟配置，没有打开真实串口、CAT、BM 或音频端点。正式 ZIP、IME 人工验证、实机验收和提交后 clean HEAD 构建仍未完成。 |
+| Native 与 Engine | `tools/build-bm-bridge.ps1` provenance 显示 41/41 个 Native 测试通过，包含 `engine_test`。构建来自 HEAD `8e2ce8ea2dde08e452565645107675a4c489953a` 的 dirty tree，产物记录在 `build/_work/wirex-bridge-8e2ce8e-dirty-20261104-232649/build-provenance.json`。Engine fake 集成覆盖 BM-only 来话、隔离 WaveOut、FakeSerial T3/T0 确认、队列/未确认帧/设备排空门控以及首通后续呼叫；这些测试没有连接实际电台或 BM 服务器。 |
+| app 测试 | `tools/build-app-tests.ps1` 本轮实际执行 14 个目标，全部通过、0 warning：`app_config_test`、`app_devices_test`、`app_radio_cat_test`、`gui_fake_cat_lifecycle_test`、`gui_cat_form_sync_test`、`bm_local_playback_test`、`gui_startup_group_activation_test`、`gui_startup_group_view_model_test`、`gui_bm_profile_race_view_model_test`、`gui_operation_event_queue_test`、`gui_radio_lifecycle_view_model_test`、`app_bm_api_test`、`app_radio_identity_test`、`gui_config_bridge_test`。运行产物在 `build/app-tests/`。另有 `audio_peak_window_test` 的 6 项滑窗、过期、范围夹紧和 NaN 检查通过。 |
+| GUI 构建与截图 | GUI Release provenance 位于 `build/_work/wirex-gui-8e2ce8e-dirty-20261104-232914/gui-build-provenance.json`，MSVC 2019 项目代码 0 warning，EXE SHA-256 为 `eeeb71434bfb434b67fda49065f65653fd48fab5812910eb890ab124a23ea7df`。新旧中文/英文界面对照及标题行对齐检查通过；1360×900、100% DPI 截图位于 `build/_work/ui-header-alignment-20261105/zh-1360.png`、`build/_work/ui-header-alignment-20261105/en-isolated/en-1360.png`。这组 FakeEngine 截图没有连接真实设备。 |
+| 重复 ID harness | `tools/run-gui-duplicate-item-harness.ps1` 使用生产环境共用的 `ItemIdScope` 编译并运行通过。Harness 检查三组相同可见标签（Auto/手动 COM5、重复 COM5、同名 USB 音频端点）的 ID 冲突，并执行 5 次点击确认选择结果；输出位于 `build/_work/ui-id-harness-20261104-233433/`。 |
 | BM RTT | 引擎侧既有状态报告含 RTT 字段，但 GUI `Snapshot` 尚未接入这些字段；主界面目前明确显示“暂无数据 / No data”。GUI RTT 显示与实际 BM 连接测量仍待完成。 |
 
 ### BM/HRI 生命周期与配置安全增补（2026-11-04）
@@ -78,8 +78,8 @@ R128 的引擎拆分、原生界面、BM/HRI 分层连接、启动组呼自动�
 
 ### 本轮字体、布局与缩放验证
 
-- 字体从 Windows Fonts 读取：拉丁字符使用 Segoe UI，CJK 优先合并等线，缺少等线时回退黑体，最后使用 ImGui 默认字体；未使用微软雅黑。ImGui 1.92 保留自动水平过采样（`OversampleH=0`），不启用 `PixelSnapH`，以保留分数字号和分数 DPI 下的排版能力。
-- 主界面右侧显示发送增益和状态，频道卡片使用显式布局；中英文截图中六张频道卡、底部按钮、BM 控件、两种增益、meter 和状态指示均完整可见。当前视检为 1360×900、100% DPI。125% DPI 下的实机显示尚未检查；字体设置和像素对齐代码不作为该缩放比例的验证结果。
+- 字体从 Windows Fonts 读取：拉丁字符使用 Segoe UI，CJK 优先合并等线，缺少等线时回退黑体，最后使用 ImGui 默认字体；未使用微软雅黑。当前仍由 ImGui stb 栅格化，不使用 DirectWrite。`PixelSnapH` 与物理像素对齐后，“电台控制”标题局部字形覆盖更集中，但改善有限；该结果是局部截图目视比较，不是更换渲染引擎或可读性测量。
+- 主界面标题行对齐、频道卡片和控件布局的中英文新旧截图对比已通过；六张频道卡、底部按钮、BM 控件、增益、meter 和状态指示均完整可见。截图为 1360×900、100% DPI。125% DPI 下的显示尚未验证；没有测量文字与背景的量化对比度，也没有在目标显示器上做可读性验收。
 
 ### 设备选择显示与热插拔
 
@@ -90,8 +90,9 @@ R128 的引擎拆分、原生界面、BM/HRI 分层连接、启动组呼自动�
 
 ### 待办
 
-1. 实机：不带 `--fake` 启动，依次验证连接串口 → 连接 BM → TG 收听/发射 → Quick Call → CAT 门控 → 身份写回 → 关闭窗口时有界收尾。
-2. 打包：在 `ZipOnlyRelease.psm1` 新增 GUI profile（单个 `WirexBridge.exe` 与所需 `licenses/`）；内置 HRI 模板不再作为随包的 `private/device-y.bin` 文件。完成 profile 检查后再交付候选包。
-3. 接入 BM RTT 到引擎 `Snapshot` 与 GUI，展示有效值和无数据状态；当前界面仍显示“暂无数据”。
-4. 人工验证 IME 中文输入并复查中英文截图；随后在 FTX-1、HRI-200、CAT 串口与音频设备上验证连接、切换和收尾行为。
-5. 实机通过后进入步骤 5：删除 WPF/PowerShell UI、launcher 和 control-v2 适配层。
+1. HRI 实机：复现用户报告的握手失败并记录非敏感诊断字段。当前 fake HRI 覆盖了版本、Y/0、T3/T0 等协议阶段，但无法确定用户设备实际失败的根因。
+2. 实机：不带 `--fake` 启动，验证 HRI/CAT 串口、BM 连接、BM-only 本机播放、TG 收听/发射、Quick Call、CAT 门控、身份写回和关闭窗口时有界收尾。BM-only 本机播放目前只在 FakeMaster/FakeWaveOut 环境验证。
+3. 打包：在 `ZipOnlyRelease.psm1` 新增 GUI profile（单个 `WirexBridge.exe` 与所需 `licenses/`）；内置 HRI 模板不再作为随包的 `private/device-y.bin` 文件。完成 profile 检查后再交付候选包。
+4. 接入 BM RTT 到引擎 `Snapshot` 与 GUI，展示有效值和无数据状态；当前界面仍显示“暂无数据”。
+5. 人工验证 IME 中文输入，并在 125% DPI 下复查布局、字体和对比度。
+6. 实机通过后再删除 WPF/PowerShell UI、launcher 和 control-v2 适配层。

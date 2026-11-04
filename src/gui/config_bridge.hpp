@@ -89,6 +89,12 @@ struct ActiveDeviceIds {
     const services::GuiConfig& gui, const services::DeviceInventory& inventory,
     const ActiveDeviceIds& active = {});
 
+// Resolve only the selected WaveOut for BM-only local receive playback. This
+// accepts the saved USB Audio auto choice when unique, or any single usable
+// render endpoint; it does not require HRI COM, WaveIn, or a paired device.
+[[nodiscard]] std::optional<engine::AudioEndpoints> resolve_local_playback_output(
+    const services::GuiConfig& gui, const services::DeviceInventory& inventory, std::string& error);
+
 [[nodiscard]] std::optional<engine::StartConfig> make_start_config(const services::GuiConfig& gui,
                                                                     const StartInputs& inputs, std::string& error);
 // 不解析串口或音频端点；用于先启动常驻 BM runtime。无线端点由 make_start_config 单独解析。

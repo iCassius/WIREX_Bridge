@@ -437,10 +437,23 @@ std::future<CommandResult> FakeEngine::start(engine::StartConfig config) {
             s->state.hri_ready = s->state.serial_open;
             s->state.wave_in_open = s->state.serial_open;
             s->state.wave_out_open = s->state.serial_open;
+            s->state.local_audio = {};
+            s->state.local_audio.radio_ready = s->state.hri_ready;
+            s->state.local_audio.output_open = s->state.wave_out_open ||
+                !config.audio.expected_wave_out_endpoint_id.empty();
+            s->state.local_audio.audio_state = s->state.local_audio.output_open
+                ? bm_local_playback::AudioState::ready
+                : bm_local_playback::AudioState::failed;
+            if (!s->state.local_audio.output_open) {
+                s->state.local_audio.output_error = bm_local_playback::OutputError::selection_unavailable;
+            }
+            s->state.local_audio_error = config.local_audio_start_error;
             if (s->state.serial_open) {
                 s->state.wave_in_endpoint_id = config.audio.expected_wave_in_endpoint_id;
                 s->state.wave_out_endpoint_id = config.audio.expected_wave_out_endpoint_id;
                 s->state.radio_error.clear();
+                s->state.local_audio.radio_ready = true;
+                s->state.local_audio.audio_state = bm_local_playback::AudioState::inactive;
             }
             s->state.radio_playback_gain_milli = config.radio_playback_gain_milli;
             s->state.mic_transmit_gain_milli = config.mic_transmit_gain_milli;
@@ -691,18 +704,29 @@ std::future<CommandResult> FakeEngine::set_audio_endpoints(engine::AudioEndpoint
     auto* s = impl_.get();
     return s->command(80ms, [s, audio = std::move(audio)]() mutable {
         auto& st = s->state;
-        if (audio.expected_wave_in_endpoint_id.empty() || audio.expected_wave_out_endpoint_id.empty()) {
+        const bool update_input = !audio.expected_wave_in_endpoint_id.empty();
+        const bool update_output = !audio.expected_wave_out_endpoint_id.empty();
+        if (!update_input && !update_output) {
             return result(CommandStatus::invalid, st.audio_endpoints_revision, "invalid_audio_endpoints");
         }
         if (st.phase != engine::Phase::running && st.phase != engine::Phase::starting) {
             return result(CommandStatus::not_ready, st.audio_endpoints_revision, "engine_not_running");
         }
-        if (st.wave_in_endpoint_id == audio.expected_wave_in_endpoint_id &&
-            st.wave_out_endpoint_id == audio.expected_wave_out_endpoint_id) {
+        const bool input_changed = update_input && st.wave_in_endpoint_id != audio.expected_wave_in_endpoint_id;
+        const bool output_changed = update_output && st.wave_out_endpoint_id != audio.expected_wave_out_endpoint_id;
+        if (!input_changed && !output_changed) {
             return result(CommandStatus::idempotent, st.audio_endpoints_revision);
         }
-        st.wave_in_endpoint_id = std::move(audio.expected_wave_in_endpoint_id);
-        st.wave_out_endpoint_id = std::move(audio.expected_wave_out_endpoint_id);
+        if (input_changed) st.wave_in_endpoint_id = std::move(audio.expected_wave_in_endpoint_id);
+        if (output_changed) {
+            st.wave_out_endpoint_id = std::move(audio.expected_wave_out_endpoint_id);
+            st.local_audio.output_open = true;
+            st.local_audio.output_error = bm_local_playback::OutputError::none;
+            st.local_audio.audio_state = st.local_audio.radio_ready
+                ? bm_local_playback::AudioState::inactive
+                : bm_local_playback::AudioState::ready;
+            st.local_audio_error.clear();
+        }
         ++st.audio_endpoints_revision;
         return result(CommandStatus::accepted, st.audio_endpoints_revision);
     });

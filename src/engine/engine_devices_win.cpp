@@ -50,6 +50,9 @@ public:
 
     bool close() noexcept override
     {
+        // Consume this wrapper's ownership before the one CloseHandle attempt. A false return
+        // cannot prove whether the external serial resource remains valid, and retrying a stale
+        // numeric HANDLE could close an unrelated handle after Windows reuses it.
         const HANDLE raw = handle_.release();
         return raw == nullptr || raw == INVALID_HANDLE_VALUE || CloseHandle(raw) != FALSE;
     }

@@ -30,6 +30,7 @@ $tests = @(
     @{ Name = 'app_radio_cat_test'; Sources = @('tests\app_radio_cat_test.cpp', 'src\app\radio_cat.cpp') },
     @{ Name = 'gui_fake_cat_lifecycle_test'; Sources = @('tests\gui_fake_cat_lifecycle_test.cpp', 'src\gui\fake_engine.cpp') },
     @{ Name = 'gui_cat_form_sync_test'; Sources = @('tests\gui_cat_form_sync_test.cpp') },
+    @{ Name = 'bm_local_playback_test'; Sources = @('tests\bm_local_playback_test.cpp') },
     @{ Name = 'gui_startup_group_activation_test'; Sources = @('tests\gui_startup_group_activation_test.cpp') },
     @{ Name = 'gui_startup_group_view_model_test'; Sources = @('tests\gui_startup_group_view_model_test.cpp', 'src\gui\view_model.cpp', 'src\gui\config_bridge.cpp', 'src\app\config.cpp', 'src\app\json.cpp', 'src\app\devices.cpp', 'src\app\bm_servers.cpp', 'src\bm_connection_config.cpp', 'src\talkgroup_routing.cpp') },
     @{ Name = 'gui_bm_profile_race_view_model_test'; Sources = @('tests\gui_bm_profile_race_view_model_test.cpp', 'src\gui\view_model.cpp', 'src\gui\config_bridge.cpp', 'src\app\config.cpp', 'src\app\json.cpp', 'src\app\devices.cpp', 'src\app\bm_servers.cpp', 'src\bm_connection_config.cpp', 'src\talkgroup_routing.cpp') },

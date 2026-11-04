@@ -7,6 +7,7 @@
 // 引擎语义与原 run_bm_bridge 一致；旧 --ui-pipe 入口成为本 API 之上的管道适配层。
 
 #include "wirex/bm_session.hpp"
+#include "wirex/bm_local_playback.hpp"
 #include "wirex/dmr_call.hpp"
 #include "wirex/engine_diagnostics.hpp"
 #include "wirex/talkgroup_routing.hpp"
@@ -66,6 +67,9 @@ struct StartConfig {
     // radio_start_error 仅说明这次没有打开电台；不会自动尝试其它端口。
     bool start_radio{true};
     std::string radio_start_error{};
+    // GUI BM-only playback can report why no unique output was configured;
+    // BM runtime still starts and keeps validated incoming calls visible.
+    std::string local_audio_start_error{};
 
     // R128 增补（只增不改）：
     // 已在调用方解析好的 Master 地址；bm_start_disconnected=false 时优先使用，省略则在引擎线程有界解析。
@@ -124,6 +128,8 @@ struct Snapshot {
     std::wstring wave_in_endpoint_id{};
     std::wstring wave_out_endpoint_id{};
     std::uint64_t audio_endpoints_revision{};
+    bm_local_playback::Snapshot local_audio{};
+    std::string local_audio_error{};
     BmLink bm_link{BmLink::disabled};
     bool bm_requested_enabled{};
     std::uint64_t bm_connection_revision{};
@@ -143,6 +149,8 @@ struct Snapshot {
     // R128 增补（只增不改）：原 control-v2 status / routing.status 需要的原始状态。
     bm::State bm_state{bm::State::stopped};
     hri_session::Phase hri_phase{hri_session::Phase::not_started};
+    bool hri_t3_record_observed{};
+    bool hri_t0_record_observed{};
     bool bm_transport_open{};
     bool bm_resolving{};
     std::string routing_json{};            // routing_state::routing_json 视图；未启用路由时为空

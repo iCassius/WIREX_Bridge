@@ -159,6 +159,19 @@ struct AudioPair {
     [[nodiscard]] bool ok() const noexcept { return error == AudioResolveError::none; }
 };
 
+struct AudioOutputSelection {
+    WaveDevice output{};
+    AudioResolveError error{AudioResolveError::none};
+    std::string message{};
+    [[nodiscard]] bool ok() const noexcept { return error == AudioResolveError::none; }
+};
+
+// BM-only receive playback resolves its render endpoint independently from
+// HRI COM and WaveIn. "auto" selects only when exactly one usable render
+// endpoint exists; otherwise the caller should ask the user to choose one.
+[[nodiscard]] AudioOutputSelection resolve_audio_output(
+    const std::vector<WaveDevice>& outputs, std::string_view selector);
+
 // Non-interactive start-time resolution (start-bm-radio-bridge.ps1 with
 // -NoInteractive): explicit selectors must be enumerated exactly once; "auto"
 // sides use the unique USB Audio input/output pair, which is only considered

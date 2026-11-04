@@ -29,6 +29,8 @@ public:
     // 非阻塞读取已到达的字节。
     [[nodiscard]] virtual SerialReadStatus read_available(std::uint8_t* buffer, std::size_t capacity,
                                                           std::size_t& received) noexcept = 0;
+    // One-shot ownership transfer. false means CloseHandle/driver close was not confirmed;
+    // callers must not retry on this wrapper because the native handle may already be invalid.
     [[nodiscard]] virtual bool close() noexcept = 0;
 };
 
