@@ -38,6 +38,8 @@ enum class Error : std::uint8_t {
     profile_invalid,
     transport_open_failed,
     media_cleanup_timeout,
+    master_rejected,
+    session_failed,
 };
 
 [[nodiscard]] const char* error_name(Error error) noexcept;
@@ -83,10 +85,17 @@ public:
     [[nodiscard]] bool open_initial_transport() noexcept;
     void abort_initial_startup(std::uint64_t now_ms) noexcept;
 
+    // revision 是本次请求的新版本；初始 snapshot revision=0 时第一次请求传 1。
     [[nodiscard]] RequestResult set_enabled(bool enabled, std::uint64_t revision,
                                             std::uint64_t now_ms) noexcept;
+    [[nodiscard]] RequestResult configure(bm::Profile profile, std::string master_host,
+                                          std::uint16_t master_port) noexcept;
     void tick(std::uint64_t now_ms) noexcept;
     [[nodiscard]] bool disable_pending() const noexcept { return disable_pending_; }
+    [[nodiscard]] bool disable_cleanup_pending() const noexcept
+    {
+        return disable_pending_ || stop_queued_ || resolver_cleanup_pending_;
+    }
     [[nodiscard]] bool begin_disable(std::uint64_t now_ms) noexcept;
     void finish_disable() noexcept;
     void note_media_cleanup_timeout() noexcept { error_ = Error::media_cleanup_timeout; }

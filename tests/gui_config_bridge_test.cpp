@@ -19,6 +19,7 @@
 #include <iostream>
 #include <iterator>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -409,23 +410,44 @@ void test_start_config() {
     sc = cb::make_start_config(g, good_inputs(), error);
     check(sc && sc->tx_policy.target.destination_id == 46001U, "start tx target fallback to first channel");
 
-    struct Bad { const char* name; void (*mutate)(wirex::gui::services::GuiConfig&, cb::StartInputs&); };
+    error = "stale-error";
+    auto runtime_only = cb::make_runtime_config(sample_gui(), 7U, error);
+    check(runtime_only && !runtime_only->start_radio && runtime_only->bm_start_disconnected &&
+              runtime_only->hri_port.empty() && runtime_only->audio.expected_wave_in_endpoint_id.empty() &&
+              error.empty(),
+          "runtime-only config clears stale errors and does not resolve or open radio devices");
+
+    struct Bad {
+        const char* name;
+        void (*mutate)(wirex::gui::services::GuiConfig&, cb::StartInputs&);
+        bool bm_only_invalid;
+    };
     const Bad bad[] = {
-        {"no_channels", [](auto& gg, auto&) { gg.channels.clear(); }},
-        {"no_callsign", [](auto& gg, auto&) { gg.callsign.clear(); }},
-        {"no_dmr_id", [](auto& gg, auto&) { gg.dmr_id = 0U; }},
-        {"long_callsign", [](auto& gg, auto&) { gg.callsign = "ABCDEFGHI"; }},
-        {"bad_master", [](auto& gg, auto&) { gg.master_host = "bad host"; }},
-        {"no_hri", [](auto&, auto& in) { in.serial = catalog({{"COM6", false}}); }},
-        {"saved_endpoint_missing", [](auto& gg, auto&) { gg.wave_in_endpoint_id = L"{gone}"; }},
-        {"usb_not_unique", [](auto&, auto& in) { in.wave_inputs.push_back(wave(3U, "USB Audio Device", "{in-usb2}")); }},
+        {"no_channels", [](auto& gg, auto&) { gg.channels.clear(); }, true},
+        {"no_callsign", [](auto& gg, auto&) { gg.callsign.clear(); }, true},
+        {"no_dmr_id", [](auto& gg, auto&) { gg.dmr_id = 0U; }, true},
+        {"long_callsign", [](auto& gg, auto&) { gg.callsign = "ABCDEFGHI"; }, true},
+        {"bad_master", [](auto& gg, auto&) { gg.master_host = "bad host"; }, true},
+        {"no_hri", [](auto&, auto& in) { in.serial = catalog({{"COM6", false}}); }, false},
+        {"saved_endpoint_missing", [](auto& gg, auto&) { gg.wave_in_endpoint_id = L"{gone}"; }, false},
+        {"usb_not_unique", [](auto&, auto& in) { in.wave_inputs.push_back(wave(3U, "USB Audio Device", "{in-usb2}")); }, false},
     };
     for (const auto& b : bad) {
         auto gg = sample_gui();
         auto in = good_inputs();
         b.mutate(gg, in);
         error.clear();
-        check(!cb::make_start_config(gg, in, error) && !error.empty(), std::string("start rejects ") + b.name);
+        const auto candidate = cb::make_start_config(gg, in, error);
+        if (b.bm_only_invalid) {
+            check(candidate && candidate->start_radio && error.empty(),
+                  std::string("BM-only invalid field does not block radio start: ") + b.name);
+            if (candidate && std::string_view(b.name) == "no_channels") {
+                check(!candidate->tx_policy.transmit_enabled,
+                      "an empty saved channel list leaves BM transmit disabled while radio starts");
+            }
+        } else {
+            check(!candidate && !error.empty(), std::string("radio selection rejects ") + b.name);
+        }
         check(error.find("secret") == std::string::npos, std::string("error has no password ") + b.name);
     }
 

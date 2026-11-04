@@ -39,6 +39,9 @@ private:
 
 enum class CommandKind : std::uint8_t {
     set_bm_connection,
+    configure_bm,
+    connect_radio,
+    disconnect_radio,
     replace_rx_policy,
     replace_tx_policy,
     quick_call_join,
@@ -55,6 +58,8 @@ struct Command {
     std::uint32_t first{};                         // source_id / radio gain
     std::uint32_t second{};                        // mic gain
     AudioEndpoints audio_endpoints{};
+    std::optional<RadioStartConfig> radio_config{};
+    std::optional<BmTarget> bm_target{};
     talkgroup_routing::RxPolicy rx_policy{};
     talkgroup_routing::TxTarget tx_target{};
     talkgroup_routing::GroupRoute group{};
@@ -94,6 +99,11 @@ struct Shared {
     [[nodiscard]] StopRequest stop_state();
     void notify_wakeup() noexcept;
 };
+
+// BM 密码可能保存在尚未处理的命令中。兑现拒绝结果前先擦除命令中的密码。
+[[nodiscard]] bool wipe_secret(std::string& secret) noexcept;
+[[nodiscard]] bool wipe_command_secret(Command& command) noexcept;
+[[nodiscard]] bool resolve_rejected_command(Command& command, CommandResult result) noexcept;
 
 // 引擎线程主体。返回最终结果；所有 promise 由调用方（线程入口）兑现。
 [[nodiscard]] CommandResult run_loop(Shared& shared, StartConfig config);

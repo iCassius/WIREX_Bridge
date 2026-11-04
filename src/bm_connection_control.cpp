@@ -206,6 +206,8 @@ const char* error_name(Error error) noexcept
     case Error::profile_invalid: return "profile_invalid";
     case Error::transport_open_failed: return "transport_open_failed";
     case Error::media_cleanup_timeout: return "media_cleanup_timeout";
+    case Error::master_rejected: return "master_rejected";
+    case Error::session_failed: return "session_failed";
     }
     return "none";
 }
@@ -378,6 +380,22 @@ RequestResult ConnectionControl::set_enabled(bool enabled, std::uint64_t revisio
     return RequestResult::accepted;
 }
 
+RequestResult ConnectionControl::configure(bm::Profile profile, std::string master_host,
+                                          std::uint16_t master_port) noexcept
+{
+    if (requested_enabled_ || transport_.is_open() || resolving_ || resolver_cleanup_pending_ ||
+        (resolver_ && resolver_->pending()) || disable_pending_ || stop_queued_) {
+        erase_password(profile.password);
+        return RequestResult::transition_busy;
+    }
+    erase_password(profile_.password);
+    profile_ = std::move(profile);
+    master_host_ = std::move(master_host);
+    master_port_ = master_port;
+    error_ = Error::none;
+    return RequestResult::accepted;
+}
+
 RequestResult ConnectionControl::start_resolved_session(const bm::Endpoint& endpoint,
                                                         std::uint64_t now_ms) noexcept
 {
@@ -402,6 +420,19 @@ RequestResult ConnectionControl::start_resolved_session(const bm::Endpoint& endp
 void ConnectionControl::tick(std::uint64_t now_ms) noexcept
 {
     poll_resolver(now_ms);
+    if (!requested_enabled_ || resolving_ || resolver_cleanup_pending_) return;
+    const auto state = session_.snapshot();
+    if (state.state != bm::State::backoff) return;
+
+    // 失败后保持断开，交由用户检查密码、Master 地址或网络后手动重试。
+    // 这也避免对错误密码/Master 做指数退避后的无限登录尝试。
+    session_.stop(now_ms);
+    (void)transport_.close();
+    requested_enabled_ = false;
+    disable_pending_ = false;
+    stop_queued_ = false;
+    error_ = state.last_failure == bm::Failure::master_rejected
+        ? Error::master_rejected : Error::session_failed;
 }
 
 void ConnectionControl::poll_resolver(std::uint64_t now_ms) noexcept

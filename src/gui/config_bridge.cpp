@@ -280,7 +280,7 @@ std::optional<std::string> select_hri_port(const app::devices::SerialCatalog& ca
         return std::nullopt;
     }
     if (catalog.hri_ports.empty()) {
-        error = "当前枚举的串口中没有可确认的 HRI 设备。";
+        error = "当前没有识别到 HRI 串口；请检查连接并刷新设备列表。";
         return std::nullopt;
     }
     const std::string wanted = upper_ascii(trim(requested));
@@ -294,13 +294,13 @@ std::optional<std::string> select_hri_port(const app::devices::SerialCatalog& ca
         }
         if (std::count_if(catalog.hri_ports.begin(), catalog.hri_ports.end(),
                           [&](const auto& p) { return upper_ascii(p.port_name) == wanted; }) != 1) {
-            error = "连接配置指定的 " + wanted + " 未匹配到唯一 HRI 设备。";
+            error = "指定的串口 " + wanted + " 不是当前识别到的 HRI 端口；请检查选择。";
             return std::nullopt;
         }
         return wanted;
     }
     if (catalog.hri_ports.size() == 1U) return upper_ascii(catalog.hri_ports.front().port_name);
-    error = "HRI COM 端口无法唯一自动确定；请在设置中指定串口或检查 HRI 设备。";
+    error = "无法自动选择 HRI COM 端口；请在主界面选择串口或检查 HRI 连接。";
     return std::nullopt;
 }
 
@@ -378,11 +378,11 @@ services::DeviceSelectionSnapshot resolve_device_selection(const services::GuiCo
             result.hri.resolved_id = widen(*selected_hri);
             result.hri.name = matches.front()->caption;
             result.hri.reason = is_auto(gui.hri_port)
-                ? "唯一识别到 HRI 串口 " + *selected_hri + "。"
+                ? "自动选择 HRI 串口 " + *selected_hri + "。"
                 : "沿用已保存且当前识别为 HRI 的串口。";
         } else {
             result.hri.state = DeviceResolutionState::ambiguous;
-            result.hri.reason = "串口目录重复报告 " + *selected_hri + "；拒绝自动确认。";
+            result.hri.reason = "系统返回重复的 COM 记录；请刷新设备列表后手动选择 HRI 串口。";
         }
     } else if (serial_catalog.serial_ports.empty() || serial_catalog.hri_ports.empty()) {
         result.hri.state = missing_or_unavailable();
@@ -392,7 +392,7 @@ services::DeviceSelectionSnapshot resolve_device_selection(const services::GuiCo
                                                    : "当前串口目录没有识别到 HRI 设备。");
     } else if (is_auto(gui.hri_port)) {
         result.hri.state = DeviceResolutionState::ambiguous;
-        result.hri.reason = "发现多个 HRI 串口；为避免选错，请手动选择。";
+            result.hri.reason = "发现多个 HRI 串口候选；请手动选择一个。";
     } else {
         const auto wanted = normalized_port(gui.hri_port);
         const auto matches = wanted ? serial_matches(*wanted) : std::vector<const services::SerialPortInfo*>{};
@@ -401,7 +401,7 @@ services::DeviceSelectionSnapshot resolve_device_selection(const services::GuiCo
             result.hri.reason = "已保存的 HRI 串口 " + narrow(gui.hri_port) + " 当前没有枚举到。";
         } else if (matches.size() != 1U) {
             result.hri.state = DeviceResolutionState::ambiguous;
-            result.hri.reason = "串口目录重复报告已保存的 HRI 串口；拒绝自动确认。";
+            result.hri.reason = "系统返回重复的 HRI 串口记录；请手动选择一个。";
         } else {
             result.hri.state = DeviceResolutionState::conflict;
             result.hri.reason = "已保存的串口当前没有识别为 HRI。";
@@ -425,7 +425,7 @@ services::DeviceSelectionSnapshot resolve_device_selection(const services::GuiCo
                 result.cat.reason = "选择的 CAT 串口 " + *selection.cat_port + " 当前没有枚举到。";
             } else if (matches.size() != 1U) {
                 result.cat.state = DeviceResolutionState::ambiguous;
-                result.cat.reason = "串口目录重复报告 CAT 串口；拒绝自动确认。";
+                result.cat.reason = "系统返回重复的 CAT 串口记录；请刷新设备列表后手动选择。";
             } else {
                 result.cat.resolved_id = widen(*selection.cat_port);
                 result.cat.name = matches.front()->caption;
@@ -460,7 +460,7 @@ services::DeviceSelectionSnapshot resolve_device_selection(const services::GuiCo
                 result.cat.state = is_auto(gui.cat_port) ? missing_or_unavailable() : DeviceResolutionState::missing;
                 result.cat.reason = result.cat.state == DeviceResolutionState::unavailable
                     ? "Windows 串口目录读取失败；请刷新设备列表后重试。"
-                    : "没有唯一且已识别的 CAT 串口；可手动选择当前枚举的非 HRI 端口。";
+                    : "未找到可自动选择的 CAT 串口；可手动选择当前枚举的非 HRI 端口。";
             }
         }
     }
@@ -505,7 +505,7 @@ services::DeviceSelectionSnapshot resolve_device_selection(const services::GuiCo
             selection.reason = "已保存的音频 endpoint 当前没有枚举到；配置已保留。";
         } else if (matches.size() != 1U) {
             selection.state = DeviceResolutionState::ambiguous;
-            selection.reason = "设备目录重复报告该音频 endpoint；拒绝确认。";
+            selection.reason = "系统返回重复的音频端点记录；请刷新设备列表或手动选择。";
         } else {
             selection.state = DeviceResolutionState::resolved;
             selection.resolved_id = matches.front()->endpoint_id;
@@ -542,19 +542,19 @@ services::DeviceSelectionSnapshot resolve_device_selection(const services::GuiCo
             selection.reason = "当前没有 USB Audio 自动候选；请手动选择已枚举的端点。";
         } else if (!hri_identified) {
             selection.state = DeviceResolutionState::unavailable;
-            selection.reason = "USB Audio 自动配对需要唯一确认的 HRI 设备。";
+            selection.reason = "请先选择 HRI 串口，再使用 USB Audio 自动选择。";
         } else if (opposite_auto && opposite_count > 1U) {
             selection.state = DeviceResolutionState::ambiguous;
-            selection.reason = "另一方向有多个 USB Audio 候选，无法确认一对输入输出端点。";
+            selection.reason = "另一方向有多个 USB Audio 候选；请手动选择输入和输出设备。";
         } else if (!opposite_auto && endpoint_matches(opposite_endpoints, narrow(opposite_requested)).size() == 1U) {
             selection.state = DeviceResolutionState::conflict;
             selection.reason = "手动端点与唯一 USB Audio 配对不一致；请手动选择两个端点或恢复 Auto。";
         } else if (opposite_count == 0U) {
             selection.state = DeviceResolutionState::missing;
-            selection.reason = "另一方向没有 USB Audio 自动候选，无法组成配对。";
+            selection.reason = "另一方向没有 USB Audio 自动候选；请手动选择输入和输出设备。";
         } else {
             selection.state = DeviceResolutionState::unavailable;
-            selection.reason = "当前端点组合未通过启动时的 USB Audio 配对规则。";
+            selection.reason = "当前设备组合不能自动选择；请手动选择输入和输出设备。";
         }
     };
     if (!input_auto) {
@@ -614,14 +614,15 @@ services::DeviceSelectionSnapshot resolve_device_selection(const services::GuiCo
     return result;
 }
 
-std::optional<engine::StartConfig> make_start_config(const services::GuiConfig& gui, const StartInputs& inputs,
-                                                     std::string& error) {
-    // ConvertFrom-UiPortableConfigToProfile：没有频道或 TX 目标时不生成连接配置。
-    if (gui.channels.empty()) {
-        error = "频道列表为空；请先在“日常控制”中加入监听频道。";
-        return std::nullopt;
-    }
-    talkgroup_routing::TxTarget target{gui.channels.front().id, gui.channels.front().kind, gui.channels.front().slot};
+std::optional<engine::StartConfig> make_runtime_config(const services::GuiConfig& gui,
+                                                       std::uint8_t color_code,
+                                                       std::string& error) {
+    error.clear();
+    // runtime 先按保存配置创建；BM 字段缺失只会让 BM 命令失败，不阻止 radio 启动。
+    const auto local_source_id = gui.dmr_id == 0U ? 1U : gui.dmr_id;
+    talkgroup_routing::TxTarget target = gui.channels.empty()
+        ? talkgroup_routing::TxTarget{1U, CallKind::group, dmr_call::Slot::ts1}
+        : talkgroup_routing::TxTarget{gui.channels.front().id, gui.channels.front().kind, gui.channels.front().slot};
     if (gui.tx_target) {
         const auto& t = *gui.tx_target;
         const bool listed = std::any_of(gui.channels.begin(), gui.channels.end(), [&](const auto& e) {
@@ -631,19 +632,32 @@ std::optional<engine::StartConfig> make_start_config(const services::GuiConfig& 
     }
     const std::string callsign = trim(gui.callsign);
     const std::uint32_t gateway = services::effective_gateway_id(gui);
-    if (callsign.empty() || gui.dmr_id == 0U || gateway == 0U) {
-        error = "请先在设置中填写呼号、DMR ID 和设备编号。";
-        return std::nullopt;
-    }
-    // 与 native --profile-* 参数相同的校验（bm_connection_config::validate）。
-    const bool profile_ok = bm_connection_config::validate(
-        {callsign, gateway, gui.dmr_id, gui.master_host, gui.master_port, target.destination_id,
-         static_cast<std::uint64_t>(target.slot), inputs.color_code, target.kind == CallKind::group ? "G" : "P"});
-    if (!profile_ok) {
-        error = "连接配置中的呼号、ID、服务器、端口、时隙或 Color Code 超出允许范围。";
-        return std::nullopt;
-    }
+    engine::StartConfig sc;
+    sc.start_radio = false;
+    sc.radio_start_error.clear();
+    sc.bm.master_host = gui.master_host;
+    sc.bm.master_port = gui.master_port;
+    sc.bm.profile.gateway_id = gateway;
+    sc.bm.profile.callsign = callsign;
+    bm::apply_network_metadata(sc.bm.profile);
+    sc.bm.profile.color_code = color_code <= 15U ? color_code : 1U;
+    sc.bm.profile.password = gui.bm_password;
+    sc.bm_start_disconnected = true;
+    sc.local_source_id = local_source_id;
+    sc.rx_policy = make_rx_policy(gui.channels, {}, local_source_id, gui.blocked_source_ids);
+    sc.tx_policy.target = target;
+    sc.tx_policy.transmit_enabled = !gui.channels.empty();
+    sc.tx_policy.dynamic_join_enabled = false; // native 路由默认（Quick Call 走独立发送路径）
+    sc.radio_playback_gain_milli = std::clamp<std::uint32_t>(gui.playback_gain_step, 1U, 16U) * 1000U;
+    sc.mic_transmit_gain_milli = std::clamp<std::uint32_t>(gui.transmit_gain_step, 1U, 16U) * 1000U;
+    return sc;
+}
 
+std::optional<engine::StartConfig> make_start_config(const services::GuiConfig& gui, const StartInputs& inputs,
+                                                     std::string& error) {
+    auto runtime = make_runtime_config(gui, inputs.color_code, error);
+    if (!runtime) return std::nullopt;
+    // BM 登录字段无效时仍允许 HRI 单独连接；BM 连接命令会返回具体校验错误。
     const auto port = select_hri_port(inputs.serial, narrow(gui.hri_port), error);
     if (!port) return std::nullopt;
 
@@ -658,29 +672,15 @@ std::optional<engine::StartConfig> make_start_config(const services::GuiConfig& 
         error = "本机 WinMM 未返回所选 WaveIn/WaveOut 的 endpoint ID；请检查 Windows 音频端点后重试。";
         return std::nullopt;
     }
-    engine::StartConfig sc;
-    sc.hri_port = widen(*port);
-    sc.hri_body_file = inputs.body_file;
-    sc.audio.wave_in_id = audio.input.id;
-    sc.audio.wave_out_id = audio.output.id;
-    sc.audio.expected_wave_in_endpoint_id = widen(*audio.input.endpoint_id);
-    sc.audio.expected_wave_out_endpoint_id = widen(*audio.output.endpoint_id);
-    sc.bm.master_host = gui.master_host;
-    sc.bm.master_port = gui.master_port;
-    sc.bm.profile.gateway_id = gateway;
-    sc.bm.profile.callsign = callsign;
-    bm::apply_network_metadata(sc.bm.profile);
-    sc.bm.profile.color_code = inputs.color_code;
-    sc.bm.profile.password = gui.bm_password;
-    sc.bm_start_disconnected = true;
-    sc.local_source_id = gui.dmr_id;
-    sc.rx_policy = make_rx_policy(gui.channels, {}, gui.dmr_id, gui.blocked_source_ids);
-    sc.tx_policy.target = target;
-    sc.tx_policy.transmit_enabled = true;      // bridge-ui.ps1：-TransmitEnabled $true
-    sc.tx_policy.dynamic_join_enabled = false; // native 路由默认（Quick Call 走独立发送路径）
-    sc.radio_playback_gain_milli = std::clamp<std::uint32_t>(gui.playback_gain_step, 1U, 16U) * 1000U;
-    sc.mic_transmit_gain_milli = std::clamp<std::uint32_t>(gui.transmit_gain_step, 1U, 16U) * 1000U;
-    return sc;
+    runtime->hri_port = widen(*port);
+    runtime->hri_body_file = inputs.body_file;
+    runtime->audio.wave_in_id = audio.input.id;
+    runtime->audio.wave_out_id = audio.output.id;
+    runtime->audio.expected_wave_in_endpoint_id = widen(*audio.input.endpoint_id);
+    runtime->audio.expected_wave_out_endpoint_id = widen(*audio.output.endpoint_id);
+    runtime->start_radio = true;
+    runtime->radio_start_error.clear();
+    return runtime;
 }
 
 } // namespace wirex::gui::config_bridge

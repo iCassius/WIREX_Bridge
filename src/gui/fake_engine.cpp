@@ -72,6 +72,8 @@ struct FakeEngine::Impl {
     talkgroup_routing::RxPolicy rx_policy{};
     bool transmit_enabled{};
     std::uint32_t local_id{};
+    bool bm_profile_valid{};
+    std::string bm_profile_error{"profile_invalid"};
     std::uint64_t bm_epoch{};   // BM 断开/引擎停止时 +1，使旧的来话任务失效
     std::atomic<std::uint64_t> radio_generation{};
     std::atomic<bool> startup_pending{};
@@ -418,32 +420,41 @@ std::future<CommandResult> FakeEngine::start(engine::StartConfig config) {
             promise->set_value(result(CommandStatus::busy, 0U, "already_running"));
             return;
         }
-        if (config.hri_port.empty()) {
-            s->startup_pending = false;
-            promise->set_value(result(CommandStatus::invalid, 0U, "hri_port_missing"));
-            return;
-        }
         s->state = engine::Snapshot{s->state.seq};
         s->state.phase = Phase::starting;
-        s->state.serial_open = true;
-        s->state.hri_port = config.hri_port;
+        s->state.serial_open = config.start_radio && !config.hri_port.empty();
+        s->state.hri_port = s->state.serial_open ? config.hri_port : std::wstring{};
+        s->state.radio_error = s->state.serial_open ? config.radio_start_error
+            : (config.radio_start_error.empty() ? "radio_not_started" : config.radio_start_error);
         s->publish();
-        s->post_after(600ms, [s, promise, generation, config = std::move(config)]() {
+        s->post_after(600ms, [s, promise, generation, config = std::move(config)]() mutable {
             if (generation != s->radio_generation.load()) {
                 s->startup_pending = false;
                 promise->set_value(result(CommandStatus::not_ready, 0U, "start_cancelled"));
                 return;
             }
             s->state.phase = Phase::running;
-            s->state.hri_ready = s->state.wave_in_open = s->state.wave_out_open = true;
-            s->state.wave_in_endpoint_id = config.audio.expected_wave_in_endpoint_id;
-            s->state.wave_out_endpoint_id = config.audio.expected_wave_out_endpoint_id;
+            s->state.hri_ready = s->state.serial_open;
+            s->state.wave_in_open = s->state.serial_open;
+            s->state.wave_out_open = s->state.serial_open;
+            if (s->state.serial_open) {
+                s->state.wave_in_endpoint_id = config.audio.expected_wave_in_endpoint_id;
+                s->state.wave_out_endpoint_id = config.audio.expected_wave_out_endpoint_id;
+                s->state.radio_error.clear();
+            }
             s->state.radio_playback_gain_milli = config.radio_playback_gain_milli;
             s->state.mic_transmit_gain_milli = config.mic_transmit_gain_milli;
             s->state.tx_target = config.tx_policy.target;
             s->transmit_enabled = config.tx_policy.transmit_enabled;
             s->rx_policy = config.rx_policy;
             s->local_id = config.local_source_id;
+            s->bm_profile_valid = !config.bm.profile.password.empty() &&
+                !config.bm.profile.callsign.empty() && config.bm.profile.gateway_id != 0U &&
+                !config.bm.master_host.empty() && config.bm.master_port != 0U;
+            s->bm_profile_error = config.bm.profile.password.empty() ? "password_required" :
+                (s->bm_profile_valid ? "none" : "profile_invalid");
+            std::fill(config.bm.profile.password.begin(), config.bm.profile.password.end(), '\0');
+            config.bm.profile.password.clear();
             s->state.bm_requested_enabled = !config.bm_start_disconnected;
             s->startup_pending = false;
             promise->set_value(result(CommandStatus::accepted));
@@ -489,23 +500,128 @@ std::future<CommandResult> FakeEngine::stop() {
     return future;
 }
 
-std::future<CommandResult> FakeEngine::set_bm_connection(bool enabled, std::uint64_t expected_revision) {
+std::future<CommandResult> FakeEngine::connect_radio(engine::RadioStartConfig config) {
     auto* s = impl_.get();
-    return s->command(150ms, [s, enabled, expected_revision]() {
+    auto promise = std::make_shared<std::promise<CommandResult>>();
+    auto future = promise->get_future();
+    const auto generation = s->radio_generation.fetch_add(1U) + 1U;
+    s->post_after(250ms, [s, promise, generation, config = std::move(config)]() mutable {
+        if (generation != s->radio_generation.load()) {
+            promise->set_value(result(CommandStatus::not_ready, 0U, "radio_connect_cancelled"));
+            return;
+        }
+        if (s->state.phase != Phase::running) {
+            promise->set_value(result(CommandStatus::not_ready, 0U, "runtime_not_running"));
+            return;
+        }
+        if (config.hri_port.empty() || config.audio.expected_wave_in_endpoint_id.empty() ||
+            config.audio.expected_wave_out_endpoint_id.empty()) {
+            s->state.radio_error = "radio_selection_unresolved";
+            promise->set_value(result(CommandStatus::invalid, 0U, s->state.radio_error));
+            return;
+        }
+        s->state.hri_port = config.hri_port;
+        s->state.serial_open = true;
+        s->state.hri_ready = true;
+        s->state.wave_in_open = true;
+        s->state.wave_out_open = true;
+        s->state.wave_in_endpoint_id = std::move(config.audio.expected_wave_in_endpoint_id);
+        s->state.wave_out_endpoint_id = std::move(config.audio.expected_wave_out_endpoint_id);
+        s->state.radio_error.clear();
+        promise->set_value(result(CommandStatus::accepted));
+        s->publish();
+    });
+    return future;
+}
+
+std::future<CommandResult> FakeEngine::disconnect_radio() {
+    auto* s = impl_.get();
+    auto promise = std::make_shared<std::promise<CommandResult>>();
+    auto future = promise->get_future();
+    const auto generation = s->radio_generation.fetch_add(1U) + 1U;
+    s->post_after(150ms, [s, promise, generation]() {
+        if (generation != s->radio_generation.load()) {
+            promise->set_value(result(CommandStatus::not_ready, 0U, "radio_disconnect_cancelled"));
+            return;
+        }
+        if (s->state.phase != Phase::running) {
+            promise->set_value(result(CommandStatus::not_ready, 0U, "runtime_not_running"));
+            return;
+        }
+        s->state.serial_open = false;
+        s->state.hri_ready = false;
+        s->state.wave_in_open = false;
+        s->state.wave_out_open = false;
+        s->state.hri_port.clear();
+        s->state.wave_in_endpoint_id.clear();
+        s->state.wave_out_endpoint_id.clear();
+        s->end_call("radio_disconnected");
+        promise->set_value(result(CommandStatus::accepted));
+        s->publish();
+    });
+    return future;
+}
+
+std::future<CommandResult> FakeEngine::set_bm_connection(bool enabled, std::uint64_t requested_revision) {
+    auto* s = impl_.get();
+    return s->command(150ms, [s, enabled, requested_revision]() {
         auto& st = s->state;
-        if (expected_revision != st.bm_connection_revision) {
+        if (requested_revision == 0U) {
+            return result(CommandStatus::stale_revision, st.bm_connection_revision, "bm_revision_conflict");
+        }
+        if (requested_revision < st.bm_connection_revision) {
             return result(CommandStatus::stale_revision, st.bm_connection_revision);
         }
-        if (st.phase != Phase::running) return result(CommandStatus::not_ready, st.bm_connection_revision, "hri_not_ready");
-        if (enabled == st.bm_requested_enabled) return result(CommandStatus::idempotent, st.bm_connection_revision);
-        ++st.bm_connection_revision;
-        st.bm_requested_enabled = enabled;
+        if (requested_revision == st.bm_connection_revision) {
+            if (enabled == st.bm_requested_enabled) return result(CommandStatus::idempotent, st.bm_connection_revision);
+            return result(CommandStatus::stale_revision, st.bm_connection_revision, "bm_revision_conflict");
+        }
+        if (st.phase != Phase::running && st.phase != Phase::starting) {
+            return result(CommandStatus::not_ready, st.bm_connection_revision, "runtime_not_running");
+        }
+        st.bm_connection_revision = requested_revision;
         if (enabled) {
+            if (!s->bm_profile_valid) {
+                st.bm_requested_enabled = false;
+                st.bm_link = BmLink::failed;
+                st.bm_error = s->bm_profile_error;
+                return result(CommandStatus::invalid, st.bm_connection_revision, st.bm_error);
+            }
+            st.bm_requested_enabled = true;
             st.bm_error = "none";
             s->bm_step(s->bm_epoch, BmLink::resolving, 0ms);
         } else {
+            st.bm_requested_enabled = false;
             s->drop_bm();
         }
+        return result(CommandStatus::accepted, st.bm_connection_revision);
+    });
+}
+
+std::future<CommandResult> FakeEngine::configure_bm(engine::BmTarget config) {
+    auto* s = impl_.get();
+    return s->command(100ms, [s, config = std::move(config)]() mutable {
+        auto& st = s->state;
+        if (st.phase != Phase::running) {
+            return result(CommandStatus::not_ready, st.bm_connection_revision, "runtime_not_running");
+        }
+        if (st.bm_requested_enabled || st.bm_link == BmLink::connected || st.bm_link == BmLink::connecting ||
+            st.bm_link == BmLink::resolving) {
+            return result(CommandStatus::busy, st.bm_connection_revision, "bm_disconnect_before_configure");
+        }
+        const bool password_present = !config.profile.password.empty();
+        s->bm_profile_valid = password_present && !config.profile.callsign.empty() &&
+            config.profile.gateway_id != 0U && !config.master_host.empty() && config.master_port != 0U;
+        s->bm_profile_error = !password_present ? "password_required" :
+            (s->bm_profile_valid ? "none" : "profile_invalid");
+        s->local_id = config.local_source_id;
+        s->rx_policy = std::move(config.rx_policy);
+        s->transmit_enabled = config.tx_policy.transmit_enabled;
+        st.tx_target = config.tx_policy.target;
+        st.bm_error = s->bm_profile_error;
+        if (st.bm_link == BmLink::failed) st.bm_link = BmLink::disabled;
+        std::fill(config.profile.password.begin(), config.profile.password.end(), '\0');
+        config.profile.password.clear();
         return result(CommandStatus::accepted, st.bm_connection_revision);
     });
 }
@@ -769,9 +885,21 @@ services::Services make_fake_services(FakeEngine& engine) {
         st->config = config;
         return true;
     };
+    sv.config.make_runtime_config = [](const services::GuiConfig& config, std::string&) -> std::optional<engine::StartConfig> {
+        engine::StartConfig sc;
+        sc.start_radio = false;
+        sc.radio_start_error = "radio_not_started";
+        sc.bm.master_host = config.master_host;
+        sc.bm.master_port = config.master_port;
+        sc.bm.profile.gateway_id = config.dmr_id;
+        sc.bm.profile.callsign = config.callsign;
+        sc.bm.profile.password = config.bm_password;
+        sc.local_source_id = config.dmr_id;
+        return sc;
+    };
     sv.config.make_start_config = [](const services::GuiConfig& config, std::string& error) -> std::optional<engine::StartConfig> {
-        if (config.hri_port.empty()) {
-            error = "未选择 Wires-X 串口。";
+        if (config.hri_port.empty() || config.wave_in_endpoint_id.empty() || config.wave_out_endpoint_id.empty()) {
+            error = "未能解析 Wires-X 串口和 USB Audio 端点。";
             return std::nullopt;
         }
         engine::StartConfig sc;
@@ -784,6 +912,7 @@ services::Services make_fake_services(FakeEngine& engine) {
         sc.bm.profile.callsign = config.callsign;
         sc.bm.profile.password = config.bm_password;
         sc.local_source_id = config.dmr_id;
+        sc.start_radio = true;
         return sc;
     };
 

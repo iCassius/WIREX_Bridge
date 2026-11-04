@@ -27,7 +27,10 @@ public:
 
     virtual std::future<engine::CommandResult> start(engine::StartConfig config) = 0;
     virtual std::future<engine::CommandResult> stop() = 0;
-    virtual std::future<engine::CommandResult> set_bm_connection(bool enabled, std::uint64_t expected_revision) = 0;
+    virtual std::future<engine::CommandResult> set_bm_connection(bool enabled, std::uint64_t requested_revision) = 0;
+    virtual std::future<engine::CommandResult> configure_bm(engine::BmTarget config) = 0;
+    virtual std::future<engine::CommandResult> connect_radio(engine::RadioStartConfig config) = 0;
+    virtual std::future<engine::CommandResult> disconnect_radio() = 0;
     virtual std::future<engine::CommandResult> replace_rx_policy(std::uint64_t expected_revision,
                                                                  talkgroup_routing::RxPolicy policy) = 0;
     virtual std::future<engine::CommandResult> replace_tx_policy(std::uint64_t expected_revision,
@@ -54,8 +57,17 @@ public:
         return engine_.start(std::move(config));
     }
     std::future<engine::CommandResult> stop() override { return engine_.stop(); }
-    std::future<engine::CommandResult> set_bm_connection(bool enabled, std::uint64_t expected_revision) override {
-        return engine_.set_bm_connection(enabled, expected_revision);
+    std::future<engine::CommandResult> set_bm_connection(bool enabled, std::uint64_t requested_revision) override {
+        return engine_.set_bm_connection(enabled, requested_revision);
+    }
+    std::future<engine::CommandResult> configure_bm(engine::BmTarget config) override {
+        return engine_.configure_bm(std::move(config));
+    }
+    std::future<engine::CommandResult> connect_radio(engine::RadioStartConfig config) override {
+        return engine_.connect_radio(std::move(config));
+    }
+    std::future<engine::CommandResult> disconnect_radio() override {
+        return engine_.disconnect_radio();
     }
     std::future<engine::CommandResult> replace_rx_policy(std::uint64_t expected_revision,
                                                          talkgroup_routing::RxPolicy policy) override {

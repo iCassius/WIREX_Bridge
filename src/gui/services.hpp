@@ -154,6 +154,8 @@ struct ConfigService {
     // 由配置生成引擎启动参数（解析串口与 endpoint ID → WinMM 编号）。
     // 在 UI 线程调用；会做一次设备枚举（约百毫秒级）。
     std::function<std::optional<engine::StartConfig>(const GuiConfig& config, std::string& error)> make_start_config{};
+    // 仅构造常驻 BM/路由 runtime 参数，不要求当前存在可用 HRI 串口或 USB Audio。
+    std::function<std::optional<engine::StartConfig>(const GuiConfig& config, std::string& error)> make_runtime_config{};
 };
 
 // ---------- BrandMeister API（静态组） ----------

@@ -208,6 +208,14 @@ services::ConfigService make_config_service(const std::shared_ptr<ConfigState>& 
         }
         return sc;
     };
+    svc.make_runtime_config = [st](const services::GuiConfig& gui, std::string& error) -> std::optional<engine::StartConfig> {
+        std::uint8_t color_code = 1U;
+        {
+            std::lock_guard<std::mutex> lock(st->mutex);
+            if (st->base) color_code = st->base->connection.color_code;
+        }
+        return config_bridge::make_runtime_config(gui, color_code, error);
+    };
     return svc;
 }
 

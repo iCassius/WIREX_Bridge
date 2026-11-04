@@ -40,15 +40,27 @@ UI 线程 (ImGui/DX11, MsgWaitForMultipleObjects, 空闲 ≤10 fps)
 
 ## 进度（2026-11-04）
 
-R128 的引擎拆分、原生界面和本轮串口/音频设备显示已在 `feat/r128-native-gui`。设备选择预览、保留 Auto 配置语义、设备目录变化刷新、CAT 未知值显示及主界面布局已完成源码集成。基于基线 `9e789c9` 的 GUI Release 构建和中英文隔离截图均已通过；构建时源码保持冻结。正式打包、BM RTT 在 GUI 的显示、真实设备与 RF 验收仍未完成。因此不退役旧 UI，也不把当前 EXE 候选称为正式发布。
+R128 的引擎拆分、原生界面、BM/HRI 分层连接、启动组呼自动激活和串口/音频设备显示已集成。最新 dirty tree 源码基于 `16caaa7`；Native 与 app 离线测试、GUI Release 构建以及中英文隔离截图均已通过。当前 EXE 仍是构建候选，正式打包、BM RTT 在 GUI 的显示、真实设备与 RF 验收仍未完成，因此不退役旧 UI，也不把当前 EXE 候选称为正式发布。
 
 | 项 | 结果 |
 | --- | --- |
-| Native 与引擎 | `tools/build-bm-bridge.ps1` 本次编译核心和固定第三方源通过，注册的离线测试全部通过；`engine_test` 覆盖模板嵌入、音频路由失败与排队切换、旧 WaveOut 清理失败但句柄关闭的状态处理。 |
-| app 服务测试 | 最新 `tools/build-app-tests.ps1`：8 个测试目标通过、0 warning；config 396、devices 83、CAT 163、fake CAT 生命周期 6、CAT 表单同步 22、BM API 285、RadioID 234、GUI config bridge 109。GUI config bridge 检查 Auto 解析、候选歧义、拔出/重插、配置保持、预览 ID 与启动/CAT helper 一致，以及 CAT busy/断开时不把旧 COM 报成活动端口。 |
+| Native 与引擎 | 2026-11-04 最新 dirty tree 的 `tools/build-bm-bridge.ps1` 编译通过，清单中的 41 个离线测试全部通过；构建来源提交为 `16caaa7b6e9cdaa331e20af4b8b59a83e5a6089d`。`engine_test` 新增 BM/HRI 独立生命周期、音频句柄拒绝关闭后的恢复、BM 停止收尾、配置失败后禁止旧 profile 登录，以及拒绝命令先清密码再兑现 future 的覆盖。 |
+| app 服务测试 | 最新 `tools/build-app-tests.ps1`：13 个测试目标通过、0 warning；config 396、devices 83、CAT 163、fake CAT 生命周期 6、CAT 表单同步 22、BM API 285、RadioID 234、GUI config bridge 109；BM profile ViewModel 测试 16 项、operation-event queue 测试 9 项。GUI config bridge 检查 Auto 解析、候选歧义、拔出/重插、配置保持、预览 ID 与启动/CAT helper 一致，以及 CAT busy/断开时不把旧 COM 报成活动端口。 |
 | 音频 meter | `audio_peak_window_test` 的 6 项滑窗、过期、范围夹紧和 NaN 检查通过。 |
-| AP_PC GUI 构建 | 基于 HEAD `9e789c9` 的本轮 dirty 源码 GUI Release 编译通过，项目代码 0 warning；EXE 为 `build/_work/wirex-gui-9e789c9-dirty-20261104-042648/WirexBridge.exe`，SHA-256 `0152a00b773fb80e686386d869645f554a77261854cbb4165f43bf54fa1dd4fd`。首次配置检查退出码 0。中文、英文隔离截图均为 1360×900；FakeEngine 配合本机设备目录只读枚举，没有连接 HRI、CAT 或 BM。构建期间 126 个 src/include 文件哈希未变化。正式 ZIP、IME 人工验证、实机验收和提交后 clean HEAD 构建仍未完成。 |
+| AP_PC GUI 构建 | 最新 GUI Release 来源为 dirty tree 提交 `16caaa7b6e9cdaa331e20af4b8b59a83e5a6089d`，项目代码 0 warning；EXE 位于 `build/_work/wirex-gui-16caaa7-dirty-20261104-113212/WirexBridge.exe`，SHA-256 `8cc039941fc7e688357c4cbc63f99b27ecff7fd77c94659f38d7262c7eabec7d`。中文、英文 FakeEngine 截图为 1360×900，人工视检通过，文件在 `build/_work/validation-16caaa7-20261104-113212/screenshots/`。截图使用模拟引擎和模拟配置，没有打开真实串口、CAT、BM 或音频端点。正式 ZIP、IME 人工验证、实机验收和提交后 clean HEAD 构建仍未完成。 |
 | BM RTT | 引擎侧既有状态报告含 RTT 字段，但 GUI `Snapshot` 尚未接入这些字段；主界面目前明确显示“暂无数据 / No data”。GUI RTT 显示与实际 BM 连接测量仍待完成。 |
+
+### BM/HRI 生命周期与配置安全增补（2026-11-04）
+
+- Engine runtime、BM 和 HRI/电台串口分别管理连接状态。HRI 模板、串口打开或握手失败保留在 `radio_error`，不结束 BM runtime；BM 初始资料无效或 Master 返回认证拒绝时，BM 保持断开并保留 BM 错误，HRI 仍可启动。认证拒绝不自动重试；用户换入有效资料后可在同一 runtime 内显式重新连接。
+- HRI 电台断开只收尾串口与音频，不停止 Engine runtime 或已连接 BM。音频 `close()` 若返回失败且驱动仍报告句柄打开，Snapshot 保留真实打开状态与错误；重复连接会被拒绝，用户可再次断开尝试清理。Engine stop 在清理预算内结束；仍未释放的句柄在最终 Snapshot 中继续显示为打开，不能报告完全清理成功。
+- 正常产品模式创建 ViewModel 时自动调用启动流程：常驻 Engine/BM runtime、CAT worker 和电台连接按各自服务结果更新状态。HRI/USB Audio 无唯一设备时，Engine 与 BM runtime 仍可运行并保留 radio 错误；BM 无效或认证失败时，HRI/CAT 仍按各自结果连接或报错。电台停止只断开 CAT 与 HRI，不停止常驻 runtime 或 BM。Fake 模式不自动连接，供截图和演示使用。
+- 启动组呼自动激活在 BM 第一次达到 connected 后，按 ViewModel 创建时冻结的已保存频道顺序逐项发送 Quick Call；排除私呼、TG4000、无效目标和重复 `(TG, TS)`。它不等待 HRI ready，也不依赖静态组 API。`accepted` 只表示本机发送到 UDP transport；BM 服务器确认、真实动态组接收和 RF 均没有这项离线测试证据，详见 [R129 启动组呼自动激活](R129_启动组呼自动激活.md)。
+- `configure_bm` 最终失败后，Engine 暂停后续 BM enable，并返回 `bm_profile_reconfigure_required`。只有一次有效 `configure_bm` 成功后才允许 enable，防止界面刚保存的新资料被拒绝后又静默拿旧 profile 登录。失败配置后重新连接必须先成功配置。
+- BM 密码在 `Engine::Impl::enqueue()` 拒绝新命令和 worker 结束时清理遗留命令的路径中，先擦除字符串当前长度内的字节，再兑现 `engine_not_running` 或 `engine_stopped` future。延迟 BM 命令在成功、失败、超时、停机和析构路径沿用现有清理守卫。C++ `std::string` 移动后的源对象状态由实现决定；当前检查确认拒绝入队和 worker leftovers 此时仍持有未消费的命令字符串，清理会覆盖其有效长度。本轮没有引入新的密码容器或重构 BM 协议资料的整体所有权。
+- 验证：最新 `tools/build-bm-bridge.ps1` 来源为 dirty tree 提交 `16caaa7b6e9cdaa331e20af4b8b59a83e5a6089d`，41/41 离线测试通过；`engine_test` 使用 fake 串口/音频和 localhost 假 Master，不访问真实 BM、CAT、HRI、音频设备或 RF。新断言覆盖配置失败后没有旧 profile 的第二组 RPTL/RPTK/RPTC，之后有效配置才重新连接；也覆盖拒绝命令 helper 在 future 返回前清空密码，并分别检查 `engine_not_running` 与 `engine_stopped` 结果。测试直接调用共享清理 helper 检查 `engine_stopped` 分支语义，没有用时序竞争强迫真实 worker 在停机瞬间遗留一条 configure 命令。
+- 本轮 app 测试由 ap_pc 另行构建，13 个目标通过、0 warning；BM profile race 用例有 16 项检查，operation event queue 用例有 9 项检查。startup group helper/VM 用例覆盖配置频道过滤、首次 BM connected 只启动一次、串行发起、断线暂停和重连续接。它们使用 fake Engine/Service，不发真实 BM 数据报。
+- 构建来源记录：Native 为 `build/_work/wirex-bridge-16caaa7-dirty-20261104-112441/build-provenance.json`，41 个测试全部通过；GUI 为 `build/_work/wirex-gui-16caaa7-dirty-20261104-113212/gui-build-provenance.json`，项目警告数为 0。隔离截图和配置目录在 `build/_work/validation-16caaa7-20261104-113212/`。Native、app 和 GUI 验证均未连接真实 CAT/HRI/BM、音频设备或 RF；125% DPI、IME 人工输入、真实设备热插拔和射频行为仍未验证。上述构建均为本地 dirty tree 产物，不是交付包。
 
 ### GUI 启动参数
 

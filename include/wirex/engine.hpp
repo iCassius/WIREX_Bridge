@@ -34,10 +34,20 @@ struct AudioEndpoints {
     std::wstring expected_wave_out_endpoint_id{};
 };
 
+// 电台端点的独立配置。BM runtime 可以先运行；该配置只用于显式连接 HRI/USB Audio。
+struct RadioStartConfig {
+    std::wstring hri_port{};
+    std::filesystem::path hri_body_file{};
+    AudioEndpoints audio{};
+};
+
 struct BmTarget {
     std::string master_host{};             // IPv4 或主机名；引擎线程内解析
     std::uint16_t master_port{62031U};
     bm::Profile profile{};                 // 含密码；引擎持有期间负责擦除
+    std::uint32_t local_source_id{};
+    talkgroup_routing::RxPolicy rx_policy{};
+    talkgroup_routing::TxPolicy tx_policy{};
 };
 
 struct StartConfig {
@@ -52,6 +62,10 @@ struct StartConfig {
     std::uint32_t radio_playback_gain_milli{1000U};  // 250..16000
     std::uint32_t mic_transmit_gain_milli{16000U};
     std::filesystem::path diagnostics_log{};          // 可空；非空时追加 JSONL 诊断（替代 status-file 的取证用途）
+    // 初次启动时的 radio 结果与 BM runtime 分开。start_radio=false 时保留 Engine/BM loop，
+    // radio_start_error 仅说明这次没有打开电台；不会自动尝试其它端口。
+    bool start_radio{true};
+    std::string radio_start_error{};
 
     // R128 增补（只增不改）：
     // 已在调用方解析好的 Master 地址；bm_start_disconnected=false 时优先使用，省略则在引擎线程有界解析。
@@ -101,6 +115,7 @@ struct Snapshot {
     std::uint64_t clock_origin_ms{};
     Phase phase{Phase::stopped};
     std::string failure_reason{};          // phase==failed 时的机器可读原因
+    std::string radio_error{};             // 电台串口/HRI/USB Audio 子系统错误；BM runtime 可继续工作
     bool serial_open{};
     std::wstring hri_port{};                // 本次运行实际打开的 HRI COM 端口
     bool hri_ready{};
@@ -188,7 +203,11 @@ public:
     // 有界停止：BM 先发 RPTCL，HRI T0 收尾，关闭音频与串口。
     std::future<CommandResult> stop();
 
-    std::future<CommandResult> set_bm_connection(bool enabled, std::uint64_t expected_revision);
+    // requested_revision 是本次请求的新 revision（初始快照 0 时首次请求传 1）。
+    std::future<CommandResult> set_bm_connection(bool enabled, std::uint64_t requested_revision);
+    std::future<CommandResult> configure_bm(BmTarget config);
+    std::future<CommandResult> connect_radio(RadioStartConfig config);
+    std::future<CommandResult> disconnect_radio();
     std::future<CommandResult> replace_rx_policy(std::uint64_t expected_revision,
                                                  talkgroup_routing::RxPolicy policy);
     std::future<CommandResult> replace_tx_policy(std::uint64_t expected_revision,

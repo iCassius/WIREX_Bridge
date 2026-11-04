@@ -7,6 +7,7 @@
 
 #include "engine_api.hpp"
 #include "services.hpp"
+#include "startup_group_activation.hpp"
 #include "strings.hpp"
 
 #include <array>
@@ -90,6 +91,14 @@ struct CatForm {
 
 enum class CatFormField : std::uint8_t { mode, frequency, power };
 
+// 单次 pump 中完成的多条命令结果会逐条入队，避免短暂错误被后续结果覆盖。
+struct OperationEvent {
+    std::uint64_t sequence{};
+    Str operation{Str::core};
+    std::string message{};
+    bool failed{};
+};
+
 class ViewModel {
 public:
     static constexpr std::size_t channel_page_size = 6U;
@@ -136,6 +145,13 @@ public:
     [[nodiscard]] const std::string& transient_text() const noexcept { return transient_text_; }
     [[nodiscard]] bool transient_failed() const noexcept { return transient_failed_; }
     [[nodiscard]] bool transient_visible() const;
+    [[nodiscard]] std::vector<OperationEvent> drain_operation_events();
+    [[nodiscard]] const std::string& startup_group_activation_status() const noexcept {
+        return startup_group_activation_status_;
+    }
+    [[nodiscard]] bool startup_group_activation_active() const noexcept {
+        return startup_group_activation_.active();
+    }
     [[nodiscard]] bool engine_running() const noexcept;
     [[nodiscard]] bool can_mutate_channels() const noexcept;
     [[nodiscard]] FontStatus font_status() const noexcept { return font_status_; }
@@ -201,7 +217,8 @@ private:
                std::function<void(const engine::CommandResult&)> on_done = {});
     void post_to_ui(std::function<void()> action);
     void report(Str op, const engine::CommandResult& result);
-    void flash(std::string text, bool failed);
+    void flash(std::string text, bool failed, Str operation = Str::core);
+    void enqueue_operation_event(Str operation, const std::string& message, bool failed);
     void handle_event(const engine::Event& event);
     [[nodiscard]] talkgroup_routing::RxPolicy build_rx_policy() const;
     [[nodiscard]] std::optional<talkgroup_routing::TxTarget> current_tx_target() const;
@@ -217,7 +234,11 @@ private:
     void apply_identity(const services::IdentityResult& result);
     void push_identity(std::uint32_t source_id, std::optional<std::string> callsign);
     void on_engine_running();
+    [[nodiscard]] bool pump_startup_group_activation();
+    void update_startup_group_activation_status();
     void sync_cat_form_from_observed(const services::CatState& state);
+    [[nodiscard]] std::optional<engine::RadioStartConfig> make_radio_start_config(std::string& error) const;
+    [[nodiscard]] std::optional<engine::BmTarget> make_bm_target(std::string& error) const;
 
     EngineApi& engine_;
     services::Services services_;
@@ -233,11 +254,16 @@ private:
     std::set<ChannelKey> muted_{};
     std::set<ChannelKey> quick_call_sent_{};
     std::optional<ChannelKey> quick_call_pending_{};
+    StartupGroupActivation startup_group_activation_{};
+    std::optional<ChannelKey> startup_group_activation_last_target_{};
+    std::string startup_group_activation_status_{};
     StaticGroupsView static_{};
     std::map<std::uint32_t, std::string> callsigns_{};     // RadioID 查询得到的呼号
     std::set<std::uint32_t> identity_requested_{};
     std::uint64_t identity_revision_{};                    // 每次引擎进入 running 从 0 开始
     std::uint64_t radio_connection_generation_{};            // 取消过期的并行 CAT 连接回调
+    std::uint64_t bm_profile_generation_{};                  // 保存 BM 会话字段后递增，使旧 configure 回调失效
+    bool bm_configure_pending_{};                           // 允许保存新配置，但旧配置完成后不得发起连接
     std::vector<std::future<engine::CommandResult>> identity_ops_{};
     engine::Phase last_phase_{engine::Phase::stopped};
     std::deque<CallRecord> history_{};
@@ -248,6 +274,8 @@ private:
     std::string transient_text_{};
     bool transient_failed_{};
     std::chrono::steady_clock::time_point transient_until_{};
+    std::deque<OperationEvent> operation_events_{};
+    std::uint64_t next_operation_event_sequence_{1U};
     FontStatus font_status_{FontStatus::segoe_deng};
     bool exit_requested_{};
     bool suppress_cancelled_start_report_{};

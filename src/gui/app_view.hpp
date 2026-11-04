@@ -7,6 +7,8 @@
 #include "services.hpp"
 #include "view_model.hpp"
 
+#include <cstdint>
+#include <deque>
 #include <string>
 
 struct ImFont;
@@ -31,7 +33,18 @@ public:
     [[nodiscard]] bool wants_continuous() const noexcept { return continuous_; }
 
 private:
+    struct ConnectionLogEntry {
+        std::string time;
+        Str source{Str::core};
+        std::string message;
+        bool failed{};
+        bool resolved{};
+    };
+
     void draw_header();
+    void draw_connection_log_popup();
+    void add_connection_event(Str source, std::string message, bool failed);
+    void resolve_connection_error(Str source, std::string message);
     void draw_channels(float height);
     void draw_channel_card(const ChannelView& ch, float width, float height);
     void draw_calls(float height);
@@ -40,6 +53,7 @@ private:
     void draw_recent_calls(float width, float height);
     void draw_radio_panel(float width, float height);
     void draw_daily_panel(float width, float height);
+    void update_connection_log();
     void draw_audio_devices(float inner_w);
     void draw_static_groups(float inner_w);
     void toggle_language();
@@ -59,6 +73,21 @@ private:
     std::string settings_error_{};
     std::string language_notice_{};
     std::string audio_notice_{};
+    std::deque<ConnectionLogEntry> connection_events_{};
+    std::string last_settings_error_{};
+    std::string last_bm_error_{};
+    std::string last_radio_error_{};
+    std::string last_core_failure_{};
+    std::string last_cat_error_{};
+    std::uint64_t last_bm_connection_revision_{};
+    std::uint64_t last_audio_endpoints_revision_{};
+    std::uint64_t last_cat_revision_{};
+    engine::BmLink last_bm_link_{engine::BmLink::disabled};
+    engine::Phase last_core_phase_{engine::Phase::stopped};
+    bool connection_states_initialized_{};
+    bool last_serial_open_{};
+    bool last_hri_ready_{};
+    bool last_cat_connected_{};
     std::wstring pending_wave_in_{};
     std::wstring pending_wave_out_{};
     bool audio_selection_pending_{};

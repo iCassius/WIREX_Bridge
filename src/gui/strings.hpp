@@ -27,12 +27,62 @@ namespace wirex::gui {
     X(core,                 "核心",                                "Core")                          /* new */ \
     X(language_english,     "English",                             "English") \
     X(language_chinese,     "中文",                                 "Chinese") \
-    X(relay_unknown,        "中继未知",                            "Relay ?")                        /* new */ \
-    X(relay_unavailable_reason,"中继控制尚未接入可验证的引擎命令；目前不能确认中继已启用或关闭。", \
-                            "Relay control is not connected to a verifiable engine command; its enabled state is unknown.") /* new */ \
+    X(relay_enable,         "启用中继",                            "Enable relay")                   /* new */ \
+    X(relay_disable,        "停用中继",                            "Disable relay")                  /* new */ \
+    X(relay_state_unknown,  "中继状态未知",                        "Relay status: unknown")          /* new */ \
+    X(log_error,            "错误",                                "Error")                          /* new */ \
+    X(log_events,           "连接日志",                            "Connection log")                 /* new */ \
+    X(log_empty,            "暂无连接事件。",                      "No connection events.")          /* new */ \
+    X(log_clear,            "清空",                                "Clear")                          /* new */ \
+    X(log_resolved,         "已恢复",                              "Resolved")                       /* new */ \
+    X(log_radio_open,       "HRI 串口已打开，等待设备就绪。",      "HRI serial opened; waiting for device readiness.") /* new */ \
+    X(log_radio_ready,      "HRI 电台已就绪。",                    "HRI radio is ready.")            /* new */ \
+    X(log_radio_disconnected,"HRI 电台已断开。",                   "HRI radio disconnected.")       /* new */ \
+    X(log_bm_connect_requested,"已请求连接 BM。",                  "BM connection requested.")       /* new */ \
+    X(log_bm_disconnect_requested,"已请求断开 BM。",               "BM disconnect requested.")       /* new */ \
+    X(log_cat_connected,    "CAT 已连接。",                        "CAT connected.")                 /* new */ \
+    X(log_cat_disconnected, "CAT 已断开。",                        "CAT disconnected.")              /* new */ \
+    X(log_core_ready,       "核心已就绪。",                        "Core is ready.")                 /* new */ \
+    X(log_settings_saved,   "配置已保存。",                        "Settings saved.")                /* new */ \
+    X(log_audio_changed,    "音频设备已切换。",                    "Audio devices changed.")         /* new */ \
+    X(bm_error_fmt,         "BM 连接失败：%s",                     "BM connection failed: %s")       /* new */ \
+    X(radio_error_fmt,      "电台连接失败：%s",                    "Radio connection failed: %s")    /* new */ \
+    X(cat_error_fmt,        "CAT 连接失败：%s",                    "CAT connection failed: %s")      /* new */ \
+    X(core_error_fmt,       "核心错误：%s",                        "Core error: %s")                 /* new */ \
+    X(bm_config_changed_while_connecting,"BM 连接已启用或正在进行；请先断开 BM，再保存账户配置。", \
+                            "BM is connected or a connection attempt is in progress. Disconnect BM before saving account settings.") /* new */ \
+    X(bm_config_saved_during_connection,"连接期间 BM 配置已更改；本次不会连接旧配置，请再次连接 BM。", \
+                            "BM settings changed during connection. The old profile will not be used; connect BM again.") /* new */ \
+    X(err_radio_selection,  "未能选择电台设备；请检查 HRI 串口和音频输入/输出设备后重试。", \
+                            "Could not select radio devices. Check the HRI port and audio input/output, then retry.") /* new */ \
+    X(err_radio_template,   "电台协议模板无效或缺失；请检查程序文件后重试。", \
+                            "The radio protocol template is missing or invalid. Check the application files and retry.") /* new */ \
+    X(err_radio_serial,     "无法打开或配置 HRI 串口；请检查电台连接及串口占用后重试。", \
+                            "Could not open or configure the HRI port. Check the radio connection and whether another app is using the port, then retry.") /* new */ \
+    X(err_radio_resources,  "无法分配电台连接资源；请重启应用后重试。", \
+                            "Could not allocate radio connection resources. Restart the application and retry.") /* new */ \
+    X(err_bm_password,      "BM 密码未填写；请完成 BM 账户配置并保存。", \
+                            "BM password is missing. Complete and save the BM account settings.") /* new */ \
+    X(err_bm_profile,       "BM 账户或服务器配置无效；请检查呼号、ID 和服务器设置。", \
+                            "BM account or server settings are invalid. Check the callsign, ID, and server settings.") /* new */ \
+    X(err_bm_dns,           "无法解析 BM 服务器地址；请检查服务器地址和网络连接。", \
+                            "Could not resolve the BM server address. Check the server address and network connection.") /* new */ \
+    X(err_bm_dns_timeout,   "解析 BM 服务器地址超时；请检查 DNS 和网络后重试。", \
+                            "BM server address lookup timed out. Check DNS and the network, then retry.") /* new */ \
+    X(err_bm_cancel_timeout,"取消 BM 服务器地址解析超时；请稍候后重试。", \
+                            "Cancelling the BM server lookup timed out. Wait briefly and retry.") /* new */ \
+    X(err_bm_transport,     "无法连接 BM 服务器；请检查服务器地址、UDP 端口和网络。", \
+                            "Could not connect to the BM server. Check the server address, UDP port, and network.") /* new */ \
+    X(err_bm_cleanup,       "BM 断开后的音频清理未完成；请检查音频设备后重试。", \
+                            "Audio cleanup after BM disconnect did not finish. Check the audio devices and retry.") /* new */ \
+    X(err_bm_rejected,      "BM 服务器拒绝登录；请检查呼号、DMR ID 和密码。", \
+                            "The BM server rejected the login. Check the callsign, DMR ID, and password.") /* new */ \
+    X(err_bm_session,       "BM 会话失败；请检查登录信息和网络后重试。", \
+                            "The BM session failed. Check the login details and network, then retry.") /* new */ \
+    X(err_quick_call_partial,"本机 Quick Call 只发送了部分内容；请检查电台连接后重试。", \
+                            "The local Quick Call was only partially sent. Check the radio connection and retry.") /* new */ \
     X(manual_dmr_id,        "BM DMR ID（手动）",                    "BM DMR ID (manual)")             /* new */ \
-    X(manual_dmr_id_hint,   "DMR ID 必须由用户手动填写；不会根据呼号自动补全。", \
-                            "Enter the DMR ID manually; it is never inferred from the callsign.") /* new */ \
+    X(manual_dmr_id_hint,   "请手动填写 DMR ID。",                 "Enter the DMR ID manually.")     /* new */ \
     X(status,               "状态",                                "Status") \
     X(status_serial,        "串口",                                "Serial") \
     X(status_hri,           "HRI",                                 "HRI") \
@@ -77,13 +127,12 @@ namespace wirex::gui {
     X(btn_joining_short,    "处理中",                              "Working…") \
     X(tip_tx_selected,      "已选为下次 PTT 呼叫目标",             "Selected as the next TX target") \
     X(tip_set_tx,           "选择此频道作为下次 PTT 目标",         "Select this channel as the next TX target") \
-    X(tip_quick_call,       "向本机 Native 请求发送一次动态组 Quick Call；本机只报告发送结果，不回读 BM 当前动态组。", \
-                            "Send one dynamic group Quick Call to local Native. The local result reports transmission only; it does not read back the current BM dynamic group.") \
+    X(tip_quick_call,       "请求本机加入该动态组，并等待本机发送结果。", \
+                            "Ask the local node to join this dynamic group and wait for its send result.") \
     X(tip_quick_pending,    "一项激活请求正在等待本机结果；结果返回或等待超时后可再次操作。", \
                             "An activation request is waiting for a local result. Try again after a result or timeout.") \
     X(tip_static,           "TG %u TS%d；静态组已读取。",          "TG %u TS%d; static group read back.")   /* new */ \
-    X(tip_dynamic_sent,     "TG %u TS%d；本机已发送上一条激活请求，BM 当前动态组状态未知。", \
-                            "TG %u TS%d; the previous request was sent locally; BM dynamic group state is unknown.") /* new */ \
+    X(tip_dynamic_sent,     "TG %u TS%d；已发送激活请求。",        "TG %u TS%d; activation request sent.") /* new */ \
     X(empty_channels,       "暂无频道；在“日常控制”中加入监听。",  "No channels yet. Add one under Daily controls.") /* new */ \
     X(current_call,         "当前来话",                            "Current call")                  /* new */ \
     X(recent_calls,         "最近来话",                            "Recent calls")                  /* new */ \
@@ -138,7 +187,7 @@ namespace wirex::gui {
     X(audio_devices,        "音频设备",                            "Audio devices") \
     X(audio_devices_switching,"正在切换音频设备…",                "Switching audio devices…") \
     X(audio_devices_applied,"音频设备已切换。",                   "Audio devices switched.") \
-    X(audio_devices_failed, "音频切换未确认，请检查设备后重试。", "Audio switch was not confirmed. Check devices and retry.") \
+    X(audio_devices_failed, "音频设备切换失败，请检查设备后重试。", "Audio device switch failed. Check devices and retry.") \
     X(audio_devices_next_connection,"下次连接时使用所选设备。",    "Selected devices will be used on the next connection.") \
     X(input,                "输入",                                "Input") \
     X(output,               "输出",                                "Output") \
@@ -199,6 +248,34 @@ namespace wirex::gui {
     X(device_active_missing,"正在使用，但不在设备列表",            "Active, but missing from the device list") \
     X(device_active,        "正在使用",                            "Active") \
     X(unknown,              "未知",                                "Unknown") \
+    X(op_auto_quick_call,   "启动自动组呼",                        "Startup group Quick Call")        /* new */ \
+    X(startup_group_waiting_fmt, \
+                            "自动组呼已冻结 %u 个目标，等待 BM 首次连接；忽略私呼 %u 个、TG4000 安全跳过 %u 个、重复合并 %u 个、无效跳过 %u 个。", \
+                            "Startup group Quick Calls frozen: %u targets waiting for the first BM connection; ignored %u private calls, safety-skipped %u TG4000 entries, merged %u duplicates, and skipped %u invalid targets.") /* new */ \
+    X(startup_group_connected_fmt, \
+                            "BM 已连接；开始依序在本机发送 %u 个已保存组呼目标。", \
+                            "BM connected; starting local Quick Call sends for %u saved group targets in order.") /* new */ \
+    X(startup_group_paused_fmt, \
+                            "BM 已断开；自动组呼暂停，待处理 %u 个目标。本机已发送 %u 个，失败 %u 个。", \
+                            "BM disconnected; startup group calls paused with %u targets pending. %u sent locally, %u failed.") /* new */ \
+    X(startup_group_resumed_fmt, \
+                            "BM 已重连；继续处理剩余 %u 个组呼目标。", \
+                            "BM reconnected; resuming the remaining %u group targets.") /* new */ \
+    X(startup_group_busy, \
+                            "BM 媒体忙；等待空闲，持续忙碌 30 秒后跳过未处理目标。", \
+                            "BM media is busy; waiting for idle. Remaining targets are skipped after 30 seconds of continuous busy state.") /* new */ \
+    X(startup_group_progress_fmt, \
+                            "自动组呼进度：本机已发送 %u/%u 个，失败 %u 个，剩余 %u 个。", \
+                            "Startup group Quick Calls: %u/%u sent locally, %u failed, %u remaining.") /* new */ \
+    X(startup_group_done_fmt, \
+                            "自动组呼完成：本机已发送 %u/%u 个，失败 %u 个，持续忙碌跳过 %u 个；忽略私呼 %u 个、TG4000 安全跳过 %u 个、重复合并 %u 个、无效跳过 %u 个。", \
+                            "Startup group Quick Calls complete: %u/%u sent locally, %u failed, %u skipped after persistent busy; ignored %u private calls, safety-skipped %u TG4000 entries, merged %u duplicates, and skipped %u invalid targets.") /* new */ \
+    X(startup_group_sent_fmt, \
+                            "TG %u TS%d：Quick Call 两帧已由本机发送。", \
+                            "TG %u TS%d: both Quick Call frames were sent locally.") /* new */ \
+    X(startup_group_failure_fmt, \
+                            "TG %u TS%d：本机 Quick Call 失败（%s）。", \
+                            "TG %u TS%d: local Quick Call failed (%s).") /* new */ \
     X(muted_badge,          "已屏蔽",                              "Muted")                         /* new */
 // clang-format on
 

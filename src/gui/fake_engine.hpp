@@ -30,7 +30,10 @@ public:
 
     std::future<engine::CommandResult> start(engine::StartConfig config) override;
     std::future<engine::CommandResult> stop() override;
-    std::future<engine::CommandResult> set_bm_connection(bool enabled, std::uint64_t expected_revision) override;
+    std::future<engine::CommandResult> set_bm_connection(bool enabled, std::uint64_t requested_revision) override;
+    std::future<engine::CommandResult> configure_bm(engine::BmTarget config) override;
+    std::future<engine::CommandResult> connect_radio(engine::RadioStartConfig config) override;
+    std::future<engine::CommandResult> disconnect_radio() override;
     std::future<engine::CommandResult> replace_rx_policy(std::uint64_t expected_revision,
                                                          talkgroup_routing::RxPolicy policy) override;
     std::future<engine::CommandResult> replace_tx_policy(std::uint64_t expected_revision,

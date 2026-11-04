@@ -7,10 +7,13 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <string>
+#include <string_view>
+#include <utility>
 
 namespace wirex::gui {
 namespace {
@@ -170,6 +173,95 @@ const char* device_state_text(services::DeviceResolutionState state) {
     case services::DeviceResolutionState::active_not_enumerated: return tr(Str::device_active_missing);
     }
     return tr(Str::device_unavailable);
+}
+
+std::string friendly_error_detail(Str source, const std::string& detail) {
+    struct Mapping {
+        Str source;
+        std::string_view token;
+        Str message;
+    };
+    static constexpr Mapping mappings[] = {
+        {Str::radio_control, "hri_port_missing", Str::err_radio_selection},
+        {Str::radio_control, "radio_selection_unresolved", Str::err_radio_selection},
+        {Str::radio_control, "y_template_invalid", Str::err_radio_template},
+        {Str::radio_control, "serial_open_or_configure_failed", Str::err_radio_serial},
+        {Str::radio_control, "radio_state_allocation_failed", Str::err_radio_resources},
+        {Str::brandmeister, "password_required", Str::err_bm_password},
+        {Str::brandmeister, "profile_invalid", Str::err_bm_profile},
+        {Str::brandmeister, "master_resolution_failed", Str::err_bm_dns},
+        {Str::brandmeister, "master_resolution_timeout", Str::err_bm_dns_timeout},
+        {Str::brandmeister, "resolver_cancel_timeout", Str::err_bm_cancel_timeout},
+        {Str::brandmeister, "transport_open_failed", Str::err_bm_transport},
+        {Str::brandmeister, "media_cleanup_timeout", Str::err_bm_cleanup},
+        {Str::brandmeister, "master_rejected", Str::err_bm_rejected},
+        {Str::brandmeister, "session_failed", Str::err_bm_session},
+        {Str::dynamic_group, "quick_call_partial_send", Str::err_quick_call_partial},
+    };
+    for (const auto& mapping : mappings) {
+        if (source == mapping.source && detail.find(mapping.token) != std::string::npos) return tr(mapping.message);
+    }
+    return detail;
+}
+
+bool contains_radio_error_hint(const std::string& detail) {
+    constexpr std::string_view hints[] = {"HRI", "电台", "串口", "USB Audio", "WaveIn", "WaveOut",
+                                          "hri_port", "radio_selection", "serial_open_or_configure"};
+    for (const auto hint : hints) {
+        if (detail.find(hint) != std::string::npos) return true;
+    }
+    return false;
+}
+
+Str operation_log_source(Str operation, const std::string& message) {
+    switch (operation) {
+    case Str::op_bm:
+        return Str::brandmeister;
+    case Str::op_start:
+    case Str::op_stop:
+        return Str::radio_control;
+    case Str::op_cat:
+        return Str::status_cat;
+    case Str::op_audio_devices:
+    case Str::op_gains:
+        return Str::audio_devices;
+    case Str::op_quick_call:
+    case Str::op_auto_quick_call:
+    case Str::op_rx_policy:
+    case Str::op_tx_policy:
+        return Str::dynamic_group;
+    case Str::save_settings:
+        return Str::save_settings;
+    case Str::bm_static_groups:
+        return Str::brandmeister;
+    default:
+        break;
+    }
+    const Str operations[] = {Str::op_bm, Str::op_start, Str::op_stop, Str::op_cat,
+                              Str::op_audio_devices, Str::op_quick_call, Str::op_auto_quick_call};
+    const Str sources[] = {Str::brandmeister, Str::radio_control, Str::radio_control,
+                           Str::status_cat, Str::audio_devices, Str::dynamic_group, Str::dynamic_group};
+    for (std::size_t i = 0; i < 7U; ++i) {
+        const std::string prefix = fmt("%s:", tr(operations[i]));
+        const std::string full_width_prefix = fmt("%s：", tr(operations[i]));
+        if (message.rfind(prefix, 0U) == 0U || message.rfind(full_width_prefix, 0U) == 0U) {
+            return sources[i];
+        }
+    }
+    const std::string settings_prefix = fmt(tr(Str::settings_save_failed), "");
+    if (message.rfind(settings_prefix, 0U) == 0U) return Str::save_settings;
+    if (contains_radio_error_hint(message)) return Str::radio_control;
+    if (message.find("CAT") != std::string::npos || message.find("cat_") != std::string::npos) {
+        return Str::status_cat;
+    }
+    if (message.find("BM") != std::string::npos || message.find("bm_") != std::string::npos) {
+        return Str::brandmeister;
+    }
+    if (message.find("音频") != std::string::npos || message.find("audio") != std::string::npos ||
+        message.find("WaveIn") != std::string::npos || message.find("WaveOut") != std::string::npos) {
+        return Str::audio_devices;
+    }
+    return Str::core;
 }
 
 std::string device_selection_text(const services::ResolvedDeviceSelection& selection, bool include_id) {
@@ -461,6 +553,7 @@ void AppView::draw(float dpi_scale) {
 
     const auto snap_to_pixel = [this](float value) { return std::round(value * scale_) / scale_; };
     const float gap = snap_to_pixel(px(4.0F));
+    update_connection_log();
     draw_header();
     const ImVec2 avail = ImGui::GetContentRegionAvail();
     const float body_h = std::max(0.0F, avail.y - gap);
@@ -486,6 +579,20 @@ void AppView::draw(float dpi_scale) {
 
 void AppView::draw_header() {
     const auto& s = vm_.snapshot();
+    const ConnectionLogEntry* summary = nullptr;
+    for (auto it = connection_events_.rbegin(); it != connection_events_.rend(); ++it) {
+        if (it->failed && !it->resolved) {
+            summary = &*it;
+            break;
+        }
+    }
+    if (!summary && !connection_events_.empty()) summary = &connection_events_.back();
+    const bool summary_error = summary && summary->failed && !summary->resolved;
+    std::string summary_text;
+    if (summary) {
+        summary_text = fmt("%s · %s", tr(summary->source), summary->message.c_str());
+        if (summary->failed && summary->resolved) summary_text += fmt(" · %s", tr(Str::log_resolved));
+    }
     const float row_h = px(32.0F);
     if (ImGui::BeginTable("##header", 3, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoPadOuterX |
                                            ImGuiTableFlags_NoBordersInBody)) {
@@ -508,42 +615,57 @@ void AppView::draw_header() {
 
         ImGui::TableSetColumnIndex(1);
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (row_h - ImGui::GetTextLineHeight()) * 0.5F);
-        const float status_w = px(390.0F);
-        const float status_x = ImGui::GetCursorPosX() + std::max(0.0F, (ImGui::GetContentRegionAvail().x - status_w) * 0.5F);
-        ImGui::SetCursorPosX(status_x);
-        caption(tr(Str::brandmeister));
-        ImGui::SameLine(0.0F, px(5.0F));
-        ImGui::PushFont(fonts_.bold, 13.0F);
-        const bool bm_ok = s.bm_link == BmLink::connected;
-        const bool bm_bad = s.bm_link == BmLink::failed || s.bm_link == BmLink::backoff;
-        ImGui::PushStyleColor(ImGuiCol_Text, bm_ok ? vec(color::green) : bm_bad ? vec(color::warn) : vec(color::text));
-        ImGui::TextUnformatted(bm_short_text(s.bm_link));
-        ImGui::PopStyleColor();
-        ImGui::PopFont();
-        ImGui::SameLine(0.0F, px(12.0F));
-        caption(tr(Str::rtt));
-        ImGui::SameLine(0.0F, px(5.0F));
-        ImGui::PushStyleColor(ImGuiCol_Text, vec(color::muted));
-        ImGui::TextUnformatted(tr(Str::rtt_no_data));
-        ImGui::PopStyleColor();
-        ImGui::SameLine(0.0F, px(12.0F));
-        caption(tr(Str::core));
-        ImGui::SameLine(0.0F, px(5.0F));
-        ImGui::PushFont(fonts_.bold, 13.0F);
-        const bool core_ok = s.phase == Phase::running;
-        ImGui::PushStyleColor(ImGuiCol_Text,
-                              core_ok ? vec(color::green) : s.phase == Phase::failed ? vec(color::error) : vec(color::text));
-        ImGui::TextUnformatted(phase_short_text(s.phase));
-        ImGui::PopStyleColor();
-        ImGui::PopFont();
-        if (s.phase == Phase::failed && !s.failure_reason.empty()) ImGui::SetItemTooltip("%s", s.failure_reason.c_str());
-        else ImGui::SetItemTooltip("%s", phase_text(s));
+        if (summary) {
+            caption(tr(summary_error ? Str::log_error : Str::log_events));
+            ImGui::SameLine(0.0F, px(6.0F));
+            ImGui::PushStyleColor(ImGuiCol_Text, vec(summary_error ? color::error : color::muted));
+            const float available = std::max(px(24.0F), ImGui::GetContentRegionAvail().x - px(28.0F));
+            text_ellipsis(summary_text.c_str(), available, rgb(summary_error ? color::error : color::muted));
+            ImGui::SetItemTooltip("%s", summary_text.c_str());
+            ImGui::PopStyleColor();
+            ImGui::SameLine(0.0F, px(3.0F));
+            if (summary_error && button("×##clear-error", ImVec2(px(20.0F), px(22.0F)))) {
+                connection_events_.clear();
+            }
+            if (summary_error) ImGui::SetItemTooltip("%s", tr(Str::log_clear));
+        } else {
+            const float status_w = px(390.0F);
+            const float status_x = ImGui::GetCursorPosX() + std::max(0.0F, (ImGui::GetContentRegionAvail().x - status_w) * 0.5F);
+            ImGui::SetCursorPosX(status_x);
+            caption(tr(Str::brandmeister));
+            ImGui::SameLine(0.0F, px(5.0F));
+            ImGui::PushFont(fonts_.bold, 13.0F);
+            const bool bm_ok = s.bm_link == BmLink::connected;
+            const bool bm_bad = s.bm_link == BmLink::failed || s.bm_link == BmLink::backoff;
+            ImGui::PushStyleColor(ImGuiCol_Text, bm_ok ? vec(color::green) : bm_bad ? vec(color::warn) : vec(color::text));
+            ImGui::TextUnformatted(bm_short_text(s.bm_link));
+            ImGui::PopStyleColor();
+            ImGui::PopFont();
+            ImGui::SameLine(0.0F, px(12.0F));
+            caption(tr(Str::rtt));
+            ImGui::SameLine(0.0F, px(5.0F));
+            ImGui::PushStyleColor(ImGuiCol_Text, vec(color::muted));
+            ImGui::TextUnformatted(tr(Str::rtt_no_data));
+            ImGui::PopStyleColor();
+            ImGui::SameLine(0.0F, px(12.0F));
+            caption(tr(Str::core));
+            ImGui::SameLine(0.0F, px(5.0F));
+            ImGui::PushFont(fonts_.bold, 13.0F);
+            const bool core_ok = s.phase == Phase::running;
+            ImGui::PushStyleColor(ImGuiCol_Text,
+                                  core_ok ? vec(color::green) : s.phase == Phase::failed ? vec(color::error) : vec(color::text));
+            ImGui::TextUnformatted(phase_short_text(s.phase));
+            ImGui::PopStyleColor();
+            ImGui::PopFont();
+            if (s.phase == Phase::failed && !s.failure_reason.empty()) ImGui::SetItemTooltip("%s", s.failure_reason.c_str());
+            else ImGui::SetItemTooltip("%s", phase_text(s));
+        }
 
         ImGui::TableSetColumnIndex(2);
         const float btn_h = px(26.0F);
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (row_h - btn_h) * 0.5F);
         if (button(language() == Language::zh_cn ? tr(Str::language_english) : tr(Str::language_chinese),
-                   ImVec2(px(76.0F), btn_h))) toggle_language();
+                   ImVec2(px(64.0F), btn_h))) toggle_language();
         if (!language_notice_.empty()) {
             ImGui::SetItemTooltip("%s", language_notice_.c_str());
         } else if (vm_.font_status() == FontStatus::segoe_simhei) {
@@ -552,18 +674,228 @@ void AppView::draw_header() {
             ImGui::SetItemTooltip("%s", tr(Str::font_default));
         }
         ImGui::SameLine(0.0F, px(5.0F));
-        if (button(tr(Str::relay_unknown), ImVec2(px(100.0F), btn_h), Tone::normal, false)) {}
-        ImGui::SetItemTooltip("%s", tr(Str::relay_unavailable_reason));
+        if (button(tr(Str::relay_enable), ImVec2(px(108.0F), btn_h), Tone::normal, false)) {}
+        ImGui::SetItemTooltip("%s", tr(Str::relay_state_unknown));
         ImGui::SameLine(0.0F, px(5.0F));
-        if (button(tr(Str::stop_exit), ImVec2(px(126.0F), btn_h), Tone::stop)) {
+        if (button(tr(Str::stop_exit), ImVec2(px(108.0F), btn_h), Tone::stop)) {
             if (vm_.snapshot().phase != Phase::stopped || vm_.cat().connected || vm_.cat().busy) vm_.stop();
             vm_.request_exit();
         }
+        ImGui::SameLine(0.0F, px(5.0F));
+        const auto log_label = fmt("≡ %zu##connection-log", connection_events_.size());
+        if (button(log_label.c_str(), ImVec2(px(48.0F), btn_h), Tone::normal,
+                   !connection_events_.empty())) {
+            ImGui::OpenPopup("##connection-log");
+        }
+        ImGui::SetItemTooltip("%s (%zu)", tr(Str::log_events), connection_events_.size());
         ImGui::EndTable();
     }
 
+    draw_connection_log_popup();
     const ImVec2 pos = ImGui::GetCursorPos();
     ImGui::SetCursorPos(ImVec2(pos.x, pos.y + px(4.0F)));
+}
+
+void AppView::update_connection_log() {
+    const auto& s = vm_.snapshot();
+    for (auto& event : vm_.drain_operation_events()) {
+        const Str source = operation_log_source(event.operation, event.message);
+        add_connection_event(source, friendly_error_detail(source, event.message), event.failed);
+    }
+
+    if (s.bm_error != last_bm_error_) {
+        const bool was_error = !last_bm_error_.empty() && last_bm_error_ != "none";
+        last_bm_error_ = s.bm_error;
+        if (!s.bm_error.empty() && s.bm_error != "none") {
+            const auto detail = friendly_error_detail(Str::brandmeister, s.bm_error);
+            add_connection_event(Str::brandmeister, fmt(tr(Str::bm_error_fmt), detail.c_str()), true);
+        } else if (was_error) {
+            if (s.bm_link == BmLink::connected) {
+                resolve_connection_error(Str::brandmeister, tr(Str::bm_connected));
+            } else if (s.bm_link == BmLink::disabled) {
+                resolve_connection_error(Str::brandmeister, tr(Str::bm_disabled));
+            }
+        }
+    }
+    if (s.radio_error != last_radio_error_) {
+        const bool was_error = !last_radio_error_.empty();
+        last_radio_error_ = s.radio_error;
+        if (!s.radio_error.empty()) {
+            const auto detail = friendly_error_detail(Str::radio_control, s.radio_error);
+            add_connection_event(Str::radio_control, fmt(tr(Str::radio_error_fmt), detail.c_str()), true);
+        } else if (was_error) {
+            resolve_connection_error(Str::radio_control,
+                s.hri_ready ? tr(Str::log_radio_ready)
+                : s.serial_open ? tr(Str::log_radio_open) : tr(Str::log_radio_disconnected));
+        }
+    }
+    if (vm_.cat().error != last_cat_error_) {
+        const bool was_error = !last_cat_error_.empty();
+        last_cat_error_ = vm_.cat().error;
+        if (!last_cat_error_.empty()) {
+            const auto detail = friendly_error_detail(Str::status_cat, last_cat_error_);
+            add_connection_event(Str::status_cat, fmt(tr(Str::cat_error_fmt), detail.c_str()), true);
+        } else if (was_error) {
+            resolve_connection_error(Str::status_cat,
+                vm_.cat().connected ? tr(Str::log_cat_connected) : tr(Str::log_cat_disconnected));
+        }
+    }
+    if (s.failure_reason != last_core_failure_) {
+        const bool was_error = !last_core_failure_.empty();
+        last_core_failure_ = s.failure_reason;
+        if (!s.failure_reason.empty()) {
+            const auto detail = friendly_error_detail(Str::core, s.failure_reason);
+            add_connection_event(Str::core, fmt(tr(Str::core_error_fmt), detail.c_str()), true);
+        } else if (was_error && s.phase == Phase::running) {
+            resolve_connection_error(Str::core, tr(Str::log_core_ready));
+        }
+    }
+    if (settings_error_ != last_settings_error_) {
+        const bool was_error = !last_settings_error_.empty();
+        last_settings_error_ = settings_error_;
+        if (!settings_error_.empty()) {
+            add_connection_event(Str::save_settings, settings_error_, true);
+        } else if (was_error) {
+            resolve_connection_error(Str::save_settings, tr(Str::log_settings_saved));
+        }
+    }
+
+    if (!connection_states_initialized_) {
+        connection_states_initialized_ = true;
+        last_bm_link_ = s.bm_link;
+        last_core_phase_ = s.phase;
+        last_serial_open_ = s.serial_open;
+        last_hri_ready_ = s.hri_ready;
+        last_cat_connected_ = vm_.cat().connected;
+        last_bm_connection_revision_ = s.bm_connection_revision;
+        last_audio_endpoints_revision_ = s.audio_endpoints_revision;
+        last_cat_revision_ = vm_.cat().revision;
+        if (s.bm_link == BmLink::connected && (s.bm_error.empty() || s.bm_error == "none")) {
+            resolve_connection_error(Str::brandmeister, tr(Str::bm_connected));
+        }
+        if (s.hri_ready) {
+            resolve_connection_error(Str::radio_control, tr(Str::log_radio_ready));
+        } else if (s.serial_open) {
+            add_connection_event(Str::radio_control, tr(Str::log_radio_open), false);
+        }
+        if (vm_.cat().connected) resolve_connection_error(Str::status_cat, tr(Str::log_cat_connected));
+        if (s.phase == Phase::running) resolve_connection_error(Str::core, tr(Str::log_core_ready));
+    } else {
+        if (s.bm_link != last_bm_link_) {
+            if (s.bm_link == BmLink::connected && (s.bm_error.empty() || s.bm_error == "none")) {
+                resolve_connection_error(Str::brandmeister, tr(Str::bm_connected));
+            } else if (s.bm_link == BmLink::disabled &&
+                       (s.bm_error.empty() || s.bm_error == "none")) {
+                resolve_connection_error(Str::brandmeister, tr(Str::bm_disabled));
+            } else if (s.bm_link == BmLink::resolving || s.bm_link == BmLink::connecting) {
+                add_connection_event(Str::brandmeister, tr(Str::bm_connecting), false);
+            } else if (s.bm_link == BmLink::backoff) {
+                add_connection_event(Str::brandmeister, tr(Str::bm_backoff), false);
+            } else if (s.bm_link == BmLink::failed) {
+                add_connection_event(Str::brandmeister, tr(Str::bm_failed), true);
+            }
+        }
+        if (s.serial_open != last_serial_open_) {
+            if (s.serial_open && !s.hri_ready) {
+                add_connection_event(Str::radio_control, tr(Str::log_radio_open), false);
+            } else if (!s.serial_open) {
+                resolve_connection_error(Str::radio_control, tr(Str::log_radio_disconnected));
+            }
+        }
+        if (s.hri_ready != last_hri_ready_ && s.hri_ready) {
+            resolve_connection_error(Str::radio_control, tr(Str::log_radio_ready));
+        }
+        if (vm_.cat().connected != last_cat_connected_) {
+            resolve_connection_error(Str::status_cat,
+                vm_.cat().connected ? tr(Str::log_cat_connected) : tr(Str::log_cat_disconnected));
+        }
+        if (s.phase != last_core_phase_ && s.phase == Phase::running) {
+            resolve_connection_error(Str::core, tr(Str::log_core_ready));
+        }
+    }
+
+    if (s.bm_connection_revision != last_bm_connection_revision_) {
+        last_bm_connection_revision_ = s.bm_connection_revision;
+        add_connection_event(Str::brandmeister,
+            s.bm_requested_enabled ? tr(Str::log_bm_connect_requested)
+                                   : tr(Str::log_bm_disconnect_requested), false);
+    }
+    if (s.audio_endpoints_revision != last_audio_endpoints_revision_) {
+        last_audio_endpoints_revision_ = s.audio_endpoints_revision;
+        resolve_connection_error(Str::audio_devices, tr(Str::log_audio_changed));
+    }
+    if (vm_.cat().revision != last_cat_revision_) last_cat_revision_ = vm_.cat().revision;
+
+    last_bm_link_ = s.bm_link;
+    last_core_phase_ = s.phase;
+    last_serial_open_ = s.serial_open;
+    last_hri_ready_ = s.hri_ready;
+    last_cat_connected_ = vm_.cat().connected;
+}
+
+void AppView::add_connection_event(Str source, std::string message, bool failed) {
+    if (message.empty()) return;
+    const auto& config = vm_.config();
+    const std::string secrets[] = {config.bm_password, config.bm_api_key,
+                                   draft_.bm_password, draft_.bm_api_key};
+    for (const auto& secret : secrets) {
+        if (secret.empty()) continue;
+        std::size_t pos = 0U;
+        while ((pos = message.find(secret, pos)) != std::string::npos) {
+            message.replace(pos, secret.size(), "[redacted]");
+            pos += sizeof("[redacted]") - 1U;
+        }
+    }
+    if (!connection_events_.empty()) {
+        const auto& last = connection_events_.back();
+        if (last.source == source && last.message == message && last.failed == failed && !last.resolved) return;
+    }
+    connection_events_.push_back({format_clock(std::chrono::system_clock::now()),
+                                  std::move(source), std::move(message), failed, false});
+    constexpr std::size_t max_events = 12U;
+    while (connection_events_.size() > max_events) connection_events_.pop_front();
+}
+
+void AppView::resolve_connection_error(Str source, std::string message) {
+    for (auto it = connection_events_.rbegin(); it != connection_events_.rend(); ++it) {
+        if (it->source == source && it->failed && !it->resolved) it->resolved = true;
+    }
+    add_connection_event(source, std::move(message), false);
+}
+
+void AppView::draw_connection_log_popup() {
+    if (ImGui::IsPopupOpen("##connection-log")) {
+        const ImVec2 viewport = ImGui::GetMainViewport()->WorkSize;
+        ImGui::SetNextWindowSize(ImVec2(std::min(px(560.0F), viewport.x * 0.9F),
+                                        std::min(px(320.0F), viewport.y * 0.75F)), ImGuiCond_Appearing);
+    }
+    if (!ImGui::BeginPopup("##connection-log")) return;
+
+    section_title(tr(Str::log_events), fonts_.bold);
+    ImGui::SameLine();
+    if (button(tr(Str::log_clear), ImVec2(px(52.0F), px(22.0F)), Tone::normal,
+               !connection_events_.empty())) {
+        connection_events_.clear();
+    }
+    ImGui::Separator();
+    if (connection_events_.empty()) {
+        ImGui::TextUnformatted(tr(Str::log_empty));
+    } else {
+        ImGui::BeginChild("##connection-log-items", ImVec2(0.0F, px(245.0F)),
+                          ImGuiChildFlags_None, ImGuiWindowFlags_AlwaysVerticalScrollbar);
+        for (auto it = connection_events_.rbegin(); it != connection_events_.rend(); ++it) {
+            const ImU32 tint = it->failed && !it->resolved ? rgb(color::error)
+                               : it->resolved ? rgb(color::muted) : rgb(color::green);
+            ImGui::PushStyleColor(ImGuiCol_Text, tint);
+            ImGui::Text("%s  %s", it->time.c_str(), tr(it->source));
+            ImGui::PopStyleColor();
+            const std::string suffix = it->resolved ? fmt(" · %s", tr(Str::log_resolved)) : std::string{};
+            ImGui::TextWrapped("%s%s", it->message.c_str(), suffix.c_str());
+            ImGui::Spacing();
+        }
+        ImGui::EndChild();
+    }
+    ImGui::EndPopup();
 }
 
 void AppView::draw_channels(float height) {
@@ -730,7 +1062,9 @@ void AppView::draw_channel_card(const ChannelView& ch, float width, float height
                             : ch.quick_call_sent    ? tr(Str::btn_rejoin_short)
                                                     : tr(Str::btn_join_short);
         const bool bm_ready = vm_.snapshot().bm_link == BmLink::connected;
-        if (button(label, bsize, Tone::normal, !ch.is_static && !any_pending && bm_ready && !ch.is_muted)) {
+        if (button(label, bsize, Tone::normal,
+                   !ch.is_static && !any_pending && !vm_.startup_group_activation_active() &&
+                       bm_ready && !ch.is_muted)) {
             vm_.quick_call(ch.key);
         }
         ImGui::SetItemTooltip("%s", ch.is_static ? ch.tooltip.c_str()
@@ -928,23 +1262,28 @@ void AppView::draw_radio_panel(float width, float height) {
     hri_port_labels.insert(hri_port_labels.end(), serial_port_labels.begin(), serial_port_labels.end());
     std::vector<std::string> cat_port_labels{tr(Str::auto_select)};
     cat_port_labels.insert(cat_port_labels.end(), serial_port_labels.begin(), serial_port_labels.end());
-    const bool radio_idle = s.phase == Phase::stopped && !cat.connected && !cat.busy;
-    const bool radio_active = s.phase == Phase::starting || s.phase == Phase::running ||
-                              s.phase == Phase::stopping || cat.connected || cat.busy;
-    const char* radio_label = s.phase == Phase::stopping ? tr(Str::disconnecting_serial)
-                              : (s.phase == Phase::starting || (s.phase == Phase::stopped && cat.busy))
-                                  ? tr(Str::connecting_radio)
+    const bool radio_idle = !s.serial_open && !s.hri_ready && !cat.connected && !cat.busy;
+    const bool radio_active = s.serial_open || s.hri_ready || cat.connected || cat.busy;
+    const bool radio_start_pending = vm_.pending(Str::op_start);
+    const bool radio_stop_pending = vm_.pending(Str::op_stop);
+    const bool radio_cancelable = radio_start_pending || (s.phase == Phase::starting && !radio_active);
+    const bool port_settings_enabled = radio_idle && s.phase != Phase::starting && s.phase != Phase::stopping &&
+                                       !radio_start_pending && !radio_stop_pending;
+    const bool radio_connecting = cat.busy || (s.serial_open && !s.hri_ready);
+    const char* radio_label = radio_stop_pending || s.phase == Phase::stopping ? tr(Str::disconnecting_serial)
+                              : radio_cancelable ? tr(Str::disconnect_serial)
+                              : radio_connecting ? tr(Str::connecting_radio)
                               : radio_active ? tr(Str::disconnect_serial) : tr(Str::connect_serial);
-    const bool radio_button_enabled = s.phase != Phase::stopping &&
-                                      !vm_.pending(Str::op_start) && !vm_.pending(Str::op_stop);
+    const bool radio_button_enabled = s.phase != Phase::stopping && !radio_stop_pending;
     if (begin_fields("##serials", {{tr(Str::radio_link), 0.0F, px(104.0F)}, {tr(Str::wiresx_port), 1.0F, 0.0F},
                                     {tr(Str::cat_port), 1.0F, 0.0F}, {tr(Str::baud_rate), 0.0F, px(84.0F)}})) {
         ImGui::TableNextColumn();
-        if (button(radio_label, ImVec2(-FLT_MIN, 0.0F), radio_active ? Tone::normal : Tone::ok,
+        if (button(radio_label, ImVec2(-FLT_MIN, 0.0F),
+                   (radio_active || radio_cancelable) ? Tone::normal : Tone::ok,
                    radio_button_enabled)) toggle_radio();
         ImGui::SetItemTooltip("%s", tr(Str::radio_link_hint));
         ImGui::TableNextColumn();
-        ImGui::BeginDisabled(!radio_idle || vm_.pending(Str::op_start) || vm_.pending(Str::op_stop));
+        ImGui::BeginDisabled(!port_settings_enabled);
         int hri_port_index = 0;
         if (!is_auto_selection(cfg.hri_port)) {
             const std::string selected = to_utf8(cfg.hri_port);
@@ -976,7 +1315,7 @@ void AppView::draw_radio_panel(float width, float height) {
         }
         ImGui::EndDisabled();
         ImGui::TableNextColumn();
-        ImGui::BeginDisabled(!radio_idle || vm_.pending(Str::op_start) || vm_.pending(Str::op_stop));
+        ImGui::BeginDisabled(!port_settings_enabled);
         int cat_port_index = 0;
         cat_port_labels[0] = device_selection_text(selections.cat, true);
         if (!is_auto_selection(cfg.cat_port)) {
@@ -1066,6 +1405,7 @@ void AppView::draw_radio_panel(float width, float height) {
     const char* bm_label = !s.bm_requested_enabled ? tr(Str::connect_bm)
                            : bm_connecting ? tr(Str::connecting_bm) : tr(Str::disconnect_bm);
     if (vm_.pending(Str::op_bm)) bm_label = s.bm_requested_enabled ? tr(Str::disconnecting_bm) : tr(Str::connecting_bm);
+    const bool bm_runtime_available = s.phase == Phase::running;
     section_title(tr(Str::bm_account), fonts_.bold);
     if (begin_fields("##bm-identity", {{tr(Str::callsign), 1.0F, 0.0F},
                                         {tr(Str::manual_dmr_id), 1.0F, 0.0F},
@@ -1137,7 +1477,7 @@ void AppView::draw_radio_panel(float width, float height) {
         if (button(tr(Str::save_settings), ImVec2(-FLT_MIN, 0.0F), Tone::normal)) save_bm_config();
         ImGui::TableNextColumn();
         if (button(bm_label, ImVec2(-FLT_MIN, 0.0F), s.bm_requested_enabled ? Tone::normal : Tone::ok,
-                   s.phase == Phase::running && !vm_.pending(Str::op_bm) &&
+                   bm_runtime_available && !vm_.pending(Str::op_bm) &&
                        (s.bm_requested_enabled || (!bm_config_dirty && bm_config_complete)))) toggle_bm();
         if (!s.bm_requested_enabled && (bm_config_dirty || !bm_config_complete)) {
             ImGui::SetItemTooltip("%s", tr(Str::bm_save_before_connect));
@@ -1291,6 +1631,21 @@ void AppView::draw_daily_panel(float width, float height) {
         ImGui::EndTable();
     }
 
+    const auto& startup_status = vm_.startup_group_activation_status();
+    if (!startup_status.empty()) {
+        const bool warning = startup_status.find("失败") != std::string::npos ||
+                             startup_status.find("failed") != std::string::npos ||
+                             startup_status.find("busy") != std::string::npos ||
+                             startup_status.find("paused") != std::string::npos ||
+                             startup_status.find("忙") != std::string::npos ||
+                             startup_status.find("暂停") != std::string::npos;
+        ImGui::PushFont(nullptr, 11.0F);
+        ImGui::PushStyleColor(ImGuiCol_Text, vec(warning ? color::warn : color::muted));
+        ImGui::TextWrapped("%s", startup_status.c_str());
+        ImGui::PopStyleColor();
+        ImGui::PopFont();
+    }
+
     ImGui::Separator();
     draw_static_groups(inner_w);
     ImGui::Separator();
@@ -1359,13 +1714,6 @@ void AppView::draw_daily_panel(float width, float height) {
     ImGui::SetItemTooltip("%s", device_selection_text(device_status.wave_out, false).c_str());
     ImGui::SameLine(0.0F, px(10.0F));
     caption(phase_short_text(s.phase));
-    if (!cat.error.empty()) {
-        ImGui::PushFont(nullptr, 11.0F);
-        ImGui::PushStyleColor(ImGuiCol_Text, vec(color::warn));
-        ImGui::TextWrapped("%s", cat.error.c_str());
-        ImGui::PopStyleColor();
-        ImGui::PopFont();
-    }
     ImGui::EndChild();
 }
 
@@ -1494,8 +1842,8 @@ void AppView::toggle_language() {
 
 void AppView::toggle_radio() {
     const auto& s = vm_.snapshot();
-    const bool active = s.phase == Phase::starting || s.phase == Phase::running ||
-                        s.phase == Phase::stopping || vm_.cat().connected || vm_.cat().busy;
+    const bool active = s.serial_open || s.hri_ready || vm_.cat().connected || vm_.cat().busy ||
+                        vm_.pending(Str::op_start) || s.phase == Phase::starting;
     if (!active) {
         if (!vm_.pending(Str::op_start) && !vm_.pending(Str::op_stop)) vm_.start();
     } else if (s.phase != Phase::stopping && !vm_.pending(Str::op_stop)) {

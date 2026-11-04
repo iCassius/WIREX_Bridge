@@ -91,5 +91,9 @@ struct ActiveDeviceIds {
 
 [[nodiscard]] std::optional<engine::StartConfig> make_start_config(const services::GuiConfig& gui,
                                                                     const StartInputs& inputs, std::string& error);
+// 不解析串口或音频端点；用于先启动常驻 BM runtime。无线端点由 make_start_config 单独解析。
+[[nodiscard]] std::optional<engine::StartConfig> make_runtime_config(const services::GuiConfig& gui,
+                                                                       std::uint8_t color_code,
+                                                                       std::string& error);
 
 } // namespace wirex::gui::config_bridge

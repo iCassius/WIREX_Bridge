@@ -15,6 +15,29 @@
 namespace wirex::engine {
 namespace detail {
 
+bool wipe_secret(std::string& secret) noexcept
+{
+    const auto size = secret.size();
+    auto* bytes = reinterpret_cast<volatile unsigned char*>(secret.data());
+    for (std::size_t index = 0U; index < size; ++index) bytes[index] = 0U;
+    bool zeroed = true;
+    for (std::size_t index = 0U; index < size; ++index) zeroed = zeroed && bytes[index] == 0U;
+    secret.clear();
+    return zeroed;
+}
+
+bool wipe_command_secret(Command& command) noexcept
+{
+    return !command.bm_target || wipe_secret(command.bm_target->profile.password);
+}
+
+bool resolve_rejected_command(Command& command, CommandResult result) noexcept
+{
+    const bool wiped = wipe_command_secret(command);
+    try { command.promise.set_value(std::move(result)); } catch (...) {}
+    return wiped;
+}
+
 void EventQueue::push(Event event)
 {
     last_at_ms_ = event.at_ms;
@@ -155,9 +178,6 @@ void engine_thread_main(std::shared_ptr<Shared> shared, StartConfig config) noex
         }
         last.phase = final_phase(result);
         last.failure_reason = result.status == CommandStatus::accepted ? std::string{} : result.detail;
-        last.serial_open = false;
-        last.wave_in_open = false;
-        last.wave_out_open = false;
         last.tx_active = false;
         last.active_rx_call.reset();
         last.bm_link = BmLink::disabled;
@@ -175,8 +195,8 @@ void engine_thread_main(std::shared_ptr<Shared> shared, StartConfig config) noex
         leftovers.swap(shared->commands);
     }
     for (auto& command : leftovers) {
-        try { command.promise.set_value(CommandResult{CommandStatus::not_ready, 0U, "engine_stopped"}); }
-        catch (...) {}
+        (void)detail::resolve_rejected_command(
+            command, CommandResult{CommandStatus::not_ready, 0U, "engine_stopped"});
     }
     for (auto& promise : stop_promises) {
         try { promise.set_value(result); } catch (...) {}
@@ -218,7 +238,8 @@ struct Engine::Impl {
             std::lock_guard<std::mutex> lock(shared->mutex);
             // 收尾期间仍接受命令（与原 control-v2 一致）；线程结束后统一拒绝。
             if (!shared->accepting) {
-                command.promise.set_value(CommandResult{CommandStatus::not_ready, 0U, "engine_not_running"});
+                (void)detail::resolve_rejected_command(
+                    command, CommandResult{CommandStatus::not_ready, 0U, "engine_not_running"});
                 return future;
             }
             shared->commands.push_back(std::move(command));
@@ -350,12 +371,35 @@ bool Engine::wait_stopped(std::chrono::milliseconds timeout)
     return impl_->join_for(timeout);
 }
 
-std::future<CommandResult> Engine::set_bm_connection(bool enabled, std::uint64_t expected_revision)
+std::future<CommandResult> Engine::set_bm_connection(bool enabled, std::uint64_t requested_revision)
 {
     Command command{};
     command.kind = CommandKind::set_bm_connection;
     command.flag = enabled;
-    command.revision = expected_revision;
+    command.revision = requested_revision;
+    return impl_->enqueue(std::move(command));
+}
+
+std::future<CommandResult> Engine::configure_bm(BmTarget config)
+{
+    Command command{};
+    command.kind = CommandKind::configure_bm;
+    command.bm_target.emplace(std::move(config));
+    return impl_->enqueue(std::move(command));
+}
+
+std::future<CommandResult> Engine::connect_radio(RadioStartConfig config)
+{
+    Command command{};
+    command.kind = CommandKind::connect_radio;
+    command.radio_config.emplace(std::move(config));
+    return impl_->enqueue(std::move(command));
+}
+
+std::future<CommandResult> Engine::disconnect_radio()
+{
+    Command command{};
+    command.kind = CommandKind::disconnect_radio;
     return impl_->enqueue(std::move(command));
 }
 

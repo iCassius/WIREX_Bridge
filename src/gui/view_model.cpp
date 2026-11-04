@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <ctime>
 #include <exception>
+#include <limits>
 #include <utility>
 
 namespace wirex::gui {
@@ -56,6 +57,13 @@ bool call_matches(const engine::CallInfo& call, const services::ChannelEntry& ch
         return call.source_id == ch.id && (local_id == 0U || call.destination_id == local_id);
     }
     return call.destination_id == ch.id;
+}
+
+bool bm_profile_changed(const services::GuiConfig& current, const services::GuiConfig& next) {
+    return current.callsign != next.callsign || current.dmr_id != next.dmr_id ||
+           services::effective_gateway_id(current) != services::effective_gateway_id(next) ||
+           current.master_host != next.master_host || current.master_port != next.master_port ||
+           current.bm_password != next.bm_password;
 }
 
 } // namespace
@@ -146,7 +154,7 @@ ViewModel::ViewModel(EngineApi& engine, services::Services services, bool fake)
         if (auto loaded = services_.config.load(error)) {
             config_ = std::move(*loaded);
         } else if (!error.empty()) {
-            flash(fmt(tr(Str::settings_save_failed), error.c_str()), true);
+            flash(fmt(tr(Str::settings_save_failed), error.c_str()), true, Str::save_settings);
         }
     }
     // 从用户配置恢复上次选择的界面语言；未知值由 parse_language 回落到简体中文。
@@ -173,6 +181,10 @@ ViewModel::ViewModel(EngineApi& engine, services::Services services, bool fake)
     }
     last_phase_ = snapshot_->phase;
     static_sync(); // 已有 API Key 与设备 ID 时读取 BM 静态组
+    startup_group_activation_.freeze(config_.channels);
+    update_startup_group_activation_status();
+    // 正常产品启动时自动独立连接 BM runtime、CAT 与电台；--fake 保持静止，供截图和演示控制。
+    if (!fake_) start();
 }
 
 ViewModel::~ViewModel() {
@@ -238,6 +250,12 @@ bool ViewModel::pump() {
         handle_event(event);
         changed = true;
     }
+    struct CompletedPending {
+        Str op{};
+        CommandResult result{};
+        std::function<void(const CommandResult&)> on_done{};
+    };
+    std::vector<CompletedPending> completed;
     for (auto it = pending_.begin(); it != pending_.end();) {
         if (it->future.wait_for(0s) != std::future_status::ready) {
             ++it;
@@ -253,8 +271,14 @@ bool ViewModel::pump() {
         auto op = it->op;
         auto done = std::move(it->on_done);
         it = pending_.erase(it);
-        if (done) done(r);
-        report(op, r);
+        completed.push_back({op, std::move(r), std::move(done)});
+        changed = true;
+    }
+    // 完成回调可以再排队一条 future（例如 configure_bm 后 set_bm_connection）；
+    // 先完整移除本轮完成项，再调用回调，避免 vector 扩容使遍历迭代器失效。
+    for (auto& item : completed) {
+        if (item.on_done) item.on_done(item.result);
+        report(item.op, item.result);
         changed = true;
     }
     std::vector<std::function<void()>> actions;
@@ -279,6 +303,7 @@ bool ViewModel::pump() {
             changed = true;
         }
     }
+    if (pump_startup_group_activation()) changed = true;
     if (!transient_text_.empty() && !transient_visible()) {
         transient_text_.clear();
         changed = true;
@@ -289,6 +314,14 @@ bool ViewModel::pump() {
 std::optional<std::uint32_t> ViewModel::idle_timeout_ms() const {
     // 命令等待中：轮询 future（引擎完成时也会唤醒，这里只作兜底）。
     if (!pending_.empty() || static_.busy) return 100U;
+    if (startup_group_activation_.active() &&
+        snapshot_->bm_link == BmLink::connected && !startup_group_activation_.command_pending()) {
+        if (const auto retry_at = startup_group_activation_.retry_at()) {
+            const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+                *retry_at - std::chrono::steady_clock::now()).count();
+            return static_cast<std::uint32_t>(std::clamp<long long>(left + 1, 1, 1000));
+        }
+    }
     // 有来话时显示通话时长，需要每秒刷新。
     if (snapshot_->active_rx_call) return 1000U;
     if (!transient_text_.empty()) {
@@ -325,6 +358,10 @@ void ViewModel::handle_event(const engine::Event& event) {
         }
         break;
     case engine::EventKind::quick_call_result:
+        // 自动队列在右侧状态行汇总本机发送进度；避免通用事件文案覆盖 TG/TS 级状态。
+        if (startup_group_activation_.command_pending()) break;
+        if (!event.text.empty()) flash(event.text, false);
+        break;
     case engine::EventKind::warning:
         if (!event.text.empty()) flash(event.text, event.kind == engine::EventKind::warning);
         break;
@@ -339,10 +376,54 @@ void ViewModel::handle_event(const engine::Event& event) {
     }
 }
 
-void ViewModel::flash(std::string text, bool failed) {
+void ViewModel::flash(std::string text, bool failed, Str operation) {
+    if (failed) enqueue_operation_event(operation, text, true);
     transient_text_ = std::move(text);
     transient_failed_ = failed;
     transient_until_ = std::chrono::steady_clock::now() + kTransientDuration;
+}
+
+void ViewModel::enqueue_operation_event(Str operation, const std::string& message, bool failed) {
+    if (!failed || message.empty()) return;
+
+    std::string safe_message = message;
+    const std::string* secrets[] = {&config_.bm_password, &config_.bm_api_key};
+    for (const auto* secret : secrets) {
+        if (secret->empty()) continue;
+        std::size_t pos = 0U;
+        while ((pos = safe_message.find(*secret, pos)) != std::string::npos) {
+            safe_message.replace(pos, secret->size(), "[redacted]");
+            pos += sizeof("[redacted]") - 1U;
+        }
+    }
+    constexpr std::size_t max_message_bytes = 1024U;
+    if (safe_message.size() > max_message_bytes) {
+        safe_message.resize(max_message_bytes);
+        // Keep UTF-8 valid when the byte cap lands inside a multibyte character.
+        while (!safe_message.empty() &&
+               (static_cast<unsigned char>(safe_message.back()) & 0xC0U) == 0x80U) {
+            safe_message.pop_back();
+        }
+        if (!safe_message.empty() &&
+            (static_cast<unsigned char>(safe_message.back()) & 0xC0U) == 0xC0U) {
+            safe_message.pop_back();
+        }
+    }
+
+    operation_events_.push_back({next_operation_event_sequence_++, operation,
+                                 std::move(safe_message), true});
+    constexpr std::size_t max_events = 64U;
+    while (operation_events_.size() > max_events) operation_events_.pop_front();
+}
+
+std::vector<OperationEvent> ViewModel::drain_operation_events() {
+    std::vector<OperationEvent> drained;
+    drained.reserve(operation_events_.size());
+    while (!operation_events_.empty()) {
+        drained.push_back(std::move(operation_events_.front()));
+        operation_events_.pop_front();
+    }
+    return drained;
 }
 
 bool ViewModel::transient_visible() const {
@@ -354,13 +435,31 @@ void ViewModel::report(Str op, const CommandResult& r) {
         suppress_cancelled_start_report_ = false;
         return;
     }
+    if (op == Str::op_auto_quick_call &&
+        (r.status == CommandStatus::busy ||
+         (r.status == CommandStatus::not_ready && snapshot_->bm_link != BmLink::connected))) {
+        return; // Busy/断线由持久队列状态显示；避免 500ms 重试时刷屏或把暂缓误报为失败。
+    }
+    if (op == Str::op_auto_quick_call) {
+        if (r.status == CommandStatus::accepted) return;
+        if (startup_group_activation_last_target_) {
+            const auto& target = *startup_group_activation_last_target_;
+            const auto detail = r.detail.empty() ? command_status_text(r.status) : r.detail.c_str();
+            flash(fmt(tr(Str::startup_group_failure_fmt), target.id, static_cast<int>(target.slot), detail), true, op);
+        } else if (r.detail.empty()) {
+            flash(fmt(tr(Str::result_fmt), tr(op), command_status_text(r.status)), true, op);
+        } else {
+            flash(fmt(tr(Str::result_fmt_detail), tr(op), command_status_text(r.status), r.detail.c_str()), true, op);
+        }
+        return;
+    }
     const bool ok = r.status == CommandStatus::accepted || r.status == CommandStatus::idempotent;
     // 成功由状态本身体现；Quick Call 的本机发送结果由 quick_call_result 事件文本提示。
     if (ok && op != Str::op_cat) return;
     if (r.detail.empty() || ok) {
-        flash(fmt(tr(Str::result_fmt), tr(op), command_status_text(r.status)), !ok);
+        flash(fmt(tr(Str::result_fmt), tr(op), command_status_text(r.status)), !ok, op);
     } else {
-        flash(fmt(tr(Str::result_fmt_detail), tr(op), command_status_text(r.status), r.detail.c_str()), true);
+        flash(fmt(tr(Str::result_fmt_detail), tr(op), command_status_text(r.status), r.detail.c_str()), true, op);
     }
 }
 
@@ -488,10 +587,10 @@ engine::CallInfo ViewModel::with_callsign(engine::CallInfo call) const {
 
 void ViewModel::start() {
     if (pending(Str::op_start) || pending(Str::op_stop)) return;
-    const bool hri_active = snapshot_->phase == Phase::running || snapshot_->phase == Phase::starting ||
-                            snapshot_->phase == Phase::stopping;
+    if (snapshot_->phase == Phase::starting || snapshot_->phase == Phase::stopping) return;
+    const bool runtime_active = snapshot_->phase == Phase::running;
+    if (runtime_active && snapshot_->serial_open) return;
     const auto current_cat = services_.cat.state ? services_.cat.state() : cat_;
-    if (hri_active || current_cat.connected) return;
 
     auto next_config = config_;
     const bool cat_auto = cat_form.port.empty() || cat_form.port == "auto";
@@ -505,11 +604,15 @@ void ViewModel::start() {
         }
     }
 
-    // make_start_config 刷新本次 Windows 串口目录；CAT Auto 随后只允许使用唯一的已分类候选。
-    std::string error;
-    std::optional<engine::StartConfig> sc;
-    if (services_.config.make_start_config) sc = services_.config.make_start_config(config_, error);
-    else error = "引擎启动服务不可用。";
+    // 电台参数与 BM runtime 分开解析：设备缺失时仍启动 BM runtime，并保留精确 radio_error。
+    std::string radio_error;
+    auto radio_config = make_radio_start_config(radio_error);
+    const bool can_connect_radio = radio_config.has_value();
+    if (runtime_active && !can_connect_radio) {
+        flash(radio_error.empty() ? "未找到唯一可用的 HRI/USB Audio 设备。" : radio_error, true);
+        return;
+    }
+
     const auto generation = ++radio_connection_generation_;
     if (services_.cat.connect && !current_cat.connected && !current_cat.busy) {
         services_.cat.connect(config_.cat_port, config_.cat_baud_rate,
@@ -526,20 +629,53 @@ void ViewModel::start() {
                 });
             });
     }
-    if (!sc) {
-        flash(fmt(tr(Str::result_fmt), tr(Str::op_start), error.c_str()), true);
+
+    if (runtime_active) {
+        // Runtime/BM 已經运行；手动点 Start 只重新连电台，不重启 Engine，也不自动重试 BM。
+        track(Str::op_start, engine_.connect_radio(std::move(*radio_config)));
         return;
     }
-    if (!error.empty()) flash(error, true); // 参数可用但有提示（例如 --fake 下真实设备检查未通过）
-    // make_start_config 已按配置生成 RX/TX 策略；这里叠加本次会话的临时屏蔽状态。
-    sc->rx_policy = build_rx_policy();
-    sc->radio_playback_gain_milli = gain_milli(playback_step);
-    sc->mic_transmit_gain_milli = gain_milli(transmit_step);
-    sc->bm_start_disconnected = true;
-    track(Str::op_start, engine_.start(std::move(*sc)), [this, generation](const CommandResult& result) {
-        suppress_cancelled_start_report_ = generation != radio_connection_generation_ &&
-            result.status == CommandStatus::not_ready && result.detail == "start_cancelled";
-    });
+
+    std::string runtime_error;
+    std::optional<engine::StartConfig> runtime;
+    if (services_.config.make_runtime_config) {
+        runtime = services_.config.make_runtime_config(config_, runtime_error);
+    } else {
+        runtime_error = "常驻引擎配置服务不可用。";
+    }
+    if (!runtime) {
+        flash(fmt(tr(Str::result_fmt), tr(Str::op_start), runtime_error.c_str()), true);
+        return;
+    }
+
+    runtime->start_radio = false;
+    runtime->hri_port.clear();
+    runtime->hri_body_file.clear();
+    runtime->audio = {};
+    runtime->radio_start_error = can_connect_radio ? std::string{} : radio_error;
+    runtime->rx_policy = build_rx_policy();
+    runtime->radio_playback_gain_milli = gain_milli(playback_step);
+    runtime->mic_transmit_gain_milli = gain_milli(transmit_step);
+    runtime->bm_start_disconnected = true;
+
+    if (!radio_error.empty()) flash(radio_error, true);
+    track(Str::op_start, engine_.start(std::move(*runtime)),
+        [this, generation, radio_config = std::move(radio_config)](const CommandResult& result) mutable {
+            suppress_cancelled_start_report_ = generation != radio_connection_generation_ &&
+                result.status == CommandStatus::not_ready && result.detail == "start_cancelled";
+            if (result.status != CommandStatus::accepted) return;
+
+            // 两条子系统命令独立排队；其中一条失败不会撤销另一条或退出常驻 runtime。
+            if (radio_config && generation == radio_connection_generation_) {
+                track(Str::op_start, engine_.connect_radio(std::move(*radio_config)));
+            }
+            const auto base_revision = snapshot_->bm_connection_revision;
+            if (base_revision == std::numeric_limits<std::uint64_t>::max()) {
+                flash("BM 连接 revision 已达到上限，未发起连接。", true);
+                return;
+            }
+            track(Str::op_bm, engine_.set_bm_connection(true, base_revision + 1U));
+        });
 }
 
 void ViewModel::stop() {
@@ -555,17 +691,98 @@ void ViewModel::stop() {
             });
         });
     }
-    track(Str::op_stop, engine_.stop());
+    if (snapshot_->phase == Phase::running &&
+        (snapshot_->serial_open || pending(Str::op_start))) {
+        // 即使 attach 命令仍在队列中，也排入 detach；BM runtime 始终保留。
+        track(Str::op_stop, engine_.disconnect_radio());
+    } else {
+        CommandResult result;
+        result.status = CommandStatus::idempotent;
+        report(Str::op_stop, result);
+    }
 }
 
 void ViewModel::toggle_bm() {
     if (pending(Str::op_bm)) return;
-    const bool enable = !snapshot_->bm_requested_enabled;
-    if (enable && config_.bm_password.empty()) {
-        flash(tr(Str::password_empty), true);
+    if (snapshot_->phase != Phase::running) {
+        flash("BM runtime 尚未运行。", true);
         return;
     }
-    track(Str::op_bm, engine_.set_bm_connection(enable, snapshot_->bm_connection_revision));
+    const auto current_revision = snapshot_->bm_connection_revision;
+    if (current_revision == std::numeric_limits<std::uint64_t>::max()) {
+        flash("BM 连接 revision 已达到上限，无法切换连接。", true);
+        return;
+    }
+    const auto requested_revision = current_revision + 1U;
+    if (snapshot_->bm_requested_enabled) {
+        track(Str::op_bm, engine_.set_bm_connection(false, requested_revision), [this](const CommandResult& result) {
+            if (result.status == CommandStatus::accepted || result.status == CommandStatus::idempotent) {
+                bm_configure_pending_ = false;
+            }
+        });
+        return;
+    }
+
+    std::string error;
+    auto target = make_bm_target(error);
+    if (!target) {
+        flash(fmt(tr(Str::result_fmt), tr(Str::op_bm), error.c_str()), true);
+        return;
+    }
+    const auto requested_profile_generation = bm_profile_generation_;
+    bm_configure_pending_ = true;
+    track(Str::op_bm, engine_.configure_bm(std::move(*target)),
+        [this, requested_profile_generation](const CommandResult& configured) {
+            bm_configure_pending_ = false;
+            if (configured.status != CommandStatus::accepted && configured.status != CommandStatus::idempotent) return;
+            if (requested_profile_generation != bm_profile_generation_) {
+                flash(tr(Str::bm_config_saved_during_connection), true);
+                return; // A newer profile was saved while configure_bm was pending; never enable the old one.
+            }
+            const auto revision = std::max(configured.revision, snapshot_->bm_connection_revision);
+            if (revision == std::numeric_limits<std::uint64_t>::max()) {
+                flash("BM 连接 revision 已达到上限，未发起连接。", true);
+                return;
+            }
+            track(Str::op_bm, engine_.set_bm_connection(true, revision + 1U));
+        });
+}
+
+std::optional<engine::RadioStartConfig> ViewModel::make_radio_start_config(std::string& error) const {
+    if (!services_.config.make_start_config) {
+        error = "电台设备解析服务不可用。";
+        return std::nullopt;
+    }
+    // make_start_config 同时构造 StartConfig；清除临时 GUI 副本里的密码，避免第二份明文密码被复制进结果。
+    auto radio_only = config_;
+    std::fill(radio_only.bm_password.begin(), radio_only.bm_password.end(), '\0');
+    radio_only.bm_password.clear();
+    auto parsed = services_.config.make_start_config(radio_only, error);
+    if (!parsed || !parsed->start_radio || parsed->hri_port.empty() ||
+        parsed->audio.expected_wave_in_endpoint_id.empty() ||
+        parsed->audio.expected_wave_out_endpoint_id.empty()) {
+        if (error.empty()) error = "未解析到唯一可用的 HRI 串口和 USB Audio 输入/输出端点。";
+        return std::nullopt;
+    }
+    engine::RadioStartConfig result;
+    result.hri_port = std::move(parsed->hri_port);
+    result.hri_body_file = std::move(parsed->hri_body_file);
+    result.audio = std::move(parsed->audio);
+    return result;
+}
+
+std::optional<engine::BmTarget> ViewModel::make_bm_target(std::string& error) const {
+    if (!services_.config.make_runtime_config) {
+        error = "BM 配置服务不可用。";
+        return std::nullopt;
+    }
+    auto runtime = services_.config.make_runtime_config(config_, error);
+    if (!runtime) return std::nullopt;
+    auto target = std::move(runtime->bm);
+    target.local_source_id = runtime->local_source_id;
+    target.rx_policy = build_rx_policy();
+    target.tx_policy = runtime->tx_policy;
+    return target;
 }
 
 // Get-UiNativeRxPolicyForChannels：屏蔽 = 从 allow 列表中移除（Router 拒绝同时出现在 allow 与 block 的组）。
@@ -661,7 +878,7 @@ void ViewModel::add_channel() {
 }
 
 void ViewModel::quick_call(const ChannelKey& key) {
-    if (quick_call_pending_ || key.kind != dmr_call::CallKind::group) return;
+    if (quick_call_pending_ || startup_group_activation_.active() || key.kind != dmr_call::CallKind::group) return;
     quick_call_pending_ = key;
     track(Str::op_quick_call, engine_.quick_call_join({key.id, key.slot}), [this, key](const CommandResult& r) {
         quick_call_pending_.reset();
@@ -814,9 +1031,26 @@ services::DeviceSelectionSnapshot ViewModel::device_selection() const {
 }
 
 bool ViewModel::save_config(const services::GuiConfig& next, std::string& error) {
+    const bool bm_changed = bm_profile_changed(config_, next);
+    if (bm_changed) {
+        if (bm_profile_generation_ == std::numeric_limits<std::uint64_t>::max()) {
+            error = "BM 配置版本已达到上限，无法安全保存。";
+            return false;
+        }
+        const bool bm_link_active = snapshot_->bm_requested_enabled || snapshot_->bm_link == BmLink::resolving ||
+            snapshot_->bm_link == BmLink::connecting || snapshot_->bm_link == BmLink::connected ||
+            snapshot_->bm_link == BmLink::backoff;
+        const bool configure_only = bm_configure_pending_ && !bm_link_active;
+        const bool startup_pending = pending(Str::op_start) || snapshot_->phase == Phase::starting;
+        if (!configure_only && (bm_link_active || startup_pending || pending(Str::op_bm))) {
+            error = tr(Str::bm_config_changed_while_connecting);
+            return false;
+        }
+    }
     if (services_.config.save && !services_.config.save(next, error)) return false;
     config_ = next;
     config_.gateway_id = services::effective_gateway_id(next);
+    if (bm_changed) ++bm_profile_generation_;
     flash(tr(Str::settings_saved), false);
     static_sync(); // 设备 ID 或 API Key 变化时刷新静态组（Sync-BmManagementUiIdentity）
     return true;
@@ -1040,6 +1274,137 @@ void ViewModel::on_engine_running() {
     for (const auto& [id, callsign] : callsigns_) {
         if (pushed.count(id) == 0U) push_identity(id, callsign);
     }
+}
+
+bool ViewModel::pump_startup_group_activation() {
+    bool changed = false;
+    bool state_transition_reported = false;
+    const bool bm_connected = snapshot_->bm_link == BmLink::connected;
+    const auto now = std::chrono::steady_clock::now();
+
+    if (!startup_group_activation_.started() && bm_connected) {
+        if (startup_group_activation_.activate()) {
+            startup_group_activation_status_ = fmt(
+                tr(Str::startup_group_connected_fmt),
+                static_cast<unsigned>(startup_group_activation_.stats().target_count));
+            changed = true;
+            state_transition_reported = true;
+        }
+    }
+
+    switch (startup_group_activation_.observe_connection(bm_connected)) {
+    case StartupGroupActivation::ConnectionChange::paused:
+        startup_group_activation_status_ = fmt(
+            tr(Str::startup_group_paused_fmt),
+            static_cast<unsigned>(startup_group_activation_.remaining()),
+            static_cast<unsigned>(startup_group_activation_.stats().locally_sent),
+            static_cast<unsigned>(startup_group_activation_.stats().failed));
+        changed = true;
+        state_transition_reported = true;
+        break;
+    case StartupGroupActivation::ConnectionChange::resumed:
+        startup_group_activation_status_ = fmt(
+            tr(Str::startup_group_resumed_fmt),
+            static_cast<unsigned>(startup_group_activation_.remaining()));
+        changed = true;
+        state_transition_reported = true;
+        break;
+    case StartupGroupActivation::ConnectionChange::none:
+        break;
+    }
+
+    if (!startup_group_activation_.started()) return changed;
+    if (startup_group_activation_.command_pending()) return changed;
+
+    const auto decision = startup_group_activation_.next(bm_connected, now);
+    if (decision.kind == StartupGroupActivation::DecisionKind::finished) {
+        const auto previous = startup_group_activation_status_;
+        update_startup_group_activation_status();
+        return changed || previous != startup_group_activation_status_;
+    }
+    if (decision.kind == StartupGroupActivation::DecisionKind::wait) {
+        if (!state_transition_reported) {
+            const auto previous = startup_group_activation_status_;
+            update_startup_group_activation_status();
+            changed = changed || previous != startup_group_activation_status_;
+        }
+        return changed;
+    }
+
+    const ChannelKey key{decision.target.destination_id, dmr_call::CallKind::group, decision.target.slot};
+    if (quick_call_pending_) {
+        // 只能有一个 Quick Call future；如手动请求仍在途，按无发包的 Busy 等待处理。
+        startup_group_activation_.complete(CommandStatus::busy, bm_connected, now);
+        if (!state_transition_reported) {
+            const auto previous = startup_group_activation_status_;
+            update_startup_group_activation_status();
+            changed = changed || previous != startup_group_activation_status_;
+        }
+        return changed;
+    }
+
+    quick_call_pending_ = key;
+    startup_group_activation_last_target_ = key;
+    track(Str::op_auto_quick_call, engine_.quick_call_join({key.id, key.slot}), [this, key](const CommandResult& r) {
+        quick_call_pending_.reset();
+        if (r.status == CommandStatus::accepted) {
+            quick_call_sent_.insert(key);
+            flash(fmt(tr(Str::startup_group_sent_fmt), key.id, static_cast<int>(key.slot)), false);
+        }
+        startup_group_activation_.complete(
+            r.status, snapshot_->bm_link == BmLink::connected, std::chrono::steady_clock::now());
+    });
+    if (!state_transition_reported) {
+        const auto previous = startup_group_activation_status_;
+        update_startup_group_activation_status();
+        changed = changed || previous != startup_group_activation_status_;
+    }
+    return true;
+}
+
+void ViewModel::update_startup_group_activation_status() {
+    const auto& stats = startup_group_activation_.stats();
+    if (!startup_group_activation_.started()) {
+        startup_group_activation_status_ = fmt(
+            tr(Str::startup_group_waiting_fmt),
+            static_cast<unsigned>(stats.target_count),
+            static_cast<unsigned>(stats.private_skipped),
+            static_cast<unsigned>(stats.disconnect_group_skipped),
+            static_cast<unsigned>(stats.duplicate_skipped),
+            static_cast<unsigned>(stats.invalid_skipped));
+        return;
+    }
+    if (startup_group_activation_.finished()) {
+        startup_group_activation_status_ = fmt(
+            tr(Str::startup_group_done_fmt),
+            static_cast<unsigned>(stats.locally_sent),
+            static_cast<unsigned>(stats.target_count),
+            static_cast<unsigned>(stats.failed),
+            static_cast<unsigned>(stats.busy_skipped),
+            static_cast<unsigned>(stats.private_skipped),
+            static_cast<unsigned>(stats.disconnect_group_skipped),
+            static_cast<unsigned>(stats.duplicate_skipped),
+            static_cast<unsigned>(stats.invalid_skipped));
+        return;
+    }
+    if (startup_group_activation_.paused()) {
+        startup_group_activation_status_ = fmt(
+            tr(Str::startup_group_paused_fmt),
+            static_cast<unsigned>(startup_group_activation_.remaining()),
+            static_cast<unsigned>(stats.locally_sent),
+            static_cast<unsigned>(stats.failed));
+        return;
+    }
+    if (!startup_group_activation_.command_pending() && startup_group_activation_.retry_at()) {
+        startup_group_activation_status_ = tr(Str::startup_group_busy);
+        return;
+    }
+    startup_group_activation_status_ = fmt(
+        tr(Str::startup_group_progress_fmt),
+        static_cast<unsigned>(stats.locally_sent),
+        static_cast<unsigned>(stats.target_count),
+        static_cast<unsigned>(stats.failed),
+        static_cast<unsigned>(startup_group_activation_.remaining()));
 }
 
 void ViewModel::set_channel_page(std::size_t page) { channel_page_ = std::min(page, channel_page_count() - 1U); }
