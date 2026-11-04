@@ -47,7 +47,10 @@ std::string to_selector(const std::wstring& value) {
     const auto first = s.find_first_not_of(" \t");
     if (first == std::string::npos) return "auto";
     s = s.substr(first, s.find_last_not_of(" \t") - first + 1U);
-    return s.empty() ? "auto" : s;
+    if (s.empty()) return "auto";
+    std::string auto_check = s;
+    for (char& c : auto_check) if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+    return auto_check == "AUTO" ? "auto" : s;
 }
 
 std::string upper_ascii(std::string s) {
@@ -299,6 +302,316 @@ std::optional<std::string> select_hri_port(const app::devices::SerialCatalog& ca
     if (catalog.hri_ports.size() == 1U) return upper_ascii(catalog.hri_ports.front().port_name);
     error = "HRI COM 端口无法唯一自动确定；请在设置中指定串口或检查 HRI 设备。";
     return std::nullopt;
+}
+
+ActiveDeviceIds active_device_ids(const engine::Snapshot& snapshot, const services::CatState& cat) {
+    ActiveDeviceIds active;
+    if (snapshot.serial_open) active.hri_port = snapshot.hri_port;
+    if (cat.connected) active.cat_port = cat.port;
+    if (snapshot.wave_in_open) active.wave_in_endpoint_id = snapshot.wave_in_endpoint_id;
+    if (snapshot.wave_out_open) active.wave_out_endpoint_id = snapshot.wave_out_endpoint_id;
+    return active;
+}
+
+services::DeviceSelectionSnapshot resolve_device_selection(const services::GuiConfig& gui,
+                                                             const services::DeviceInventory& inventory,
+                                                             const ActiveDeviceIds& active) {
+    using app::devices::PortSelectionError;
+    using services::DeviceResolutionState;
+    using services::DeviceSelectionSource;
+
+    const auto is_auto = [](const std::wstring& value) {
+        const std::string selector = upper_ascii(trim(narrow(value)));
+        return selector.empty() || selector == "AUTO";
+    };
+    const auto missing_or_unavailable = [&]() {
+        return inventory.serial_discovery_status == "failed" ||
+                       inventory.serial_discovery_status == "unknown"
+                   ? DeviceResolutionState::unavailable
+                   : DeviceResolutionState::missing;
+    };
+    const auto normalized_port = [](const std::wstring& value) {
+        return app::devices::normalize_port_name(narrow(value));
+    };
+    const auto serial_matches = [&](std::string_view port) {
+        std::vector<const services::SerialPortInfo*> matches;
+        for (const auto& info : inventory.serial_ports) {
+            const auto normalized = app::devices::normalize_port_name(narrow(info.port));
+            if (normalized && *normalized == port) matches.push_back(&info);
+        }
+        return matches;
+    };
+
+    services::DeviceSelectionSnapshot result;
+    result.hri.source = is_auto(gui.hri_port) ? DeviceSelectionSource::automatic : DeviceSelectionSource::saved;
+    result.cat.source = is_auto(gui.cat_port) ? DeviceSelectionSource::automatic : DeviceSelectionSource::saved;
+    result.wave_in.source = is_auto(gui.wave_in_endpoint_id) ? DeviceSelectionSource::automatic : DeviceSelectionSource::saved;
+    result.wave_out.source = is_auto(gui.wave_out_endpoint_id) ? DeviceSelectionSource::automatic : DeviceSelectionSource::saved;
+    if (!is_auto(gui.hri_port)) result.hri.requested_id = gui.hri_port;
+    if (!is_auto(gui.cat_port)) result.cat.requested_id = gui.cat_port;
+    if (!is_auto(gui.wave_in_endpoint_id)) result.wave_in.requested_id = gui.wave_in_endpoint_id;
+    if (!is_auto(gui.wave_out_endpoint_id)) result.wave_out.requested_id = gui.wave_out_endpoint_id;
+
+    app::devices::SerialCatalog serial_catalog;
+    serial_catalog.discovery_status = inventory.serial_discovery_status;
+    for (const auto& info : inventory.serial_ports) {
+        app::devices::SerialPort port;
+        port.port_name = narrow(info.port);
+        port.friendly_name = info.caption;
+        port.is_hri = info.is_hri;
+        port.is_cat_candidate = info.is_cat_candidate;
+        port.cat_match_rank = info.cat_match_rank;
+        port.cat_match_reason = info.cat_match_reason;
+        port.confidence = info.is_hri ? "high" : (info.cat_match_rank > 0 ? "medium" : "unknown");
+        serial_catalog.serial_ports.push_back(port);
+        if (port.is_hri) serial_catalog.hri_ports.push_back(port);
+        if (port.is_cat_candidate) serial_catalog.cat_ports.push_back(port);
+    }
+
+    const std::string hri_selector = to_selector(gui.hri_port);
+    std::string hri_error;
+    const auto selected_hri = select_hri_port(serial_catalog, hri_selector, hri_error);
+    if (selected_hri) {
+        const auto matches = serial_matches(*selected_hri);
+        if (matches.size() == 1U) {
+            result.hri.state = DeviceResolutionState::resolved;
+            result.hri.resolved_id = widen(*selected_hri);
+            result.hri.name = matches.front()->caption;
+            result.hri.reason = is_auto(gui.hri_port)
+                ? "唯一识别到 HRI 串口 " + *selected_hri + "。"
+                : "沿用已保存且当前识别为 HRI 的串口。";
+        } else {
+            result.hri.state = DeviceResolutionState::ambiguous;
+            result.hri.reason = "串口目录重复报告 " + *selected_hri + "；拒绝自动确认。";
+        }
+    } else if (serial_catalog.serial_ports.empty() || serial_catalog.hri_ports.empty()) {
+        result.hri.state = missing_or_unavailable();
+        result.hri.reason = result.hri.state == DeviceResolutionState::unavailable
+            ? "Windows 串口目录读取失败；请刷新设备列表后重试。"
+            : (serial_catalog.serial_ports.empty() ? "当前没有枚举到 Windows COM 端口。"
+                                                   : "当前串口目录没有识别到 HRI 设备。");
+    } else if (is_auto(gui.hri_port)) {
+        result.hri.state = DeviceResolutionState::ambiguous;
+        result.hri.reason = "发现多个 HRI 串口；为避免选错，请手动选择。";
+    } else {
+        const auto wanted = normalized_port(gui.hri_port);
+        const auto matches = wanted ? serial_matches(*wanted) : std::vector<const services::SerialPortInfo*>{};
+        if (matches.empty()) {
+            result.hri.state = missing_or_unavailable();
+            result.hri.reason = "已保存的 HRI 串口 " + narrow(gui.hri_port) + " 当前没有枚举到。";
+        } else if (matches.size() != 1U) {
+            result.hri.state = DeviceResolutionState::ambiguous;
+            result.hri.reason = "串口目录重复报告已保存的 HRI 串口；拒绝自动确认。";
+        } else {
+            result.hri.state = DeviceResolutionState::conflict;
+            result.hri.reason = "已保存的串口当前没有识别为 HRI。";
+        }
+    }
+
+    {
+        const std::string cat_selector = to_selector(gui.cat_port);
+        const std::string manual_cat = is_auto(gui.cat_port) ? std::string{} : cat_selector;
+        PortSelectionError selection_error{};
+        const auto selection = app::devices::resolve_port_selection(serial_catalog, hri_selector, cat_selector,
+                                                                      manual_cat, selection_error);
+        if (selection_error != PortSelectionError::none || selection.cat_conflict) {
+            result.cat.state = DeviceResolutionState::conflict;
+            result.cat.reason = selection.cat_match_reason.empty()
+                ? "CAT 串口选择无效或与 HRI 串口冲突。" : selection.cat_match_reason;
+        } else if (selection.cat_port) {
+            const auto matches = serial_matches(*selection.cat_port);
+            if (matches.empty()) {
+                result.cat.state = missing_or_unavailable();
+                result.cat.reason = "选择的 CAT 串口 " + *selection.cat_port + " 当前没有枚举到。";
+            } else if (matches.size() != 1U) {
+                result.cat.state = DeviceResolutionState::ambiguous;
+                result.cat.reason = "串口目录重复报告 CAT 串口；拒绝自动确认。";
+            } else {
+                result.cat.resolved_id = widen(*selection.cat_port);
+                result.cat.name = matches.front()->caption;
+                result.cat.source = selection.cat_port_source == "manual" ? DeviceSelectionSource::manual
+                    : selection.cat_port_source == "saved" ? DeviceSelectionSource::saved
+                                                            : DeviceSelectionSource::automatic;
+                if (selection.cat_port_source == "manual" && matches.front()->cat_match_rank <= 0) {
+                    result.cat.state = DeviceResolutionState::manual_unclassified;
+                    result.cat.reason = "当前目录中未识别该端口的 CAT 身份；保留用户明确选择的 COM 口。";
+                } else {
+                    result.cat.state = DeviceResolutionState::resolved;
+                    result.cat.reason = selection.cat_match_reason;
+                }
+            }
+        } else {
+            int best_rank = 0;
+            std::size_t best_count = 0U;
+            for (const auto& port : serial_catalog.cat_ports) {
+                if (port.cat_match_rank <= 0) continue;
+                if (selection.hri_port && port.port_name == *selection.hri_port) continue;
+                if (port.cat_match_rank > best_rank) {
+                    best_rank = port.cat_match_rank;
+                    best_count = 1U;
+                } else if (port.cat_match_rank == best_rank) {
+                    ++best_count;
+                }
+            }
+            if (best_rank > 0 && best_count > 1U) {
+                result.cat.state = DeviceResolutionState::ambiguous;
+                result.cat.reason = "发现多个同级 CAT 串口候选；为避免选错，请手动选择。";
+            } else {
+                result.cat.state = is_auto(gui.cat_port) ? missing_or_unavailable() : DeviceResolutionState::missing;
+                result.cat.reason = result.cat.state == DeviceResolutionState::unavailable
+                    ? "Windows 串口目录读取失败；请刷新设备列表后重试。"
+                    : "没有唯一且已识别的 CAT 串口；可手动选择当前枚举的非 HRI 端口。";
+            }
+        }
+    }
+
+    const auto make_wave_devices = [](const std::vector<services::AudioEndpointInfo>& endpoints) {
+        std::vector<app::devices::WaveDevice> waves;
+        waves.reserve(endpoints.size());
+        for (const auto& endpoint : endpoints) {
+            app::devices::WaveDevice wave;
+            wave.id = endpoint.wave_id;
+            // Candidate metadata was captured from the same WinMM name test used by
+            // enumerate_audio(); keep the helper's auto decision identical to startup.
+            wave.name = endpoint.usb_audio_auto_candidate ? "USB Audio" : endpoint.name;
+            wave.endpoint_id = narrow(endpoint.endpoint_id);
+            wave.pcm_48000_mono_s16_supported = true;
+            waves.push_back(std::move(wave));
+        }
+        return waves;
+    };
+    const auto wave_inputs = make_wave_devices(inventory.wave_in);
+    const auto wave_outputs = make_wave_devices(inventory.wave_out);
+    const std::string wave_in_selector = to_selector(gui.wave_in_endpoint_id);
+    const std::string wave_out_selector = to_selector(gui.wave_out_endpoint_id);
+    const bool hri_identified = result.hri.state == DeviceResolutionState::resolved;
+    const auto audio_selection = app::devices::resolve_audio_endpoints(
+        wave_inputs, wave_outputs, wave_in_selector, wave_out_selector, hri_identified);
+    const auto endpoint_matches = [](const std::vector<services::AudioEndpointInfo>& endpoints,
+                                     std::string_view wanted) {
+        std::vector<const services::AudioEndpointInfo*> matches;
+        for (const auto& endpoint : endpoints) {
+            if (upper_ascii(narrow(endpoint.endpoint_id)) == upper_ascii(std::string(wanted))) {
+                matches.push_back(&endpoint);
+            }
+        }
+        return matches;
+    };
+    const auto set_explicit_wave = [&](services::ResolvedDeviceSelection& selection,
+                                       const std::vector<services::AudioEndpointInfo>& endpoints) {
+        const auto matches = endpoint_matches(endpoints, narrow(selection.requested_id));
+        if (matches.empty()) {
+            selection.state = DeviceResolutionState::missing;
+            selection.reason = "已保存的音频 endpoint 当前没有枚举到；配置已保留。";
+        } else if (matches.size() != 1U) {
+            selection.state = DeviceResolutionState::ambiguous;
+            selection.reason = "设备目录重复报告该音频 endpoint；拒绝确认。";
+        } else {
+            selection.state = DeviceResolutionState::resolved;
+            selection.resolved_id = matches.front()->endpoint_id;
+            selection.name = matches.front()->name;
+            selection.reason = "沿用当前枚举到的稳定音频 endpoint ID。";
+        }
+    };
+    const bool input_auto = is_auto(gui.wave_in_endpoint_id);
+    const bool output_auto = is_auto(gui.wave_out_endpoint_id);
+    const auto set_auto_wave = [&](services::ResolvedDeviceSelection& selection,
+                                   const std::vector<services::AudioEndpointInfo>& endpoints,
+                                   const std::vector<services::AudioEndpointInfo>& opposite_endpoints,
+                                   bool opposite_auto, const std::wstring& opposite_requested,
+                                   const app::devices::WaveDevice& selected_by_helper, bool helper_selected) {
+        if (helper_selected && selected_by_helper.endpoint_id) {
+            const auto matches = endpoint_matches(endpoints, *selected_by_helper.endpoint_id);
+            if (matches.size() == 1U) {
+                selection.state = DeviceResolutionState::resolved;
+                selection.resolved_id = matches.front()->endpoint_id;
+                selection.name = matches.front()->name;
+                selection.reason = "与启动配置相同的 USB Audio 自动选择结果。";
+                return;
+            }
+        }
+        const auto count = static_cast<std::size_t>(std::count_if(endpoints.begin(), endpoints.end(),
+            [](const auto& endpoint) { return endpoint.usb_audio_auto_candidate; }));
+        const auto opposite_count = static_cast<std::size_t>(std::count_if(opposite_endpoints.begin(), opposite_endpoints.end(),
+            [](const auto& endpoint) { return endpoint.usb_audio_auto_candidate; }));
+        if (count > 1U) {
+            selection.state = DeviceResolutionState::ambiguous;
+            selection.reason = "发现多个 USB Audio 候选；请手动选择。";
+        } else if (count == 0U) {
+            selection.state = DeviceResolutionState::missing;
+            selection.reason = "当前没有 USB Audio 自动候选；请手动选择已枚举的端点。";
+        } else if (!hri_identified) {
+            selection.state = DeviceResolutionState::unavailable;
+            selection.reason = "USB Audio 自动配对需要唯一确认的 HRI 设备。";
+        } else if (opposite_auto && opposite_count > 1U) {
+            selection.state = DeviceResolutionState::ambiguous;
+            selection.reason = "另一方向有多个 USB Audio 候选，无法确认一对输入输出端点。";
+        } else if (!opposite_auto && endpoint_matches(opposite_endpoints, narrow(opposite_requested)).size() == 1U) {
+            selection.state = DeviceResolutionState::conflict;
+            selection.reason = "手动端点与唯一 USB Audio 配对不一致；请手动选择两个端点或恢复 Auto。";
+        } else if (opposite_count == 0U) {
+            selection.state = DeviceResolutionState::missing;
+            selection.reason = "另一方向没有 USB Audio 自动候选，无法组成配对。";
+        } else {
+            selection.state = DeviceResolutionState::unavailable;
+            selection.reason = "当前端点组合未通过启动时的 USB Audio 配对规则。";
+        }
+    };
+    if (!input_auto) {
+        set_explicit_wave(result.wave_in, inventory.wave_in);
+    } else {
+        set_auto_wave(result.wave_in, inventory.wave_in, inventory.wave_out, output_auto,
+                      gui.wave_out_endpoint_id, audio_selection.input, audio_selection.input.endpoint_id.has_value());
+    }
+
+    if (!output_auto) {
+        set_explicit_wave(result.wave_out, inventory.wave_out);
+    } else {
+        set_auto_wave(result.wave_out, inventory.wave_out, inventory.wave_in, input_auto,
+                      gui.wave_in_endpoint_id, audio_selection.output, audio_selection.output.endpoint_id.has_value());
+    }
+
+    const auto apply_active_serial = [&](services::ResolvedDeviceSelection& selection, const std::wstring& active_port) {
+        if (active_port.empty()) return;
+        selection.active = true;
+        selection.resolved_id = active_port;
+        const auto wanted = app::devices::normalize_port_name(narrow(active_port));
+        const auto matches = wanted ? serial_matches(*wanted) : std::vector<const services::SerialPortInfo*>{};
+        if (matches.size() == 1U) {
+            selection.state = DeviceResolutionState::resolved;
+            selection.name = matches.front()->caption;
+            selection.reason = "连接状态报告当前实际使用的串口。";
+        } else {
+            selection.state = DeviceResolutionState::active_not_enumerated;
+            selection.name = narrow(active_port);
+            selection.reason = "连接状态仍报告此串口，但最新设备目录没有唯一匹配项。";
+        }
+    };
+    const auto apply_active_audio = [](services::ResolvedDeviceSelection& selection, const std::wstring& active_id,
+                                       const std::vector<services::AudioEndpointInfo>& endpoints) {
+        if (active_id.empty()) return;
+        selection.active = true;
+        selection.resolved_id = active_id;
+        const std::string wanted = upper_ascii(narrow(active_id));
+        std::vector<const services::AudioEndpointInfo*> matches;
+        for (const auto& endpoint : endpoints) {
+            if (upper_ascii(narrow(endpoint.endpoint_id)) == wanted) matches.push_back(&endpoint);
+        }
+        if (matches.size() == 1U) {
+            selection.state = DeviceResolutionState::resolved;
+            selection.name = matches.front()->name;
+            selection.reason = "引擎状态报告当前实际使用的音频 endpoint。";
+        } else {
+            selection.state = DeviceResolutionState::active_not_enumerated;
+            selection.name = narrow(active_id);
+            selection.reason = "引擎仍报告此 endpoint，但最新设备目录没有唯一匹配项。";
+        }
+    };
+    apply_active_serial(result.hri, active.hri_port);
+    apply_active_serial(result.cat, active.cat_port);
+    apply_active_audio(result.wave_in, active.wave_in_endpoint_id, inventory.wave_in);
+    apply_active_audio(result.wave_out, active.wave_out_endpoint_id, inventory.wave_out);
+    return result;
 }
 
 std::optional<engine::StartConfig> make_start_config(const services::GuiConfig& gui, const StartInputs& inputs,

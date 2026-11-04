@@ -102,10 +102,6 @@ namespace wirex::gui {
     X(radio_control,        "电台控制",                            "Radio control")                 /* new */ \
     X(cat_port,             "CAT 串口",                            "CAT port") \
     X(baud_rate,            "波特率",                              "Baud rate") \
-    X(cat_disconnected,     "CAT 未连接",                          "CAT not connected")             /* new */ \
-    X(cat_connecting,       "CAT 正在连接或执行命令…",           "CAT connecting or handling a command…") \
-    X(active_serials_fmt,   "实际串口：HRI %s · CAT %s",          "Active ports: HRI %s · CAT %s") \
-    X(cat_observed,         "读取：%s · %.4f MHz · %u W",          "Read: %s · %.4f MHz · %u W")    /* new */ \
     X(main_mode,            "MAIN 模式",                           "MAIN mode") \
     X(frequency_mhz,        "频率 MHz",                            "Frequency MHz") \
     X(power_w,              "功率 W",                              "Power W") \
@@ -131,7 +127,6 @@ namespace wirex::gui {
     X(bm_changes_next_connection,"保存后在下次连接 BM 时应用；DMR ID 必须手动填写。", \
                             "Saved values apply the next time BM connects. Enter the DMR ID manually.") \
     X(bm_save_before_connect,"先保存 BrandMeister 配置后再连接。", "Save BrandMeister settings before connecting.") \
-    X(port_missing_fmt,     "%s（当前未检测到）",                "%s (not detected)") \
     X(dmr_id,               "DMR ID",                              "DMR ID") \
     X(device_no,            "设备编号",                            "Device no.") \
     X(bm_server,            "BM 服务器",                           "BM server") \
@@ -195,6 +190,15 @@ namespace wirex::gui {
     X(channel_idle,         "空闲",                                "Idle")                          /* new */ \
     X(last_call_fmt,        "上次 %s",                             "Last %s")                       /* new */ \
     X(auto_select,          "自动",                                "Auto")                          /* new */ \
+    X(device_resolved,      "已解析",                              "Resolved") \
+    X(device_ambiguous,     "有多个候选",                          "Multiple matches") \
+    X(device_missing,       "未找到设备",                          "Device not found") \
+    X(device_conflict,      "设备冲突",                            "Device conflict") \
+    X(device_unavailable,   "不可用",                              "Unavailable") \
+    X(device_manual_unclassified,"手动设备未分类",                  "Manual device is unclassified") \
+    X(device_active_missing,"正在使用，但不在设备列表",            "Active, but missing from the device list") \
+    X(device_active,        "正在使用",                            "Active") \
+    X(unknown,              "未知",                                "Unknown") \
     X(muted_badge,          "已屏蔽",                              "Muted")                         /* new */
 // clang-format on
 

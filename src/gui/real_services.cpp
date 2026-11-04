@@ -1,6 +1,7 @@
 #include "real_services.hpp"
 
 #include "config_bridge.hpp"
+#include "cat_state_sync.hpp"
 
 #include "wirex/app/bm_api.hpp"
 #include "wirex/app/config.hpp"
@@ -215,11 +216,13 @@ services::DeviceService make_device_service(const std::shared_ptr<ConfigState>& 
     svc.enumerate = [st]() {
         services::DeviceInventory inv;
         auto serial = app::devices::enumerate_serial_ports();
+        inv.serial_discovery_status = serial.discovery_status;
         for (const auto& p : serial.serial_ports) {
             std::string caption = p.port_name;
             if (!p.friendly_name.empty()) caption += " · " + p.friendly_name;
             if (p.is_hri) caption += " · HRI";
-            inv.serial_ports.push_back({widen(p.port_name), std::move(caption)});
+            inv.serial_ports.push_back({widen(p.port_name), std::move(caption), p.is_hri,
+                                        p.is_cat_candidate, p.cat_match_rank, p.cat_match_reason});
         }
         {
             std::lock_guard<std::mutex> lock(st->mutex);
@@ -238,7 +241,8 @@ services::DeviceService make_device_service(const std::shared_ptr<ConfigState>& 
                         name = e.friendly_name;
                     }
                 }
-                out.push_back({widen(*w.endpoint_id), std::move(name), w.id});
+                out.push_back({widen(*w.endpoint_id), std::move(name), w.id,
+                               app::devices::is_usb_audio_name(w.name)});
             }
         };
         add(audio.wave_inputs, audio.capture_endpoints, inv.wave_in);
@@ -249,16 +253,6 @@ services::DeviceService make_device_service(const std::shared_ptr<ConfigState>& 
 }
 
 // ---------------------------------------------------------------- CAT
-
-std::optional<services::CatMode> to_gui_mode(app::CatMode mode) {
-    switch (mode) {
-    case app::CatMode::fm: return services::CatMode::fm;
-    case app::CatMode::fm_n: return services::CatMode::fm_n;
-    case app::CatMode::c4fm_dn: return services::CatMode::c4fm_dn;
-    case app::CatMode::c4fm_vw: return services::CatMode::c4fm_vw;
-    default: return std::nullopt;
-    }
-}
 
 app::CatMode to_app_mode(services::CatMode mode) {
     switch (mode) {
@@ -330,6 +324,7 @@ public:
             state_.connected = false;
             state_.busy = false;
             connection_.reset();
+            (void)cat_state_sync::invalidate_observation(state_);
             ++state_.revision;
         }
         worker_.disconnect(); // 取消进行中的串口操作，解除 runner 对 future 的等待
@@ -366,6 +361,7 @@ public:
             state_.busy = false;
             state_.error.clear();
             connection_.reset();
+            (void)cat_state_sync::invalidate_observation(state_);
             ++state_.revision;
         }
         worker_.disconnect();
@@ -430,16 +426,18 @@ private:
         if (wakeup) wakeup();
     }
 
-    // 观测值（断开后仍保留）同步到 GUI 状态。
-    void absorb_observed() {
+    // 只接收本次 CAT 任务可信的新读回；失败查询保留旧读数和错误状态，不制造新鲜序号。
+    void absorb_observed(const app::CatResult& result) {
         const auto snap = worker_.snapshot();
+        if (result.status == app::CatResultStatus::identity_mismatch) {
+            update([&](services::CatState& s) {
+                (void)cat_state_sync::apply(s, result, snap.observed);
+            });
+            return;
+        }
+        if (!cat_state_sync::may_adopt_observation(result) || !cat_state_sync::has_observation(result.observed)) return;
         update([&](services::CatState& s) {
-            s.observed_mode.reset();
-            s.observed_frequency_hz.reset();
-            s.observed_power_w.reset();
-            if (snap.observed.main_mode) s.observed_mode = to_gui_mode(snap.observed.main_mode->value.mode);
-            if (snap.observed.main_frequency_hz) s.observed_frequency_hz = snap.observed.main_frequency_hz->value;
-            if (snap.observed.power) s.observed_power_w = static_cast<std::uint32_t>(snap.observed.power->value.watts);
+            (void)cat_state_sync::apply(s, result, snap.observed);
         });
     }
 
@@ -517,7 +515,7 @@ private:
         job.operation = app::CatOperation::query;
         job.connection = *conn;
         const auto r = run(job, generation);
-        absorb_observed();
+        absorb_observed(r);
         bool ok = r.status == app::CatResultStatus::confirmed;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -556,7 +554,7 @@ private:
         job.connection = *conn;
         job.operation = app::CatOperation::query;
         auto r = run(job, generation);
-        absorb_observed();
+        absorb_observed(r);
         if (r.status != app::CatResultStatus::confirmed) {
             finish(generation, done, to_command_result(r), [&](services::CatState& s) { s.error = r.error_message; });
             return;
@@ -566,7 +564,7 @@ private:
         const auto step = [&](app::CatJob next) {
             next.connection = *conn;
             r = run(next, generation);
-            absorb_observed();
+            absorb_observed(r);
             ++steps;
             return r.status == app::CatResultStatus::confirmed;
         };
@@ -635,7 +633,7 @@ private:
         job.operation = app::CatOperation::query;
         job.connection = *conn;
         const auto r = run(job, generation);
-        absorb_observed();
+        absorb_observed(r);
         std::lock_guard<std::mutex> lock(mutex_);
         if (!connection_ || generation != task_generation_ || stopping_) return; // 期间已断开
         const std::string error = r.status == app::CatResultStatus::confirmed ? std::string{} : r.error_message;

@@ -40,14 +40,14 @@ UI 线程 (ImGui/DX11, MsgWaitForMultipleObjects, 空闲 ≤10 fps)
 
 ## 进度（2026-11-04）
 
-R128 的引擎拆分、原生界面和本次串口/音频集成代码已在 `feat/r128-native-gui`。AP_PC 已完成 GUI Release 编译和隔离界面检查；正式打包、BM RTT 在 GUI 的显示、真实设备与 RF 验收仍未完成。因此不退役旧 UI，也不把当前 EXE 候选称为正式发布。
+R128 的引擎拆分、原生界面和本轮串口/音频设备显示已在 `feat/r128-native-gui`。设备选择预览、保留 Auto 配置语义、设备目录变化刷新、CAT 未知值显示及主界面布局已完成源码集成。基于基线 `9e789c9` 的 GUI Release 构建和中英文隔离截图均已通过；构建时源码保持冻结。正式打包、BM RTT 在 GUI 的显示、真实设备与 RF 验收仍未完成。因此不退役旧 UI，也不把当前 EXE 候选称为正式发布。
 
 | 项 | 结果 |
 | --- | --- |
 | Native 与引擎 | `tools/build-bm-bridge.ps1` 本次编译核心和固定第三方源通过，注册的离线测试全部通过；`engine_test` 覆盖模板嵌入、音频路由失败与排队切换、旧 WaveOut 清理失败但句柄关闭的状态处理。 |
-| app 服务测试 | `tools/build-app-tests.ps1`：7 个测试目标通过、0 warning；config 396、devices 83、CAT 163、fake CAT 生命周期 6、BM API 285、RadioID 234、GUI config bridge 82。 |
+| app 服务测试 | 最新 `tools/build-app-tests.ps1`：8 个测试目标通过、0 warning；config 396、devices 83、CAT 163、fake CAT 生命周期 6、CAT 表单同步 22、BM API 285、RadioID 234、GUI config bridge 109。GUI config bridge 检查 Auto 解析、候选歧义、拔出/重插、配置保持、预览 ID 与启动/CAT helper 一致，以及 CAT busy/断开时不把旧 COM 报成活动端口。 |
 | 音频 meter | `audio_peak_window_test` 的 6 项滑窗、过期、范围夹紧和 NaN 检查通过。 |
-| AP_PC GUI 构建 | AP_PC 已构建 GUI Release 单 EXE 候选，0 warning，大小 2,190,848 字节，并完成默认配置检查及中英文隔离截图；候选位于 `build/_work/wirex-gui-ff2bb16-dirty-20261104-031600/WirexBridge.exe`。该构建早于最后一次中文字体回退修正；最新源码的最终干净构建待本地提交后执行。正式 ZIP、IME 人工验证和实机验收仍未完成。 |
+| AP_PC GUI 构建 | 基于 HEAD `9e789c9` 的本轮 dirty 源码 GUI Release 编译通过，项目代码 0 warning；EXE 为 `build/_work/wirex-gui-9e789c9-dirty-20261104-042648/WirexBridge.exe`，SHA-256 `0152a00b773fb80e686386d869645f554a77261854cbb4165f43bf54fa1dd4fd`。首次配置检查退出码 0。中文、英文隔离截图均为 1360×900；FakeEngine 配合本机设备目录只读枚举，没有连接 HRI、CAT 或 BM。构建期间 126 个 src/include 文件哈希未变化。正式 ZIP、IME 人工验证、实机验收和提交后 clean HEAD 构建仍未完成。 |
 | BM RTT | 引擎侧既有状态报告含 RTT 字段，但 GUI `Snapshot` 尚未接入这些字段；主界面目前明确显示“暂无数据 / No data”。GUI RTT 显示与实际 BM 连接测量仍待完成。 |
 
 ### GUI 启动参数
@@ -63,6 +63,18 @@ R128 的引擎拆分、原生界面和本次串口/音频集成代码已在 `fea
 - `Snapshot::levels.rx_peak` 和 `tx_peak` 是增益处理后 PCM 在最近 200 ms 窗口内的最大归一化峰值；削波样本数仍为累计值。
 - 窗口大小可调整（最小 1180×780）。Wires-X COM、CAT COM 与波特率、音频输入/输出设备及 BrandMeister 配置直接显示在主界面面板中，没有单独的设置弹窗。运行时音频下拉变更由引擎确认后再保存配置；连接期间切换等待媒体空闲，最多 30 秒。
 - 电台连接按钮同时发起 HRI Engine 与 CAT 服务连接，停止时请求两侧断开；界面分别报告两侧真实状态和部分失败，不把单侧成功显示为全部连接成功。
+
+### 本轮字体、布局与缩放验证
+
+- 字体从 Windows Fonts 读取：拉丁字符使用 Segoe UI，CJK 优先合并等线，缺少等线时回退黑体，最后使用 ImGui 默认字体；未使用微软雅黑。ImGui 1.92 保留自动水平过采样（`OversampleH=0`），不启用 `PixelSnapH`，以保留分数字号和分数 DPI 下的排版能力。
+- 主界面右侧显示发送增益和状态，频道卡片使用显式布局；中英文截图中六张频道卡、底部按钮、BM 控件、两种增益、meter 和状态指示均完整可见。当前视检为 1360×900、100% DPI。125% DPI 下的实机显示尚未检查；字体设置和像素对齐代码不作为该缩放比例的验证结果。
+
+### 设备选择显示与热插拔
+
+- 主界面的 HRI、CAT、音频输入和音频输出选择框显示当前配置的解析状态；唯一候选显示 COM 口或音频端点的友好名称，HRI/CAT 同时显示 COM ID。歧义、未枚举、冲突和手动未分类状态各自显示原因。Engine `Snapshot` 的已打开端口/音频端点，以及 `CatState.connected` 确认的 CAT 端口优先显示；CAT 仅 busy 但尚未 confirmed connected 时仍显示配置解析候选，此时主连接按钮显示“连接中”，CAT 指示灯保持未连接。查询成功后才把 CAT 实际端口标为活动端口。如果设备目录刷新后找不到实际活动 ID，界面保留并显示状态报告中的 ID。
+- Auto 仍保存在原配置字段中，解析结果只用于显示，不把当前 COM 或音频 endpoint ID 写回配置。HRI 继续使用唯一识别规则；CAT 使用 `resolve_port_selection` 的候选排序和 HRI 排除规则；音频使用 `resolve_audio_endpoints` 的唯一 USB Audio 配对规则。候选不唯一时不自动选择，也不逐个试开未知 COM 口。用户手动选中的未分类 CAT COM 会标为“手动未分类”，不会伪装为已识别设备。
+- 收到 Windows `WM_DEVICECHANGE` 到达、移除或设备节点变化消息后，GUI 重新枚举并刷新设备显示；主界面也保留手动刷新入口。刷新不改变保存选择、不发起连接或重连。手动选择的 COM/endpoint 被拔出后仍保留为 requested ID 并显示缺失；相同 ID 再次出现时恢复解析。Auto 会按最新枚举重新解析，COM 编号变化后只在规则可唯一确定时显示新候选。
+- 离线测试使用模拟设备目录和既有纯选择函数，检查 Auto 候选与启动/CAT helper 结果一致、多个候选保持歧义、配置不被解析结果改写，以及拔出和重插后的显示状态。CAT 表单测试检查未读回时功率为未知、断开清除可信读数、草稿保留，以及重连成功读回后更新表单。截图用 FakeEngine，并仅只读枚举本机设备目录；没有打开实体串口或实际电台音频流。100% DPI 截图不验证 125% DPI；离线检查也不验证目标机器收到热插拔通知、驱动兼容、CAT/HRI 连接或 RF 行为。
 
 ### 待办
 

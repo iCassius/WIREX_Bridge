@@ -1,6 +1,7 @@
 #include "view_model.hpp"
 
 #include "config_bridge.hpp"
+#include "cat_form_sync.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -163,7 +164,13 @@ ViewModel::ViewModel(EngineApi& engine, services::Services services, bool fake)
         if (kBaudRates[i] == config_.cat_baud_rate) cat_form.baud_index = i;
     }
     refresh_devices();
-    if (services_.cat.state) cat_ = services_.cat.state();
+    if (services_.cat.state) {
+        cat_ = services_.cat.state();
+        last_cat_observed_revision_ = cat_.observed_revision;
+        if (last_cat_observed_revision_ != 0U) {
+            sync_cat_form_from_observed(cat_);
+        }
+    }
     last_phase_ = snapshot_->phase;
     static_sync(); // 已有 API Key 与设备 ID 时读取 BM 静态组
 }
@@ -261,8 +268,14 @@ bool ViewModel::pump() {
     }
     if (services_.cat.state) {
         auto cat = services_.cat.state();
-        if (cat.revision != cat_.revision) {
-            cat_ = std::move(cat);
+        const bool state_changed = cat.revision != cat_.revision;
+        const bool observation_changed = cat.observed_revision != last_cat_observed_revision_;
+        if (state_changed) cat_ = std::move(cat);
+        if (observation_changed) {
+            last_cat_observed_revision_ = cat_.observed_revision;
+            sync_cat_form_from_observed(cat_);
+        }
+        if (state_changed || observation_changed) {
             changed = true;
         }
     }
@@ -737,25 +750,67 @@ void ViewModel::cat_toggle_connection() {
 
 void ViewModel::cat_apply() {
     if (!services_.cat.apply) return;
+    if (cat_form.mode_index < 0 || cat_form.mode_index >= 4 ||
+        cat_form.power_index < 0 || cat_form.power_index >= 5) {
+        flash(fmt(tr(Str::result_fmt), tr(Str::op_cat), tr(Str::st_invalid)), true);
+        return;
+    }
     services::CatSettings s;
-    s.main_mode = static_cast<services::CatMode>(std::clamp(cat_form.mode_index, 0, 3));
+    s.main_mode = static_cast<services::CatMode>(cat_form.mode_index);
     double mhz = 0.0;
     if (!cat_form.frequency_mhz.empty()) {
         const auto [ptr, ec] = std::from_chars(cat_form.frequency_mhz.data(),
                                                cat_form.frequency_mhz.data() + cat_form.frequency_mhz.size(), mhz);
-        if (ec != std::errc{} || mhz <= 0.0 || mhz > 1000.0) {
+        if (ec != std::errc{} || ptr != cat_form.frequency_mhz.data() + cat_form.frequency_mhz.size() ||
+            mhz <= 0.0 || mhz > 1000.0) {
             flash(fmt(tr(Str::result_fmt), tr(Str::op_cat), tr(Str::st_invalid)), true);
             return;
         }
-        (void)ptr;
     }
     s.main_frequency_hz = static_cast<std::uint64_t>(std::llround(mhz * 1'000'000.0));
-    s.power_w = kPowerWatts[std::clamp(cat_form.power_index, 0, 4)];
-    services_.cat.apply(s, [this](CommandResult r) { post_to_ui([this, r = std::move(r)]() { report(Str::op_cat, r); }); });
+    s.power_w = kPowerWatts[cat_form.power_index];
+
+    const std::array<bool, 3> submitted{true, !cat_form.frequency_mhz.empty(), true};
+    const auto submitted_revision = cat_form_edit_revision_;
+    services_.cat.apply(s, [this, submitted, submitted_revision](CommandResult r) {
+        post_to_ui([this, r = std::move(r), submitted, submitted_revision]() {
+            const bool ok = r.status == CommandStatus::accepted || r.status == CommandStatus::idempotent;
+            if (ok) {
+                cat_form_sync::clear_applied_dirty(cat_form_dirty_, submitted_revision,
+                                                   cat_form_edit_revision_, submitted);
+                if (services_.cat.state) {
+                    auto state = services_.cat.state();
+                    cat_ = std::move(state);
+                    last_cat_observed_revision_ = cat_.observed_revision;
+                    sync_cat_form_from_observed(cat_);
+                }
+            }
+            report(Str::op_cat, r);
+        });
+    });
+}
+
+void ViewModel::set_cat_form_editing(CatFormField field, bool editing) noexcept {
+    cat_form_editing_[cat_form_sync::index(field)] = editing;
+}
+
+void ViewModel::mark_cat_form_edited(CatFormField field) noexcept {
+    const auto i = cat_form_sync::index(field);
+    cat_form_dirty_[i] = true;
+    ++cat_form_edit_revision_[i];
+}
+
+void ViewModel::sync_cat_form_from_observed(const services::CatState& state) {
+    cat_form_sync::sync(cat_form, state, cat_form_dirty_, cat_form_editing_);
 }
 
 void ViewModel::refresh_devices() {
     if (services_.devices.enumerate) devices_ = services_.devices.enumerate();
+}
+
+services::DeviceSelectionSnapshot ViewModel::device_selection() const {
+    const auto active = config_bridge::active_device_ids(*snapshot_, cat_);
+    return config_bridge::resolve_device_selection(config_, devices_, active);
 }
 
 bool ViewModel::save_config(const services::GuiConfig& next, std::string& error) {

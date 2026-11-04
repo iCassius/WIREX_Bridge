@@ -12,6 +12,7 @@
 #endif
 #include <windows.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -98,6 +99,23 @@ cb::StartInputs good_inputs() {
     return in;
 }
 
+wirex::gui::services::DeviceInventory selection_inventory() {
+    wirex::gui::services::DeviceInventory inv;
+    inv.serial_discovery_status = "ready";
+    inv.serial_ports = {
+        {L"COM5", "COM5 · Yaesu HRI-200", true, false, 0, "HRI VID/PID 匹配"},
+        {L"COM6", "COM6 · Silicon Labs CP210x", false, true, 220, "CP210x 匹配"},
+        {L"COM7", "COM7 · Unknown UART", false, true, 0, "未识别；可手动选择"},
+    };
+    inv.wave_in = {{L"{usb-in}", "FTX-1 USB Audio Input", 1U, true}};
+    inv.wave_out = {{L"{usb-out}", "FTX-1 USB Audio Output", 2U, true}};
+    return inv;
+}
+
+std::wstring widen_ascii(const std::string& value) {
+    return std::wstring(value.begin(), value.end());
+}
+
 void test_device_number() {
     struct Case { const char* name; std::uint32_t source; std::uint32_t gateway; const char* expected; };
     const Case cases[] = {
@@ -163,9 +181,162 @@ void test_select_hri() {
     }
 }
 
+void test_active_device_ids() {
+    wirex::engine::Snapshot snapshot;
+    snapshot.serial_open = true;
+    snapshot.hri_port = L"COM5";
+    snapshot.wave_in_open = true;
+    snapshot.wave_in_endpoint_id = L"{wave-in-active}";
+    snapshot.wave_out_open = true;
+    snapshot.wave_out_endpoint_id = L"{wave-out-active}";
+    wirex::gui::services::CatState cat;
+    cat.busy = true;
+    cat.port = L"COM77"; // CAT busy may still retain a previous port while a new query is pending.
+
+    auto active = cb::active_device_ids(snapshot, cat);
+    check(active.hri_port == L"COM5" && active.wave_in_endpoint_id == L"{wave-in-active}" &&
+              active.wave_out_endpoint_id == L"{wave-out-active}",
+          "open Engine endpoints are exposed as the active IDs");
+    check(active.cat_port.empty(), "CAT busy without confirmed connection does not publish an active port");
+
+    cat.connected = true;
+    active = cb::active_device_ids(snapshot, cat);
+    check(active.cat_port == L"COM77", "CAT port becomes active after CatState confirms connected");
+
+    cat.connected = false;
+    cat.busy = false;
+    active = cb::active_device_ids(snapshot, cat);
+    check(active.cat_port.empty(), "disconnected CAT state does not publish its retained previous port");
+}
+
+void test_device_selection_preview_and_reinsert() {
+    using wirex::gui::services::DeviceResolutionState;
+    using wirex::gui::services::DeviceSelectionSource;
+    auto gui = sample_gui();
+    auto inventory = selection_inventory();
+
+    auto selected = cb::resolve_device_selection(gui, inventory);
+    check(selected.hri.state == DeviceResolutionState::resolved && selected.hri.resolved_id == L"COM5" &&
+              selected.hri.name.find("Yaesu HRI-200") != std::string::npos,
+          "HRI Auto preview resolves and names the unique classified port");
+    check(selected.cat.state == DeviceResolutionState::resolved && selected.cat.resolved_id == L"COM6" &&
+              selected.cat.source == DeviceSelectionSource::automatic,
+          "CAT Auto preview resolves the unique strongest classified candidate");
+    check(selected.wave_in.state == DeviceResolutionState::resolved && selected.wave_in.resolved_id == L"{usb-in}" &&
+              selected.wave_in.name == "FTX-1 USB Audio Input",
+          "audio input Auto preview resolves its endpoint ID and friendly name");
+    check(selected.wave_out.state == DeviceResolutionState::resolved && selected.wave_out.resolved_id == L"{usb-out}" &&
+              selected.wave_out.name == "FTX-1 USB Audio Output",
+          "audio output Auto preview resolves its endpoint ID and friendly name");
+    check(selected.hri.requested_id.empty() && selected.cat.requested_id.empty() &&
+              selected.wave_in.requested_id.empty() && selected.wave_out.requested_id.empty() &&
+              gui.hri_port.empty() && gui.cat_port.empty() && gui.wave_in_endpoint_id.empty() &&
+              gui.wave_out_endpoint_id.empty(),
+          "resolved Auto preview never writes the concrete IDs into saved selectors");
+    auto alternate_auto_spelling = gui;
+    alternate_auto_spelling.hri_port = L" AUTO ";
+    alternate_auto_spelling.cat_port = L"Auto";
+    alternate_auto_spelling.wave_in_endpoint_id = L" AUTO ";
+    alternate_auto_spelling.wave_out_endpoint_id = L"Auto";
+    const auto normalized_auto = cb::resolve_device_selection(alternate_auto_spelling, inventory);
+    check(normalized_auto.hri.resolved_id == selected.hri.resolved_id &&
+              normalized_auto.cat.resolved_id == selected.cat.resolved_id &&
+              normalized_auto.wave_in.resolved_id == selected.wave_in.resolved_id &&
+              normalized_auto.wave_out.resolved_id == selected.wave_out.resolved_id,
+          "case and surrounding spaces in Auto selectors resolve to the same preview IDs");
+
+    auto ambiguous = inventory;
+    ambiguous.serial_ports.push_back({L"COM8", "COM8 · second HRI", true, false, 0, "HRI VID/PID 匹配"});
+    ambiguous.serial_ports.push_back({L"COM9", "COM9 · second CP210x", false, true, 220, "CP210x 匹配"});
+    ambiguous.wave_in.push_back({L"{usb-in-2}", "Second USB Audio Input", 3U, true});
+    selected = cb::resolve_device_selection(gui, ambiguous);
+    check(selected.hri.state == DeviceResolutionState::ambiguous && selected.hri.resolved_id.empty(),
+          "multiple HRI devices remain unresolved until manual selection");
+    check(selected.cat.state == DeviceResolutionState::ambiguous && selected.cat.resolved_id.empty(),
+          "a tie among strongest CAT candidates remains unresolved");
+    auto ambiguous_audio = inventory;
+    ambiguous_audio.wave_in.push_back({L"{usb-in-2}", "Second USB Audio Input", 3U, true});
+    selected = cb::resolve_device_selection(gui, ambiguous_audio);
+    check(selected.wave_in.state == DeviceResolutionState::ambiguous && selected.wave_in.resolved_id.empty(),
+          "multiple USB Audio inputs remain unresolved while HRI is uniquely identified");
+
+    auto manual = gui;
+    manual.hri_port = L"COM5";
+    manual.cat_port = L"COM7";
+    manual.wave_in_endpoint_id = L"{usb-in}";
+    manual.wave_out_endpoint_id = L"{usb-out}";
+    selected = cb::resolve_device_selection(manual, inventory);
+    check(selected.hri.state == DeviceResolutionState::resolved && selected.hri.source == DeviceSelectionSource::saved,
+          "a manually selected HRI port remains selected when currently identified");
+    check(selected.cat.state == DeviceResolutionState::manual_unclassified && selected.cat.resolved_id == L"COM7" &&
+              selected.cat.source == DeviceSelectionSource::manual,
+          "manual CAT selection of an enumerated unknown UART is visible but not auto-identified");
+    check(selected.wave_in.state == DeviceResolutionState::resolved && selected.wave_in.resolved_id == L"{usb-in}" &&
+              selected.wave_out.state == DeviceResolutionState::resolved && selected.wave_out.resolved_id == L"{usb-out}",
+          "explicit stable audio endpoint IDs resolve independently of USB auto matching");
+
+    manual.cat_port = L"COM5";
+    selected = cb::resolve_device_selection(manual, inventory);
+    check(selected.cat.state == DeviceResolutionState::conflict,
+          "CAT manual selection is rejected when it would share the HRI port");
+
+    auto unplugged = gui;
+    unplugged.hri_port = L"COM5";
+    unplugged.cat_port = L"COM10";
+    unplugged.wave_in_endpoint_id = L"{removed-in}";
+    unplugged.wave_out_endpoint_id = L"{removed-out}";
+    selected = cb::resolve_device_selection(unplugged, inventory);
+    check(selected.cat.state == DeviceResolutionState::missing && selected.cat.requested_id == L"COM10" &&
+              selected.wave_in.state == DeviceResolutionState::missing &&
+              selected.wave_in.requested_id == L"{removed-in}",
+          "unplugged explicit devices remain visible as missing without clearing saved IDs");
+
+    auto reinserted = inventory;
+    reinserted.serial_ports.push_back({L"COM10", "COM10 · CP210x restored", false, true, 220, "CP210x 匹配"});
+    reinserted.wave_in.push_back({L"{removed-in}", "Restored USB Audio Input", 4U, true});
+    reinserted.wave_out.push_back({L"{removed-out}", "Restored USB Audio Output", 5U, true});
+    selected = cb::resolve_device_selection(unplugged, reinserted);
+    check(selected.cat.state == DeviceResolutionState::resolved && selected.cat.resolved_id == L"COM10" &&
+              selected.wave_in.resolved_id == L"{removed-in}" && selected.wave_out.resolved_id == L"{removed-out}",
+          "reinserted devices with the same COM and endpoint IDs resolve again from preserved config");
+
+    auto changed_hardware = reinserted;
+    changed_hardware.serial_ports.erase(std::remove_if(changed_hardware.serial_ports.begin(),
+        changed_hardware.serial_ports.end(), [](const auto& port) { return port.port == L"COM6"; }),
+        changed_hardware.serial_ports.end());
+    selected = cb::resolve_device_selection(gui, changed_hardware);
+    check(selected.cat.state == DeviceResolutionState::resolved && selected.cat.resolved_id == L"COM10" &&
+              gui.cat_port.empty(),
+          "Auto resolves a reinserted device at its new COM number without persisting that number");
+
+    cb::ActiveDeviceIds active;
+    active.hri_port = L"COM77";
+    active.cat_port = L"COM78";
+    active.wave_in_endpoint_id = L"{active-in}";
+    active.wave_out_endpoint_id = L"{active-out}";
+    selected = cb::resolve_device_selection(gui, inventory, active);
+    check(selected.hri.active && selected.hri.state == DeviceResolutionState::active_not_enumerated &&
+              selected.hri.resolved_id == L"COM77",
+          "active Engine port remains the displayed actual ID when a refresh no longer enumerates it");
+    check(selected.cat.active && selected.cat.resolved_id == L"COM78" &&
+              selected.wave_in.active && selected.wave_in.resolved_id == L"{active-in}" &&
+              selected.wave_out.active && selected.wave_out.resolved_id == L"{active-out}",
+          "active CAT and audio IDs override the idle Auto preview in the display snapshot");
+
+    auto unavailable = inventory;
+    unavailable.serial_ports.clear();
+    unavailable.serial_discovery_status = "failed";
+    selected = cb::resolve_device_selection(gui, unavailable);
+    check(selected.hri.state == DeviceResolutionState::unavailable &&
+              selected.cat.state == DeviceResolutionState::unavailable,
+          "device catalog errors are distinguished from an empty or ambiguous catalog");
+}
+
 void test_start_config() {
     std::string error;
-    auto sc = cb::make_start_config(sample_gui(), good_inputs(), error);
+    const auto gui = sample_gui();
+    const auto start_inputs = good_inputs();
+    auto sc = cb::make_start_config(gui, start_inputs, error);
     check(sc.has_value(), "start config ok: " + error);
     if (!sc) return;
     check(sc->hri_port == L"COM5", "start hri port auto");
@@ -186,6 +357,45 @@ void test_start_config() {
           "start tx target from tx_channel_id");
     check(sc->rx_policy.allowed_groups.size() == 2U && sc->rx_policy.private_peers.size() == 1U, "start rx policy");
     check(sc->radio_playback_gain_milli == 4000U && sc->mic_transmit_gain_milli == 16000U, "start gains");
+
+    wirex::gui::services::DeviceInventory inventory;
+    inventory.serial_discovery_status = "ready";
+    for (const auto& port : start_inputs.serial.serial_ports) {
+        inventory.serial_ports.push_back({widen_ascii(port.port_name), port.port_name + " · " + port.friendly_name,
+                                          port.is_hri, port.is_cat_candidate, port.cat_match_rank,
+                                          port.cat_match_reason});
+    }
+    const auto add_audio = [](const std::vector<dev::WaveDevice>& waves,
+                              std::vector<wirex::gui::services::AudioEndpointInfo>& endpoints) {
+        for (const auto& item : waves) {
+            if (!dev::usable(item)) continue;
+            endpoints.push_back({widen_ascii(*item.endpoint_id), item.name, item.id,
+                                 dev::is_usb_audio_name(item.name)});
+        }
+    };
+    add_audio(start_inputs.wave_inputs, inventory.wave_in);
+    add_audio(start_inputs.wave_outputs, inventory.wave_out);
+    const auto preview = cb::resolve_device_selection(gui, inventory);
+    check(preview.hri.resolved_id == sc->hri_port,
+          "displayed HRI Auto ID equals the port selected for the actual start configuration");
+    check(preview.wave_in.resolved_id == sc->audio.expected_wave_in_endpoint_id &&
+              preview.wave_out.resolved_id == sc->audio.expected_wave_out_endpoint_id,
+          "displayed audio Auto endpoint IDs equal those selected for the actual start configuration");
+    auto alternate_auto_gui = gui;
+    alternate_auto_gui.hri_port = L" AUTO ";
+    alternate_auto_gui.wave_in_endpoint_id = L" AUTO ";
+    alternate_auto_gui.wave_out_endpoint_id = L"Auto";
+    error.clear();
+    const auto alternate_start = cb::make_start_config(alternate_auto_gui, start_inputs, error);
+    check(alternate_start && alternate_start->hri_port == sc->hri_port &&
+              alternate_start->audio.expected_wave_in_endpoint_id == sc->audio.expected_wave_in_endpoint_id &&
+              alternate_start->audio.expected_wave_out_endpoint_id == sc->audio.expected_wave_out_endpoint_id,
+          "start-time helper treats case-insensitive Auto spellings like the displayed Auto selection");
+    dev::PortSelectionError cat_error{};
+    const auto cat = dev::resolve_port_selection(start_inputs.serial, "auto", "auto", "", cat_error);
+    check(cat_error == dev::PortSelectionError::none && cat.cat_port &&
+              preview.cat.resolved_id == widen_ascii(*cat.cat_port),
+          "displayed CAT Auto ID equals the production serial selection helper result");
 
     auto embedded = good_inputs();
     embedded.body_file.clear();
@@ -318,6 +528,8 @@ int main() {
     test_rx_policy();
     test_channel_key();
     test_select_hri();
+    test_active_device_ids();
+    test_device_selection_preview_and_reinsert();
     test_start_config();
     test_round_trip_preserves_unknown();
     std::cout << "gui_config_bridge_test: " << (checks - failures) << "/" << checks << " passed\n";

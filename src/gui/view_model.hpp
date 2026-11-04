@@ -9,6 +9,7 @@
 #include "services.hpp"
 #include "strings.hpp"
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <deque>
@@ -84,8 +85,10 @@ struct CatForm {
     int baud_index{3};            // 4800/9600/19200/38400/115200
     int mode_index{-1};           // FM/FM-N/C4FM-DN/C4FM-VW
     std::string frequency_mhz{};
-    int power_index{3};           // 5/10/15/25/50 W
+    int power_index{-1};          // 5/10/15/25/50 W；-1 表示尚无可信 CAT 读回
 };
+
+enum class CatFormField : std::uint8_t { mode, frequency, power };
 
 class ViewModel {
 public:
@@ -110,6 +113,7 @@ public:
     [[nodiscard]] bool fake() const noexcept { return fake_; }
     [[nodiscard]] const services::GuiConfig& config() const noexcept { return config_; }
     [[nodiscard]] const services::DeviceInventory& devices() const noexcept { return devices_; }
+    [[nodiscard]] services::DeviceSelectionSnapshot device_selection() const;
     [[nodiscard]] const services::CatState& cat() const noexcept { return cat_; }
     [[nodiscard]] bool cat_available() const noexcept { return static_cast<bool>(services_.cat.connect); }
     [[nodiscard]] std::vector<ChannelView> channel_page() const;
@@ -160,6 +164,8 @@ public:
     // ---------- 其它服务 ----------
     void cat_toggle_connection();
     void cat_apply();
+    void set_cat_form_editing(CatFormField field, bool editing) noexcept;
+    void mark_cat_form_edited(CatFormField field) noexcept;
     void refresh_devices();
     [[nodiscard]] bool save_config(const services::GuiConfig& next, std::string& error);
     void set_channel_page(std::size_t page);
@@ -211,6 +217,7 @@ private:
     void apply_identity(const services::IdentityResult& result);
     void push_identity(std::uint32_t source_id, std::optional<std::string> callsign);
     void on_engine_running();
+    void sync_cat_form_from_observed(const services::CatState& state);
 
     EngineApi& engine_;
     services::Services services_;
@@ -219,6 +226,10 @@ private:
     services::GuiConfig config_{};
     services::DeviceInventory devices_{};
     services::CatState cat_{};
+    std::array<bool, 3> cat_form_dirty_{};
+    std::array<bool, 3> cat_form_editing_{};
+    std::array<std::uint64_t, 3> cat_form_edit_revision_{};
+    std::uint64_t last_cat_observed_revision_{};
     std::set<ChannelKey> muted_{};
     std::set<ChannelKey> quick_call_sent_{};
     std::optional<ChannelKey> quick_call_pending_{};

@@ -673,13 +673,14 @@ services::Services make_fake_services(FakeEngine& engine) {
 
     sv.devices.enumerate = []() {
         services::DeviceInventory inv;
+        inv.serial_discovery_status = "synthetic";
         inv.serial_ports = {
-            {L"COM3", "COM3 · USB Serial Device"},
-            {L"COM5", "COM5 · Silicon Labs CP210x (Wires-X)"},
-            {L"COM6", "COM6 · Silicon Labs CP210x (CAT)"},
+            {L"COM3", "COM3 · USB Serial Device", false, true, 100, "USB 串行接口候选"},
+            {L"COM5", "COM5 · Silicon Labs CP210x (Wires-X)", true, false, 0, "唯一 HRI 设备"},
+            {L"COM6", "COM6 · Silicon Labs CP210x (CAT)", false, true, 220, "CP210x 串口匹配"},
         };
-        inv.wave_in = {{L"{0.0.1.00000000}.{fake-in}", "麦克风 (USB Audio CODEC)"}};
-        inv.wave_out = {{L"{0.0.0.00000000}.{fake-out}", "扬声器 (USB Audio CODEC)"}};
+        inv.wave_in = {{L"{0.0.1.00000000}.{fake-in}", "麦克风 (USB Audio CODEC)", 0U, true}};
+        inv.wave_out = {{L"{0.0.0.00000000}.{fake-out}", "扬声器 (USB Audio CODEC)", 0U, true}};
         return inv;
     };
 
@@ -708,6 +709,7 @@ services::Services make_fake_services(FakeEngine& engine) {
                     st->cat.observed_mode = services::CatMode::fm;
                     st->cat.observed_frequency_hz = 145'000'000U;
                     st->cat.observed_power_w = 25U;
+                    ++st->cat.observed_revision;
                     st->cat.error.clear();
                     ++st->cat.revision;
                 }
@@ -750,6 +752,7 @@ services::Services make_fake_services(FakeEngine& engine) {
                     st->cat.observed_mode = settings.main_mode;
                     if (settings.main_frequency_hz != 0U) st->cat.observed_frequency_hz = settings.main_frequency_hz;
                     st->cat.observed_power_w = settings.power_w;
+                    ++st->cat.observed_revision;
                     ++st->cat.revision;
                 }
             }

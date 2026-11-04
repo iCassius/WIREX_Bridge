@@ -23,18 +23,53 @@ using Done = std::function<void(engine::CommandResult)>;
 struct SerialPortInfo {
     std::wstring port{};       // "COM5"
     std::string caption{};     // UTF-8 显示文本，例如 "COM5 · Silicon Labs CP210x"
+    bool is_hri{};
+    bool is_cat_candidate{};
+    int cat_match_rank{};
+    std::string cat_match_reason{};
 };
 
 struct AudioEndpointInfo {
     std::wstring endpoint_id{}; // MMDevice endpoint id
     std::string name{};         // UTF-8 友好名称
     std::uint32_t wave_id{};    // 当前枚举对应的 WinMM 设备编号
+    bool usb_audio_auto_candidate{}; // 依照 WinMM 设备名参与 USB Audio 自动配对
 };
 
 struct DeviceInventory {
+    std::string serial_discovery_status{"unknown"}; // ready | empty | failed | synthetic
     std::vector<SerialPortInfo> serial_ports{};
     std::vector<AudioEndpointInfo> wave_in{};
     std::vector<AudioEndpointInfo> wave_out{};
+};
+
+enum class DeviceResolutionState : std::uint8_t {
+    resolved,
+    ambiguous,
+    missing,
+    conflict,
+    unavailable,
+    manual_unclassified,
+    active_not_enumerated,
+};
+
+enum class DeviceSelectionSource : std::uint8_t { automatic, saved, manual };
+
+struct ResolvedDeviceSelection {
+    DeviceResolutionState state{DeviceResolutionState::unavailable};
+    DeviceSelectionSource source{DeviceSelectionSource::automatic};
+    std::wstring requested_id{}; // empty = Auto；保留配置选择，不随解析结果改写
+    std::wstring resolved_id{};  // 当前解析或运行状态报告的 COM / endpoint ID
+    std::string name{};          // 当前目录中的友好名称；无法匹配时可回退为 ID
+    std::string reason{};        // UTF-8 中文原因
+    bool active{};               // true 表示引擎或 CAT 状态报告正在使用此 ID
+};
+
+struct DeviceSelectionSnapshot {
+    ResolvedDeviceSelection hri{};
+    ResolvedDeviceSelection cat{};
+    ResolvedDeviceSelection wave_in{};
+    ResolvedDeviceSelection wave_out{};
 };
 
 struct DeviceService {
@@ -59,6 +94,7 @@ struct CatState {
     std::optional<CatMode> observed_mode{};     // 最近一次读取值
     std::optional<std::uint64_t> observed_frequency_hz{};
     std::optional<std::uint32_t> observed_power_w{};
+    std::uint64_t observed_revision{};          // 可信新读回递增；与连接/busy/error 的 revision 分开
     std::string error{};                        // 中文源文案；空表示无错误
     std::uint64_t revision{};                   // 每次变化 +1
 };

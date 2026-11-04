@@ -21,6 +21,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <dbt.h>
 
 #include <d3d11.h>
 #include <imm.h>
@@ -92,6 +93,7 @@ struct Shell {
     D3D d3d{};
     float dpi_scale{1.0F};
     bool dpi_changed{};
+    bool device_change_pending{};
     bool quit_requested{};
 };
 
@@ -152,6 +154,11 @@ LRESULT WINAPI wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             g_shell.d3d.resize_h = HIWORD(lparam);
         }
         return 0;
+    case WM_DEVICECHANGE:
+        if (wparam == DBT_DEVICEARRIVAL || wparam == DBT_DEVICEREMOVECOMPLETE || wparam == DBT_DEVNODES_CHANGED) {
+            g_shell.device_change_pending = true;
+        }
+        break;
     case WM_GETMINMAXINFO: {
         auto* info = reinterpret_cast<MINMAXINFO*>(lparam);
         const UINT dpi = GetDpiForWindow(hwnd);
@@ -226,7 +233,9 @@ ImFont* add_font(const std::filesystem::path& file, int index, bool merge = fals
     cfg.FontNo = static_cast<ImU32>(index);
     cfg.MergeMode = merge;
     cfg.Flags |= ImFontFlags_NoLoadError;
-    cfg.OversampleH = 1; // 1.92 动态字形：CJK 无需水平过采样，降低图集内存
+    // 保留 ImGui 1.92 的自动水平过采样（常用小字号取 2），改善分数坐标下的字形边缘。
+    // 不启用 PixelSnapH：它会把字宽取整，并会破坏 1.3× 与非整数 DPI 下的分数字号。
+    cfg.OversampleH = 0;
     const std::string utf8 = file.u8string();
     return ImGui::GetIO().Fonts->AddFontFromFileTTF(utf8.c_str(), 14.0F, &cfg);
 }
@@ -628,6 +637,11 @@ int run(HINSTANCE instance) {
                     input = true;
                 }
                 if (!running) break;
+                if (g_shell.device_change_pending) {
+                    g_shell.device_change_pending = false;
+                    vm.refresh_devices(); // read-only refresh; does not alter saved selectors or reconnect devices
+                    dirty = true;
+                }
                 if (vm.pump()) dirty = true;
                 if (g_shell.quit_requested || vm.exit_requested()) {
                     if (vm.snapshot().phase != wirex::engine::Phase::stopped && !vm.pending(wirex::gui::Str::op_stop)) vm.stop();

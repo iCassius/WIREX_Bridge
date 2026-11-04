@@ -72,6 +72,23 @@ struct StartInputs {
     std::filesystem::path body_file{};                    // 可选外部覆盖；留空使用内置模板
 };
 
+struct ActiveDeviceIds {
+    std::wstring hri_port{};
+    std::wstring cat_port{};
+    std::wstring wave_in_endpoint_id{};
+    std::wstring wave_out_endpoint_id{};
+};
+
+// 只把 Engine/CAT 状态确认正在使用的设备作为活动 ID；CAT busy 本身不确认目标端口已连接。
+[[nodiscard]] ActiveDeviceIds active_device_ids(const engine::Snapshot& snapshot,
+                                                 const services::CatState& cat);
+
+// 预览当前选择在最近一次设备目录中的唯一解析结果；不写回 GuiConfig。
+// active IDs 来自 Engine Snapshot/CatState，优先于配置预览显示为实际使用设备。
+[[nodiscard]] services::DeviceSelectionSnapshot resolve_device_selection(
+    const services::GuiConfig& gui, const services::DeviceInventory& inventory,
+    const ActiveDeviceIds& active = {});
+
 [[nodiscard]] std::optional<engine::StartConfig> make_start_config(const services::GuiConfig& gui,
                                                                     const StartInputs& inputs, std::string& error);
 
