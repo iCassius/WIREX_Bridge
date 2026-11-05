@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <deque>
+#include <optional>
 #include <string>
 
 struct ImFont;
@@ -35,6 +36,8 @@ public:
     void draw(float dpi_scale);
     // 有需要持续重绘的交互（拖动滑块、弹窗动画等）时返回 true。
     [[nodiscard]] bool wants_continuous() const noexcept { return continuous_; }
+    // 仅供截图验收（--screenshot-modal remove-static）：对当前页第一个静态组频道打开移除确认弹窗。
+    void preview_static_remove_modal();
 
 private:
     struct ConnectionLogEntry {
@@ -60,6 +63,7 @@ private:
     void update_connection_log();
     void draw_audio_devices(const FieldGrid& grid, float caption_h);
     void draw_filtered_hint(const FilteredHint& hint, float inner_w);
+    void draw_static_remove_modal();
     void begin_panel(const char* id, float width, float height);
     void end_panel();
     void draw_static_groups(float inner_w);
@@ -79,6 +83,7 @@ private:
     // 电台/日常控制面板上一帧测得的“不含段间距”内容高度，用于推算段间距（SectionFlow）。
     float radio_fixed_h_{};
     float daily_fixed_h_{};
+    std::optional<ChannelKey> static_remove_confirm_{}; // 正在确认移除的静态组频道
     // 主界面 BM 配置草稿
     services::GuiConfig draft_{};
     std::string draft_dmr_id_{};

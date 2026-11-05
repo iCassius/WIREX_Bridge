@@ -816,7 +816,8 @@ struct FakeServiceState {
     services::CatState cat{};
     std::uint64_t cat_generation{};
     services::GuiConfig config{};
-    std::vector<services::StaticGroup> static_groups{{46001U, 2}, {4600U, 2}, {91U, 2}, {46025U, 2}};
+    // 46010 不在演示频道中：启动读取静态组后会自动补进收听频道（第 6 张卡片）。
+    std::vector<services::StaticGroup> static_groups{{46001U, 2}, {4600U, 2}, {91U, 2}, {46025U, 2}, {46010U, 2}};
 };
 
 services::GuiConfig demo_config() {

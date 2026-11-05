@@ -262,6 +262,22 @@ namespace wirex::gui {
     X(static_row_fmt,       "TG %u · %s",                          "TG %u · %s")                    /* new */ \
     X(static_slot_fmt,      "TS%d",                                "TS%d")                          /* new */ \
     X(static_slot_dmo,      "DMO",                                 "DMO")                           /* new */ \
+    X(static_imported_fmt,  "已把 %u 个 BM 静态组加入收听频道：TG %s。", \
+                            "Added %u BM static groups to the listen channels: TG %s.") /* new */ \
+    X(static_removing_fmt,  "正在从 BM 移除静态组 TG %u…",         "Removing static group TG %u from BM…") /* new */ \
+    X(static_remove_failed_fmt,"BM 静态组 TG %u 移除失败，频道已保留：%s", \
+                            "Could not remove static group TG %u from BM; the channel was kept: %s") /* new */ \
+    X(static_removed_unlisten_fmt,"已从 BM 移除静态组 TG %u，并取消收听。", \
+                            "Removed static group TG %u from BM and stopped listening.") /* new */ \
+    X(static_unlisten_no_key_fmt,"已取消收听 TG %u；未设置 API Key，BM 静态组未改动。", \
+                            "Stopped listening to TG %u; no API key is set, so the BM static group was not changed.") /* new */ \
+    X(static_remove_title,  "移除静态组",                          "Remove static group")           /* new */ \
+    X(static_remove_ask_fmt,"同时从 BM 移除静态组 TG %u？",        "Also remove static group TG %u from BM?") /* new */ \
+    X(static_remove_no_key, "未设置 API Key：只能取消收听，BM 静态组不会改动。", \
+                            "No API key is set: only listening stops; the BM static group is not changed.") /* new */ \
+    X(static_remove_both,   "从 BM 移除并取消收听",                "Remove from BM and stop listening") /* new */ \
+    X(static_remove_listen_only,"仅取消收听",                      "Stop listening only")           /* new */ \
+    X(btn_cancel,           "取消",                                "Cancel")                        /* new */ \
     X(channel_idle,         "空闲",                                "Idle")                          /* new */ \
     X(last_call_fmt,        "上次 %s",                             "Last %s")                       /* new */ \
     X(auto_select,          "自动",                                "Auto")                          /* new */ \
@@ -276,8 +292,8 @@ namespace wirex::gui {
     X(unknown,              "未知",                                "Unknown") \
     X(op_auto_quick_call,   "启动自动组呼",                        "Startup group Quick Call")        /* new */ \
     X(startup_group_waiting_fmt, \
-                            "自动组呼已冻结 %u 个目标，等待 BM 首次连接；忽略私呼 %u 个、TG4000 安全跳过 %u 个、重复合并 %u 个、无效跳过 %u 个。", \
-                            "Startup group Quick Calls frozen: %u targets waiting for the first BM connection; ignored %u private calls, safety-skipped %u TG4000 entries, merged %u duplicates, and skipped %u invalid targets.") /* new */ \
+                            "自动组呼已冻结 %u 个目标，等待 BM 首次连接；忽略私呼 %u 个、TG4000 安全跳过 %u 个、重复合并 %u 个、无效跳过 %u 个、静态组无需激活 %u 个。", \
+                            "Startup group Quick Calls frozen: %u targets waiting for the first BM connection; ignored %u private calls, safety-skipped %u TG4000 entries, merged %u duplicates, skipped %u invalid targets, and %u static groups need no activation.") /* new */ \
     X(startup_group_connected_fmt, \
                             "BM 已连接；开始依序在本机发送 %u 个已保存组呼目标。", \
                             "BM connected; starting local Quick Call sends for %u saved group targets in order.") /* new */ \
@@ -294,8 +310,8 @@ namespace wirex::gui {
                             "自动组呼进度：本机已发送 %u/%u 个，失败 %u 个，剩余 %u 个。", \
                             "Startup group Quick Calls: %u/%u sent locally, %u failed, %u remaining.") /* new */ \
     X(startup_group_done_fmt, \
-                            "自动组呼完成：本机已发送 %u/%u 个，失败 %u 个，持续忙碌跳过 %u 个；忽略私呼 %u 个、TG4000 安全跳过 %u 个、重复合并 %u 个、无效跳过 %u 个。", \
-                            "Startup group Quick Calls complete: %u/%u sent locally, %u failed, %u skipped after persistent busy; ignored %u private calls, safety-skipped %u TG4000 entries, merged %u duplicates, and skipped %u invalid targets.") /* new */ \
+                            "自动组呼完成：本机已发送 %u/%u 个，失败 %u 个，持续忙碌跳过 %u 个；忽略私呼 %u 个、TG4000 安全跳过 %u 个、重复合并 %u 个、无效跳过 %u 个、静态组无需激活 %u 个。", \
+                            "Startup group Quick Calls complete: %u/%u sent locally, %u failed, %u skipped after persistent busy; ignored %u private calls, safety-skipped %u TG4000 entries, merged %u duplicates, skipped %u invalid targets, and %u static groups need no activation.") /* new */ \
     X(startup_group_sent_fmt, \
                             "TG %u TS%d：Quick Call 两帧已由本机发送。", \
                             "TG %u TS%d: both Quick Call frames were sent locally.") /* new */ \

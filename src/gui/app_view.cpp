@@ -810,6 +810,7 @@ void AppView::draw(float dpi_scale) {
     draw_radio_panel(radio_w, panels_h);
     ImGui::SameLine(0.0F, gap);
     draw_daily_panel(daily_w, panels_h);
+    draw_static_remove_modal();
     ImGuiIO& io = ImGui::GetIO();
     if (ImGui::IsAnyItemActive() || ImGui::IsMouseDown(ImGuiMouseButton_Left) || io.MouseWheel != 0.0F) continuous_ = true;
     ImGui::End();
@@ -1330,7 +1331,13 @@ void AppView::draw_channel_card(const ChannelView& ch, float width, float height
     }
     ImGui::SetItemTooltip("%s", ch.is_tx_target ? tr(Str::tip_tx_selected) : tr(Str::tip_set_tx));
     ImGui::SameLine();
-    if (button(tr(Str::btn_remove_short), bsize, Tone::normal, can_mutate)) vm_.remove_channel(ch.key);
+    if (button(tr(Str::btn_remove_short), bsize, Tone::normal, can_mutate)) {
+        if (ch.is_static) {
+            static_remove_confirm_ = ch.key; // 静态组：先确认是否同时从 BM 移除
+        } else {
+            vm_.remove_channel(ch.key);
+        }
+    }
     if (button(ch.is_muted ? tr(Str::btn_unmute_short) : tr(Str::btn_mute_short), bsize, Tone::normal, can_mutate)) {
         vm_.toggle_mute(ch.key);
     }
@@ -2189,6 +2196,71 @@ void AppView::draw_daily_panel(float width, float height) {
     }
     if (flow.finish()) continuous_ = true;
     end_panel();
+}
+
+// 频道卡片“移除”静态组频道时的确认弹窗：[从 BM 移除并取消收听] [仅取消收听] [取消]。
+void AppView::draw_static_remove_modal() {
+    constexpr const char* kId = "##static-remove";
+    if (static_remove_confirm_ && !ImGui::IsPopupOpen(kId)) ImGui::OpenPopup(kId);
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5F, 0.5F));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(16.0F), px(12.0F)));
+    const bool open = ImGui::BeginPopupModal(kId, nullptr,
+        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::PopStyleVar();
+    if (!open) return;
+    continuous_ = true;
+    if (!static_remove_confirm_) {
+        ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+        return;
+    }
+    const auto key = *static_remove_confirm_;
+    const bool has_key = !vm_.config().bm_api_key.empty();
+    ImGui::PushFont(fonts_.bold, layout::kFontTitle);
+    ImGui::TextUnformatted(tr(Str::static_remove_title));
+    ImGui::PopFont();
+    ImGui::Dummy(ImVec2(0.0F, px(layout::kRowGap)));
+    ImGui::PushFont(nullptr, layout::kFontBody);
+    ImGui::TextUnformatted(fmt(tr(Str::static_remove_ask_fmt), key.id).c_str());
+    if (!has_key) {
+        ImGui::PushStyleColor(ImGuiCol_Text, vec(color::warn));
+        ImGui::TextUnformatted(tr(Str::static_remove_no_key));
+        ImGui::PopStyleColor();
+    }
+    ImGui::PopFont();
+    ImGui::Dummy(ImVec2(0.0F, px(layout::kSectionGapMin)));
+    const float bh = px(layout::kHeaderButtonHeight);
+    const auto bw = [this](const char* label) { return ImGui::CalcTextSize(label).x + px(24.0F); };
+    const bool can_mutate = vm_.can_mutate_channels();
+    if (button(tr(Str::static_remove_both), ImVec2(bw(tr(Str::static_remove_both)), bh), Tone::stop,
+               has_key && can_mutate && !vm_.static_groups().busy)) {
+        vm_.remove_static_channel(key);
+        static_remove_confirm_.reset();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine(0.0F, px(layout::kInlineGap));
+    if (button(tr(Str::static_remove_listen_only), ImVec2(bw(tr(Str::static_remove_listen_only)), bh), Tone::normal,
+               can_mutate)) {
+        vm_.remove_channel(key);
+        static_remove_confirm_.reset();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine(0.0F, px(layout::kInlineGap));
+    if (button(tr(Str::btn_cancel), ImVec2(bw(tr(Str::btn_cancel)), bh)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        static_remove_confirm_.reset();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+void AppView::preview_static_remove_modal() {
+    for (const auto& ch : vm_.channel_page()) {
+        if (ch.is_static) {
+            static_remove_confirm_ = ch.key;
+            return;
+        }
+    }
 }
 
 // 有 BM 流量但被收听策略过滤时的弱提示：一行文字 + “加入收听”小按钮，同一行垂直居中。

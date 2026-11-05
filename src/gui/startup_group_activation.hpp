@@ -26,6 +26,7 @@ struct StartupGroupActivationStats {
     std::size_t disconnect_group_skipped{};
     std::size_t duplicate_skipped{};
     std::size_t invalid_skipped{};
+    std::size_t static_skipped{};   // BM 静态组频道无需 Quick Call 激活
 };
 
 // 本次进程只触发一次的启动组呼队列。接收 `accepted` 只记录本机发完两帧；
@@ -72,6 +73,24 @@ public:
         }
         stats_.target_count = targets_.size();
         return true;
+    }
+
+    // 激活前剔除不需要 Quick Call 的目标（BM 静态组）；激活后调用无效，避免改动进行中的序列。
+    template <class Pred>
+    std::size_t skip_if(Pred pred) {
+        if (!frozen_ || started_) return 0U;
+        std::size_t skipped = 0U;
+        for (auto it = targets_.begin(); it != targets_.end();) {
+            if (pred(*it)) {
+                it = targets_.erase(it);
+                ++skipped;
+            } else {
+                ++it;
+            }
+        }
+        stats_.static_skipped += skipped;
+        stats_.target_count = targets_.size();
+        return skipped;
     }
 
     // 仅在本进程第一次观察到 BM connected 时调用，不允许重连重置本序列。

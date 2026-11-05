@@ -179,6 +179,9 @@ public:
     void toggle_bm();             // engine.set_bm_connection
     void set_tx_target(const ChannelKey& key);   // engine.replace_tx_policy
     void remove_channel(const ChannelKey& key);  // engine.replace_rx_policy
+    // 静态组频道：先从 BM 移除静态组（保留原 API slot），成功后再取消收听；失败时频道保留。
+    // 未设置 API Key 时只取消收听并提示 BM 未改动。
+    void remove_static_channel(const ChannelKey& key);
     void toggle_mute(const ChannelKey& key);     // engine.replace_rx_policy
     void add_channel();                          // engine.replace_rx_policy
     void listen_filtered();                      // 把 filtered_hint() 的 TG/私呼加入频道（已屏蔽则恢复）
@@ -203,6 +206,8 @@ public:
     void static_remove();
     void static_set_page(std::size_t page);
     void static_select(std::optional<std::size_t> index);
+    // 频道对应的 BM 静态组（API slot 原值）；不是静态组时为空。
+    [[nodiscard]] std::optional<services::StaticGroup> static_group_for(const ChannelKey& key) const;
     StaticGroupsView& static_form() noexcept { return static_; }
     void select_history(std::optional<std::size_t> index);
     void request_exit() noexcept { exit_requested_ = true; }
@@ -242,6 +247,9 @@ private:
     void static_status(std::string text, bool failed);
     void static_apply(const services::BmApiResult& result, bool write);
     [[nodiscard]] bool is_static_channel(const services::ChannelEntry& entry) const;
+    void import_static_channels();
+    void resolve_startup_static();
+    void erase_channel(const ChannelKey& key);
     void lookup_identity(const engine::CallInfo& call);
     void apply_identity(const services::IdentityResult& result);
     void push_identity(std::uint32_t source_id, std::optional<std::string> callsign);
@@ -270,6 +278,10 @@ private:
     std::optional<ChannelKey> startup_group_activation_last_target_{};
     std::string startup_group_activation_status_{};
     StaticGroupsView static_{};
+    bool static_import_pending_{};        // 当前设备/Key 的首次成功读取要把静态组补进收听频道
+    bool startup_static_resolved_{};      // 启动组呼在首次静态组读取结束（或超时）后才激活
+    std::optional<std::chrono::steady_clock::time_point> startup_static_wait_since_{};
+    bool rx_policy_dirty_{};              // 频道已变但收听策略尚未下发（引擎未运行或策略命令在途）
     std::map<std::uint32_t, std::string> callsigns_{};     // RadioID 查询得到的呼号
     std::set<std::uint32_t> identity_requested_{};
     std::uint64_t identity_revision_{};                    // 每次引擎进入 running 从 0 开始
