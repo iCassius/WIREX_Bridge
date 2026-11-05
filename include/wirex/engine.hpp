@@ -114,6 +114,22 @@ struct Counters {
     std::uint64_t rx_filtered_datagrams{};
 };
 
+// BM 网络质量：RTT 来自 RPTPING/MSTPONG 往返；丢包来自 DMRD 序号（本次 BM 会话累计 + 当前/最近一次通话）。
+struct NetworkQuality {
+    bool rtt_valid{};
+    std::uint64_t rtt_last_ms{};
+    double rtt_avg_ms{};
+    std::uint64_t rtt_min_ms{};
+    std::uint64_t rtt_max_ms{};
+    std::uint64_t rtt_samples{};
+    bool session_loss_valid{};
+    std::uint64_t session_expected{};
+    std::uint64_t session_missing{};
+    bool call_loss_valid{};
+    std::uint64_t call_expected{};
+    std::uint64_t call_missing{};
+};
+
 // 最近一次被收听策略过滤的 BM 流（只用于界面提示，不参与路由）。
 struct FilteredTraffic {
     std::uint32_t source_id{};
@@ -157,6 +173,7 @@ struct Snapshot {
     AudioLevels levels{};
     Counters counters{};
     std::optional<FilteredTraffic> last_filtered{};
+    NetworkQuality network{};
 
     // R128 增补（只增不改）：原 control-v2 status / routing.status 需要的原始状态。
     bm::State bm_state{bm::State::stopped};

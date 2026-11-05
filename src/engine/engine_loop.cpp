@@ -475,6 +475,22 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         next.counters.ptt_tx_timeouts = counters.ptt_tx_timeouts;
         next.counters.rx_filtered_datagrams = counters.rx_filtered_datagrams;
         next.last_filtered = last_filtered;
+        {
+            const auto bm_now = bm_session.snapshot();
+            next.network.rtt_valid = bm_now.rtt_valid;
+            next.network.rtt_last_ms = bm_now.rtt_last_ms;
+            next.network.rtt_avg_ms = bm_now.rtt_avg_ms;
+            next.network.rtt_min_ms = bm_now.rtt_min_ms;
+            next.network.rtt_max_ms = bm_now.rtt_max_ms;
+            next.network.rtt_samples = bm_now.rtt_sample_count;
+            const auto& sequence = pipeline->snapshot().dmrd_sequence;
+            next.network.session_loss_valid = sequence.session_valid;
+            next.network.session_expected = sequence.session_expected;
+            next.network.session_missing = sequence.session_missing;
+            next.network.call_loss_valid = sequence.call_valid;
+            next.network.call_expected = sequence.call_expected;
+            next.network.call_missing = sequence.call_missing;
+        }
         next.bm_state = connection.bm_state;
         next.hri_phase = hri_state.phase;
         const auto hri_stream = stream_session->snapshot();
