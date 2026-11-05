@@ -629,12 +629,17 @@ private:
     wirex::wave_output_open::State device_cleanup_state_{};
 };
 
-inline bool load_hri_y_template(const std::filesystem::path& path, std::vector<std::uint8_t>& body)
+// 读取并校验 HRI Y 模板。ap_mode=false：只接受 DIRECT（offset 0x05 为 '2'，哈希 82e0085c…）。
+// ap_mode=true（中继开启，AP PC 模式）：路径为空时使用内嵌 AP 变体；外部文件须为 DIRECT 或 AP 两个已批准哈希之一，
+// 通过后统一使用 AP 变体（两者只差 offset 0x05）。
+inline bool load_hri_y_template(const std::filesystem::path& path, std::vector<std::uint8_t>& body,
+                                bool ap_mode = false)
 {
+    namespace approved = wirex::approved_resources;
     body.clear();
     if (path.empty()) {
-        body.assign(wirex::approved_resources::hri_y_template.begin(),
-                    wirex::approved_resources::hri_y_template.end());
+        const auto& source = ap_mode ? approved::hri_y_template_ap : approved::hri_y_template;
+        body.assign(source.begin(), source.end());
     } else {
         if (!path.is_absolute()) {
             std::wcerr << L"--body-file must be an absolute path.\n";
@@ -659,14 +664,14 @@ inline bool load_hri_y_template(const std::filesystem::path& path, std::vector<s
         body.clear();
         return false;
     }
-    if (body[5] != '2') {
-        std::wcerr << L"The HRI body does not have ASCII '2' at byte offset 5.\n";
+    const auto mode = body[approved::hri_y_template_mode_offset];
+    if (mode != approved::hri_y_template_mode_direct && !(ap_mode && mode == approved::hri_y_template_mode_ap)) {
+        std::wcerr << (ap_mode ? L"The HRI body does not have ASCII '2' or '1' at byte offset 5.\n"
+                               : L"The HRI body does not have ASCII '2' at byte offset 5.\n");
         body.clear();
         return false;
     }
 
-    constexpr std::string_view expected_hash =
-        "82e0085ccaccb769a83362c5b335ce6b9a0e3ae93afdf2ad4f46eb81f908577f";
     BCRYPT_ALG_HANDLE algorithm = nullptr;
     BCRYPT_HASH_HANDLE hash = nullptr;
     DWORD object_length = 0;
@@ -700,11 +705,14 @@ inline bool load_hri_y_template(const std::filesystem::path& path, std::vector<s
             actual_hash_hex.push_back(hex_digits[byte & 0x0fU]);
         }
     }
-    if (status < 0 || actual_hash_hex != expected_hash) {
+    const bool hash_approved = actual_hash_hex == approved::hri_y_template_direct_sha256 ||
+        (ap_mode && actual_hash_hex == approved::hri_y_template_ap_sha256);
+    if (status < 0 || !hash_approved) {
         std::wcerr << L"The HRI body does not match the approved 100-byte template SHA-256.\n";
         body.clear();
         return false;
     }
+    if (ap_mode) body[approved::hri_y_template_mode_offset] = approved::hri_y_template_mode_ap;
     return true;
 }
 

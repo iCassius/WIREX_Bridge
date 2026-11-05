@@ -27,7 +27,8 @@ Session::Session(std::vector<std::uint8_t> external_y_body, Config config)
       config_(config),
       parser_(max_frame_bytes - direct_frame::fixed_overhead),
       config_valid_(config_.continuous || (config_.window_ms > 0 && config_.window_ms <= max_window_ms)),
-      y_template_valid_(y_body_.size() == y_body_size && y_body_[5] == '2')
+      y_template_valid_(y_body_.size() == y_body_size &&
+          (y_body_[5] == '2' || (config_.ap_mode && y_body_[5] == '1')))
 {
 }
 

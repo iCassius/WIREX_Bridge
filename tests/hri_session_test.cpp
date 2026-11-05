@@ -97,6 +97,24 @@ void test_template_gate_and_fixed_version_request()
     check(rejected.commands.empty() && rejected.state.stop_reason == StopReason::invalid_y_template,
         "Y body with byte 5 other than ASCII 2 should stop before the V request");
 
+    // AP PC 模式（中继开启）：只有 ap_mode=true 时接受 offset 0x05 为 '1'；'2' 仍然有效，其它值仍拒绝。
+    auto ap_body = synthetic_y_body();
+    ap_body[5] = '1';
+    wirex::hri_session::Config ap_config{};
+    ap_config.ap_mode = true;
+    Session ap_session(ap_body, ap_config);
+    const auto ap_started = ap_session.start(10);
+    check(ap_started.commands.size() == 1 && ap_started.commands[0].kind == CommandKind::version_query &&
+              ap_started.state.y_template_valid,
+          "ap_mode accepts a Y body with ASCII 1 at byte 5");
+    Session ap_direct(synthetic_y_body(), ap_config);
+    check(ap_direct.start(10).state.y_template_valid, "ap_mode still accepts the DIRECT ASCII 2 Y body");
+    auto ap_wrong = synthetic_y_body();
+    ap_wrong[5] = '3';
+    Session ap_invalid(std::move(ap_wrong), ap_config);
+    check(ap_invalid.start(10).state.stop_reason == StopReason::invalid_y_template,
+          "ap_mode rejects byte 5 values other than ASCII 1 or 2");
+
     Session session(synthetic_y_body());
     const auto started = session.start(100);
     const std::vector<std::uint8_t> v_expected{0x01, 0x56, 0x30, 0x30, 0x30, 0x30, 0x04, 0x31, 0x42};

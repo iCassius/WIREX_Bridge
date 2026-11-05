@@ -27,6 +27,8 @@
 #include <chrono>
 #include <cstdint>
 #include <deque>
+#include <filesystem>
+#include <fstream>
 #include <future>
 #include <iostream>
 #include <memory>
@@ -2648,6 +2650,42 @@ void test_embedded_hri_template()
     check(devices && devices->load_hri_template({}, body), "approved HRI Y template loads from the executable");
     check(body.size() == wirex::hri_session::y_body_size && body[5] == '2',
           "embedded HRI Y template passes size and marker checks");
+
+    // AP 变体：内嵌模板 offset 0x05 改为 '1'，其余 99 字节与 DIRECT 相同，按第二个固定哈希校验。
+    std::vector<std::uint8_t> ap_body;
+    check(devices && devices->load_hri_template_ap({}, ap_body), "approved AP HRI Y template variant loads");
+    bool rest_identical = ap_body.size() == body.size();
+    for (std::size_t index = 0U; rest_identical && index < body.size(); ++index) {
+        if (index != 5U && ap_body[index] != body[index]) rest_identical = false;
+    }
+    check(ap_body.size() == wirex::hri_session::y_body_size && ap_body[5] == '1' && rest_identical,
+          "AP HRI Y template differs from DIRECT only at offset 0x05");
+
+    // 外部文件：DIRECT 文件在 AP 模式下也被接受（统一改为 '1'）；AP 文件在 DIRECT 模式下被拒绝；改动其它字节被拒绝。
+    const auto scratch = std::filesystem::temp_directory_path() /
+        ("engine-test-y-" + std::to_string(GetCurrentProcessId()));
+    std::error_code ignored;
+    std::filesystem::create_directories(scratch, ignored);
+    const auto write_body = [&](const std::filesystem::path& path, const std::vector<std::uint8_t>& bytes) {
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
+        file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        return static_cast<bool>(file);
+    };
+    const auto direct_file = scratch / "direct.bin";
+    const auto ap_file = scratch / "ap.bin";
+    const auto tampered_file = scratch / "tampered.bin";
+    auto tampered = ap_body;
+    tampered[20] = static_cast<std::uint8_t>(tampered[20] ^ 0x01U);
+    check(write_body(direct_file, body) && write_body(ap_file, ap_body) && write_body(tampered_file, tampered),
+          "scratch Y template files are written");
+    std::vector<std::uint8_t> loaded;
+    check(devices->load_hri_template_ap(direct_file, loaded) && loaded == ap_body,
+          "external DIRECT template is accepted in AP mode and switched to offset 0x05 = '1'");
+    check(devices->load_hri_template_ap(ap_file, loaded) && loaded == ap_body,
+          "external AP template matches the second approved SHA-256");
+    check(!devices->load_hri_template(ap_file, loaded), "AP template is rejected when AP mode is off");
+    check(!devices->load_hri_template_ap(tampered_file, loaded), "AP mode still rejects unapproved template bytes");
+    std::filesystem::remove_all(scratch, ignored);
 }
 
 } // namespace

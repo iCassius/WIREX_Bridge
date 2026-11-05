@@ -40,6 +40,9 @@ struct RadioStartConfig {
     std::wstring hri_port{};
     std::filesystem::path hri_body_file{};
     AudioEndpoints audio{};
+    // R130 增补（只增不改）：AP PC 模式（中继开启时）。hri_body_file 为空时使用 offset 0x05 为 '1' 的内嵌 AP 变体，
+    // 非空时文件须为 DIRECT 或 AP 两个已批准哈希之一；HRI 会话按此接受 '2' 或 '1'。
+    bool ap_mode{false};
 };
 
 struct BmTarget {

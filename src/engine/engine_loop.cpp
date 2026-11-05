@@ -1379,10 +1379,14 @@ CommandResult run_loop(Shared& shared, StartConfig config)
 
         std::vector<std::uint8_t> body;
         bool body_ok = false;
-        try { body_ok = devices.load_hri_template(requested.hri_body_file, body); } catch (...) {}
+        try {
+            body_ok = requested.ap_mode ? devices.load_hri_template_ap(requested.hri_body_file, body)
+                                        : devices.load_hri_template(requested.hri_body_file, body);
+        } catch (...) {}
         if (!body_ok) {
             radio_error = "y_template_invalid";
             publish_dirty = true;
+            status(requested.ap_mode ? "radio_connect_y_template_ap_invalid" : "radio_connect_y_template_direct_invalid");
             return CommandResult{CommandStatus::invalid, 0U, radio_error};
         }
         std::unique_ptr<AudioInput> next_input;
@@ -1393,7 +1397,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             next_input = devices.make_audio_input(requested.audio);
             next_output = devices.make_audio_output(requested.audio);
             next_hri = std::make_unique<wirex::hri_session::Session>(std::move(body),
-                wirex::hri_session::Config{wirex::session_timing::active_window_ms, continuous_run});
+                wirex::hri_session::Config{wirex::session_timing::active_window_ms, continuous_run, requested.ap_mode});
         } catch (...) {
             radio_error = "radio_state_allocation_failed";
             publish_dirty = true;
@@ -1448,6 +1452,8 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             detach_radio(reason);
             return CommandResult{CommandStatus::failed, 0U, reason};
         }
+        // dev 日志据此记录本次握手使用的 Y 模板（DIRECT offset 0x05='2' / AP '1'）。
+        status(requested.ap_mode ? "hri_y_template_ap" : "hri_y_template_direct");
         status("radio_connected_hri_start_requested");
         return CommandResult{CommandStatus::accepted, 0U, ""};
     };

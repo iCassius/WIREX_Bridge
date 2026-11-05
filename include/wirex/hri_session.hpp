@@ -126,6 +126,8 @@ struct Update {
 struct Config {
     std::uint64_t window_ms{max_window_ms};
     bool continuous{false};
+    // Y 模板 offset 0x05：默认只接受 '2'（DIRECT）；ap_mode=true 时另外接受 '1'（AP PC 模式，中继开启时）。
+    bool ap_mode{false};
 };
 
 // 纯函数状态机：调用者通过 write_completed() 报告串口写入结果；本类不访问设备。

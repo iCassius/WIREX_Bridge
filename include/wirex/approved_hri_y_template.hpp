@@ -1,8 +1,11 @@
 #pragma once
 
 // 已授权的 100 字节 HRI Y 模板；载入时仍按固定 SHA-256 校验。
+// offset 0x05 为模式字节：'2' = DIRECT（默认），'1' = AP PC（中继开启时使用，其余 99 字节与 DIRECT 相同）。
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <string_view>
 
 namespace wirex::approved_resources {
 inline constexpr std::array<std::uint8_t, 100U> hri_y_template{
@@ -17,4 +20,23 @@ inline constexpr std::array<std::uint8_t, 100U> hri_y_template{
     0x30, 0x30, 0x30, 0x38, 0x38, 0x37, 0x35, 0x34, 0x31, 0x30,
     0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
 };
+
+inline constexpr std::size_t hri_y_template_mode_offset = 5U;
+inline constexpr std::uint8_t hri_y_template_mode_direct = '2';
+inline constexpr std::uint8_t hri_y_template_mode_ap = '1';
+
+// 两个固定哈希：DIRECT 原模板，以及只把 offset 0x05 改为 '1' 的 AP 变体（离线计算后写死）。
+inline constexpr std::string_view hri_y_template_direct_sha256 =
+    "82e0085ccaccb769a83362c5b335ce6b9a0e3ae93afdf2ad4f46eb81f908577f";
+inline constexpr std::string_view hri_y_template_ap_sha256 =
+    "0cff0cc909604b83b04de3c06b7fdb46501885fde0cb34daee8a2951a6e638ca";
+
+[[nodiscard]] constexpr std::array<std::uint8_t, 100U> make_hri_y_template_ap() noexcept
+{
+    auto body = hri_y_template;
+    body[hri_y_template_mode_offset] = hri_y_template_mode_ap;
+    return body;
+}
+
+inline constexpr std::array<std::uint8_t, 100U> hri_y_template_ap = make_hri_y_template_ap();
 } // namespace wirex::approved_resources

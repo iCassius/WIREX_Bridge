@@ -76,6 +76,15 @@ public:
     // 读取并校验 HRI Y 模板（默认实现核对已批准的 SHA-256）。
     [[nodiscard]] virtual bool load_hri_template(const std::filesystem::path& path,
                                                  std::vector<std::uint8_t>& body) = 0;
+    // R130 增补：AP PC 模式（中继开启）的 Y 模板，offset 0x05 为 '1'。Windows 实现核对 DIRECT/AP 两个固定哈希；
+    // 默认实现（测试假设备）在 load_hri_template 成功后把 offset 0x05 改为 '1'。
+    [[nodiscard]] virtual bool load_hri_template_ap(const std::filesystem::path& path,
+                                                    std::vector<std::uint8_t>& body)
+    {
+        if (!load_hri_template(path, body) || body.size() <= 5U) return false;
+        body[5] = '1';
+        return true;
+    }
     // 打开、配置并预排空 HRI 串口；失败时返回空并写入 R127 failure_reason。
     [[nodiscard]] virtual std::unique_ptr<SerialPort> open_serial(const std::wstring& port_name,
                                                                   std::string& failure_reason) = 0;

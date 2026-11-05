@@ -151,6 +151,11 @@ public:
         return win_io::load_hri_y_template(path, body);
     }
 
+    bool load_hri_template_ap(const std::filesystem::path& path, std::vector<std::uint8_t>& body) override
+    {
+        return win_io::load_hri_y_template(path, body, true);
+    }
+
     std::unique_ptr<SerialPort> open_serial(const std::wstring& port_name, std::string& failure_reason) override
     {
         std::wstring device_path;
