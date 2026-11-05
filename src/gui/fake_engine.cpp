@@ -199,6 +199,33 @@ struct FakeEngine::Impl {
         return call;
     }
 
+    // 模拟 BM 链路质量：RTT 约 40 ms 上下抖动，会话丢包约 0.4%。
+    void seed_network() {
+        auto& n = state.network;
+        n = {};
+        n.rtt_valid = true;
+        n.rtt_last_ms = 43U;
+        n.rtt_min_ms = 38U;
+        n.rtt_max_ms = 61U;
+        n.rtt_avg_ms = 44.6;
+        n.rtt_samples = 128U;
+        n.session_loss_valid = true;
+        n.session_expected = 12480U;
+        n.session_missing = 50U;
+    }
+
+    // 通话期间每 100 ms 约 2 帧语音；偶发缺帧计入当前通话与会话统计。
+    void tick_network() {
+        auto& n = state.network;
+        n.session_expected += 2U;
+        n.call_loss_valid = true;
+        n.call_expected += 2U;
+        if (std::uniform_int_distribution<int>(0, 199)(rng) == 0) {
+            ++n.session_missing;
+            ++n.call_missing;
+        }
+    }
+
     std::string lookup_callsign(std::uint32_t source_id) const {
         if (auto it = identities.find(source_id); it != identities.end()) return it->second;
         for (const auto& c : kCallers) {
@@ -232,6 +259,9 @@ struct FakeEngine::Impl {
         }
         state.active_rx_call = call;
         state.media_owner = MediaOwner::rx_active;
+        state.network.call_loss_valid = false;
+        state.network.call_expected = 0U;
+        state.network.call_missing = 0U;
         ++state.counters.calls_started;
         Event e;
         e.kind = EventKind::rx_call_started;
@@ -257,6 +287,7 @@ struct FakeEngine::Impl {
             std::uniform_real_distribution<float> level(0.15F, 0.85F);
             state.levels.rx_peak = 0.6F * state.levels.rx_peak + 0.4F * level(rng);
             ++state.counters.rx_datagrams;
+            tick_network();
             publish();
             level_tick(epoch, this_call, remaining - 1);
         });
@@ -330,6 +361,7 @@ struct FakeEngine::Impl {
         state.tx_active = false;
         state.media_owner = MediaOwner::idle;
         state.bm_link = BmLink::disabled;
+        state.network = {};
         push_simple(EventKind::bm_link_changed);
     }
 
@@ -344,6 +376,8 @@ struct FakeEngine::Impl {
             } else if (next == BmLink::connecting) {
                 bm_step(epoch, BmLink::connected, 800ms);
             } else if (next == BmLink::connected) {
+                seed_network();
+                publish();
                 schedule_next_call(1500ms);
                 filtered_tick(epoch);
             }
@@ -357,6 +391,10 @@ struct FakeEngine::Impl {
         state.bm_link = BmLink::connected;
         state.bm_requested_enabled = true;
         state.bm_connection_revision = 1U;
+        seed_network();
+        state.network.call_loss_valid = true;
+        state.network.call_expected = 200U;
+        state.network.call_missing = 1U;
         state.tx_target = {46001U, dmr_call::CallKind::group, dmr_call::Slot::ts2};
         state.radio_playback_gain_milli = 4000U;
         state.mic_transmit_gain_milli = 16000U;
@@ -816,7 +854,8 @@ struct FakeServiceState {
     services::CatState cat{};
     std::uint64_t cat_generation{};
     services::GuiConfig config{};
-    std::vector<services::StaticGroup> static_groups{{46001U, 2}, {4600U, 2}, {91U, 2}, {46025U, 2}};
+    // 46010 不在演示频道中：启动读取静态组后会自动补进收听频道（第 6 张卡片）。
+    std::vector<services::StaticGroup> static_groups{{46001U, 2}, {4600U, 2}, {91U, 2}, {46025U, 2}, {46010U, 2}};
 };
 
 services::GuiConfig demo_config() {

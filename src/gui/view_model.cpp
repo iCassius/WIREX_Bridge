@@ -60,6 +60,25 @@ bool call_matches(const engine::CallInfo& call, const services::ChannelEntry& ch
     return call.destination_id == ch.id;
 }
 
+// BM API slot → 收听频道时隙：1/2 → TS1/TS2；0（DMO/单时隙热点，设备状态 4）→ TS2。
+// 理由：FTX-1 网关的 DMRD 流量与本程序新增频道默认都在 TS2（add_channel、Quick Call 同样用 TS2），
+// 单时隙热点在 BM 侧不区分时隙，映射到 TS2 才能与现有频道和启动组呼的 TS2 目标对上。
+dmr_call::Slot listen_slot(int api_slot) { return api_slot == 1 ? dmr_call::Slot::ts1 : dmr_call::Slot::ts2; }
+
+// 静态组是否覆盖该组呼频道：同 TG 且同时隙；API slot 0 覆盖该 TG 的 TS2 频道，
+// 若该 TG 只有一个频道则不论时隙都视为覆盖（Test-UiBmStaticChannelReadback）。
+bool static_covers(const services::StaticGroup& g, std::uint32_t id, dmr_call::Slot slot,
+                   const std::vector<services::ChannelEntry>& channels) {
+    if (g.talkgroup != id) return false;
+    if (g.slot == static_cast<int>(slot)) return true;
+    if (g.slot != 0) return false;
+    if (slot == dmr_call::Slot::ts2) return true;
+    const auto same_tg = std::count_if(channels.begin(), channels.end(), [&](const auto& e) {
+        return e.kind == dmr_call::CallKind::group && e.id == id;
+    });
+    return same_tg <= 1;
+}
+
 bool bm_profile_changed(const services::GuiConfig& current, const services::GuiConfig& next) {
     return current.callsign != next.callsign || current.dmr_id != next.dmr_id ||
            services::effective_gateway_id(current) != services::effective_gateway_id(next) ||
@@ -181,8 +200,12 @@ ViewModel::ViewModel(EngineApi& engine, services::Services services, bool fake)
         }
     }
     last_phase_ = snapshot_->phase;
-    static_sync(); // 已有 API Key 与设备 ID 时读取 BM 静态组
+    // 顺序：先冻结启动组呼计划，再读取 BM 静态组；静态组读取结束（或超时）前不激活启动组呼，
+    // 读到的静态组频道从计划中剔除（无需 Quick Call），未在收听表中的静态组补进频道。
     startup_group_activation_.freeze(config_.channels);
+    static_import_pending_ = true;
+    static_sync(); // 已有 API Key 与设备 ID 时读取 BM 静态组
+    if (!static_.busy) resolve_startup_static(); // 无 API Key / 设备 ID：不等待
     update_startup_group_activation_status();
     // 正常产品启动时自动独立连接 BM runtime、CAT 与电台；--fake 保持静止，供截图和演示控制。
     if (!fake_) start();
@@ -303,6 +326,11 @@ bool ViewModel::pump() {
         if (state_changed || observation_changed) {
             changed = true;
         }
+    }
+    if (rx_policy_dirty_ && snapshot_->phase == Phase::running && !pending(Str::op_rx_policy)) {
+        rx_policy_dirty_ = false;
+        push_rx_policy();
+        changed = true;
     }
     if (pump_startup_group_activation()) changed = true;
     if (!transient_text_.empty() && !transient_visible()) {
@@ -809,7 +837,15 @@ talkgroup_routing::RxPolicy ViewModel::build_rx_policy() const {
 }
 
 void ViewModel::push_rx_policy() {
-    if (snapshot_->phase != Phase::running) return; // 未运行时只改配置，启动时一并下发
+    if (snapshot_->phase != Phase::running) {
+        // 未运行时只改配置，启动时一并下发；启动中则等进入 running 后补发（启动参数可能已是旧策略）。
+        if (snapshot_->phase == Phase::starting || pending(Str::op_start)) rx_policy_dirty_ = true;
+        return;
+    }
+    if (pending(Str::op_rx_policy)) {
+        rx_policy_dirty_ = true; // revision 会过期：等在途命令完成后按最新频道重发
+        return;
+    }
     track(Str::op_rx_policy, engine_.replace_rx_policy(snapshot_->rx_policy_revision, build_rx_policy()));
 }
 
@@ -838,6 +874,10 @@ void ViewModel::set_tx_target(const ChannelKey& key) {
 
 void ViewModel::remove_channel(const ChannelKey& key) {
     if (!can_mutate_channels()) return;
+    erase_channel(key);
+}
+
+void ViewModel::erase_channel(const ChannelKey& key) {
     auto& chs = config_.channels;
     chs.erase(std::remove_if(chs.begin(), chs.end(), [&](const auto& e) { return key_of(e) == key; }), chs.end());
     muted_.erase(key);
@@ -849,6 +889,46 @@ void ViewModel::remove_channel(const ChannelKey& key) {
     set_channel_page(channel_page_);
     persist();
     push_rx_policy();
+}
+
+void ViewModel::remove_static_channel(const ChannelKey& key) {
+    if (!can_mutate_channels()) return;
+    if (config_.bm_api_key.empty()) {
+        erase_channel(key);
+        flash(fmt(tr(Str::static_unlisten_no_key_fmt), key.id), false);
+        return;
+    }
+    const auto group = static_group_for(key);
+    if (!group) {
+        erase_channel(key);
+        return;
+    }
+    if (static_.busy || !services_.bm_api.remove_static_group) {
+        static_status(static_.busy ? "BM 静态组操作正在进行。" : "BM 静态组模块不可用。", true);
+        return;
+    }
+    static_.busy = true;
+    static_status(fmt(tr(Str::static_removing_fmt), group->talkgroup), false);
+    const auto device = bm_device_id();
+    const auto g = *group; // 删除保留原 API slot
+    services_.bm_api.remove_static_group(device, config_.bm_api_key, g.talkgroup, g.slot,
+        [this, device, key, g](services::BmApiResult r) {
+            post_to_ui([this, device, key, g, r = std::move(r)]() {
+                static_.busy = false;
+                if (device != bm_device_id()) {
+                    static_status("设备或 API Key 已变更；频道保留。", true);
+                    return;
+                }
+                static_apply(r, true);
+                if (r.failed) {
+                    const auto detail = r.message.empty() ? std::string(tr(Str::st_failed)) : r.message;
+                    static_status(fmt(tr(Str::static_remove_failed_fmt), g.talkgroup, detail.c_str()), true);
+                    return;
+                }
+                erase_channel(key);
+                static_status(fmt(tr(Str::static_removed_unlisten_fmt), g.talkgroup), false);
+            });
+        });
 }
 
 void ViewModel::toggle_mute(const ChannelKey& key) {
@@ -1183,18 +1263,60 @@ bool ViewModel::save_config(const services::GuiConfig& next, std::string& error)
 
 bool ViewModel::is_static_channel(const services::ChannelEntry& entry) const {
     // Test-UiBmStaticChannelReadback：同 TG 同时隙；API slot 0（DMO）只在设备状态 4 且该 TG 只有一个频道时对应。
-    if (!static_.loaded || entry.kind != dmr_call::CallKind::group) return false;
-    bool slot0 = false;
+    return entry.kind == dmr_call::CallKind::group && static_group_for(key_of(entry)).has_value();
+}
+
+std::optional<services::StaticGroup> ViewModel::static_group_for(const ChannelKey& key) const {
+    if (!static_.loaded || key.kind != dmr_call::CallKind::group) return std::nullopt;
+    // 精确时隙优先，其次 API slot 0。
     for (const auto& g : static_.groups) {
-        if (g.talkgroup != entry.id) continue;
-        if (g.slot == static_cast<int>(entry.slot)) return true;
-        if (g.slot == 0) slot0 = true;
+        if (g.talkgroup == key.id && g.slot == static_cast<int>(key.slot)) return g;
     }
-    if (!slot0 || !static_.add_slot || *static_.add_slot != 0) return false;
-    const auto same_tg = std::count_if(config_.channels.begin(), config_.channels.end(), [&](const auto& e) {
-        return e.kind == dmr_call::CallKind::group && e.id == entry.id;
-    });
-    return same_tg == 1;
+    for (const auto& g : static_.groups) {
+        if (g.slot == 0 && static_covers(g, key.id, key.slot, config_.channels)) return g;
+    }
+    return std::nullopt;
+}
+
+// 把已读取的 BM 静态组补进收听频道（不在收听表中的才加），保存配置并下发收听策略。
+void ViewModel::import_static_channels() {
+    if (!static_.loaded) return;
+    std::vector<std::uint32_t> added;
+    for (const auto& g : static_.groups) {
+        if (g.talkgroup == 0U || g.talkgroup > 16777215U) continue;
+        const bool listed = std::any_of(config_.channels.begin(), config_.channels.end(), [&](const auto& e) {
+            return e.kind == dmr_call::CallKind::group && static_covers(g, e.id, e.slot, config_.channels);
+        });
+        if (listed) continue;
+        services::ChannelEntry entry;
+        entry.id = g.talkgroup;
+        entry.kind = dmr_call::CallKind::group;
+        entry.slot = listen_slot(g.slot);
+        entry.name = config_bridge::known_channel_name(entry.id, entry.kind);
+        config_.channels.push_back(std::move(entry));
+        added.push_back(g.talkgroup);
+    }
+    if (added.empty()) return;
+    persist();
+    push_rx_policy();
+    std::string list;
+    for (const auto tg : added) list += (list.empty() ? "" : ", ") + std::to_string(tg);
+    flash(fmt(tr(Str::static_imported_fmt), static_cast<unsigned>(added.size()), list.c_str()), false);
+}
+
+// 首次静态组读取结束（成功、失败、无 API Key 或超时）后调用一次：从启动组呼计划中剔除静态组频道。
+void ViewModel::resolve_startup_static() {
+    if (startup_static_resolved_) return;
+    startup_static_resolved_ = true;
+    startup_static_wait_since_.reset();
+    if (static_.loaded) {
+        startup_group_activation_.skip_if([this](const StartupGroupActivationTarget& t) {
+            return std::any_of(static_.groups.begin(), static_.groups.end(), [&](const auto& g) {
+                return static_covers(g, t.destination_id, t.slot, config_.channels);
+            });
+        });
+    }
+    update_startup_group_activation_status();
 }
 
 // Set-MainText BmStaticGroupStatus → Set-UiTransientStatus：静态组状态显示在标题栏的临时提示中；
@@ -1218,6 +1340,7 @@ void ViewModel::static_sync() {
     static_.page = 0U;
     static_.observed_device = device;
     static_.observed_key = key;
+    static_import_pending_ = true; // 新设备/Key 的首次成功读取补充收听频道
     if (key.empty() || device == 0U) {
         static_status(key.empty() ? std::string() : std::string("请先保存有效的 BM 设备 ID。"), !key.empty());
         return;
@@ -1259,11 +1382,16 @@ void ViewModel::static_refresh() {
                 static_status("设备或 API Key 已变更；未显示旧设备的 BM 静态组。", false);
             } else {
                 static_apply(r, false);
+                if (static_.loaded && static_import_pending_) {
+                    static_import_pending_ = false;
+                    import_static_channels();
+                }
             }
             if (static_.refresh_pending) {
                 static_.refresh_pending = false;
                 static_refresh();
             }
+            if (!static_.busy) resolve_startup_static();
         });
     });
 }
@@ -1320,7 +1448,10 @@ void ViewModel::static_add() {
             static_.busy = false;
             if (device == bm_device_id()) {
                 static_apply(r, true);
-                if (!r.failed) static_.tg_input.clear();
+                if (!r.failed) {
+                    static_.tg_input.clear();
+                    import_static_channels(); // 新静态组同步加入收听频道
+                }
             }
         });
     });
@@ -1340,12 +1471,23 @@ void ViewModel::static_remove() {
     static_status("正在向 BM 移除静态组。", false);
     const auto device = bm_device_id();
     services_.bm_api.remove_static_group(device, config_.bm_api_key, group.talkgroup, group.slot,
-                                         [this, device](services::BmApiResult r) {
-                                             post_to_ui([this, device, r = std::move(r)]() {
-                                                 static_.busy = false;
-                                                 if (device == bm_device_id()) static_apply(r, true);
-                                             });
-                                         });
+        [this, device, group](services::BmApiResult r) {
+            post_to_ui([this, device, group, r = std::move(r)]() {
+                static_.busy = false;
+                if (device != bm_device_id()) return;
+                static_apply(r, true);
+                if (r.failed) return;
+                // 与频道卡片“移除”一致：BM 静态组移除成功后同步取消对应收听频道。
+                std::vector<ChannelKey> keys;
+                for (const auto& e : config_.channels) {
+                    if (e.kind == dmr_call::CallKind::group && static_covers(group, e.id, e.slot, config_.channels)) {
+                        keys.push_back(key_of(e));
+                    }
+                }
+                for (const auto& k : keys) erase_channel(k);
+                if (!keys.empty()) static_status(fmt(tr(Str::static_removed_unlisten_fmt), group.talkgroup), false);
+            });
+        });
 }
 
 void ViewModel::static_set_page(std::size_t page) {
@@ -1405,7 +1547,12 @@ bool ViewModel::pump_startup_group_activation() {
     const bool bm_connected = snapshot_->bm_link == BmLink::connected;
     const auto now = std::chrono::steady_clock::now();
 
-    if (!startup_group_activation_.started() && bm_connected) {
+    if (!startup_static_resolved_ && bm_connected) {
+        // 等首次静态组读取结果，最多 10 秒；BM API 不可达时不阻塞动态组激活。
+        if (!startup_static_wait_since_) startup_static_wait_since_ = now;
+        if (now - *startup_static_wait_since_ >= 10s) resolve_startup_static();
+    }
+    if (!startup_group_activation_.started() && bm_connected && startup_static_resolved_) {
         if (startup_group_activation_.activate()) {
             startup_group_activation_status_ = fmt(
                 tr(Str::startup_group_connected_fmt),
@@ -1494,7 +1641,8 @@ void ViewModel::update_startup_group_activation_status() {
             static_cast<unsigned>(stats.private_skipped),
             static_cast<unsigned>(stats.disconnect_group_skipped),
             static_cast<unsigned>(stats.duplicate_skipped),
-            static_cast<unsigned>(stats.invalid_skipped));
+            static_cast<unsigned>(stats.invalid_skipped),
+            static_cast<unsigned>(stats.static_skipped));
         return;
     }
     if (startup_group_activation_.finished()) {
@@ -1507,7 +1655,8 @@ void ViewModel::update_startup_group_activation_status() {
             static_cast<unsigned>(stats.private_skipped),
             static_cast<unsigned>(stats.disconnect_group_skipped),
             static_cast<unsigned>(stats.duplicate_skipped),
-            static_cast<unsigned>(stats.invalid_skipped));
+            static_cast<unsigned>(stats.invalid_skipped),
+            static_cast<unsigned>(stats.static_skipped));
         return;
     }
     if (startup_group_activation_.paused()) {

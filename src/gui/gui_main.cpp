@@ -6,6 +6,8 @@
 //   --config <json>        config.json 路径（默认 exe 同目录；不存在时生成默认配置）
 //   --screenshot <png>     渲染若干帧后把后台缓冲区保存为 PNG 并退出（离线验收）
 //   --lang zh-CN|en-US     本次运行的界面语言（覆盖 config 的 ui.language，不保存；用于截图验收）
+//   --screenshot-modal remove-static
+//                          仅截图验收（需 --fake --screenshot）：打开“移除静态组”确认弹窗后再截图
 //   --check-config         只做 config.json 生成/读取检查并退出（退出码 0 = 成功；不打开窗口）
 // 不带 --fake 时使用真实引擎（需以 WIREX_GUI_REAL_ENGINE=1 编译；否则提示“真实引擎尚未接入”）。
 //
@@ -361,6 +363,7 @@ struct Options {
     bool check_config{};
     std::optional<std::string> lang{};
     std::optional<std::wstring> screenshot{};
+    bool screenshot_modal_remove_static{};  // 仅截图验收：打开“移除静态组”确认弹窗
     std::optional<std::filesystem::path> config{};
     std::wstring error{};
 };
@@ -389,6 +392,13 @@ Options parse_args() {
                 break;
             }
             o.lang = std::wstring(argv[++i]) == L"en-US" ? "en-US" : "zh-CN";
+        } else if (a == L"--screenshot-modal") {
+            if (i + 1 >= argc || std::wstring(argv[i + 1]) != L"remove-static") {
+                o.error = L"--screenshot-modal 只支持 remove-static。";
+                break;
+            }
+            ++i;
+            o.screenshot_modal_remove_static = true;
         } else if (a == L"--check-config") {
             o.check_config = true;
         } else if (a == L"--config") {
@@ -418,12 +428,16 @@ Options parse_args() {
         } else {
             o.error = L"未知参数：" + a +
                       L"\n用法：WirexBridge.exe [--fake [--fake-services]] [--config <json>] [--screenshot <png>] [--lang zh-CN|en-US] "
+                      L"[--screenshot-modal remove-static] "
                       L"[--check-config]";
             break;
         }
     }
     LocalFree(argv);
     if (o.error.empty() && o.fake_services && !o.fake) o.error = L"--fake-services 只能与 --fake 一起使用。";
+    if (o.error.empty() && o.screenshot_modal_remove_static && (!o.screenshot || !o.fake)) {
+        o.error = L"--screenshot-modal 只能与 --fake 和 --screenshot 一起使用。";
+    }
     return o;
 }
 
@@ -642,6 +656,7 @@ int run(HINSTANCE instance) {
             int settle_frames = 0;
             int hover_frames = 0;
             int frames = 0;
+            bool modal_opened = false;
             const auto shot_after = Clock::now() + 1500ms; // 等后台服务（静态组、CAT、身份查询）的首个结果
             DWORD wait_ms = 0;
             auto last_frame = Clock::now() - 1s;
@@ -720,6 +735,12 @@ int run(HINSTANCE instance) {
                 ImGui_ImplDX11_NewFrame();
                 ImGui_ImplWin32_NewFrame();
                 ImGui::NewFrame();
+                // 截图验收：静态组读取完成后再打开弹窗（只在 --fake --screenshot 下生效）。
+                if (opts.screenshot_modal_remove_static && !modal_opened && Clock::now() + 600ms >= shot_after &&
+                    vm.static_groups().loaded) {
+                    view.preview_static_remove_modal();
+                    modal_opened = true;
+                }
                 view.draw(g_shell.dpi_scale);
                 const bool mouse_down = ImGui::IsAnyMouseDown();
                 // 悬停只在提示延迟（≈0.5 s）出现前后刷新 1.5 s；文本输入保持 10 fps 以显示光标闪烁。

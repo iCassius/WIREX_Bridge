@@ -621,17 +621,22 @@ bool gain_slider(const char* id, int& value, float width, float scale) {
     return commit;
 }
 
-void status_dot(bool on, const char* label) {
-    const ImVec2 p = ImGui::GetCursorScreenPos();
+// 状态行圆点项：圆点 + 文字作为一个整体（一个 item，悬停提示覆盖两者），与 row_text 同样按行高居中。
+void status_dot(const Row& row, ImU32 dot_col, ImU32 text_col, const char* label) {
     const float h = ImGui::GetTextLineHeight();
-    ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x + h * 0.3F, p.y + h * 0.5F), h * 0.22F,
-                                                on ? rgb(color::green) : rgb(0x5A666C));
-    ImGui::Dummy(ImVec2(h * 0.7F, h));
-    ImGui::SameLine(0.0F, 2.0F);
-    ImGui::PushStyleColor(ImGuiCol_Text, on ? vec(color::text) : vec(color::muted));
-    ImGui::TextUnformatted(label);
-    ImGui::PopStyleColor();
+    const float dot_w = std::round(h * 0.7F);
+    const float gap = 2.0F;
+    row.place(h);
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const ImVec2 text_sz = ImGui::CalcTextSize(label);
+    ImGui::Dummy(ImVec2(dot_w + gap + text_sz.x, h));
+    auto* draw = ImGui::GetWindowDrawList();
+    draw->AddCircleFilled(ImVec2(p.x + std::round(h * 0.3F), p.y + std::round(h * 0.5F)), h * 0.22F, dot_col);
+    draw->AddText(ImVec2(p.x + dot_w + gap, p.y), text_col, label);
 }
+
+ImU32 dot_on(bool on) { return on ? rgb(color::green) : rgb(0x5A666C); }
+ImU32 dot_text(bool on) { return on ? rgb(color::text) : rgb(color::muted); }
 
 std::string source_label(const engine::CallInfo& call) {
     if (!call.callsign.empty()) return fmt("%s · DMR ID %u", call.callsign.c_str(), call.source_id);
@@ -810,6 +815,7 @@ void AppView::draw(float dpi_scale) {
     draw_radio_panel(radio_w, panels_h);
     ImGui::SameLine(0.0F, gap);
     draw_daily_panel(daily_w, panels_h);
+    draw_static_remove_modal();
     ImGuiIO& io = ImGui::GetIO();
     if (ImGui::IsAnyItemActive() || ImGui::IsMouseDown(ImGuiMouseButton_Left) || io.MouseWheel != 0.0F) continuous_ = true;
     ImGui::End();
@@ -855,13 +861,68 @@ void AppView::draw_header() {
             row_text(row, fmt("[%s]", tr(Str::fake_banner)).c_str(), rgb(color::warn), nullptr, layout::kFontBody);
         }
 
+        // RTT/丢包：连接日志摘要显示时靠右，否则与 BM/核心状态一起居中；宽度取上一帧实测值。
+        const auto draw_net_metrics = [&]() {
+            const float metrics_x0 = ImGui::GetCursorScreenPos().x;
+            const auto& net = s.network;
+            row_text(row, tr(Str::rtt), rgb(color::muted), nullptr, layout::kFontCaption);
+            ImGui::SameLine(0.0F, px(layout::kLabelGap));
+            const auto rtt_text = net.rtt_valid ? fmt(tr(Str::rtt_value_fmt), static_cast<unsigned long long>(net.rtt_last_ms))
+                                                : std::string("—");
+            row_text(row, rtt_text.c_str(), net.rtt_valid ? rgb(color::text) : rgb(color::muted), nullptr, layout::kFontBody);
+            if (net.rtt_valid) {
+                ImGui::SetItemTooltip(tr(Str::rtt_tip_fmt), static_cast<unsigned long long>(net.rtt_last_ms),
+                                      static_cast<unsigned long long>(net.rtt_min_ms), net.rtt_avg_ms,
+                                      static_cast<unsigned long long>(net.rtt_max_ms),
+                                      static_cast<unsigned long long>(net.rtt_samples));
+            } else {
+                ImGui::SetItemTooltip("%s", tr(Str::rtt_tip_none));
+            }
+            ImGui::SameLine(0.0F, px(layout::kGroupGap));
+            const auto percent = [](std::uint64_t missing, std::uint64_t expected) {
+                return expected == 0U ? 0.0 : 100.0 * static_cast<double>(missing) / static_cast<double>(expected);
+            };
+            const bool loss_ok = net.session_loss_valid && net.session_expected != 0U;
+            const double loss_pct = loss_ok ? percent(net.session_missing, net.session_expected) : 0.0;
+            row_text(row, tr(Str::loss), rgb(color::muted), nullptr, layout::kFontCaption);
+            ImGui::SameLine(0.0F, px(layout::kLabelGap));
+            const auto loss_text = loss_ok ? fmt(tr(Str::loss_value_fmt), loss_pct) : std::string("—");
+            row_text(row, loss_text.c_str(),
+                     !loss_ok ? rgb(color::muted) : loss_pct >= 5.0 ? rgb(color::error) : loss_pct >= 1.0 ? rgb(color::warn)
+                                                                                                         : rgb(color::text),
+                     nullptr, layout::kFontBody);
+            {
+                std::string tip = loss_ok ? fmt(tr(Str::loss_tip_session_fmt),
+                                                static_cast<unsigned long long>(net.session_missing),
+                                                static_cast<unsigned long long>(net.session_expected), loss_pct)
+                                          : std::string(tr(Str::loss_tip_session_none));
+                if (s.active_rx_call) {
+                    tip += "\n";
+                    tip += net.call_loss_valid && net.call_expected != 0U
+                               ? fmt(tr(Str::loss_tip_call_fmt), static_cast<unsigned long long>(net.call_missing),
+                                     static_cast<unsigned long long>(net.call_expected),
+                                     percent(net.call_missing, net.call_expected))
+                               : std::string(tr(Str::loss_tip_call_none));
+                }
+                ImGui::SetItemTooltip("%s", tip.c_str());
+            }
+            const float measured = std::round(ImGui::GetItemRectMax().x - metrics_x0);
+            if (std::abs(measured - header_metrics_w_) >= 1.0F) {
+                header_metrics_w_ = measured;
+                continuous_ = true;
+            }
+        };
+
         ImGui::TableSetColumnIndex(1);
         if (summary) {
+            const float metrics_w = header_metrics_w_ > 0.0F ? header_metrics_w_ : px(160.0F);
+            const float column_right = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
             row_text(row, tr(summary_error ? Str::log_error : Str::log_events), rgb(color::muted), nullptr,
                      layout::kFontCaption);
             ImGui::SameLine(0.0F, inline_gap);
             const float clear_w = summary_error ? px(layout::kRowHeight) + px(layout::kRowGap) : 0.0F;
-            const float available = std::max(px(24.0F), ImGui::GetContentRegionAvail().x - clear_w);
+            const float available = std::max(px(24.0F), ImGui::GetContentRegionAvail().x - clear_w - metrics_w -
+                                                             px(layout::kGroupGap));
             ImGui::PushFont(nullptr, layout::kFontBody);
             row.place(ImGui::GetTextLineHeight());
             text_ellipsis(summary_text.c_str(), available, rgb(summary_error ? color::error : color::muted));
@@ -875,10 +936,16 @@ void AppView::draw_header() {
                 }
                 ImGui::SetItemTooltip("%s", tr(Str::log_clear));
             }
+            // 表格单元格内 SameLine(offset) 会叠加列偏移；先 SameLine 再按光标坐标右对齐。
+            ImGui::SameLine(0.0F, px(layout::kGroupGap));
+            ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), column_right - metrics_w));
+            draw_net_metrics();
         } else {
-            const float status_w = px(390.0F);
+            // 宽度取上一帧实测值（首帧用估计值），使状态组在列内居中。
+            const float status_w = header_status_w_ > 0.0F ? header_status_w_ : px(470.0F);
             const float status_x = ImGui::GetCursorPosX() + std::max(0.0F, (ImGui::GetContentRegionAvail().x - status_w) * 0.5F);
             ImGui::SetCursorPosX(status_x);
+            const float status_screen_x = ImGui::GetCursorScreenPos().x;
             const bool bm_ok = s.bm_link == BmLink::connected;
             const bool bm_bad = s.bm_link == BmLink::failed || s.bm_link == BmLink::backoff;
             const bool core_ok = s.phase == Phase::running;
@@ -887,9 +954,7 @@ void AppView::draw_header() {
             row_text(row, bm_short_text(s.bm_link), bm_ok ? rgb(color::green) : bm_bad ? rgb(color::warn) : rgb(color::text),
                      fonts_.bold, layout::kFontBody);
             ImGui::SameLine(0.0F, px(layout::kGroupGap));
-            row_text(row, tr(Str::rtt), rgb(color::muted), nullptr, layout::kFontCaption);
-            ImGui::SameLine(0.0F, px(layout::kLabelGap));
-            row_text(row, tr(Str::rtt_no_data), rgb(color::muted), nullptr, layout::kFontBody);
+            draw_net_metrics();
             ImGui::SameLine(0.0F, px(layout::kGroupGap));
             row_text(row, tr(Str::core), rgb(color::muted), nullptr, layout::kFontCaption);
             ImGui::SameLine(0.0F, px(layout::kLabelGap));
@@ -898,6 +963,11 @@ void AppView::draw_header() {
                      fonts_.bold, layout::kFontBody);
             if (s.phase == Phase::failed && !s.failure_reason.empty()) ImGui::SetItemTooltip("%s", s.failure_reason.c_str());
             else ImGui::SetItemTooltip("%s", phase_text(s));
+            const float measured = std::round(ImGui::GetItemRectMax().x - status_screen_x);
+            if (std::abs(measured - header_status_w_) >= 1.0F) {
+                header_status_w_ = measured;
+                continuous_ = true; // 再绘一帧让居中按实测宽度收敛
+            }
         }
 
         ImGui::TableSetColumnIndex(2);
@@ -1330,7 +1400,13 @@ void AppView::draw_channel_card(const ChannelView& ch, float width, float height
     }
     ImGui::SetItemTooltip("%s", ch.is_tx_target ? tr(Str::tip_tx_selected) : tr(Str::tip_set_tx));
     ImGui::SameLine();
-    if (button(tr(Str::btn_remove_short), bsize, Tone::normal, can_mutate)) vm_.remove_channel(ch.key);
+    if (button(tr(Str::btn_remove_short), bsize, Tone::normal, can_mutate)) {
+        if (ch.is_static) {
+            static_remove_confirm_ = ch.key; // 静态组：先确认是否同时从 BM 移除
+        } else {
+            vm_.remove_channel(ch.key);
+        }
+    }
     if (button(ch.is_muted ? tr(Str::btn_unmute_short) : tr(Str::btn_mute_short), bsize, Tone::normal, can_mutate)) {
         vm_.toggle_mute(ch.key);
     }
@@ -2126,28 +2202,18 @@ void AppView::draw_daily_panel(float width, float height) {
             }
             first = false;
         };
+        // 所有项（含“状态”标签）同一字号 kFontBody、同一行高居中，因此文字基线一致。
         ImGui::PushFont(nullptr, layout::kFontBody);
-        const float dot_w = std::round(ImGui::GetTextLineHeight() * 0.7F) + px(2.0F);
+        const float dot_w = std::round(ImGui::GetTextLineHeight() * 0.7F) + 2.0F;
         auto text_w = [](const char* t) { return ImGui::CalcTextSize(t).x; };
-        auto dot = [&](bool on, const char* label) {
+        auto dot_colored = [&](ImU32 dot_col, ImU32 text_col, const char* label) {
             fit(dot_w + text_w(label), inline_gap * 1.5F);
-            row.place(ImGui::GetTextLineHeight());
-            status_dot(on, label);
+            status_dot(row, dot_col, text_col, label);
         };
-        auto label_value = [&](const char* label, const char* value, ImU32 col) {
-            ImGui::PushFont(nullptr, layout::kFontCaption);
-            const float lw = ImGui::CalcTextSize(label).x;
-            ImGui::PopFont();
-            fit(lw + inline_gap + text_w(value), inline_gap * 2.0F);
-            row_text(row, label, rgb(color::muted), nullptr, layout::kFontCaption);
-            ImGui::SameLine(0.0F, inline_gap);
-            row_text(row, value, col, nullptr, layout::kFontBody);
-        };
+        auto dot = [&](bool on, const char* label) { dot_colored(dot_on(on), dot_text(on), label); };
 
-        ImGui::PushFont(nullptr, layout::kFontCaption);
         fit(text_w(tr(Str::status)), 0.0F);
-        ImGui::PopFont();
-        row_text(row, tr(Str::status), rgb(color::muted), nullptr, layout::kFontCaption);
+        row_text(row, tr(Str::status), rgb(color::muted), nullptr, layout::kFontBody);
         const auto device_status = vm_.device_selection();
         dot(s.serial_open, tr(Str::status_serial));
         dot(s.hri_ready, tr(Str::status_hri));
@@ -2169,26 +2235,96 @@ void AppView::draw_daily_panel(float width, float height) {
         const char* playback_text = output_error ? tr(Str::local_playback_failed)
             : radio_route ? local_playback_route_text(wirex::bm_local_playback::Route::radio)
                           : local_playback_state_text(audio_state);
-        label_value(tr(radio_route ? Str::local_audio_route_status : Str::local_playback), playback_text,
-                    rgb(output_error ? color::error : radio_route ? color::green : local_playback_color(audio_state)));
+        // 电脑播放/音频路由：与其它项相同的圆点形式；圆点颜色表示状态，状态文字放在悬停提示里。
+        const std::uint32_t playback_color =
+            output_error ? color::error : radio_route ? color::green : local_playback_color(audio_state);
+        const bool playback_on = playback_color != color::muted;
+        const char* playback_label = radio_route ? playback_text : tr(Str::local_playback);
+        dot_colored(playback_on ? rgb(playback_color) : dot_on(false), dot_text(playback_on || output_error),
+                    playback_label);
+        std::string playback_tip = fmt(tr(Str::status_local_playback_tip_fmt),
+                                       tr(radio_route ? Str::local_audio_route_status : Str::local_playback), playback_text);
         if (output_error) {
             const char* category = local_playback_error_text(local_audio.output_error);
             const char* detail = !s.local_audio_error.empty() ? s.local_audio_error.c_str() : category;
             if (language() == Language::en_us && category[0] != '\0') detail = category;
-            ImGui::SetItemTooltip("%s", detail);
+            if (detail[0] != '\0') playback_tip += std::string("\n") + detail;
         } else {
             const auto& resolved = device_status.wave_out;
-            const std::string tooltip = !resolved.name.empty() ? resolved.name : device_selection_text(resolved, true);
-            ImGui::SetItemTooltip("%s", tooltip.c_str());
+            const std::string device = !resolved.name.empty() ? resolved.name : device_selection_text(resolved, true);
+            if (!device.empty()) playback_tip += "\n" + device;
         }
-        label_value(tr(Str::core), phase_short_text(s.phase),
-                    s.phase == Phase::running ? rgb(color::green) : s.phase == Phase::failed ? rgb(color::error)
-                                                                                         : rgb(color::text));
+        ImGui::SetItemTooltip("%s", playback_tip.c_str());
         ImGui::PopFont();
         row.end();
     }
     if (flow.finish()) continuous_ = true;
     end_panel();
+}
+
+// 频道卡片“移除”静态组频道时的确认弹窗：[从 BM 移除并取消收听] [仅取消收听] [取消]。
+void AppView::draw_static_remove_modal() {
+    constexpr const char* kId = "##static-remove";
+    if (static_remove_confirm_ && !ImGui::IsPopupOpen(kId)) ImGui::OpenPopup(kId);
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5F, 0.5F));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(16.0F), px(12.0F)));
+    const bool open = ImGui::BeginPopupModal(kId, nullptr,
+        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::PopStyleVar();
+    if (!open) return;
+    continuous_ = true;
+    if (!static_remove_confirm_) {
+        ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+        return;
+    }
+    const auto key = *static_remove_confirm_;
+    const bool has_key = !vm_.config().bm_api_key.empty();
+    ImGui::PushFont(fonts_.bold, layout::kFontTitle);
+    ImGui::TextUnformatted(tr(Str::static_remove_title));
+    ImGui::PopFont();
+    ImGui::Dummy(ImVec2(0.0F, px(layout::kRowGap)));
+    ImGui::PushFont(nullptr, layout::kFontBody);
+    ImGui::TextUnformatted(fmt(tr(Str::static_remove_ask_fmt), key.id).c_str());
+    if (!has_key) {
+        ImGui::PushStyleColor(ImGuiCol_Text, vec(color::warn));
+        ImGui::TextUnformatted(tr(Str::static_remove_no_key));
+        ImGui::PopStyleColor();
+    }
+    ImGui::PopFont();
+    ImGui::Dummy(ImVec2(0.0F, px(layout::kSectionGapMin)));
+    const float bh = px(layout::kHeaderButtonHeight);
+    const auto bw = [this](const char* label) { return ImGui::CalcTextSize(label).x + px(24.0F); };
+    const bool can_mutate = vm_.can_mutate_channels();
+    if (button(tr(Str::static_remove_both), ImVec2(bw(tr(Str::static_remove_both)), bh), Tone::stop,
+               has_key && can_mutate && !vm_.static_groups().busy)) {
+        vm_.remove_static_channel(key);
+        static_remove_confirm_.reset();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine(0.0F, px(layout::kInlineGap));
+    if (button(tr(Str::static_remove_listen_only), ImVec2(bw(tr(Str::static_remove_listen_only)), bh), Tone::normal,
+               can_mutate)) {
+        vm_.remove_channel(key);
+        static_remove_confirm_.reset();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine(0.0F, px(layout::kInlineGap));
+    if (button(tr(Str::btn_cancel), ImVec2(bw(tr(Str::btn_cancel)), bh)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        static_remove_confirm_.reset();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+void AppView::preview_static_remove_modal() {
+    for (const auto& ch : vm_.channel_page()) {
+        if (ch.is_static) {
+            static_remove_confirm_ = ch.key;
+            return;
+        }
+    }
 }
 
 // 有 BM 流量但被收听策略过滤时的弱提示：一行文字 + “加入收听”小按钮，同一行垂直居中。
