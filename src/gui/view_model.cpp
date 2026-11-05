@@ -200,6 +200,13 @@ ViewModel::ViewModel(EngineApi& engine, services::Services services, bool fake)
         }
     }
     last_phase_ = snapshot_->phase;
+    if (services_.cat.set_squelch_callback) {
+        // CAT 线程回调 → 经信箱切回 UI 线程。
+        services_.cat.set_squelch_callback([mailbox = mailbox_, this](const services::SquelchEvent& event) {
+            mailbox->post([this, event]() { on_squelch(event); });
+        });
+    }
+    update_squelch_polling();
     // 顺序：先冻结启动组呼计划，再读取 BM 静态组；静态组读取结束（或超时）前不激活启动组呼，
     // 读到的静态组频道从计划中剔除（无需 Quick Call），未在收听表中的静态组补进频道。
     startup_group_activation_.freeze(config_.channels);
@@ -327,6 +334,7 @@ bool ViewModel::pump() {
             changed = true;
         }
     }
+    update_squelch_polling();
     if (rx_policy_dirty_ && snapshot_->phase == Phase::running && !pending(Str::op_rx_policy)) {
         rx_policy_dirty_ = false;
         push_rx_policy();
@@ -397,12 +405,180 @@ void ViewModel::handle_event(const engine::Event& event) {
     case engine::EventKind::fatal:
         flash(event.text.empty() ? std::string(tr(Str::phase_failed)) : event.text, true);
         break;
+    case engine::EventKind::relay_fm_started:
+        if (auto log = dev_log()) {
+            const auto target = event.relay_fm ? event.relay_fm->target : talkgroup_routing::TxTarget{};
+            log->line("relay", fmt("fm relay started target=%s:%u ts=%d",
+                                   target.kind == dmr_call::CallKind::group ? "group" : "private",
+                                   target.destination_id, static_cast<int>(target.slot)));
+        }
+        break;
+    case engine::EventKind::relay_fm_ended:
+        finish_relay_record(event);
+        break;
     case engine::EventKind::rx_call_ended:
     case engine::EventKind::tx_started:
     case engine::EventKind::tx_ended:
     case engine::EventKind::bm_link_changed:
         break;
     }
+}
+
+// ---------------------------------------------------------------- FM 中继（R130）
+
+RelayStatus ViewModel::relay_status() const noexcept {
+    if (!config_.relay_enabled) return RelayStatus::off;
+    if (!config_.relay_fm_enabled) return RelayStatus::c4fm_only;
+    if (snapshot_->relay_fm_active) return RelayStatus::active;
+    if (!cat_.connected) return RelayStatus::no_cat;
+    return RelayStatus::waiting;
+}
+
+void ViewModel::update_squelch_polling() {
+    const bool want = config_.relay_enabled && config_.relay_fm_enabled && cat_.connected;
+    if (want == squelch_polling_) return;
+    squelch_polling_ = want;
+    if (services_.cat.set_squelch_polling) services_.cat.set_squelch_polling(want);
+    if (!want) {
+        squelch_open_ = false;
+        // 关闭轮询时服务会对开门状态发 closed；这里再兜底请求引擎结束（未在中继时为 idempotent）。
+        if (snapshot_->relay_fm_active) request_relay_fm_stop();
+    }
+}
+
+void ViewModel::request_relay_fm_stop() {
+    // start 可能仍在途：stop 照常排队，引擎按命令顺序处理（未在中继时返回 idempotent）。
+    track(Str::op_relay_fm, engine_.relay_fm_stop(), [](const CommandResult& result) {
+        if (auto log = dev_log()) {
+            log->line("relay", "relay_fm_stop status=" + std::to_string(static_cast<int>(result.status)) +
+                                   " detail=" + result.detail);
+        }
+    });
+}
+
+void ViewModel::on_squelch(const services::SquelchEvent& event) {
+    if (event.edge == services::SquelchEdge::opened) {
+        squelch_open_ = true;
+        if (!(config_.relay_enabled && config_.relay_fm_enabled)) return;
+        track(Str::op_relay_fm, engine_.relay_fm_start(), [this](const CommandResult& result) {
+            if (auto log = dev_log()) {
+                log->line("relay", "relay_fm_start status=" + std::to_string(static_cast<int>(result.status)) +
+                                       " detail=" + result.detail);
+            }
+            if (result.status == CommandStatus::accepted || result.status == CommandStatus::idempotent) return;
+            // busy（BM/HRI 下行或手咪 PTT 占用）只记日志，避免每次开门都刷屏；其它原因提示一次。
+            if (result.status == CommandStatus::busy) return;
+            const auto detail = result.detail.empty() ? std::string(command_status_text(result.status)) : result.detail;
+            flash(fmt(tr(Str::relay_fm_rejected_fmt), detail.c_str()), true, Str::op_relay_fm);
+        });
+        return;
+    }
+    squelch_open_ = false;
+    last_squelch_peak_ = event.s_meter_peak;
+    last_squelch_close_ = std::chrono::steady_clock::now();
+    if (relay_awaiting_peak_) {
+        // 引擎先结束（超时等）的段：用本次关门峰值补全后再写记录。
+        auto record = std::move(*relay_awaiting_peak_);
+        relay_awaiting_peak_.reset();
+        record.relay_s_peak = event.s_meter_peak;
+        for (auto& rec : history_) {
+            if (rec.relay_fm && rec.started_wall == record.started_wall) {
+                rec.relay_s_peak = record.relay_s_peak;
+                break;
+            }
+        }
+        write_relay_record(record);
+    }
+    request_relay_fm_stop();
+}
+
+void ViewModel::finish_relay_record(const engine::Event& event) {
+    CallRecord record;
+    record.relay_fm = true;
+    if (event.relay_fm) {
+        record.call.destination_id = event.relay_fm->target.destination_id;
+        record.call.kind = event.relay_fm->target.kind;
+        record.call.slot = event.relay_fm->target.slot;
+        record.call.started_ms = event.relay_fm->started_ms;
+        record.relay_duration_ms = event.relay_fm->duration_ms;
+        record.started_wall = to_wall(event.relay_fm->started_ms);
+    } else {
+        record.started_wall = to_wall(event.at_ms);
+    }
+    record.relay_end_reason = event.end_reason;
+    bool complete = true;
+    if (squelch_open_) {
+        complete = false; // 静噪仍开（例如 180 s 超时）：等关门事件补 S 峰值
+    } else if (last_squelch_close_ &&
+               std::chrono::steady_clock::now() - *last_squelch_close_ <= std::chrono::seconds(5)) {
+        record.relay_s_peak = last_squelch_peak_;
+    }
+    history_.push_front(record);
+    if (history_.size() > history_limit) history_.pop_back();
+    if (selected_history_) {
+        *selected_history_ += 1U;
+        if (*selected_history_ >= history_.size()) selected_history_.reset();
+    }
+    if (complete) {
+        write_relay_record(record);
+    } else {
+        if (relay_awaiting_peak_) write_relay_record(*relay_awaiting_peak_);
+        relay_awaiting_peak_ = record;
+    }
+}
+
+void ViewModel::write_relay_record(const CallRecord& record) {
+    const std::time_t tt = std::chrono::system_clock::to_time_t(record.started_wall);
+    std::tm utc{};
+    char when[32] = "1970-01-01T00:00:00Z";
+    if (gmtime_s(&utc, &tt) == 0) std::strftime(when, sizeof(when), "%Y-%m-%dT%H:%M:%SZ", &utc);
+    std::string reason;
+    for (const char c : record.relay_end_reason) {
+        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_') reason.push_back(c); // 机器可读原因，无需转义
+    }
+    const std::string peak = record.relay_s_peak ? std::to_string(*record.relay_s_peak) : std::string("null");
+    const std::string line = fmt(
+        "{\"started_utc\":\"%s\",\"duration_ms\":%llu,\"target_kind\":\"%s\",\"target_id\":%u,\"slot\":%d,"
+        "\"s_meter_peak\":%s,\"end_reason\":\"%s\"}",
+        when, static_cast<unsigned long long>(record.relay_duration_ms),
+        record.call.kind == dmr_call::CallKind::group ? "group" : "private", record.call.destination_id,
+        static_cast<int>(record.call.slot), peak.c_str(), reason.c_str());
+    if (auto log = dev_log()) log->line("relay", "fm relay ended " + line);
+    if (services_.append_relay_log && !services_.append_relay_log(line)) {
+        if (auto log = dev_log()) log->line("gui-error", "relay-log.jsonl append failed");
+    }
+}
+
+void ViewModel::toggle_relay() {
+    auto next = config_;
+    next.relay_enabled = !config_.relay_enabled;
+    std::string error;
+    if (!save_config(next, error)) {
+        flash(fmt(tr(Str::settings_save_failed), error.c_str()), true, Str::save_settings);
+        return;
+    }
+    if (snapshot_->serial_open || pending(Str::op_start)) flash(tr(Str::relay_reconnect_needed), false);
+    update_squelch_polling();
+}
+
+void ViewModel::toggle_relay_fm() {
+    if (!config_.relay_enabled) return;
+    auto next = config_;
+    next.relay_fm_enabled = !config_.relay_fm_enabled;
+    std::string error;
+    if (!save_config(next, error)) {
+        flash(fmt(tr(Str::settings_save_failed), error.c_str()), true, Str::save_settings);
+        return;
+    }
+    update_squelch_polling();
+}
+
+void ViewModel::preview_relay_enabled() noexcept {
+    config_.relay_enabled = true;
+    config_.relay_fm_enabled = true;
+    // 演示段的关门峰值（模拟 SM0 读数），使注入的 FM 中继记录显示 S 峰值。
+    last_squelch_peak_ = 198U;
+    last_squelch_close_ = std::chrono::steady_clock::now();
 }
 
 void ViewModel::flash(std::string text, bool failed, Str operation) {
@@ -474,6 +650,7 @@ void ViewModel::report(Str op, const CommandResult& r) {
          (r.status == CommandStatus::not_ready && snapshot_->bm_link != BmLink::connected))) {
         return; // Busy/断线由持久队列状态显示；避免 500ms 重试时刷屏或把暂缓误报为失败。
     }
+    if (op == Str::op_relay_fm) return; // FM 中继启停结果由 on_squelch 的回调按状态提示，避免 busy 刷屏
     if (op == Str::op_auto_quick_call) {
         if (r.status == CommandStatus::accepted) return;
         if (startup_group_activation_last_target_) {
@@ -556,6 +733,7 @@ std::vector<ChannelView> ViewModel::channel_page() const {
             v.current_call = with_callsign(*snapshot_->active_rx_call);
         } else {
             for (const auto& rec : history_) {
+                if (rec.relay_fm) continue;
                 if (call_matches(rec.call, entry, config_.dmr_id)) {
                     v.last_call = rec;
                     v.last_call->call = with_callsign(rec.call);
@@ -587,6 +765,7 @@ std::vector<CallRecord> ViewModel::recent_callers(std::size_t max) const {
     const auto active = snapshot_->active_rx_call;
     bool skipped_active = false;
     for (const auto& rec : history_) {
+        if (rec.relay_fm) continue;
         if (active && !skipped_active && rec.call.source_id == active->source_id &&
             rec.call.destination_id == active->destination_id) {
             skipped_active = true;
@@ -812,6 +991,8 @@ std::optional<engine::RadioStartConfig> ViewModel::make_radio_start_config(std::
     result.hri_port = std::move(parsed->hri_port);
     result.hri_body_file = std::move(parsed->hri_body_file);
     result.audio = std::move(parsed->audio);
+    result.ap_mode = config_.relay_enabled; // 中继开启：AP PC 模式 Y 模板
+    if (auto log = dev_log()) log->line("gui", result.ap_mode ? "radio connect y_template=ap" : "radio connect y_template=direct");
     return result;
 }
 
@@ -1140,8 +1321,11 @@ void ViewModel::set_audio_output(std::wstring wave_out_endpoint_id) {
 
 void ViewModel::set_history_target() {
     if (!selected_history_ || *selected_history_ >= history_.size()) return;
-    const auto& call = history_[*selected_history_].call;
-    ChannelKey key{call.kind == dmr_call::CallKind::group ? call.destination_id : call.source_id, call.kind, call.slot};
+    const auto& rec = history_[*selected_history_];
+    const auto& call = rec.call;
+    // FM 中继记录的 destination_id 就是当时的上行目标（私呼时为对端 ID）。
+    ChannelKey key{call.kind == dmr_call::CallKind::group || rec.relay_fm ? call.destination_id : call.source_id,
+                   call.kind, call.slot};
     const bool listed = std::any_of(config_.channels.begin(), config_.channels.end(),
                                     [&](const auto& e) { return key_of(e) == key; });
     if (!listed) {

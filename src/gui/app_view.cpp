@@ -844,7 +844,10 @@ void AppView::draw_header() {
     const float lang_w = px(64.0F);
     const float action_w = px(108.0F);
     const float log_w = px(48.0F);
-    const float actions_w = lang_w + action_w * 2.0F + log_w + inline_gap * 3.0F;
+    // 中继开启时在“停用中继”右侧追加 FM 开关与“官方未支持”标注（宽度取上一帧实测值）。
+    const bool relay_on = vm_.relay_enabled();
+    const float fm_group_w = relay_on ? (header_relay_w_ > 0.0F ? header_relay_w_ : px(150.0F)) + inline_gap : 0.0F;
+    const float actions_w = lang_w + action_w * 2.0F + log_w + inline_gap * 3.0F + fm_group_w;
     if (ImGui::BeginTable("##header", 3, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoPadOuterX |
                                            ImGuiTableFlags_NoBordersInBody)) {
         ImGui::TableSetupColumn("##title", ImGuiTableColumnFlags_WidthStretch, 1.0F);
@@ -983,9 +986,16 @@ void AppView::draw_header() {
         }
         ImGui::SameLine(0.0F, inline_gap);
         row.place(btn_h);
-        if (button(tr(Str::relay_enable), ImVec2(action_w, btn_h), Tone::normal, false)) {}
-        ImGui::SetItemTooltip("%s", tr(Str::relay_state_unknown));
+        if (button(fmt("%s##relay-toggle", tr(relay_on ? Str::relay_disable : Str::relay_enable)).c_str(),
+                   ImVec2(action_w, btn_h), relay_on ? Tone::ok : Tone::normal)) {
+            vm_.toggle_relay();
+        }
+        ImGui::SetItemTooltip("%s", tr(relay_on ? Str::relay_tip_on : Str::relay_tip_off));
         ImGui::SameLine(0.0F, inline_gap);
+        if (relay_on) {
+            draw_relay_fm_controls(row.x0, row.top, row.h, btn_h);
+            ImGui::SameLine(0.0F, inline_gap);
+        }
         row.place(btn_h);
         if (button(tr(Str::stop_exit), ImVec2(action_w, btn_h), Tone::stop)) {
             if (vm_.snapshot().phase != Phase::stopped || vm_.cat().connected || vm_.cat().busy) vm_.stop();
@@ -1003,8 +1013,53 @@ void AppView::draw_header() {
     }
 
     draw_connection_log_popup();
+    draw_relay_status_line();
     const ImVec2 pos = ImGui::GetCursorPos();
     ImGui::SetCursorPos(ImVec2(pos.x, pos.y + px(layout::kGap)));
+}
+
+// FM 开关 + “官方未支持”标注（中继开启时显示在“停用中继”右侧）。
+void AppView::draw_relay_fm_controls(float row_x, float row_top, float row_h, float btn_h) {
+    const Row row{row_x, row_top, row_h};
+    const float x0 = ImGui::GetCursorScreenPos().x;
+    const bool fm_on = vm_.relay_fm_enabled();
+    const bool supported = vm_.relay_fm_supported();
+    row.place(btn_h);
+    const auto label = fmt("%s %s##relay-fm", fm_on ? "●" : "○", tr(Str::relay_fm));
+    if (button(label.c_str(), ImVec2(px(54.0F), btn_h), fm_on ? Tone::ok : Tone::normal, supported)) {
+        vm_.toggle_relay_fm();
+    }
+    ImGui::SetItemTooltip("%s", tr(Str::relay_fm_tip));
+    ImGui::SameLine(0.0F, px(layout::kLabelGap));
+    row_text(row, tr(Str::relay_fm_unofficial), rgb(color::warn), nullptr, layout::kFontCaption);
+    ImGui::SetItemTooltip("%s", tr(Str::relay_fm_tip));
+    const float measured = std::round(ImGui::GetItemRectMax().x - x0);
+    if (std::abs(measured - header_relay_w_) >= 1.0F) {
+        header_relay_w_ = measured;
+        continuous_ = true;
+    }
+}
+
+// 中继开启时在顶栏下方显示一行状态：C4FM 未支持提示，或 FM 中继状态。
+void AppView::draw_relay_status_line() {
+    const auto status = vm_.relay_status();
+    if (status == RelayStatus::off) return;
+    const char* text = nullptr;
+    ImU32 col = rgb(color::muted);
+    switch (status) {
+    case RelayStatus::off: return;
+    case RelayStatus::c4fm_only: text = tr(Str::relay_c4fm_unsupported); col = rgb(color::warn); break;
+    case RelayStatus::no_cat: text = tr(Str::relay_status_no_cat); col = rgb(color::warn); break;
+    case RelayStatus::waiting: text = tr(Str::relay_status_waiting); break;
+    case RelayStatus::active: text = tr(Str::relay_status_active); col = rgb(color::green); break;
+    }
+    const auto line = status == RelayStatus::c4fm_only
+        ? std::string(text)
+        : fmt("%s (%s) · %s", tr(Str::relay_fm), tr(Str::relay_fm_unofficial), text);
+    ImGui::PushFont(nullptr, layout::kFontCaption);
+    text_ellipsis(line.c_str(), ImGui::GetContentRegionAvail().x, col);
+    ImGui::PopFont();
+    ImGui::SetItemTooltip("%s", tr(Str::relay_fm_tip));
 }
 
 void AppView::update_connection_log() {
@@ -1501,18 +1556,36 @@ void AppView::draw_history(float width, float height) {
     for (std::size_t i = begin; i < history.size() && i < begin + ViewModel::history_page_size; ++i) {
         const auto& rec = history[i];
         const auto clock = format_clock(rec.started_wall);
-        const auto from = source_label(vm_.with_callsign(rec.call));
-        const auto text = rec.call.kind == dmr_call::CallKind::group
-                              ? fmt(tr(Str::history_group), clock.c_str(), rec.call.destination_id, from.c_str())
-                              : fmt(tr(Str::history_private), clock.c_str(), rec.call.destination_id, from.c_str());
+        std::string text;
+        if (rec.relay_fm) {
+            // FM 中继：无呼号；以“FM 中继 →”前缀与警示色区分 BM 来话。
+            const auto peak = rec.relay_s_peak ? std::to_string(*rec.relay_s_peak) : std::string("—");
+            const double secs = static_cast<double>(rec.relay_duration_ms) / 1000.0;
+            text = rec.call.kind == dmr_call::CallKind::group
+                       ? fmt(tr(Str::relay_history_group_fmt), clock.c_str(), rec.call.destination_id,
+                             static_cast<int>(rec.call.slot), secs, peak.c_str())
+                       : fmt(tr(Str::relay_history_private_fmt), clock.c_str(), rec.call.destination_id,
+                             static_cast<int>(rec.call.slot), secs, peak.c_str());
+        } else {
+            const auto from = source_label(vm_.with_callsign(rec.call));
+            text = rec.call.kind == dmr_call::CallKind::group
+                       ? fmt(tr(Str::history_group), clock.c_str(), rec.call.destination_id, from.c_str())
+                       : fmt(tr(Str::history_private), clock.c_str(), rec.call.destination_id, from.c_str());
+        }
         ImGui::PushID(static_cast<int>(i));
         const bool selected = vm_.selected_history() == i;
         const float row_h = ImGui::GetTextLineHeightWithSpacing();
         const bool clicked = ImGui::Selectable("##history-row", selected, ImGuiSelectableFlags_None, ImVec2(inner_w, row_h));
         const ImVec2 row_pos = ImGui::GetItemRectMin();
         ImGui::SetCursorScreenPos(row_pos);
-        text_ellipsis(text.c_str(), inner_w, rgb(color::text));
-        ImGui::SetItemTooltip("%s", text.c_str());
+        text_ellipsis(text.c_str(), inner_w, rec.relay_fm ? rgb(color::warn) : rgb(color::text));
+        if (rec.relay_fm) {
+            const auto tip = text + "\n" + fmt(tr(Str::relay_history_tip),
+                                               rec.relay_end_reason.empty() ? "—" : rec.relay_end_reason.c_str());
+            ImGui::SetItemTooltip("%s", tip.c_str());
+        } else {
+            ImGui::SetItemTooltip("%s", text.c_str());
+        }
         if (clicked) vm_.select_history(selected ? std::nullopt : std::optional<std::size_t>(i));
         ImGui::PopID();
     }

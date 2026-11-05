@@ -43,9 +43,25 @@ public:
     virtual std::future<engine::CommandResult> upsert_radio_identity(std::uint32_t source_id, std::uint64_t revision,
                                                                      std::optional<std::string> callsign) = 0;
 
+    // R130 FM 中继。默认实现返回 forbidden，测试中的旧桩无需改动。
+    virtual std::future<engine::CommandResult> relay_fm_start() {
+        return ready_result(engine::CommandStatus::forbidden, "relay_fm_unsupported");
+    }
+    virtual std::future<engine::CommandResult> relay_fm_stop() {
+        return ready_result(engine::CommandStatus::idempotent, "relay_fm_unsupported");
+    }
+
     [[nodiscard]] virtual std::shared_ptr<const engine::Snapshot> snapshot() const = 0;
     [[nodiscard]] virtual std::vector<engine::Event> drain_events(std::size_t max) = 0;
     virtual void set_wakeup(std::function<void()> wakeup) = 0;
+
+protected:
+    [[nodiscard]] static std::future<engine::CommandResult> ready_result(engine::CommandStatus status,
+                                                                         std::string detail) {
+        std::promise<engine::CommandResult> promise;
+        promise.set_value(engine::CommandResult{status, 0U, std::move(detail)});
+        return promise.get_future();
+    }
 };
 
 template <class E>
@@ -92,6 +108,8 @@ public:
                                                              std::optional<std::string> callsign) override {
         return engine_.upsert_radio_identity(source_id, revision, std::move(callsign));
     }
+    std::future<engine::CommandResult> relay_fm_start() override { return engine_.relay_fm_start(); }
+    std::future<engine::CommandResult> relay_fm_stop() override { return engine_.relay_fm_stop(); }
     [[nodiscard]] std::shared_ptr<const engine::Snapshot> snapshot() const override { return engine_.snapshot(); }
     [[nodiscard]] std::vector<engine::Event> drain_events(std::size_t max) override {
         return engine_.drain_events(max);

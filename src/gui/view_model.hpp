@@ -29,7 +29,16 @@ namespace wirex::gui {
 struct CallRecord {
     engine::CallInfo call{};
     std::chrono::system_clock::time_point started_wall{};
+    // R130 FM 中继记录（与 BM 来话混排）：relay_fm=true 时 call 只用 destination_id/kind/slot 表示上行目标，
+    // source_id 为 0（FM 无呼号）。
+    bool relay_fm{};
+    std::uint64_t relay_duration_ms{};
+    std::optional<unsigned> relay_s_peak{};
+    std::string relay_end_reason{};
 };
+
+// FM 中继状态（右上角提示）。
+enum class RelayStatus : std::uint8_t { off, c4fm_only, no_cat, waiting, active };
 
 struct ChannelKey {
     std::uint32_t id{};
@@ -164,6 +173,11 @@ public:
     [[nodiscard]] bool engine_running() const noexcept;
     [[nodiscard]] bool can_mutate_channels() const noexcept;
     [[nodiscard]] FontStatus font_status() const noexcept { return font_status_; }
+    // R130 中继
+    [[nodiscard]] bool relay_enabled() const noexcept { return config_.relay_enabled; }
+    [[nodiscard]] bool relay_fm_enabled() const noexcept { return config_.relay_fm_enabled; }
+    [[nodiscard]] bool relay_fm_supported() const noexcept { return static_cast<bool>(services_.cat.set_squelch_polling); }
+    [[nodiscard]] RelayStatus relay_status() const noexcept;
     void set_font_status(FontStatus status) noexcept { font_status_ = status; }
 
     // 视图可直接编辑的表单状态
@@ -190,6 +204,10 @@ public:
     void set_audio_devices(std::wstring wave_in_endpoint_id, std::wstring wave_out_endpoint_id);
     void set_audio_output(std::wstring wave_out_endpoint_id); // BM-only output selection; no HRI/WaveIn required
     void set_history_target();                   // engine.replace_tx_policy（来话历史所选条目）
+    void toggle_relay();                         // relay.enabled（保存配置；电台需重连后生效）
+    void toggle_relay_fm();                      // relay.fm_enabled（仅中继开启时可切换）
+    // 仅截图验收（--screenshot-relay-demo）：在内存中开启中继与 FM，不写配置。
+    void preview_relay_enabled() noexcept;
 
     // ---------- 其它服务 ----------
     void cat_toggle_connection();
@@ -259,6 +277,12 @@ private:
     void sync_cat_form_from_observed(const services::CatState& state);
     [[nodiscard]] std::optional<engine::RadioStartConfig> make_radio_start_config(std::string& error) const;
     [[nodiscard]] std::optional<engine::BmTarget> make_bm_target(std::string& error) const;
+    // R130 FM 中继
+    void update_squelch_polling();
+    void on_squelch(const services::SquelchEvent& event);
+    void request_relay_fm_stop();
+    void finish_relay_record(const engine::Event& event);
+    void write_relay_record(const CallRecord& record);
 
     EngineApi& engine_;
     services::Services services_;
@@ -303,6 +327,12 @@ private:
     FontStatus font_status_{FontStatus::segoe_deng};
     bool exit_requested_{};
     bool suppress_cancelled_start_report_{};
+    // R130 FM 中继
+    bool squelch_polling_{};               // 最近一次下发给 CatService 的轮询开关
+    bool squelch_open_{};                  // 最近一次静噪事件为 opened
+    std::optional<unsigned> last_squelch_peak_{};
+    std::optional<std::chrono::steady_clock::time_point> last_squelch_close_{};
+    std::optional<CallRecord> relay_awaiting_peak_{}; // 超时等先于关门结束的段：等关门事件补 S 峰值后再写日志
 
     std::shared_ptr<Mailbox> mailbox_{std::make_shared<Mailbox>()};
 };

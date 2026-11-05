@@ -42,6 +42,27 @@ namespace wirex::gui {
     X(relay_enable,         "启用中继",                            "Enable relay")                   /* new */ \
     X(relay_disable,        "停用中继",                            "Disable relay")                  /* new */ \
     X(relay_state_unknown,  "中继状态未知",                        "Relay status: unknown")          /* new */ \
+    X(relay_tip_off,        "开启后连接电台使用 AP PC 模式 Y 模板（offset 0x05 = '1'）；需重新连接电台后生效。", \
+                            "When on, the radio connects with the AP PC mode Y template (offset 0x05 = '1'); reconnect the radio to apply.") /* new */ \
+    X(relay_tip_on,         "中继已开启：连接电台使用 AP PC 模式 Y 模板。点击停用。", \
+                            "Relay is on: the radio connects with the AP PC mode Y template. Click to disable.") /* new */ \
+    X(relay_fm,             "FM",                                  "FM")                             /* new */ \
+    X(relay_fm_unofficial,  "官方未支持",                          "Not officially supported")       /* new */ \
+    X(relay_fm_tip,         "FM 中继（官方未支持）：通过 CAT 静噪检测触发，使用当前 PTT 目标发往 BM。", \
+                            "FM relay (not officially supported): triggered by CAT squelch detection, sent to BM on the current TX target.") /* new */ \
+    X(relay_c4fm_unsupported,"C4FM 中继尚未支持，当前仅 FM 可用", "C4FM relay is not supported yet; only FM is available") /* new */ \
+    X(relay_reconnect_needed,"中继设置已保存；需重新连接电台后生效。", \
+                            "Relay setting saved; reconnect the radio to apply it.") /* new */ \
+    X(relay_status_active,  "FM 中继进行中",                       "FM relay active")                /* new */ \
+    X(relay_status_waiting, "等待静噪开启",                        "Waiting for squelch")            /* new */ \
+    X(relay_status_no_cat,  "CAT 未连接",                          "CAT not connected")              /* new */ \
+    X(op_relay_fm,          "FM 中继",                             "FM relay")                       /* new */ \
+    X(relay_fm_rejected_fmt,"FM 中继未开始：%s",                   "FM relay not started: %s")       /* new */ \
+    X(relay_history_group_fmt,"%s · FM 中继 → TG %u · TS%d · %.1f s · S 峰值 %s", \
+                            "%s · FM relay → TG %u · TS%d · %.1f s · S peak %s") /* new */ \
+    X(relay_history_private_fmt,"%s · FM 中继 → 私呼 %u · TS%d · %.1f s · S 峰值 %s", \
+                            "%s · FM relay → private %u · TS%d · %.1f s · S peak %s") /* new */ \
+    X(relay_history_tip,    "FM 中继记录（无呼号）。结束原因：%s", "FM relay record (no callsign). End reason: %s") /* new */ \
     X(log_error,            "错误",                                "Error")                          /* new */ \
     X(log_events,           "连接日志",                            "Connection log")                 /* new */ \
     X(log_empty,            "暂无连接事件。",                      "No connection events.")          /* new */ \

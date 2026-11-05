@@ -19,6 +19,8 @@ namespace wirex::gui {
 struct FakeEngineOptions {
     // true：以“已连接串口 + BM 已连接 + 正有来话 + 已有若干历史”的状态启动，用于截图验收。
     bool seed_demo{};
+    // FM 中继单段上限（模拟引擎内同样按 180 s 自动结束）。
+    std::uint64_t relay_fm_max_duration_ms{engine::relay_fm_max_duration_ms};
     // 随机来话的种子；固定值让截图可复现。
     std::uint32_t seed{20261103U};
 };
@@ -45,6 +47,11 @@ public:
     std::future<engine::CommandResult> set_audio_endpoints(engine::AudioEndpoints audio) override;
     std::future<engine::CommandResult> upsert_radio_identity(std::uint32_t source_id, std::uint64_t revision,
                                                              std::optional<std::string> callsign) override;
+    // R130 FM 中继（简化规则：需 running + BM connected + 允许发射 + 媒体空闲）。
+    std::future<engine::CommandResult> relay_fm_start() override;
+    std::future<engine::CommandResult> relay_fm_stop() override;
+    // 仅截图验收：立即注入一段已结束的 FM 中继（relay_fm_started/ended 事件）。
+    void seed_relay_fm_demo();
 
     [[nodiscard]] std::shared_ptr<const engine::Snapshot> snapshot() const override;
     [[nodiscard]] std::vector<engine::Event> drain_events(std::size_t max) override;

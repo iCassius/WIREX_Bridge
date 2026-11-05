@@ -585,8 +585,28 @@ void test_round_trip_preserves_unknown() {
 
 } // namespace
 
+// R130：relay.enabled / relay.fm_enabled 与 GuiConfig 往返；默认关闭。
+void test_relay_round_trip() {
+    const auto base = wirex::app::default_config();
+    auto gui = cb::to_gui(base);
+    check(!gui.relay_enabled && !gui.relay_fm_enabled, "relay toggles default off");
+    gui.relay_enabled = true;
+    gui.relay_fm_enabled = true;
+    std::string error;
+    auto next = cb::apply_gui(base, gui, error);
+    check(next.has_value() && next->relay.enabled && next->relay.fm_enabled, "apply_gui writes relay toggles");
+    if (!next) return;
+    const auto back = cb::to_gui(*next);
+    check(back.relay_enabled && back.relay_fm_enabled, "to_gui reads relay toggles");
+    gui.relay_enabled = false;
+    next = cb::apply_gui(*next, gui, error);
+    check(next.has_value() && !next->relay.enabled && next->relay.fm_enabled,
+          "relay master switch is independent of the stored FM toggle");
+}
+
 int main() {
     SetConsoleOutputCP(CP_UTF8);
+    test_relay_round_trip();
     test_device_number();
     test_rx_policy();
     test_channel_key();

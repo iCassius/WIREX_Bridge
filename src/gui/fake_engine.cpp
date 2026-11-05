@@ -79,6 +79,7 @@ struct FakeEngine::Impl {
     std::atomic<bool> startup_pending{};
     std::uint64_t call_epoch{}; // 每通来话 +1
     std::uint32_t calls_until_tx{4U};
+    std::uint64_t relay_epoch{};    // 每段 FM 中继 +1，使旧的超时任务失效
     std::unordered_map<std::uint32_t, std::string> identities{};
 
     // ---- 跨线程 ----
@@ -354,9 +355,62 @@ struct FakeEngine::Impl {
         }
     }
 
+    // ---- FM 中继（R130） ----
+    CommandResult relay_start() {
+        if (state.relay_fm_active) return result(CommandStatus::idempotent, 0U, "relay_fm_already_active");
+        if (state.phase != Phase::running || state.bm_link != BmLink::connected) {
+            return result(CommandStatus::not_ready, 0U, "relay_fm_bm_not_ready");
+        }
+        if (!transmit_enabled) return result(CommandStatus::forbidden, 0U, "relay_fm_transmit_disabled");
+        if (state.media_owner == MediaOwner::rx_active || state.media_owner == MediaOwner::rx_draining ||
+            state.media_owner == MediaOwner::rx_stopping) {
+            ++state.counters.relay_fm_rejected_busy;
+            return result(CommandStatus::busy, 0U, "relay_fm_busy_downlink");
+        }
+        if (state.tx_active || state.media_owner != MediaOwner::idle) {
+            ++state.counters.relay_fm_rejected_busy;
+            return result(CommandStatus::busy, 0U, "relay_fm_busy_ptt");
+        }
+        state.relay_fm_active = true;
+        state.relay_fm_started_ms = now_ms();
+        state.tx_active = true;
+        state.media_owner = MediaOwner::tx_active;
+        Event e;
+        e.kind = EventKind::relay_fm_started;
+        e.at_ms = state.relay_fm_started_ms;
+        e.relay_fm = engine::RelayFmInfo{state.tx_target, state.relay_fm_started_ms, 0U};
+        push_event(std::move(e));
+        const auto epoch = ++relay_epoch;
+        post_after(std::chrono::milliseconds(options.relay_fm_max_duration_ms), [this, epoch]() {
+            if (epoch != relay_epoch || !state.relay_fm_active) return;
+            relay_end("timeout");
+            publish();
+        });
+        return result(CommandStatus::accepted);
+    }
+
+    void relay_end(const char* reason) {
+        if (!state.relay_fm_active) return;
+        ++relay_epoch;
+        const auto ended = now_ms();
+        Event e;
+        e.kind = EventKind::relay_fm_ended;
+        e.at_ms = ended;
+        e.end_reason = reason;
+        e.relay_fm = engine::RelayFmInfo{state.tx_target, state.relay_fm_started_ms,
+                                         ended >= state.relay_fm_started_ms ? ended - state.relay_fm_started_ms : 0U};
+        push_event(std::move(e));
+        state.relay_fm_active = false;
+        state.relay_fm_started_ms = 0U;
+        state.tx_active = false;
+        state.media_owner = MediaOwner::idle;
+        state.levels.tx_peak = 0.0F;
+    }
+
     void drop_bm() {
         ++bm_epoch;
         ++call_epoch;
+        relay_end("bm_not_ready");
         end_call("bm_disconnected");
         state.tx_active = false;
         state.media_owner = MediaOwner::idle;
@@ -825,6 +879,41 @@ std::future<CommandResult> FakeEngine::upsert_radio_identity(std::uint32_t sourc
     });
 }
 
+std::future<CommandResult> FakeEngine::relay_fm_start() {
+    auto* s = impl_.get();
+    return s->command(20ms, [s]() { return s->relay_start(); });
+}
+
+std::future<CommandResult> FakeEngine::relay_fm_stop() {
+    auto* s = impl_.get();
+    return s->command(20ms, [s]() {
+        if (!s->state.relay_fm_active) return result(CommandStatus::idempotent, 0U, "relay_fm_not_active");
+        s->relay_end("squelch_closed");
+        return result(CommandStatus::accepted);
+    });
+}
+
+void FakeEngine::seed_relay_fm_demo() {
+    auto* s = impl_.get();
+    s->post_after(0ms, [s]() {
+        const auto now = now_ms();
+        const engine::RelayFmInfo info{talkgroup_routing::TxTarget{46001U, dmr_call::CallKind::group, dmr_call::Slot::ts2},
+                                       now - 75'000U, 12'300U};
+        Event start;
+        start.kind = EventKind::relay_fm_started;
+        start.at_ms = info.started_ms;
+        start.relay_fm = engine::RelayFmInfo{info.target, info.started_ms, 0U};
+        s->push_event(std::move(start));
+        Event end;
+        end.kind = EventKind::relay_fm_ended;
+        end.at_ms = info.started_ms + info.duration_ms;
+        end.end_reason = "squelch_closed";
+        end.relay_fm = info;
+        s->push_event(std::move(end));
+        s->publish();
+    });
+}
+
 std::shared_ptr<const engine::Snapshot> FakeEngine::snapshot() const {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     return impl_->published;
@@ -853,6 +942,10 @@ struct FakeServiceState {
     std::mutex mutex;
     services::CatState cat{};
     std::uint64_t cat_generation{};
+    // R130：模拟静噪。轮询开启后每 20 s 产生一段约 3 s 的开门（S 峰值 198）。
+    bool squelch_polling{};
+    std::uint64_t squelch_epoch{};
+    services::SquelchCallback squelch_callback{};
     services::GuiConfig config{};
     // 46010 不在演示频道中：启动读取静态组后会自动补进收听频道（第 6 张卡片）。
     std::vector<services::StaticGroup> static_groups{{46001U, 2}, {4600U, 2}, {91U, 2}, {46025U, 2}, {46010U, 2}};
@@ -956,6 +1049,21 @@ services::Services make_fake_services(FakeEngine& engine) {
                     const auto revision = st->cat.revision + 1U;
                     st->cat = services::CatState{};
                     st->cat.revision = revision;
+                    ++st->squelch_epoch; // 与真实服务一致：CAT 断开时门控 reset
+                }
+            }
+            if (current) {
+                services::SquelchCallback callback;
+                {
+                    std::lock_guard<std::mutex> lock(st->mutex);
+                    if (st->squelch_polling) callback = st->squelch_callback;
+                }
+                if (callback) {
+                    services::SquelchEvent closed;
+                    closed.edge = services::SquelchEdge::closed;
+                    closed.at = std::chrono::steady_clock::now();
+                    closed.reason = "cat_disconnected";
+                    callback(closed);
                 }
             }
             if (done) done(current ? result(CommandStatus::accepted)
@@ -979,6 +1087,60 @@ services::Services make_fake_services(FakeEngine& engine) {
             }
             if (done) done(r);
         });
+    };
+
+    // 静噪事件在模拟线程上回调（与真实 CAT 线程一样不在 UI 线程）。
+    struct SquelchSim {
+        static void emit(const std::shared_ptr<FakeServiceState>& st, services::SquelchEvent event) {
+            services::SquelchCallback callback;
+            {
+                std::lock_guard<std::mutex> lock(st->mutex);
+                callback = st->squelch_callback;
+            }
+            if (callback) callback(event);
+        }
+        static void cycle(const std::shared_ptr<FakeServiceState>& st, FakeEngine& engine, std::uint64_t epoch,
+                          std::chrono::milliseconds delay) {
+            engine.post_after(delay, [st, &engine, epoch]() {
+                {
+                    std::lock_guard<std::mutex> lock(st->mutex);
+                    if (epoch != st->squelch_epoch || !st->squelch_polling || !st->cat.connected) return;
+                }
+                services::SquelchEvent open;
+                open.edge = services::SquelchEdge::opened;
+                open.at = std::chrono::steady_clock::now();
+                open.s_meter = 176U;
+                emit(st, open);
+                engine.post_after(3000ms, [st, &engine, epoch]() {
+                    {
+                        std::lock_guard<std::mutex> lock(st->mutex);
+                        if (epoch != st->squelch_epoch) return;
+                    }
+                    services::SquelchEvent closed;
+                    closed.edge = services::SquelchEdge::closed;
+                    closed.at = std::chrono::steady_clock::now();
+                    closed.s_meter = 84U;
+                    closed.s_meter_peak = 198U;
+                    closed.reason = "squelch";
+                    emit(st, closed);
+                    cycle(st, engine, epoch, 20000ms);
+                });
+            });
+        }
+    };
+    sv.cat.set_squelch_callback = [st](services::SquelchCallback callback) {
+        std::lock_guard<std::mutex> lock(st->mutex);
+        st->squelch_callback = std::move(callback);
+    };
+    sv.cat.set_squelch_polling = [st, &engine](bool enabled) {
+        std::uint64_t epoch = 0U;
+        {
+            std::lock_guard<std::mutex> lock(st->mutex);
+            if (st->squelch_polling == enabled) return;
+            st->squelch_polling = enabled;
+            epoch = ++st->squelch_epoch;
+        }
+        if (enabled) SquelchSim::cycle(st, engine, epoch, 4000ms);
     };
 
     sv.config.load = [st](std::string&) -> std::optional<services::GuiConfig> {

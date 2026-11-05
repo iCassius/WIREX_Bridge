@@ -153,6 +153,8 @@ services::GuiConfig to_gui(const app::AppConfig& config) {
     }
     g.tx_target = parse_channel_key(config.tx_channel_id);
     g.blocked_source_ids = config.routing.blocked_source_ids;
+    g.relay_enabled = config.relay.enabled;
+    g.relay_fm_enabled = config.relay.fm_enabled;
     return g;
 }
 
@@ -233,6 +235,8 @@ std::optional<app::AppConfig> apply_gui(const app::AppConfig& base, const servic
         }
     }
     if (out.tx_channel_id.empty() && !out.channels.empty()) out.tx_channel_id = out.channels.front().key();
+    out.relay.enabled = gui.relay_enabled;
+    out.relay.fm_enabled = gui.relay_fm_enabled;
     return out;
 }
 

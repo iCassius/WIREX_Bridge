@@ -41,7 +41,7 @@ $imguiFiles = @('imgui.cpp', 'imgui_draw.cpp', 'imgui_tables.cpp', 'imgui_widget
 $guiFiles = @('gui_main.cpp', 'app_view.cpp', 'view_model.cpp', 'fake_engine.cpp', 'config_bridge.cpp', 'real_services.cpp', 'dev_log.cpp', 'dev_log_engine.cpp') |
     ForEach-Object { 'src\gui\' + $_ }
 # GUI 用到的 app 服务与 native 公共模块（与 tools/build-app-tests.ps1 同一组源文件）。
-$serviceFiles = @('app\config.cpp', 'app\json.cpp', 'app\devices.cpp', 'app\radio_cat.cpp', 'app\bm_api.cpp',
+$serviceFiles = @('app\config.cpp', 'app\json.cpp', 'app\devices.cpp', 'app\radio_cat.cpp', 'app\radio_info.cpp', 'app\bm_api.cpp',
     'app\bm_servers.cpp', 'app\http_client.cpp', 'app\radio_identity.cpp') | ForEach-Object { 'src\' + $_ }
 # 进程内桥接引擎及其 native 模块：与 tools/build-bm-bridge.ps1 的 $coreSources 相同（不含管道适配层与 CLI 入口）。
 $engineFiles = @('dmrd.cpp', 'dmr_call.cpp', 'talkgroup_routing.cpp', 'dmr_vocoder.cpp', 'pcm_resampler.cpp',

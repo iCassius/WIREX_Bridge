@@ -28,7 +28,7 @@ $tests = @(
     @{ Name = 'app_config_test'; Sources = @('tests\app_config_test.cpp', 'src\app\config.cpp', 'src\app\json.cpp') },
     @{ Name = 'app_devices_test'; Sources = @('tests\app_devices_test.cpp', 'src\app\devices.cpp') },
     @{ Name = 'app_radio_info_test'; Sources = @('tests\app_radio_info_test.cpp', 'src\app\radio_info.cpp') },
-    @{ Name = 'app_radio_cat_test'; Sources = @('tests\app_radio_cat_test.cpp', 'src\app\radio_cat.cpp') },
+    @{ Name = 'app_radio_cat_test'; Sources = @('tests\app_radio_cat_test.cpp', 'src\app\radio_cat.cpp', 'src\app\radio_info.cpp') },
     @{ Name = 'gui_fake_cat_lifecycle_test'; Sources = @('tests\gui_fake_cat_lifecycle_test.cpp', 'src\gui\fake_engine.cpp') },
     @{ Name = 'gui_cat_form_sync_test'; Sources = @('tests\gui_cat_form_sync_test.cpp') },
     @{ Name = 'bm_local_playback_test'; Sources = @('tests\bm_local_playback_test.cpp') },
@@ -39,6 +39,7 @@ $tests = @(
     @{ Name = 'gui_radio_lifecycle_view_model_test'; Sources = @('tests\gui_radio_lifecycle_view_model_test.cpp', 'src\gui\fake_engine.cpp', 'src\gui\view_model.cpp', 'src\gui\dev_log.cpp','src\gui\config_bridge.cpp', 'src\app\config.cpp', 'src\app\json.cpp', 'src\app\devices.cpp', 'src\app\bm_servers.cpp', 'src\bm_connection_config.cpp', 'src\talkgroup_routing.cpp') },
     @{ Name = 'gui_filtered_hint_view_model_test'; Sources = @('tests\gui_filtered_hint_view_model_test.cpp', 'src\gui\fake_engine.cpp', 'src\gui\view_model.cpp', 'src\gui\dev_log.cpp','src\gui\config_bridge.cpp', 'src\app\config.cpp', 'src\app\json.cpp', 'src\app\devices.cpp', 'src\app\bm_servers.cpp', 'src\bm_connection_config.cpp', 'src\talkgroup_routing.cpp') },
     @{ Name = 'gui_static_channel_sync_view_model_test'; Sources = @('tests\gui_static_channel_sync_view_model_test.cpp', 'src\gui\fake_engine.cpp', 'src\gui\view_model.cpp', 'src\gui\dev_log.cpp', 'src\gui\config_bridge.cpp', 'src\app\config.cpp', 'src\app\json.cpp', 'src\app\devices.cpp', 'src\app\bm_servers.cpp', 'src\bm_connection_config.cpp', 'src\talkgroup_routing.cpp') },
+    @{ Name = 'gui_relay_fm_view_model_test'; Sources = @('tests\gui_relay_fm_view_model_test.cpp', 'src\gui\fake_engine.cpp', 'src\gui\view_model.cpp', 'src\gui\dev_log.cpp', 'src\gui\config_bridge.cpp', 'src\app\config.cpp', 'src\app\json.cpp', 'src\app\devices.cpp', 'src\app\bm_servers.cpp', 'src\bm_connection_config.cpp', 'src\talkgroup_routing.cpp') },
     @{ Name = 'app_bm_api_test'; Sources = @('tests\app_bm_api_test.cpp', 'src\app\bm_api.cpp', 'src\app\bm_servers.cpp', 'src\app\http_client.cpp', 'src\app\json.cpp') },
     @{ Name = 'app_radio_identity_test'; Sources = @('tests\app_radio_identity_test.cpp', 'src\app\radio_identity.cpp', 'src\app\http_client.cpp', 'src\app\json.cpp', 'src\radio_identity_cache.cpp') },
     @{ Name = 'gui_config_bridge_test'; Sources = @('tests\gui_config_bridge_test.cpp', 'src\gui\config_bridge.cpp', 'src\app\config.cpp', 'src\app\json.cpp', 'src\app\devices.cpp', 'src\app\bm_servers.cpp', 'src\bm_connection_config.cpp', 'src\talkgroup_routing.cpp') }

@@ -9,6 +9,7 @@
 #include "wirex/app/devices.hpp"
 #include "wirex/app/radio_cat.hpp"
 #include "wirex/app/radio_identity.hpp"
+#include "wirex/app/radio_info.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -24,6 +25,7 @@
 #include <condition_variable>
 #include <cstdio>
 #include <deque>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -341,7 +343,10 @@ public:
             connection_.reset();
             (void)cat_state_sync::invalidate_observation(state_);
             ++state_.revision;
+            (void)reset_squelch_locked("cat_disconnected"); // 关闭服务：ViewModel 正在析构，不再回调
+            squelch_callback_ = {};
         }
+        squelch_cancel_.store(true);
         worker_.disconnect(); // 取消进行中的串口操作，解除 runner 对 future 的等待
         wake_.notify_all();
         if (thread_.joinable()) thread_.join();
@@ -368,6 +373,7 @@ public:
 
     void disconnect(services::Done done) {
         std::deque<Task> canceled;
+        std::optional<services::SquelchEvent> squelch_closed;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             ++task_generation_;
@@ -378,8 +384,11 @@ public:
             connection_.reset();
             (void)cat_state_sync::invalidate_observation(state_);
             ++state_.revision;
+            squelch_closed = reset_squelch_locked("cat_disconnected");
         }
+        squelch_cancel_.store(true);
         worker_.disconnect();
+        emit_squelch(squelch_closed);
         notify();
         for (auto& task : canceled) {
             if (task.on_cancel) task.on_cancel(make_result(CommandStatus::not_ready, "CAT 连接请求已取消。"));
@@ -393,7 +402,112 @@ public:
         }, done);
     }
 
+    // R130：中继与 FM 都开启且 CAT 已连接时每 100 ms 只读采样 RI0;/SM0;。关闭时门控 reset 并在开门状态下发 closed。
+    void set_squelch_polling(bool enabled) {
+        std::optional<services::SquelchEvent> closed;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (squelch_enabled_ == enabled) return;
+            squelch_enabled_ = enabled;
+            if (!enabled) closed = reset_squelch_locked("polling_disabled");
+            next_squelch_ = steady::now();
+        }
+        if (auto log = dev_log()) log->line("cat", std::string("squelch polling ") + (enabled ? "on" : "off"));
+        emit_squelch(closed);
+        wake_.notify_all();
+    }
+
+    void set_squelch_callback(services::SquelchCallback callback) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        squelch_callback_ = std::move(callback);
+    }
+
 private:
+    static constexpr auto squelch_period = 100ms;
+    static constexpr std::chrono::milliseconds squelch_session_timeout{400};
+
+    // 调用方持有 mutex_。门处于开启状态时返回待发送的 closed 事件。
+    std::optional<services::SquelchEvent> reset_squelch_locked(const char* reason) {
+        const bool was_open = gate_.open();
+        gate_.reset();
+        const auto peak = squelch_peak_;
+        squelch_peak_.reset();
+        last_squelch_info_.reset();
+        if (!was_open) return std::nullopt;
+        services::SquelchEvent e;
+        e.edge = services::SquelchEdge::closed;
+        e.at = steady::now();
+        e.s_meter_peak = peak;
+        e.reason = reason;
+        return e;
+    }
+
+    void emit_squelch(const std::optional<services::SquelchEvent>& event) {
+        if (!event) return;
+        services::SquelchCallback callback;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            callback = squelch_callback_;
+        }
+        if (auto log = dev_log()) {
+            std::string line = event->edge == services::SquelchEdge::opened ? "squelch opened" : "squelch closed";
+            if (event->s_meter) line += " s=" + std::to_string(*event->s_meter);
+            if (event->s_meter_peak) line += " s_peak=" + std::to_string(*event->s_meter_peak);
+            if (!event->reason.empty()) line += " reason=" + event->reason;
+            log->line("cat", line);
+        }
+        if (!callback) return;
+        try { callback(*event); } catch (...) { /* 回调错误不影响 CAT 线程 */ }
+    }
+
+    // 一次 100 ms 静噪采样：只读短会话（RI0;/SM0;），结果交给 SquelchGate。不经过 CatWorker，
+    // 因而不改变写授权或观测值；与 worker 任务串行（同一 runner 线程等待 worker 的 future）。
+    void squelch_sample(std::uint64_t generation) {
+        std::optional<app::CatConnection> conn;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (generation != task_generation_ || stopping_ || !squelch_enabled_) return;
+            conn = connection_;
+            next_squelch_ = steady::now() + squelch_period;
+            squelch_cancel_.store(false);
+        }
+        if (!conn) return;
+        conn->timeout = squelch_session_timeout;
+        const auto sample = squelch_client_.query_squelch(*conn, &squelch_cancel_);
+        const auto now = steady::now();
+        std::optional<app::radio_info::RadioInfo> info;
+        if (sample.error == app::CatError::none) info = app::radio_info::parse(sample.ri_frame);
+        std::optional<services::SquelchEvent> event;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (generation != task_generation_ || stopping_ || !squelch_enabled_ || !connection_) return;
+            const bool was_open = gate_.open();
+            const auto edge = gate_.sample(info, now);
+            if (info) last_squelch_info_ = info;
+            if (gate_.open() && sample.s_meter) {
+                squelch_peak_ = squelch_peak_ ? std::max(*squelch_peak_, *sample.s_meter) : *sample.s_meter;
+            }
+            if (edge == app::radio_info::GateEvent::opened) {
+                services::SquelchEvent e;
+                e.edge = services::SquelchEdge::opened;
+                e.at = now;
+                e.s_meter = sample.s_meter;
+                squelch_peak_ = sample.s_meter;
+                event = e;
+            } else if (edge == app::radio_info::GateEvent::closed && was_open) {
+                services::SquelchEvent e;
+                e.edge = services::SquelchEdge::closed;
+                e.at = now;
+                e.s_meter = sample.s_meter;
+                e.s_meter_peak = squelch_peak_;
+                e.reason = !info ? "stale" : (info->tx != app::radio_info::TxState::rx ? "radio_tx" : "squelch");
+                squelch_peak_.reset();
+                event = e;
+            }
+        }
+        emit_squelch(event);
+    }
+
     struct Task {
         std::uint64_t generation{};
         std::function<void(std::uint64_t)> run{};
@@ -448,6 +562,12 @@ private:
             update([&](services::CatState& s) {
                 (void)cat_state_sync::apply(s, result, snap.observed);
             });
+            std::optional<services::SquelchEvent> closed;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                closed = reset_squelch_locked("identity_mismatch");
+            }
+            emit_squelch(closed);
             return;
         }
         if (!cat_state_sync::may_adopt_observation(result) || !cat_state_sync::has_observation(result.observed)) return;
@@ -662,16 +782,23 @@ private:
         for (;;) {
             Task task;
             bool do_poll = false;
+            bool do_squelch = false;
             std::uint64_t poll_generation = 0U;
             {
                 std::unique_lock<std::mutex> lock(mutex_);
-                wake_.wait_for(lock, 250ms, [this]() { return stopping_ || !tasks_.empty(); });
+                // 静噪轮询开启时缩短等待，保证约 100 ms 一次采样；其它查询仍为 1 s。
+                const auto wait = squelch_enabled_ && connection_ ? 20ms : 250ms;
+                wake_.wait_for(lock, wait, [this]() { return stopping_ || !tasks_.empty(); });
                 if (stopping_) return;
+                const auto now = steady::now();
                 if (!tasks_.empty()) {
                     task = std::move(tasks_.front());
                     tasks_.pop_front();
-                } else if (connection_ && steady::now() - last_poll_ >= 1s) {
+                } else if (connection_ && now - last_poll_ >= 1s) {
                     do_poll = true;
+                    poll_generation = task_generation_;
+                } else if (connection_ && squelch_enabled_ && !state_.busy && now >= next_squelch_) {
+                    do_squelch = true;
                     poll_generation = task_generation_;
                 }
             }
@@ -681,6 +808,7 @@ private:
                     poll(poll_generation);
                     notify();
                 }
+                if (do_squelch) squelch_sample(poll_generation);
             } catch (...) {
                 if (task.run) {
                     finish(task.generation, task.on_cancel, make_result(CommandStatus::failed, "CAT 内部错误。"),
@@ -711,6 +839,15 @@ private:
     std::optional<app::CatConnection> connection_{};
     steady::time_point last_poll_{};
     std::function<void()> wakeup_{};
+    // R130 静噪轮询（mutex_ 保护）
+    bool squelch_enabled_{};
+    services::SquelchCallback squelch_callback_{};
+    app::radio_info::SquelchGate gate_{};
+    steady::time_point next_squelch_{};
+    std::optional<unsigned> squelch_peak_{};
+    std::optional<app::radio_info::RadioInfo> last_squelch_info_{};
+    std::atomic<bool> squelch_cancel_{false};
+    app::CatClient squelch_client_{};
     app::CatWorker worker_;
     std::thread thread_; // 最后声明
 };
@@ -1016,6 +1153,22 @@ services::Services make_real_services(EngineApi& engine, RealServiceOptions opti
     };
     sv.cat.disconnect = [cat](services::Done done) { cat->disconnect(std::move(done)); };
     sv.cat.apply = [cat](services::CatSettings settings, services::Done done) { cat->apply(settings, std::move(done)); };
+    sv.cat.set_squelch_polling = [cat](bool enabled) { cat->set_squelch_polling(enabled); };
+    sv.cat.set_squelch_callback = [cat](services::SquelchCallback callback) {
+        cat->set_squelch_callback(std::move(callback));
+    };
+
+    // R130：FM 中继记录追加写 <exe>\private\runtime\relay-log.jsonl（每段一行，不含凭据）。
+    const auto relay_log_path = options.exe_directory / L"private" / L"runtime" / L"relay-log.jsonl";
+    sv.append_relay_log = [relay_log_path](const std::string& json_line) {
+        std::error_code ec;
+        std::filesystem::create_directories(relay_log_path.parent_path(), ec);
+        std::ofstream out(relay_log_path, std::ios::binary | std::ios::app);
+        if (!out) return false;
+        out << json_line << '\n';
+        out.flush();
+        return static_cast<bool>(out);
+    };
 
     auto bm = std::make_shared<BmApiRunner>();
     sv.bm_api.list_static_groups = [bm](std::uint32_t device_id, std::string key, services::BmApiDone done) {

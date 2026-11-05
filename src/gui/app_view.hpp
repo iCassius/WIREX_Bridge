@@ -49,6 +49,8 @@ private:
     };
 
     void draw_header();
+    void draw_relay_fm_controls(float row_x, float row_top, float row_h, float btn_h);
+    void draw_relay_status_line();
     void draw_connection_log_popup();
     void add_connection_event(Str source, std::string message, bool failed);
     void resolve_connection_error(Str source, std::string message);
@@ -84,6 +86,7 @@ private:
     float radio_fixed_h_{};
     float daily_fixed_h_{};
     float header_status_w_{};                       // 标题栏状态组上一帧实测宽度（居中用）
+    float header_relay_w_{};                        // 标题栏 FM 开关组上一帧实测宽度（R130）
     float header_metrics_w_{};                      // 标题栏 RTT/丢包组上一帧实测宽度
     std::optional<ChannelKey> static_remove_confirm_{}; // 正在确认移除的静态组频道
     // 主界面 BM 配置草稿

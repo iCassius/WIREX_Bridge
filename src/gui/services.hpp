@@ -8,6 +8,7 @@
 
 #include "wirex/engine.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -99,11 +100,30 @@ struct CatState {
     std::uint64_t revision{};                   // 每次变化 +1
 };
 
+// R130 FM 中继静噪检测。CatService 在 CAT 已连接且 set_squelch_polling(true) 时每 100 ms 只读查询一次 `RI0;`
+// （同一会话内顺带读 `SM0;` S 表），交给 app::radio_info::parse 与 SquelchGate；其它查询仍为 1 s 周期。
+// CAT 断开、身份不符或关闭轮询时门控 reset，若门处于开启状态则发出 closed。回调在 CAT 线程触发。
+enum class SquelchEdge : std::uint8_t { opened, closed };
+
+struct SquelchEvent {
+    SquelchEdge edge{SquelchEdge::closed};
+    std::chrono::steady_clock::time_point at{};
+    std::optional<unsigned> s_meter{};          // 本次采样的 SM0 值（0..255）；读不到时为空
+    std::optional<unsigned> s_meter_peak{};     // closed：本段开门期间的峰值
+    std::string reason{};                       // closed：squelch / radio_tx / stale / cat_disconnected / identity_mismatch / polling_disabled
+};
+
+using SquelchCallback = std::function<void(const SquelchEvent& event)>;
+
 struct CatService {
     std::function<CatState()> state{};
     std::function<void(std::wstring port, std::uint32_t baud_rate, Done done)> connect{};
     std::function<void(Done done)> disconnect{};
     std::function<void(CatSettings settings, Done done)> apply{};
+    // R130：开启/关闭 100 ms 静噪轮询（中继与 FM 均开启时为 true）。未接线时 ViewModel 视为不支持。
+    std::function<void(bool enabled)> set_squelch_polling{};
+    // R130：注册静噪事件回调（ViewModel 创建时设置一次）。
+    std::function<void(SquelchCallback callback)> set_squelch_callback{};
 };
 
 // ---------- 便携配置 ----------
@@ -136,6 +156,8 @@ struct GuiConfig {
     std::vector<ChannelEntry> channels{};
     std::optional<talkgroup_routing::TxTarget> tx_target{};
     std::vector<std::uint32_t> blocked_source_ids{};  // routing.blocked_source_ids（只读透传）
+    bool relay_enabled{false};                  // relay.enabled（R130）
+    bool relay_fm_enabled{false};               // relay.fm_enabled（R130，官方未支持）
 };
 
 // BM 设备 ID（Hotspot ID）：两位设备编号时为 DMR ID×100+编号，否则沿用已保存的 gateway_id。
@@ -210,6 +232,9 @@ struct Services {
     std::function<void(std::function<void()> wakeup)> set_wakeup{};
     // 停止后台线程并等待结束；之后不会再调用任何回调。ViewModel 析构时调用。
     std::function<void()> shutdown{};
+    // R130：追加一行 FM 中继记录（JSON，不含凭据）到 <exe>/private/runtime/relay-log.jsonl。
+    // 返回 false 表示写入失败（不影响运行）。fake-services 不接线（不写磁盘）。
+    std::function<bool(const std::string& json_line)> append_relay_log{};
 };
 
 } // namespace wirex::gui::services

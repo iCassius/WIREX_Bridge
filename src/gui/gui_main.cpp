@@ -6,6 +6,8 @@
 //   --config <json>        config.json 路径（默认 exe 同目录；不存在时生成默认配置）
 //   --screenshot <png>     渲染若干帧后把后台缓冲区保存为 PNG 并退出（离线验收）
 //   --lang zh-CN|en-US     本次运行的界面语言（覆盖 config 的 ui.language，不保存；用于截图验收）
+//   --screenshot-relay-demo
+//                          仅截图验收（需 --fake --screenshot）：内存中开启中继与 FM（不写配置），注入一段 FM 中继历史
 //   --screenshot-modal remove-static
 //                          仅截图验收（需 --fake --screenshot）：打开“移除静态组”确认弹窗后再截图
 //   --check-config         只做 config.json 生成/读取检查并退出（退出码 0 = 成功；不打开窗口）
@@ -364,6 +366,7 @@ struct Options {
     std::optional<std::string> lang{};
     std::optional<std::wstring> screenshot{};
     bool screenshot_modal_remove_static{};  // 仅截图验收：打开“移除静态组”确认弹窗
+    bool screenshot_relay_demo{};           // 仅截图验收：开启中继/FM 并注入一段 FM 中继历史（R130）
     std::optional<std::filesystem::path> config{};
     std::wstring error{};
 };
@@ -399,6 +402,8 @@ Options parse_args() {
             }
             ++i;
             o.screenshot_modal_remove_static = true;
+        } else if (a == L"--screenshot-relay-demo") {
+            o.screenshot_relay_demo = true;
         } else if (a == L"--check-config") {
             o.check_config = true;
         } else if (a == L"--config") {
@@ -428,7 +433,7 @@ Options parse_args() {
         } else {
             o.error = L"未知参数：" + a +
                       L"\n用法：WirexBridge.exe [--fake [--fake-services]] [--config <json>] [--screenshot <png>] [--lang zh-CN|en-US] "
-                      L"[--screenshot-modal remove-static] "
+                      L"[--screenshot-modal remove-static] [--screenshot-relay-demo] "
                       L"[--check-config]";
             break;
         }
@@ -437,6 +442,9 @@ Options parse_args() {
     if (o.error.empty() && o.fake_services && !o.fake) o.error = L"--fake-services 只能与 --fake 一起使用。";
     if (o.error.empty() && o.screenshot_modal_remove_static && (!o.screenshot || !o.fake)) {
         o.error = L"--screenshot-modal 只能与 --fake 和 --screenshot 一起使用。";
+    }
+    if (o.error.empty() && o.screenshot_relay_demo && (!o.screenshot || !o.fake)) {
+        o.error = L"--screenshot-relay-demo 只能与 --fake 和 --screenshot 一起使用。";
     }
     return o;
 }
@@ -647,6 +655,10 @@ int run(HINSTANCE instance) {
             vm.set_font_status(font_status);
             // --lang 覆盖 config 中的 ui.language，只作用于本次运行（不保存）。
             if (opts.lang) wirex::gui::set_language(wirex::gui::parse_language(*opts.lang));
+            if (opts.screenshot_relay_demo && backend->fake) {
+                vm.preview_relay_enabled();
+                backend->fake->seed_relay_fm_demo();
+            }
             vm.set_wakeup([wake]() { SetEvent(wake); });
             wirex::gui::AppView view(vm, fonts);
             const ImVec4 clear = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];
