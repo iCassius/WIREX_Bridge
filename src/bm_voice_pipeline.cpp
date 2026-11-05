@@ -826,7 +826,7 @@ Error BmVoicePipeline::playback_ready(TimePoint now) noexcept
     if (!rx_network_ended_) {
         rx_state_ = RxState::buffering;
     }
-    next_rx_due_ = now;
+    last_rx_tick_ = now;
     return Error::none;
 }
 
@@ -1193,24 +1193,23 @@ Error BmVoicePipeline::tick_rx(TimePoint now)
         rx_state_ == RxState::waiting_for_playback) {
         return Error::none;
     }
+    const auto since_last_tick = now - last_rx_tick_;
+    last_rx_tick_ = now;
     if (rx_state_ == RxState::buffering) {
-        if (rx_burst_count_ < 2U && !rx_network_ended_) {
+        if (rx_burst_count_ < rx_start_prebuffer_bursts && !rx_network_ended_) {
             return Error::none;
         }
         rx_state_ = rx_network_ended_ ? RxState::draining : RxState::playing;
-        next_rx_due_ = now;
-    }
-    if (now < next_rx_due_) {
-        return Error::none;
     }
     const bool queued_voice = rx_burst_count_ != 0U || trailing_missing_bursts_ != 0U;
-    const auto rx_lateness = now - next_rx_due_;
-    if (queued_voice && rx_lateness > max_voice_schedule_lateness) {
-        // 超期 burst 已不能按实时语音播放，清空通话并让调用方执行 HRI 收尾。
+    if (queued_voice && since_last_tick > max_rx_schedule_stall) {
+        // 引擎停顿远超设备余量，积压语音已不能按实时播放；清空通话并让调用方执行 HRI 收尾。
         cancel_rx();
         return Error::deadline_missed;
     }
-    if (max_rx_queued_pcm_frames - playback_count_ < codewords_per_burst) {
+    // 由设备消费驱动：只在待播放与在途帧低于目标水位时解码下一个 burst。
+    if (playback_count_ + playback_inflight_ >= rx_playback_target_frames ||
+        max_rx_queued_pcm_frames - playback_count_ < codewords_per_burst) {
         return Error::none;
     }
 
@@ -1218,15 +1217,7 @@ Error BmVoicePipeline::tick_rx(TimePoint now)
         auto& queued = rx_bursts_[rx_burst_read_];
         if (queued.missing_before != 0U) {
             --queued.missing_before;
-            for (std::size_t index = 0U; index < codewords_per_burst; ++index) {
-                const std::size_t write = (playback_read_ + playback_count_) % max_rx_queued_pcm_frames;
-                playback_frames_[write].pcm.fill(0);
-                playback_frames_[write].sample_count = pcm48_samples_per_frame;
-                ++playback_count_;
-            }
-            next_rx_due_ = rx_lateness > voice_schedule_reanchor_lateness
-                ? now + voice_period
-                : next_rx_due_ + voice_period;
+            push_concealment_burst();
             return Error::none;
         }
 
@@ -1243,33 +1234,16 @@ Error BmVoicePipeline::tick_rx(TimePoint now)
                 converted.output_written != frame.size()) {
                 frame.fill(0);
             }
-            const std::size_t write = (playback_read_ + playback_count_) % max_rx_queued_pcm_frames;
-            playback_frames_[write].pcm = frame;
-            playback_frames_[write].sample_count = frame.size();
-            ++playback_count_;
+            push_decoded_frame(frame);
         }
         rx_burst_read_ = (rx_burst_read_ + 1U) % rx_bursts_.size();
         --rx_burst_count_;
-        next_rx_due_ = rx_lateness > voice_schedule_reanchor_lateness
-            ? now + voice_period
-            : next_rx_due_ + voice_period;
-        if (rx_state_ == RxState::draining) {
-            return Error::none;
-        }
         return Error::none;
     }
 
     if (trailing_missing_bursts_ != 0U) {
         --trailing_missing_bursts_;
-        for (std::size_t index = 0U; index < codewords_per_burst; ++index) {
-            const std::size_t write = (playback_read_ + playback_count_) % max_rx_queued_pcm_frames;
-            playback_frames_[write].pcm.fill(0);
-            playback_frames_[write].sample_count = pcm48_samples_per_frame;
-            ++playback_count_;
-        }
-        next_rx_due_ = rx_lateness > voice_schedule_reanchor_lateness
-            ? now + voice_period
-            : next_rx_due_ + voice_period;
+        push_concealment_burst();
         return Error::none;
     }
 
@@ -1283,6 +1257,15 @@ Error BmVoicePipeline::tick_rx(TimePoint now)
             const std::size_t write = (playback_read_ + playback_count_) % max_rx_queued_pcm_frames;
             playback_frames_[write].pcm.fill(0);
             std::copy_n(tail.begin(), flushed.output_written, playback_frames_[write].pcm.begin());
+            if (rx_fade_in_pending_) {
+                // 尾部紧接补偿静音时同样从 0 斜坡进入，避免阶跃。
+                const std::size_t ramp = std::min(rx_fade_samples, flushed.output_written);
+                for (std::size_t sample = 0U; sample < ramp; ++sample) {
+                    auto& value = playback_frames_[write].pcm[sample];
+                    value = static_cast<std::int16_t>(static_cast<std::int32_t>(value) *
+                        static_cast<std::int32_t>(sample) / static_cast<std::int32_t>(ramp));
+                }
+            }
             playback_frames_[write].sample_count = flushed.output_written;
             ++playback_count_;
         }
@@ -1295,6 +1278,45 @@ Error BmVoicePipeline::tick_rx(TimePoint now)
         finish_rx_if_drained();
     }
     return Error::none;
+}
+
+void BmVoicePipeline::push_concealment_burst() noexcept
+{
+    // 丢包补偿：第一帧从上一输出样本线性淡出到 0，其余为静音；下一解码帧再淡入。
+    for (std::size_t index = 0U; index < codewords_per_burst; ++index) {
+        const std::size_t write = (playback_read_ + playback_count_) % max_rx_queued_pcm_frames;
+        auto& pcm = playback_frames_[write].pcm;
+        pcm.fill(0);
+        if (index == 0U && rx_last_sample_ != 0) {
+            const auto start = static_cast<std::int32_t>(rx_last_sample_);
+            const auto ramp = static_cast<std::int32_t>(rx_fade_samples);
+            for (std::int32_t sample = 0; sample < ramp; ++sample) {
+                pcm[static_cast<std::size_t>(sample)] =
+                    static_cast<std::int16_t>(start * (ramp - 1 - sample) / ramp);
+            }
+        }
+        playback_frames_[write].sample_count = pcm48_samples_per_frame;
+        ++playback_count_;
+    }
+    rx_last_sample_ = 0;
+    rx_fade_in_pending_ = true;
+}
+
+void BmVoicePipeline::push_decoded_frame(Pcm48Frame& frame) noexcept
+{
+    if (rx_fade_in_pending_) {
+        const auto ramp = static_cast<std::int32_t>(rx_fade_samples);
+        for (std::int32_t sample = 0; sample < ramp; ++sample) {
+            auto& value = frame[static_cast<std::size_t>(sample)];
+            value = static_cast<std::int16_t>(static_cast<std::int32_t>(value) * sample / ramp);
+        }
+        rx_fade_in_pending_ = false;
+    }
+    rx_last_sample_ = frame.back();
+    const std::size_t write = (playback_read_ + playback_count_) % max_rx_queued_pcm_frames;
+    playback_frames_[write].pcm = frame;
+    playback_frames_[write].sample_count = frame.size();
+    ++playback_count_;
 }
 
 bool BmVoicePipeline::queue_event(const Event& event) noexcept
@@ -1487,9 +1509,6 @@ Error BmVoicePipeline::process_receive_result(const dmr_call::ReceiveResult& res
             rx_call_ = protocol_event.call;
             rx_have_link_control_ = protocol_event.link_control_validated;
             rx_color_code_known_ = protocol_event.color_code_known;
-            if (rx_state_ == RxState::buffering && rx_burst_count_ >= 2U) {
-                next_rx_due_ = now;
-            }
             break;
         }
         case dmr_call::ReceiveEventKind::link_control_confirmed:
@@ -1600,7 +1619,9 @@ void BmVoicePipeline::clear_rx_media() noexcept
     playback_count_ = 0U;
     playback_inflight_ = 0U;
     trailing_missing_bursts_ = 0U;
-    next_rx_due_ = {};
+    last_rx_tick_ = {};
+    rx_last_sample_ = 0;
+    rx_fade_in_pending_ = true;
     rx_upsampler_finished_ = false;
 }
 

@@ -365,7 +365,9 @@ private:
 
 class WaveOutput {
 public:
-    static constexpr std::size_t buffer_count = WaveInput::buffer_count;
+    // 与 WaveInput 解耦：BM 下行按 20 ms 帧提交，需要容纳 bm_voice 的 10 帧（200 ms）
+    // 在途上限再留余量；probe 的 100 ms 块路径只在设备欠载时才会排满。
+    static constexpr std::size_t buffer_count = 12U;
     struct Buffer {
         std::array<std::int16_t, WaveInput::sample_count> samples{};
         WAVEHDR header{};
@@ -375,7 +377,8 @@ public:
     };
     enum class SubmitResult { queued, full, failed, cancelled, timed_out };
     enum class DrainResult { complete, failed, cancelled, timed_out };
-    static constexpr std::size_t max_completion_tokens = 8U;
+    // 每个已完成缓冲产生一个令牌；按缓冲数的两倍留出调用方晚取的余量。
+    static constexpr std::size_t max_completion_tokens = buffer_count * 2U;
     struct CompletedFrames {
         std::uint64_t generation{};
         std::size_t count{};

@@ -23,13 +23,27 @@ inline constexpr std::size_t max_tx_queued_codewords = 36U;
 inline constexpr std::size_t tx_start_prebuffer_codewords = 6U;
 inline constexpr std::size_t max_rx_queued_bursts = 50U;
 inline constexpr std::size_t max_rx_queued_pcm_frames = 150U;
-inline constexpr std::size_t max_unconfirmed_playback_frames = 3U;
+// 交给 WaveOut 但尚未确认完成的 20 ms 帧上限：10 帧 = 200 ms 设备侧余量，
+// 用于吸收引擎循环调度延迟（5 ms 等待在 Windows 上常被拉长到 15 ms 以上）。
+inline constexpr std::size_t max_unconfirmed_playback_frames = 10U;
+// 起播前累积的 DMRD 语音 burst 数。生产与消费同速，稳态设备余量由此决定：
+// 第 3 个 burst 到达才起播，约 120 ms 余量可吸收 ±30 ms 到达抖动叠加单包丢失。
+inline constexpr std::size_t rx_start_prebuffer_bursts = 3U;
+// 已解码待取帧 + 在途帧低于此值时才解码下一 burst；播放由设备消费节奏驱动。
+inline constexpr std::size_t rx_playback_target_frames = max_unconfirmed_playback_frames;
+// 丢包补偿/恢复时的线性斜坡长度（48 kHz 下 5 ms）。
+inline constexpr std::size_t rx_fade_samples = 240U;
 inline constexpr std::size_t max_pipeline_events = 16U;
 inline constexpr std::uint32_t max_missing_bursts_to_compensate = 4U;
 inline constexpr std::size_t max_routed_rx_staging_datagrams = 8U;
 inline constexpr auto receive_start_timeout = std::chrono::seconds{3};
+// 仅用于 TX：发送迟到超过该值时重新锚定 60 ms 发送时钟。
 inline constexpr auto voice_schedule_reanchor_lateness = std::chrono::milliseconds{20};
+// 仅用于 TX：超过该迟到的上行语音整通结束。
 inline constexpr auto max_voice_schedule_lateness = std::chrono::milliseconds{120};
+// RX 播放中两次 tick 间隔超过该值（远超 200 ms 设备余量）时视为调度停顿，
+// 积压语音已不适合实时播放，取消接收并由外层执行收尾。
+inline constexpr auto max_rx_schedule_stall = std::chrono::milliseconds{1000};
 
 using Pcm48Frame = std::array<std::int16_t, pcm48_samples_per_frame>;
 
@@ -253,7 +267,9 @@ public:
                                              TimePoint now) noexcept;
     [[nodiscard]] std::optional<Event> take_event() noexcept;
 
-    // 每次调用最多发送一个 DMRD 语音 burst，并最多解码一个接收 burst；不会追赶补发。
+    // 每次调用最多发送一个 DMRD 语音 burst，并最多解码一个接收 burst。
+    // TX 按 60 ms 绝对时钟发送；RX 在待播放帧低于 rx_playback_target_frames 时解码，
+    // 因此调度迟到后的后续 tick 会逐个追赶积压 burst。
     [[nodiscard]] Error tick(TimePoint now) noexcept;
     void reset() noexcept;
     [[nodiscard]] Snapshot snapshot() const noexcept;
@@ -313,6 +329,8 @@ private:
                                               TimePoint now);
     void record_dmrd_sequence(const dmr_call::SequenceObservation& observation) noexcept;
     void clear_rx_media() noexcept;
+    void push_concealment_burst() noexcept;
+    void push_decoded_frame(Pcm48Frame& frame) noexcept;
     [[nodiscard]] Error timeout_rx_start() noexcept;
     void finish_rx_if_drained() noexcept;
 
@@ -377,7 +395,9 @@ private:
     std::uint64_t rx_accepted_voice_bursts_{};
     DmrdSequenceStats dmrd_sequence_stats_{};
     dmr_call::CallConfig dmrd_sequence_call_{};
-    TimePoint next_rx_due_{};
+    TimePoint last_rx_tick_{};
+    std::int16_t rx_last_sample_{};
+    bool rx_fade_in_pending_{true};
     TimePoint rx_start_deadline_{};
     TimePoint last_now_{};
     bool has_last_now_{};
