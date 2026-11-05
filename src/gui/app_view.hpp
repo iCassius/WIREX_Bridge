@@ -13,8 +13,11 @@
 #include <string>
 
 struct ImFont;
+struct ImVec2;
 
 namespace wirex::gui {
+
+struct FieldGrid;
 
 struct Fonts {
     ImFont* regular{};
@@ -55,7 +58,9 @@ private:
     void draw_radio_panel(float width, float height);
     void draw_daily_panel(float width, float height);
     void update_connection_log();
-    void draw_audio_devices(float inner_w);
+    void draw_audio_devices(const FieldGrid& grid, float caption_h);
+    void begin_panel(const char* id, float width, float height);
+    void end_panel();
     void draw_static_groups(float inner_w);
     void toggle_language();
     void toggle_radio();
@@ -64,11 +69,15 @@ private:
     // ImGui coordinates and the DX11 back buffer are both in physical pixels here.
     // Round scaled dimensions so 125%/150% DPI does not leave half-pixel widget edges.
     [[nodiscard]] float px(float logical) const noexcept { return std::round(logical * scale_); }
+    [[nodiscard]] ImVec2 call_card_padding() const noexcept;
 
     ViewModel& vm_;
     Fonts fonts_;
     float scale_{1.0F};
     bool continuous_{};
+    // 电台/日常控制面板上一帧测得的“不含段间距”内容高度，用于推算段间距（SectionFlow）。
+    float radio_fixed_h_{};
+    float daily_fixed_h_{};
     // 主界面 BM 配置草稿
     services::GuiConfig draft_{};
     std::string draft_dmr_id_{};

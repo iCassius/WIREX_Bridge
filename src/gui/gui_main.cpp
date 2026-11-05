@@ -5,6 +5,7 @@
 //   --fake-services        与 --fake 合用：服务也用内存模拟（离线截图，不读写 config.json、不访问串口/网络）
 //   --config <json>        config.json 路径（默认 exe 同目录；不存在时生成默认配置）
 //   --screenshot <png>     渲染若干帧后把后台缓冲区保存为 PNG 并退出（离线验收）
+//   --lang zh-CN|en-US     本次运行的界面语言（覆盖 config 的 ui.language，不保存；用于截图验收）
 //   --check-config         只做 config.json 生成/读取检查并退出（退出码 0 = 成功；不打开窗口）
 // 不带 --fake 时使用真实引擎（需以 WIREX_GUI_REAL_ENGINE=1 编译；否则提示“真实引擎尚未接入”）。
 //
@@ -358,6 +359,7 @@ struct Options {
     bool fake{};
     bool fake_services{};
     bool check_config{};
+    std::optional<std::string> lang{};
     std::optional<std::wstring> screenshot{};
     std::optional<std::filesystem::path> config{};
     std::wstring error{};
@@ -381,6 +383,12 @@ Options parse_args() {
             o.fake = true;
         } else if (a == L"--fake-services") {
             o.fake_services = true;
+        } else if (a == L"--lang") {
+            if (i + 1 >= argc || (std::wstring(argv[i + 1]) != L"zh-CN" && std::wstring(argv[i + 1]) != L"en-US")) {
+                o.error = L"--lang 需要 zh-CN 或 en-US。";
+                break;
+            }
+            o.lang = std::wstring(argv[++i]) == L"en-US" ? "en-US" : "zh-CN";
         } else if (a == L"--check-config") {
             o.check_config = true;
         } else if (a == L"--config") {
@@ -409,7 +417,7 @@ Options parse_args() {
             o.screenshot = full.wstring();
         } else {
             o.error = L"未知参数：" + a +
-                      L"\n用法：WirexBridge.exe [--fake [--fake-services]] [--config <json>] [--screenshot <png>] "
+                      L"\n用法：WirexBridge.exe [--fake [--fake-services]] [--config <json>] [--screenshot <png>] [--lang zh-CN|en-US] "
                       L"[--check-config]";
             break;
         }
@@ -623,6 +631,8 @@ int run(HINSTANCE instance) {
             // 成员析构顺序：vm（停止服务线程）→ backend（引擎）。
             wirex::gui::ViewModel vm(*backend->api, std::move(backend->services), opts.fake);
             vm.set_font_status(font_status);
+            // --lang 覆盖 config 中的 ui.language，只作用于本次运行（不保存）。
+            if (opts.lang) wirex::gui::set_language(wirex::gui::parse_language(*opts.lang));
             vm.set_wakeup([wake]() { SetEvent(wake); });
             wirex::gui::AppView view(vm, fonts);
             const ImVec4 clear = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];
