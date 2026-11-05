@@ -1,33 +1,27 @@
 ﻿# WIREX Bridge 交接入口
 
-更新：2026-11-05（R128）。本文只记录当前状态；更早的交接（R103–R127）可用 `git log -- HANDOFF.md` 查看。系统组成见 [ARCHITECTURE](docs/ARCHITECTURE.md)，待办以 [TODO](TODO.md) 为准。
+更新：2026-11-06（R128–R130）。本文只记录当前状态；更早的交接（R103–R127）可用 `git log -- HANDOFF.md` 查看。系统组成见 [ARCHITECTURE](docs/ARCHITECTURE.md)，待办以 [TODO](TODO.md) 为准。
 
 ## 当前版本
 
 | 项 | 状态 |
 | --- | --- |
-| `feat/r128-native-gui` | 单进程原生 C++ GUI（Dear ImGui + DX11）+ 进程内引擎 + C++ 服务；头部为 dev 日志提交 `89d2a72` 之后的文档整理提交。**未推送** |
+| `feat/r128-native-gui` | 单进程原生 C++ GUI（Dear ImGui + DX11）+ 进程内引擎 + C++ 服务 + FM 中继（R130，`914b346..27e4da4`）；头部为 `27e4da4` 之后的 FM 中继文档同步提交。**未推送** |
 | 旧 WPF UI | `ui/windows/`、launcher、`tools/start-*.ps1`、`--ui-pipe` 适配层仍在仓库中，实机验收通过后退役 |
 | stable `v0.1.0` | tag 指向 `c12b50a`，GitHub Release 已发布；发布审计见 [R124_RELEASE](docs/R124_RELEASE.md) |
 | 本机单 EXE | R128 单 EXE 仅在本机交付，未打包；单 EXE 的 ZIP profile 尚未建立 |
 
-## HRI 实机连接：二分排查中
+## HRI 实机连接
 
-用户报告当前版本连接不上电台（HRI 不就绪）。正在用 `FTX1_project/_bisect/` 下 5 个目录逐个对照，按版本二分定位引入问题的改动。尚无结论。
+已修复 `clock_regressed`（`connect_radio` 后主循环用旧时钟驱动 HRI 会话），见提交 `a50b234`。HRI 固定 115200 8N1，CAT 按配置波特率 8N2；握手时序见 ARCHITECTURE 第 6 节。
 
-方法：全程不按 PTT、不发射；每个目录测完关闭程序再测下一个；记录能否 HRI 就绪及报错原文（截图即可）。
+## FM 中继（R130）
 
-| 目录 | 内容 | 说明 |
-| --- | --- | --- |
-| `0-wpf-v010-original` | 已发布 v0.1.0（旧 WPF + 旧引擎） | 基线，预期可连 |
-| `1-wpf-v010-new-engine` | v0.1.0 的 WPF，`runtime/wirex_bridge.exe` 换成当前引擎（`89d2a72`） | 区分 UI 与引擎 |
-| `2-gui-ff2bb16` | 第一个接上真实引擎的原生 GUI | 需 `private/device-y.bin`（已放好） |
-| `3-gui-9e789c9` | codex 第一次改动（内嵌 Y 模板、串口识别、联合启停） | 需 `private/device-y.bin`（已放好） |
-| `4-gui-current` | 当前版本 + dev 日志（`logs/` 目录） | 使用内嵌模板 |
-
-0/1 使用 v0.1.0 包内自带的 `config.json`；2/3/4 使用用户个人的 `config.json`。目录 4 的 dev 日志会记录 HRI 帧类型与字节数，可用于对照 V/Y 握手阶段。
-
-相关源码事实（不是结论）：HRI 固定 115200 8N1（`src/engine/win_io.hpp` `configure_serial`）；CAT 按配置波特率 8N2，默认 38400，界面波特率只作用于 CAT。握手时序见 ARCHITECTURE 第 6 节。
+- 右上角“启用中继”写 `relay.enabled`，下次连接电台使用 AP Y 模板（offset 0x05 为 `'1'`）；中继开启后 FM 按钮写 `relay.fm_enabled`。电台已连接时切换只提示需重连。
+- 中继与 FM 都开启且 CAT 已连接时，每 100 ms 只读 `RI0;`+`SM0;`，静噪开门/关门驱动引擎 `relay_fm_start()`/`relay_fm_stop()`；单段最长 180 s。
+- 记录：来话历史黄色“FM 中继 → TG …”与 `<exe>/private/runtime/relay-log.jsonl`。
+- 2026-11-06 实测：145.200 MHz FM 下按键后 P8 在下一次轮询内 0→1；原始数据在父目录 `research/hil/2026-11-06_fm_squelch_capture2.jsonl`。
+- 规则与结束原因见 [R128_NATIVE_GUI](docs/R128_NATIVE_GUI.md)“FM 中继”。
 
 ## dev 日志
 
@@ -40,13 +34,15 @@
 与旧版的行为差异（实机确认）：
 - CAT 设置模式/频率要求核心已停止（旧版为核心空闲）；功率门控用 `media_owner==idle` 近似“接收队列为空”。
 - 窗口可调整大小（最小 1180×780），设备与 BM 配置都在主界面，没有设置弹窗。
-- BM RTT 尚未接入 `Snapshot`，主界面显示“暂无数据”。
+- BM 静态组与收听频道双向同步；主界面显示 BM RTT 与会话丢包率。
 
 待办（详见 TODO）：
-- [ ] 完成 HRI 二分排查并修复。
 - [ ] 实机（不带 `--fake`）验证 HRI/CAT、BM 连接、BM-only 本机播放、TG46001 收听、启动组呼、CAT 门控、关窗有界收尾。
 - [ ] 音频断续/破音专项（另有 agent 处理，见 TODO 第零节）。
-- [ ] BM RTT 接入快照与界面。
+- [ ] 实机验证 AP 模板与 DIRECT 模板在 AP PC 电台上的握手。
+- [ ] 实机验证 FM 中继端到端（RF → BM）与转发音量。
+- [ ] 评估 100 ms CAT 轮询负载。
+- [ ] C4FM 中继（阻塞于 `R` 记录格式，见 TODO 1.3）。
 - [ ] 125% DPI 下验收字体与布局；人工验证 IME 中文输入。
 - [ ] 为单 EXE 建立 ZIP profile 并核对首次启动配置生成。
 - [ ] 实机通过后退役 WPF/PowerShell UI、launcher 与 control-v2 适配层。
@@ -73,7 +69,8 @@ build/wirex.exe test --offline              # Native + PowerShell 离线回归�
 ```
 
 - 正式版 GUI：`tools/build-gui.ps1 -Release`（dev 日志默认关闭）。产物在 `build/_work/wirex-gui-<commit7>[-dirty]-<UTC>/`。
-- app/GUI 逻辑测试：`tools/build-app-tests.ps1`（14 个目标，输出 `build/app-tests/`）。
+- app/GUI 逻辑测试：`tools/build-app-tests.ps1`（18 个目标，输出 `build/app-tests/`）。
+- 当前基线（主 checkout 实测）：Native 41/41、app 18 项全部通过，GUI 编译 0 warning。
 - ImGui 重复 ID 检查：`tools/run-gui-duplicate-item-harness.ps1`。
 - 所有离线测试使用 fake 设备与 localhost 假 Master，不代表实机或 RF 验收。
 
@@ -83,7 +80,7 @@ build/wirex.exe test --offline              # Native + PowerShell 离线回归�
 | --- | --- |
 | [README.md](README.md) | 用户使用说明（用户维护，不随交接修改） |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 当前系统架构 |
-| [docs/R128_NATIVE_GUI.md](docs/R128_NATIVE_GUI.md) | R128 原生 GUI 设计决定与行为规则（含原 R129 启动组呼） |
+| [docs/R128_NATIVE_GUI.md](docs/R128_NATIVE_GUI.md) | R128 原生 GUI 设计决定与行为规则（含原 R129 启动组呼、R130 FM 中继） |
 | [TODO.md](TODO.md) | 权威待办清单 |
 | `docs/R126_*.md`、[docs/R124_RELEASE.md](docs/R124_RELEASE.md) | 旧 WPF 版 R126 设计记录与 v0.1.0 发布审计 |
 | `docs/releases/` | Release 正文与包内 README，由打包/发布脚本按路径读取 |

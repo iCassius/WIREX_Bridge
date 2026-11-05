@@ -1,6 +1,6 @@
 # R128 全原生 GUI 重构（设计决定）
 
-更新：2026-11-05。分支 `feat/r128-native-gui`。系统现状见 [ARCHITECTURE](ARCHITECTURE.md)，待办见 [TODO](../TODO.md)。本文记录 R128/R129 的设计决定与行为规则；逐轮验证记录见 git 历史。
+更新：2026-11-06。分支 `feat/r128-native-gui`。系统现状见 [ARCHITECTURE](ARCHITECTURE.md)，待办见 [TODO](../TODO.md)。本文记录 R128–R130 的设计决定与行为规则；逐轮验证记录见 git 历史。
 
 ## 选型
 
@@ -65,9 +65,47 @@
 - 正在编辑或有用户草稿的字段不被异步读回覆盖。Apply 成功只清除本次提交且之后未再改动的字段草稿；失败不清草稿。频率为空时 Apply 不提交频率；模式与功率都有效选择后才允许 Apply。
 - CAT 新配置及缺字段合并默认 38400 baud；但磁盘配置严格 shape 检查要求 `devices.cat_baud_rate` 存在，缺失时作为不完整配置拒绝并保留原文件。
 
+## FM 中继（R130）
+
+官方未支持的功能：电台 FM 收到信号、静噪开启时，把 USB 声卡录到的音频经 AMBE 编码发往 BM。实现分布见 ARCHITECTURE 第 3、6、8、9 节。
+
+### 开关
+
+- 标题栏右上角“启用中继 / 停用中继”按钮切换 `relay.enabled` 并立即保存。中继开启后，下次连接电台使用 AP PC 模式 Y 模板（`RadioStartConfig::ap_mode`）。电台已连接（或正在连接）时切换只提示“需重新连接电台后生效”，不自动断开或重连。
+- 中继开启时按钮右侧出现 FM 按钮，切换 `relay.fm_enabled`（中继关闭时不可切换）。状态并入按钮文字：`○ FM`（FM 关闭）、`● FM · 等待静噪开启`、`● FM · FM 中继进行中`、`● FM · CAT 未连接`。“官方未支持”说明放在 tooltip；FM 关闭时 tooltip 另加“C4FM 中继尚未支持，当前仅 FM 可用”。
+- 中继与 FM 都开启且 CAT 已连接时才启动 100 ms `RI0;`/`SM0;` 静噪采样；任一条件不满足即停止采样，若中继段正在进行则请求引擎结束。
+- 截图验收：`--fake --screenshot <png> --screenshot-relay-demo`。
+
+### 半双工规则
+
+- FM 中继与手咪 PTT 共用一个上行管线和同一个 Router 发射许可，目标都是当前 PTT 目标（`tx_policy.target`）。
+- 中继上行进行中，BM 来话按 Router 规则拒绝，不会经电台播放。
+- BM/HRI 下行进行中（来话播放、排空或收尾），静噪开门触发的 `relay_fm_start` 返回 `busy`（`relay_fm_busy_downlink`），不打断来话；手咪上行中返回 `relay_fm_busy_ptt`。两者都计入 `relay_fm_rejected_busy`，界面提示“FM 中继未开始：…”。
+- 中继段进行中，手咪按下或松开都不能打断或结束本段；中继段只由静噪关门、超时或异常结束。
+- 发射关闭（`transmit_enabled=false`）时返回 `forbidden`；BM 或电台未就绪时返回 `not_ready`。
+- 本节只覆盖 FM。C4FM 中继及其仲裁待 `R` 记录格式确认后再做（见 TODO 1.3）。
+
+### 结束原因
+
+单段最长 180 s。`relay_fm_ended.end_reason`：`squelch_closed`（静噪关门，正常结束）、`timeout`（达到 180 s）、`transmit_disabled`（发射被关闭）、`bm_not_ready`（BM 断开或断开中）、`radio_lost`（电台断开）、`shutdown`（引擎停止）、`aborted`（其他原因或终止帧发送失败）。
+
+### 记录
+
+- 来话历史中以黄色显示一行“时刻 · FM 中继 → TG …（或私呼）· TS · 时长 · S 峰值”，FM 没有呼号；tooltip 给出结束原因。
+- 每段追加一行到 `<exe>/private/runtime/relay-log.jsonl`：`started_utc`、`duration_ms`、`target_kind`、`target_id`、`slot`、`s_meter_peak`、`end_reason`。超时等先于静噪关门结束的段，等关门事件补上 S 表峰值后再写入。
+
+### 实测证据（2026-11-06，AP PC 模式，145.200 MHz FM）
+
+- 用 `tools/research/cat_squelch_probe.py` 以 100 ms 间隔只读采样（COM11，38400 8N2），由第二台电台按键发射。原始数据在仓库外父目录 `research/hil/2026-11-06_fm_squelch_capture2.jsonl`（448 次采样，0 次失败）。
+- `RI0;` 的 P8 在按键后下一次 100 ms 轮询内由 0 变 1，松开后变回 0；P4 全程为 0（本机未发射）。
+- `SM0;`：空闲时 72–94，开门时 134–212（开关门过渡采样可落在两者之间）。`SM1;`（副收信机）始终不应答。
+- 以上只确认静噪检测；AP 模板握手、RF → BM 端到端和转发音量尚未实机验证（见 TODO 1.3）。
+
 ## 与旧版的行为差异（实机验收时确认）
 
 - CAT 设置模式/频率要求核心**已停止**；旧版只要求核心空闲。
 - CAT 功率的“接收队列为空”条件：快照没有队列深度，暂用 `media_owner==idle` 代替。
 - 窗口可调整大小（最小 1180×780）；设备与 BM 配置直接在主界面面板中，没有单独的设置弹窗。
 - 无 `--open-settings` 参数。
+- BM 静态组与收听频道双向同步：每个设备/API Key 首次成功读取静态组后，把不在收听表中的静态组补进频道并保存；面板添加静态组同时加入收听频道，面板移除同时取消收听；在频道卡片上移除静态组频道时先调 BM remove，成功才取消收听，失败保留频道，无 API Key 时只取消收听。启动组呼等首次静态组读取结束（最多 10 s）后再激活，并跳过静态组频道。
+- 主界面显示 BM RTT（RPTPING/MSTPONG 往返，悬停显示最近/最小/平均/最大和样本数）与本次会话丢包率（DMRD 序号统计，≥1% 黄色、≥5% 红色，悬停另显示当前通话丢包）；无数据时显示“—”。

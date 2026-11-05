@@ -28,7 +28,7 @@ WirexBridge.exe
 
 - **UI 线程**：`MsgWaitForMultipleObjectsEx` 等待窗口消息和一个唤醒事件。引擎和 CAT 服务通过 `set_wakeup` 回调 `SetEvent` 唤醒 UI；只在消息、唤醒或动画需要时重绘（引擎事件驱动重绘限速 10 fps，悬停/输入光标 10 fps，空闲时无限等待）。窗口逻辑尺寸 1360×900，最小 1180×780，按 DPI 缩放。收到 `WM_DEVICECHANGE` 时重新枚举设备，只刷新显示，不连接。
 - **引擎线程**：`Engine::start()` 创建，运行原 `run_bm_bridge` 主循环；HRI 串口、WinMM（`CALLBACK_EVENT`）和 BM UDP 都在这个线程内驱动。
-- **CAT 线程**：`real_services.cpp` 的 `CatRunner` 串行执行连接、应用和每秒轮询，内部通过 `app::CatWorker`（自带线程和可取消任务队列）访问串口。
+- **CAT 线程**：`real_services.cpp` 的 `CatRunner` 串行执行连接、应用、每秒轮询以及 FM 中继开启时约 100 ms 一次的静噪采样（第 9 节），内部通过 `app::CatWorker`（自带线程和可取消任务队列）访问串口。
 - **HTTP 线程**：`BmApiRunner`（BM API，单任务串行）与 `IdentityRunner`（radioid.net，队列 16，请求间隔 ≥1 s，失败后指数冷却）。
 - 服务回调都在后台线程触发，由 `ViewModel` 切回 UI 线程。`Services::shutdown` 停止并等待全部服务线程；`Engine` 析构时如仍在运行，会请求停止并有界等待 5 s。
 
@@ -41,10 +41,24 @@ WirexBridge.exe
   - BM：`configure_bm(BmTarget)`、`set_bm_connection(enabled, requested_revision)`
   - 电台：`connect_radio(RadioStartConfig)`、`disconnect_radio()`
   - 路由与音频：`replace_rx_policy`、`replace_tx_policy`、`quick_call_join`、`set_audio_gains`、`set_audio_endpoints`
+  - FM 中继：`relay_fm_start()`、`relay_fm_stop()`（见下文“FM 中继上行”）
   - 其他：`upsert_radio_identity`、`manual_ptt_toggle()`（CLI 键盘诊断）
-- **快照**：`snapshot()` 返回不可变 `shared_ptr<const Snapshot>`，每次发布 `seq` +1。内容包括 `phase`、`radio_error`、HRI/串口/音频打开状态与实际端口和 endpoint、`local_audio`（本机播放状态）、`bm_link`/`bm_error`/`bm_connection_revision`、`media_owner`、策略 revision、`active_rx_call`、增益、电平（最近 200 ms 增益后峰值，削波样本为累计值）和计数器。快照中暂无 BM RTT 字段，界面显示“暂无数据”。
-- **事件**：`drain_events()` 取出离散事件（`rx_call_started/ended`、`tx_started/ended`、`bm_link_changed`、`quick_call_result`、`warning`、`fatal`）。队列上限 1024（`engine_internal.hpp`），溢出时丢弃最旧事件并计入 warning。
+- **快照**：`snapshot()` 返回不可变 `shared_ptr<const Snapshot>`，每次发布 `seq` +1。内容包括 `phase`、`radio_error`、HRI/串口/音频打开状态与实际端口和 endpoint、`local_audio`（本机播放状态）、`bm_link`/`bm_error`/`bm_connection_revision`、`media_owner`、策略 revision、`active_rx_call`、增益、电平（最近 200 ms 增益后峰值，削波样本为累计值）和计数器。另有：
+  - `network`（`NetworkQuality`）：RTT 取自 RPTPING/MSTPONG 往返（最近/平均/最小/最大/样本数，`rtt_valid`）；丢包按 DMRD 序号统计，分本次 BM 会话累计（`session_expected/missing`）与当前或最近一次通话（`call_expected/missing`）。主界面显示 RTT 与会话丢包率，悬停提示给出明细。
+  - `last_filtered`（`FilteredTraffic`）：最近一次被收听策略过滤的 BM 流（源、目标、时隙、类型、时刻），只用于界面提示“有流量但未收听”，不参与路由。
+  - `relay_fm_active`、`relay_fm_started_ms`（相对 `clock_origin_ms`，未在中继时为 0）。
+  - `Counters` 除通话/数据报/重连/PTT 计数外，还有 `rx_filtered_datagrams`（BM 已送达但 Router 未准入的语音包数）和 `relay_fm_rejected_busy`（FM 中继 start 因占用被拒次数）。
+- **事件**：`drain_events()` 取出离散事件（`rx_call_started/ended`、`tx_started/ended`、`bm_link_changed`、`quick_call_result`、`warning`、`fatal`、`relay_fm_started`、`relay_fm_ended`）。`relay_fm_*` 事件附 `RelayFmInfo`（本段 tx_policy 目标、开始时刻、时长），`relay_fm_ended` 的 `end_reason` 见下。队列上限 1024（`engine_internal.hpp`），溢出时丢弃最旧事件并计入 warning。
+- **诊断钩子**：`StartConfig::diagnostics`（`DiagnosticsHooks`，`engine_diagnostics.hpp`）可选回调：`status`（兼容 `status.jsonl` 的状态行）、`console`（操作员提示）、`cleanup_complete`（收尾通知）、`serial`（HRI 串口每次读写的方向、帧类型与字节数，不含正文；供 dev 日志）、`rx_policy`（RX 策略生效时的可读摘要；供 dev 日志）。GUI 可全部留空。
 - `Engine(std::shared_ptr<Devices>)` 可注入假设备（`engine_devices.hpp`），供 `engine_test` 使用。
+
+**FM 中继上行**（`engine_loop.cpp`）：`relay_fm_start()` 复用手咪 PTT 上行管线（WaveIn → 增益 → AMBE → DMRD → BM），目标为当前 `tx_policy.target`，与手咪共用同一个 Router 发射许可。
+
+- 返回值：`accepted`；`idempotent`（已在中继）；`forbidden`（发射关闭 `relay_fm_transmit_disabled`，或 CLI `manual_ptt` 模式 `relay_fm_manual_ptt_mode`）；`not_ready`（`relay_fm_bm_not_ready` / `relay_fm_radio_not_ready`，引擎停机中为 `engine_stopping`）；`busy`（手咪 PTT 上行中 `relay_fm_busy_ptt`，BM/HRI 下行进行中 `relay_fm_busy_downlink`，上行管线启动失败 `relay_fm_busy`），三种 busy 都计入 `relay_fm_rejected_busy`。
+- 单段最长 `relay_fm_max_duration_ms` = 180 s（`StartConfig::relay_fm_max_duration_ms` 可调小供测试，0 为默认）。
+- `relay_fm_stop()` 正常结束本段（`squelch_closed`），未在中继时 `idempotent`；终止帧发送失败时以 `aborted` 结束并返回 `failed`。
+- `end_reason`：`squelch_closed`、`timeout`、`transmit_disabled`、`bm_not_ready`、`radio_lost`、`shutdown`、`aborted`（其他路径终止上行时按当时状态推断）。
+- 中继进行中手咪松开不释放中继 lease；中继段只由静噪门控、超时或上述异常结束。
 
 ## 4. 电台与 BM 分开连接
 
@@ -62,7 +76,13 @@ WirexBridge.exe
 ## 6. HRI Y 模板
 
 - 已授权的 100 字节 Y 模板以 `constexpr` 数组编入 `include/wirex/approved_hri_y_template.hpp`，默认启动不再读取 `private/device-y.bin`。
-- `win_io::load_hri_y_template()`：路径为空时用内嵌模板；非空时必须是绝对路径且恰好 100 字节。两种来源都校验 offset 5 为 ASCII `'2'`（DIRECT），并用 BCrypt 计算 SHA-256，必须等于 `82e0085c…577f`（完整值见 `win_io.hpp`、`gui/config_bridge.hpp`）。`hri_session` 同样要求 `y_body_[5] == '2'`。
+- 同一头文件还给出 **AP PC 变体** `hri_y_template_ap`：只把 offset 0x05 改为 ASCII `'1'`，其余 99 字节与 DIRECT 相同。两个固定 SHA-256：
+  - DIRECT：`82e0085ccaccb769a83362c5b335ce6b9a0e3ae93afdf2ad4f46eb81f908577f`
+  - AP：`0cff0cc909604b83b04de3c06b7fdb46501885fde0cb34daee8a2951a6e638ca`
+- `win_io::load_hri_y_template(path, body, ap_mode)`：路径为空时用内嵌模板（`ap_mode` 时用 AP 变体）；非空时必须是绝对路径且恰好 100 字节。随后校验 offset 5 并用 BCrypt 计算 SHA-256：
+  - `ap_mode=false`：只接受 `'2'` 与 DIRECT 哈希（与中继功能加入前相同）。
+  - `ap_mode=true`：接受 DIRECT 或 AP 两个哈希之一，通过后统一把 offset 5 设为 `'1'` 使用。
+- `RadioStartConfig::ap_mode` 由 GUI 按 `relay.enabled` 设置（`view_model.cpp`），引擎据此选模板，并把 `hri_session::Config::ap_mode` 传给会话：`hri_session` 默认只接受 `y_body_[5] == '2'`，`ap_mode` 时另外接受 `'1'`。dev 日志记录本次使用的模板（`hri_y_template_direct` / `hri_y_template_ap`）。启动时随 `start()` 打开电台的路径（`StartConfig`）不带 `ap_mode`，只用 DIRECT；GUI 实际通过 `connect_radio` 连接电台。
 - HRI 串口固定 115200、8N1、无流控（`win_io::configure_serial`）。打开后先预排空（最多 250 ms / 4096 B，需 20 ms 安静），等待 V 响应最多 2500 ms，然后每 1000 ms 发 Y，等待 Y/0 最多 3000 ms（`hri_session.hpp`）。
 
 ## 7. 设备自动识别（`src/app/devices.cpp`）
@@ -84,11 +104,15 @@ WirexBridge.exe
   - `audio`：`radio_playback_gain`（1.0）、`mic_transmit_gain`（16.0），内存中以千分值保存（`*_gain_milli`，范围 250–16000）
   - `channels`、`tx_channel_id`（默认 `private:460997:2`，BM 鹦鹉）、`routing.blocked_source_ids`
   - `ui`：`bm_server_selection_id`（`bm-china-4602`）、`legacy_rx_policy`、`language`（`zh-CN`/`en-US`）；`window`
+  - `relay`（可选根节，仅原生版使用；PS 侧按未知节保留）：`enabled`（中继总开关，连接电台时使用 AP Y 模板）、`fm_enabled`（FM 中继），默认均为 false。缺节或缺字段视为 false；存在时必须是对象且两个字段为布尔值，其他成员原样保留。保存时只有文件中已有该节或任一开关为 true 才写入，默认配置与 PS 生成的字节保持一致。
 - 界面右上角语言按钮切换中英文并写回 `ui.language`。RadioID 缓存位于 `<exe>/private/runtime/radio-identity-cache.json`。
+- FM 中继记录追加写 `<exe>/private/runtime/relay-log.jsonl`（行由 `view_model.cpp` 生成，`real_services.cpp` 追加），每段一行，不含凭据：`started_utc`（ISO 8601 UTC）、`duration_ms`、`target_kind`（`group`/`private`）、`target_id`、`slot`（1/2）、`s_meter_peak`（开门期间 `SM0` 最大值，无读数为 `null`）、`end_reason`（引擎结束原因）。写入失败只记 dev 日志。
 
 ## 9. CAT 与 BM API
 
 - **CAT**（`src/app/radio_cat.cpp`）：CAT-1 串口，8N2，波特率取配置（4800/9600/19200/38400/115200）。界面波特率只作用于 CAT，与 HRI 无关。只有可信只读查询成功后才发布 `CatState.connected`；设置模式/频率要求 Engine `phase==stopped`；设置功率要求核心已停止，或运行中无活动来话、无发射且接收媒体空闲（`real_services.cpp` 用 `media_owner==idle` 近似“接收队列为空”）。
+- **FM 中继静噪采样**：`relay.enabled`、`relay.fm_enabled` 都为 true 且 CAT 已连接时，ViewModel 打开 `CatService::set_squelch_polling`。`CatRunner` 线程约每 100 ms 做一次只读短会话 `CatClient::query_squelch`：打开 CAT 口、发 `RI0;`（必须得到通过 `radio_info::parse` 的 11 字节应答）、再尽力发 `SM0;`（失败只让 S 表值为空），然后关闭；会话期限 400 ms，不发 ID/AI，不改写授权或观测值，与 1 s 周期查询和其他 CAT 任务串行（CAT 忙时跳过）。
+- 结果交给 `radio_info::SquelchGate`（`src/app/radio_info.*`）：`RI0;` 的 P8 为 SQL、P4 为 TX；连续 2 次 SQL 开才开门；SQL 关持续 600 ms 才关门；电台发射（P4≠0）或连续 1 s 无有效采样立即关门。开门事件触发引擎 `relay_fm_start()`，关门触发 `relay_fm_stop()`；轮询关闭、CAT 断开或电台 ID 不符时门控复位，若门处于开启状态则发 closed。开门期间记录 `SM0` 峰值用于中继记录。
 - **BM API**：`https://api.brandmeister.network/v2/`，Bearer API Key；用于静态组查询与增删。动态组用 Quick Call 激活。
 - **BM Master 列表**：`src/app/bm_servers.cpp` 内置离线快照，默认 `bm-china-4602`。
 
@@ -103,6 +127,8 @@ WirexBridge.exe
 - 无参数：真实引擎 + 真实服务（需以 `WIREX_GUI_REAL_ENGINE=1` 编译，`build-gui.ps1` 已设置）。
 - `--fake`：模拟引擎 + 真实服务；`--fake --fake-services`：完全离线。
 - `--config <json>`、`--screenshot <png>`（渲染后保存并退出）、`--check-config`（生成/读取/写回检查后退出，0 为成功）、`--dev-log`、`--no-dev-log`。
+- `--lang zh-CN|en-US`：覆盖 `ui.language`，只作用于本次运行，不保存。
+- 截图验收专用（必须同时带 `--fake` 与 `--screenshot`）：`--screenshot-modal remove-static`（打开“移除静态组”确认弹窗后截图）、`--screenshot-relay-demo`（在内存中开启中继与 FM 并注入一段 FM 中继历史，不写配置）。
 
 ## 12. 构建与测试
 
@@ -112,7 +138,7 @@ WirexBridge.exe
 | --- | --- |
 | GUI（单 EXE） | `wirex build --gui`，或 `tools/build-gui.ps1 [-Release]`；`-Release` 编译 `WIREX_DEV_BUILD=0`，默认为开发版。产物 `build/_work/wirex-gui-<commit7>[-dirty]-<UTC>/WirexBridge.exe`，附 provenance；项目代码 `/W4 /WX`，ImGui 单独 `/W3` |
 | Native 核心 + 测试 | `tools/build-bm-bridge.ps1 [-CompileOnly]`（`wirex build`）；Native 测试 41 项（`CMakeLists.txt` 中 41 个 `add_test`，含 `engine_test`） |
-| app / GUI 逻辑测试 | `tools/build-app-tests.ps1`：14 个目标（config、devices、CAT、BM API、RadioID、ViewModel、启动组呼、本机播放等），输出 `build/app-tests/` |
+| app / GUI 逻辑测试 | `tools/build-app-tests.ps1`：18 个目标（config、devices、RI0 解析与静噪门控、CAT、BM API、RadioID、config_bridge、fake CAT、CAT 表单、本机播放、启动组呼、各 ViewModel 场景含静态组同步与 FM 中继），输出 `build/app-tests/` |
 | 重复 ImGui ID 检查 | `tools/run-gui-duplicate-item-harness.ps1` |
 | 打包 | 单 EXE 的 ZIP profile 尚未建立；`tools/package-release.ps1`、`ZipOnlyRelease.psm1` 仍是旧 WPF 包的 profile |
 

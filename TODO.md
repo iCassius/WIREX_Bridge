@@ -1,6 +1,6 @@
 # WIREX Bridge 待办与架构演进清单
 
-更新时间：2026-11-05。权威版本为 `app/TODO.md`，父工作区根目录保留同步副本。当前状态摘要见 [HANDOFF](HANDOFF.md)，架构见 [ARCHITECTURE](docs/ARCHITECTURE.md)。
+更新时间：2026-11-06。权威版本为 `app/TODO.md`，父工作区根目录保留同步副本。当前状态摘要见 [HANDOFF](HANDOFF.md)，架构见 [ARCHITECTURE](docs/ARCHITECTURE.md)。
 
 ---
 
@@ -21,10 +21,10 @@
 ## 一、当前业务验收（短期优先）
 
 ### 1.1 R128 实机验收
-- [ ] HRI 实机连接：按 `FTX1_project/_bisect/` 5 个目录二分排查（方法见 HANDOFF），定位并修复。
+- [x] HRI 实机连接不上：已修复 `clock_regressed`（`a50b234`，`connect_radio` 后重新取主循环时钟）。
 - [ ] 不带 `--fake` 启动，验证 HRI/CAT 串口、BM 连接、BM-only 本机播放、Quick Call、CAT 门控、身份写回、关窗有界收尾。
 - [ ] TG46001 动态组真实收听：首次激活、再次激活、多组切换，以及启动组呼自动激活与 BM 连接的联动。已确认的鹦鹉私呼和 TG91 收听不列为待办。
-- [ ] BM RTT 接入 `Snapshot` 与主界面（当前显示“暂无数据”）。
+- [x] BM RTT 与丢包接入 `Snapshot::network` 与主界面。
 - [ ] 125% DPI 下验收字体、控件边界；人工验证 IME 中文输入与候选窗。
 - [ ] 确认窗口与任务栏图标正常显示。
 
@@ -36,19 +36,26 @@
 
 ### 1.3 AP PC 中继（RF ↔ BM）
 
-背景研究：父工作区 `WIREX_Bridge/docs/17_AP_PC模式RF转发与握手判定机制.md`。当前 `hri_session.cpp` 与 `win_io::load_hri_y_template` 都要求 Y 模板 offset 0x05 为 `'2'`（DIRECT），上行只由手咪 PTT（X 记录）与声卡录音驱动。
+背景研究：父工作区 `WIREX_Bridge/docs/17_AP_PC模式RF转发与握手判定机制.md`。FM 中继已实现（`914b346..27e4da4`，行为规则见 [R128_NATIVE_GUI](docs/R128_NATIVE_GUI.md)“FM 中继”）；中继关闭时 `hri_session.cpp` 与 `win_io::load_hri_y_template` 仍只接受 offset 0x05 为 `'2'`（DIRECT）。
 
-- [ ] **独立开关，默认关闭**：中继功能有单独的启用开关，关闭时行为与当前完全一致。
-- [ ] **右上角按钮**：标题栏右侧放中英文切换（已有）与中继开关两个按钮。
-- [ ] **Y 模板 AP 变体**：随中继功能一起做 offset 0x05 为 `'1'`（AP）的模板变体，放宽 `hri_session` 与模板校验；只在中继开启时使用，DIRECT 模板与 SHA-256 校验保持不变。
+- [x] **独立开关，默认关闭**：`config.json` 可选根节 `relay`（`enabled`、`fm_enabled`，默认 false）；关闭时行为与之前一致。
+- [x] **右上角按钮**：标题栏右侧为中英文切换与“启用中继 / 停用中继”；中继开启时再出现 FM 按钮。
+- [x] **Y 模板 AP 变体**：offset 0x05 为 `'1'`，SHA-256 `0cff0cc9…e638ca`；只在中继开启（`RadioStartConfig::ap_mode`）时使用，`hri_session` 仅在 ap_mode 下额外接受 `'1'`；DIRECT 模板与哈希不变（`914b346`）。
 - [ ] **默认 C4FM 中继**：中继开启后默认走 C4FM。解析 HRI 的 `G`（呼叫头，取呼号）、`R`（语音帧）、`P`/`E`（起止与结束）记录，AMBE 直接转发到 BM，不经声卡和本地声码器重编码。
   - **前置阻塞（2026-11-06 核对）**：`G` 记录的 68 字节头与目的/源呼号偏移已有静态证据（`docs/research/HRI数字记录与调制研究进度.md`），但 **`R` 记录正文到 AMBE/YSF 帧的格式没有恢复**（静态研究只证明官方程序把 R 字符串原样封进 RAW 转发）。须先在 AP 模式下用 dev 日志抓取真实 `G/R/P/E` 记录（需单独的正文采集开关），对照 `ysf_vd2_vch` / `ambe2450_parameters` 离线模块确认帧结构后才能实现。
-- [ ] **FM 中继（需单独再开启）**：在中继开关之外另设 FM 开关。通过 CAT `RI0;` 轮询 SQL 状态，开门时启动声卡采集，软件 AMBE 编码后发往 BM，关门时结束。这是官方未支持的功能，界面需明确标注。
+- [x] **FM 中继（需单独再开启）**：在中继开关之外另设 FM 开关。通过 CAT `RI0;` 轮询 SQL 状态，开门时启动声卡采集，软件 AMBE 编码后发往 BM，关门时结束。这是官方未支持的功能，界面需明确标注。
   - [x] `RI0;` 应答解析与静噪门控（`src/app/radio_info.*`，`857e5ff`）：P8 为 SQL、P4 为 TX；连续 2 次开门、600 ms 挂起关门、电台发射或 CAT 失联 1 s 立即关门。
-  - [ ] CatWorker 周期查询 `RI0;`（中继开启时约 100 ms）；门控事件 → 引擎 FM 中继启停命令 → WaveIn 采集 + AMBE 编码 + BM 上行（复用手咪 PTT 上行管线）。
-  - [ ] 实机确认 FM 开门时 P8 实际变为 1（目前只有空闲 `RI00000000;` 的实测记录）。
-- [ ] **记录传入用户**：C4FM 从 `G` 记录取呼号；FM 无呼号，记录开始时间与时长。
-- [ ] **半双工仲裁**：在 `engine_loop` 中仲裁 RF 上行与 BM 下行发射，同一时刻只允许一个方向，防止冲突与射频回环；梳理 BM 下行触发电台发射的键控方式（HRI 协议键控与 CAT 键控）。
+  - [x] CAT 周期查询：中继与 FM 都开启且 CAT 已连接时，每 100 ms 只读短会话 `RI0;`+`SM0;`（`real_services.cpp` `CatRunner`）；门控事件 → 引擎 `relay_fm_start()`/`relay_fm_stop()` → WaveIn 采集 + AMBE 编码 + BM 上行（复用手咪 PTT 上行管线，单段最长 180 s）。
+  - [x] 实机确认 FM 开门时 P8 变为 1（2026-11-06，145.200 MHz：按键后下一次 100 ms 轮询内 P8 0→1，松开后回 0）。
+  - [ ] 实机验证 AP 模板与 DIRECT 模板在 AP PC 电台上的握手。
+  - [ ] 实机验证 FM 中继端到端（RF → BM）与转发音量。
+  - [ ] 100 ms CAT 轮询负载：确认对 CAT 口、1 s 周期查询与 CAT 设置操作的影响。
+- [ ] **记录传入用户**：
+  - [x] FM：无呼号，来话历史黄色“FM 中继 → TG …”，并追加 `<exe>/private/runtime/relay-log.jsonl`（开始时间、时长、目标、时隙、S 表峰值、结束原因）。
+  - [ ] C4FM：从 `G` 记录取呼号。
+- [ ] **半双工仲裁**（FM 部分已完成，C4FM 待做）：在 `engine_loop` 中仲裁 RF 上行与 BM 下行发射，同一时刻只允许一个方向，防止冲突与射频回环；梳理 BM 下行触发电台发射的键控方式（HRI 协议键控与 CAT 键控）。
+  - [x] FM：与手咪共用一个 Router 发射许可；中继上行时 BM 来话按 Router 规则拒绝；下行进行中拒绝中继启动（`relay_fm_busy_downlink`）；手咪不能打断或结束中继段。
+  - [ ] C4FM。
 
 ---
 
