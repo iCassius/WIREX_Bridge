@@ -47,7 +47,6 @@ namespace wirex::gui {
     X(relay_tip_on,         "中继已开启：连接电台使用 AP PC 模式 Y 模板。点击停用。", \
                             "Relay is on: the radio connects with the AP PC mode Y template. Click to disable.") /* new */ \
     X(relay_fm,             "FM",                                  "FM")                             /* new */ \
-    X(relay_fm_unofficial,  "官方未支持",                          "Not officially supported")       /* new */ \
     X(relay_fm_tip,         "FM 中继（官方未支持）：通过 CAT 静噪检测触发，使用当前 PTT 目标发往 BM。", \
                             "FM relay (not officially supported): triggered by CAT squelch detection, sent to BM on the current TX target.") /* new */ \
     X(relay_c4fm_unsupported,"C4FM 中继尚未支持，当前仅 FM 可用", "C4FM relay is not supported yet; only FM is available") /* new */ \
