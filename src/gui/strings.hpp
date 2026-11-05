@@ -24,6 +24,18 @@ namespace wirex::gui {
     X(bm_failed,            "连接失败",                            "Connection failed") \
     X(rtt,                  "RTT",                                 "RTT") \
     X(rtt_no_data,          "暂无数据",                            "No data") \
+    X(rtt_value_fmt,        "%llu ms",                             "%llu ms")                       /* new */ \
+    X(rtt_tip_fmt,          "BM 往返时延\n最近 %llu ms · 最小 %llu ms · 平均 %.0f ms · 最大 %llu ms\n样本 %llu 个", \
+                            "BM round-trip time\nLast %llu ms · min %llu ms · avg %.0f ms · max %llu ms\n%llu samples") /* new */ \
+    X(rtt_tip_none,         "BM 往返时延：暂无样本。",             "BM round-trip time: no samples yet.") /* new */ \
+    X(loss,                 "丢包",                                "Loss")                          /* new */ \
+    X(loss_value_fmt,       "%.1f%%",                              "%.1f%%")                        /* new */ \
+    X(loss_tip_session_fmt, "本次 BM 会话：缺失 %llu / 应收 %llu 帧（%.2f%%）", \
+                            "This BM session: %llu missing of %llu expected frames (%.2f%%)") /* new */ \
+    X(loss_tip_session_none,"本次 BM 会话：暂无语音帧统计。",      "This BM session: no voice frame statistics yet.") /* new */ \
+    X(loss_tip_call_fmt,    "当前通话：缺失 %llu / 应收 %llu 帧（%.2f%%）", \
+                            "Current call: %llu missing of %llu expected frames (%.2f%%)") /* new */ \
+    X(loss_tip_call_none,   "当前通话：暂无统计。",                "Current call: no statistics yet.") /* new */ \
     X(core,                 "核心",                                "Core")                          /* new */ \
     X(language_english,     "English",                             "English") \
     X(language_chinese,     "中文",                                 "Chinese") \

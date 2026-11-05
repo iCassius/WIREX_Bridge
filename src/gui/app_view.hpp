@@ -83,6 +83,8 @@ private:
     // 电台/日常控制面板上一帧测得的“不含段间距”内容高度，用于推算段间距（SectionFlow）。
     float radio_fixed_h_{};
     float daily_fixed_h_{};
+    float header_status_w_{};                       // 标题栏状态组上一帧实测宽度（居中用）
+    float header_metrics_w_{};                      // 标题栏 RTT/丢包组上一帧实测宽度
     std::optional<ChannelKey> static_remove_confirm_{}; // 正在确认移除的静态组频道
     // 主界面 BM 配置草稿
     services::GuiConfig draft_{};

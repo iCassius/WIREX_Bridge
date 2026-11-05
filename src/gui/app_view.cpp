@@ -856,13 +856,68 @@ void AppView::draw_header() {
             row_text(row, fmt("[%s]", tr(Str::fake_banner)).c_str(), rgb(color::warn), nullptr, layout::kFontBody);
         }
 
+        // RTT/丢包：连接日志摘要显示时靠右，否则与 BM/核心状态一起居中；宽度取上一帧实测值。
+        const auto draw_net_metrics = [&]() {
+            const float metrics_x0 = ImGui::GetCursorScreenPos().x;
+            const auto& net = s.network;
+            row_text(row, tr(Str::rtt), rgb(color::muted), nullptr, layout::kFontCaption);
+            ImGui::SameLine(0.0F, px(layout::kLabelGap));
+            const auto rtt_text = net.rtt_valid ? fmt(tr(Str::rtt_value_fmt), static_cast<unsigned long long>(net.rtt_last_ms))
+                                                : std::string("—");
+            row_text(row, rtt_text.c_str(), net.rtt_valid ? rgb(color::text) : rgb(color::muted), nullptr, layout::kFontBody);
+            if (net.rtt_valid) {
+                ImGui::SetItemTooltip(tr(Str::rtt_tip_fmt), static_cast<unsigned long long>(net.rtt_last_ms),
+                                      static_cast<unsigned long long>(net.rtt_min_ms), net.rtt_avg_ms,
+                                      static_cast<unsigned long long>(net.rtt_max_ms),
+                                      static_cast<unsigned long long>(net.rtt_samples));
+            } else {
+                ImGui::SetItemTooltip("%s", tr(Str::rtt_tip_none));
+            }
+            ImGui::SameLine(0.0F, px(layout::kGroupGap));
+            const auto percent = [](std::uint64_t missing, std::uint64_t expected) {
+                return expected == 0U ? 0.0 : 100.0 * static_cast<double>(missing) / static_cast<double>(expected);
+            };
+            const bool loss_ok = net.session_loss_valid && net.session_expected != 0U;
+            const double loss_pct = loss_ok ? percent(net.session_missing, net.session_expected) : 0.0;
+            row_text(row, tr(Str::loss), rgb(color::muted), nullptr, layout::kFontCaption);
+            ImGui::SameLine(0.0F, px(layout::kLabelGap));
+            const auto loss_text = loss_ok ? fmt(tr(Str::loss_value_fmt), loss_pct) : std::string("—");
+            row_text(row, loss_text.c_str(),
+                     !loss_ok ? rgb(color::muted) : loss_pct >= 5.0 ? rgb(color::error) : loss_pct >= 1.0 ? rgb(color::warn)
+                                                                                                         : rgb(color::text),
+                     nullptr, layout::kFontBody);
+            {
+                std::string tip = loss_ok ? fmt(tr(Str::loss_tip_session_fmt),
+                                                static_cast<unsigned long long>(net.session_missing),
+                                                static_cast<unsigned long long>(net.session_expected), loss_pct)
+                                          : std::string(tr(Str::loss_tip_session_none));
+                if (s.active_rx_call) {
+                    tip += "\n";
+                    tip += net.call_loss_valid && net.call_expected != 0U
+                               ? fmt(tr(Str::loss_tip_call_fmt), static_cast<unsigned long long>(net.call_missing),
+                                     static_cast<unsigned long long>(net.call_expected),
+                                     percent(net.call_missing, net.call_expected))
+                               : std::string(tr(Str::loss_tip_call_none));
+                }
+                ImGui::SetItemTooltip("%s", tip.c_str());
+            }
+            const float measured = std::round(ImGui::GetItemRectMax().x - metrics_x0);
+            if (std::abs(measured - header_metrics_w_) >= 1.0F) {
+                header_metrics_w_ = measured;
+                continuous_ = true;
+            }
+        };
+
         ImGui::TableSetColumnIndex(1);
         if (summary) {
+            const float metrics_w = header_metrics_w_ > 0.0F ? header_metrics_w_ : px(160.0F);
+            const float column_right = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
             row_text(row, tr(summary_error ? Str::log_error : Str::log_events), rgb(color::muted), nullptr,
                      layout::kFontCaption);
             ImGui::SameLine(0.0F, inline_gap);
             const float clear_w = summary_error ? px(layout::kRowHeight) + px(layout::kRowGap) : 0.0F;
-            const float available = std::max(px(24.0F), ImGui::GetContentRegionAvail().x - clear_w);
+            const float available = std::max(px(24.0F), ImGui::GetContentRegionAvail().x - clear_w - metrics_w -
+                                                             px(layout::kGroupGap));
             ImGui::PushFont(nullptr, layout::kFontBody);
             row.place(ImGui::GetTextLineHeight());
             text_ellipsis(summary_text.c_str(), available, rgb(summary_error ? color::error : color::muted));
@@ -876,10 +931,16 @@ void AppView::draw_header() {
                 }
                 ImGui::SetItemTooltip("%s", tr(Str::log_clear));
             }
+            // 表格单元格内 SameLine(offset) 会叠加列偏移；先 SameLine 再按光标坐标右对齐。
+            ImGui::SameLine(0.0F, px(layout::kGroupGap));
+            ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), column_right - metrics_w));
+            draw_net_metrics();
         } else {
-            const float status_w = px(390.0F);
+            // 宽度取上一帧实测值（首帧用估计值），使状态组在列内居中。
+            const float status_w = header_status_w_ > 0.0F ? header_status_w_ : px(470.0F);
             const float status_x = ImGui::GetCursorPosX() + std::max(0.0F, (ImGui::GetContentRegionAvail().x - status_w) * 0.5F);
             ImGui::SetCursorPosX(status_x);
+            const float status_screen_x = ImGui::GetCursorScreenPos().x;
             const bool bm_ok = s.bm_link == BmLink::connected;
             const bool bm_bad = s.bm_link == BmLink::failed || s.bm_link == BmLink::backoff;
             const bool core_ok = s.phase == Phase::running;
@@ -888,9 +949,7 @@ void AppView::draw_header() {
             row_text(row, bm_short_text(s.bm_link), bm_ok ? rgb(color::green) : bm_bad ? rgb(color::warn) : rgb(color::text),
                      fonts_.bold, layout::kFontBody);
             ImGui::SameLine(0.0F, px(layout::kGroupGap));
-            row_text(row, tr(Str::rtt), rgb(color::muted), nullptr, layout::kFontCaption);
-            ImGui::SameLine(0.0F, px(layout::kLabelGap));
-            row_text(row, tr(Str::rtt_no_data), rgb(color::muted), nullptr, layout::kFontBody);
+            draw_net_metrics();
             ImGui::SameLine(0.0F, px(layout::kGroupGap));
             row_text(row, tr(Str::core), rgb(color::muted), nullptr, layout::kFontCaption);
             ImGui::SameLine(0.0F, px(layout::kLabelGap));
@@ -899,6 +958,11 @@ void AppView::draw_header() {
                      fonts_.bold, layout::kFontBody);
             if (s.phase == Phase::failed && !s.failure_reason.empty()) ImGui::SetItemTooltip("%s", s.failure_reason.c_str());
             else ImGui::SetItemTooltip("%s", phase_text(s));
+            const float measured = std::round(ImGui::GetItemRectMax().x - status_screen_x);
+            if (std::abs(measured - header_status_w_) >= 1.0F) {
+                header_status_w_ = measured;
+                continuous_ = true; // 再绘一帧让居中按实测宽度收敛
+            }
         }
 
         ImGui::TableSetColumnIndex(2);
