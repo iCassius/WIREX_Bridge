@@ -2,7 +2,10 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <deque>
 #include <iostream>
 #include <vector>
 
@@ -1194,6 +1197,396 @@ struct RxSource {
                    "watchdog leaves the observed call incomplete because its tail cannot be counted");
 }
 
+// ---- 下行播放抖动仿真 ----
+// 假 WaveOut 按 48 kHz 实时消费（独立于引擎循环），生产侧按 engine_loop 的顺序
+// ingest → tick → playback_ready → ack → submit，并注入调度与网络抖动。
+namespace jitter_sim {
+
+// 与当前生产代码一致：WaveOutput::buffer_count == WaveInput::buffer_count，
+// engine_loop 每轮最多提交 3 帧。
+constexpr std::size_t sim_waveout_buffers = 4U;
+constexpr std::size_t sim_submit_per_loop = 3U;
+constexpr std::size_t sim_bursts = 500U; // 30 s 通话
+constexpr std::int64_t samples_per_ms = 48;
+constexpr std::uint64_t sim_seed = 20261105U;
+
+struct Rng {
+    std::uint64_t state;
+
+    std::uint32_t next() noexcept
+    {
+        state ^= state >> 12U;
+        state ^= state << 25U;
+        state ^= state >> 27U;
+        return static_cast<std::uint32_t>((state * 2685821657736338717ULL) >> 32U);
+    }
+    std::int64_t uniform(std::int64_t low, std::int64_t high) noexcept
+    {
+        const auto span = static_cast<std::uint32_t>(high - low + 1);
+        return low + static_cast<std::int64_t>(next() % span);
+    }
+    bool chance(std::uint32_t per_mille) noexcept { return next() % 1000U < per_mille; }
+};
+
+struct Profile {
+    const char* name;
+    std::int64_t network_jitter_ms;  // DMRD 到达偏移 ±
+    std::uint32_t drop_per_mille;    // 偶发丢 1 包
+    std::int64_t loop_min_ms;        // 5 ms 等待 + Windows 定时器粒度
+    std::int64_t loop_max_ms;
+    std::uint32_t stall_per_mille;   // 调度延迟
+    std::int64_t stall_min_ms;
+    std::int64_t stall_max_ms;
+};
+
+struct Stats {
+    std::size_t underruns{};
+    double underrun_ms{};
+    std::size_t concealed_frames{};
+    std::size_t dropped_packets{};
+    std::size_t clicks{};
+    std::size_t cancelled_calls{};
+    std::size_t generations{};
+    double played_ms{};
+    double latency_avg_ms{};
+    std::int64_t latency_p95_ms{};
+    std::int64_t latency_max_ms{};
+    std::size_t latency_samples{};
+};
+
+struct DeviceBuffer {
+    std::vector<std::int16_t> pcm;
+    std::size_t position{};
+    std::uint64_t generation{};
+    std::int64_t arrival_ms{-1}; // 本帧是某 burst 第一帧时记录该 DMRD 到达时刻
+};
+
+class FakeWaveOut {
+public:
+    explicit FakeWaveOut(std::size_t capacity) : capacity_(capacity) {}
+
+    [[nodiscard]] bool has_capacity() const noexcept { return queued_.size() < capacity_; }
+
+    void submit(const PlaybackFrame& frame, std::int64_t arrival_ms)
+    {
+        DeviceBuffer buffer{};
+        buffer.pcm.assign(frame.pcm.begin(),
+                          frame.pcm.begin() + static_cast<std::ptrdiff_t>(frame.sample_count));
+        buffer.generation = frame.generation;
+        buffer.arrival_ms = arrival_ms;
+        queued_.push_back(std::move(buffer));
+        started_ = true;
+    }
+
+    // 按设备时钟消费到 to_ms；没有可播样本时输出静音并记为欠载。
+    void advance(std::int64_t to_ms)
+    {
+        while (clock_ms_ < to_ms) {
+            for (std::int64_t sample = 0; sample < samples_per_ms; ++sample) {
+                DeviceBuffer* active = nullptr;
+                for (auto& buffer : queued_) {
+                    if (buffer.position < buffer.pcm.size()) {
+                        active = &buffer;
+                        break;
+                    }
+                }
+                if (active == nullptr) {
+                    if (started_) {
+                        output_.push_back(0);
+                        starved_.push_back(1U);
+                    }
+                    continue;
+                }
+                if (active->position == 0U && active->arrival_ms >= 0) {
+                    latencies_.push_back(clock_ms_ - active->arrival_ms);
+                }
+                output_.push_back(active->pcm[active->position]);
+                starved_.push_back(0U);
+                ++active->position;
+            }
+            ++clock_ms_;
+        }
+    }
+
+    [[nodiscard]] bool reap(std::uint64_t& generation) noexcept
+    {
+        if (queued_.empty() || queued_.front().position < queued_.front().pcm.size()) return false;
+        generation = queued_.front().generation;
+        queued_.pop_front();
+        return true;
+    }
+
+    [[nodiscard]] bool empty() const noexcept { return queued_.empty(); }
+    [[nodiscard]] const std::vector<std::int16_t>& output() const noexcept { return output_; }
+    [[nodiscard]] const std::vector<std::uint8_t>& starved() const noexcept { return starved_; }
+    [[nodiscard]] const std::vector<std::int64_t>& latencies() const noexcept { return latencies_; }
+
+private:
+    std::size_t capacity_;
+    std::deque<DeviceBuffer> queued_;
+    std::int64_t clock_ms_{};
+    bool started_{};
+    std::vector<std::int16_t> output_;
+    std::vector<std::uint8_t> starved_;
+    std::vector<std::int64_t> latencies_;
+};
+
+[[nodiscard]] std::vector<wirex::dmr_vocoder::Codeword> encode_tone(std::size_t frames)
+{
+    wirex::dmr_vocoder::Encoder encoder;
+    std::vector<wirex::dmr_vocoder::Codeword> codewords;
+    codewords.reserve(frames);
+    std::size_t sample_index = 0U;
+    for (std::size_t frame = 0U; frame < frames; ++frame) {
+        wirex::dmr_vocoder::PcmFrame pcm{};
+        for (auto& sample : pcm) {
+            const double phase = 2.0 * 3.14159265358979323846 * 440.0 *
+                                 static_cast<double>(sample_index++) / 8000.0;
+            sample = static_cast<std::int16_t>(std::sin(phase) * 8000.0);
+        }
+        codewords.push_back(encoder.encode(pcm));
+    }
+    return codewords;
+}
+
+// 无抖动参考：直接解码 + 上采样，得到该音源相邻样本的自然最大差值。
+[[nodiscard]] std::int32_t reference_max_delta(const std::vector<wirex::dmr_vocoder::Codeword>& codewords)
+{
+    wirex::dmr_vocoder::Decoder decoder;
+    wirex::audio::PcmResampler8To48 upsampler;
+    std::int32_t max_delta = 0;
+    std::int32_t previous = 0;
+    bool have_previous = false;
+    // 跳过开头 3 帧声码器起振。
+    for (std::size_t index = 0U; index < codewords.size(); ++index) {
+        const auto decoded = decoder.decode(codewords[index]);
+        wirex::bm_voice::Pcm48Frame frame{};
+        (void)upsampler.process(decoded.pcm.data(), decoded.pcm.size(), frame.data(), frame.size());
+        if (index < 3U) continue;
+        for (const auto sample : frame) {
+            if (have_previous) max_delta = std::max(max_delta, std::abs(sample - previous));
+            previous = sample;
+            have_previous = true;
+        }
+    }
+    return max_delta;
+}
+
+struct NetPacket {
+    std::int64_t arrival_ms{};
+    wirex::dmrd::Datagram datagram{};
+    std::int64_t burst{-1};
+};
+
+[[nodiscard]] Stats run_profile(const Profile& profile,
+                                const std::vector<wirex::dmr_vocoder::Codeword>& codewords,
+                                std::int32_t click_threshold)
+{
+    Stats stats{};
+    Rng rng{sim_seed};
+    BmVoicePipeline pipeline;
+    const auto base = TimePoint{} + 200s;
+    const auto at = [base](std::int64_t ms) { return base + std::chrono::milliseconds{ms}; };
+
+    // 网络侧：BM 以 60 ms 发 burst，到达时刻加 ±jitter，保持单调（接收端拒收乱序）。
+    wirex::dmr_call::Transmitter transmitter;
+    const auto call = make_call(7001U, 91U, 0x71U);
+    std::vector<NetPacket> packets;
+    std::vector<std::int64_t> arrivals(sim_bursts, -1);
+    const auto header = transmitter.start(call);
+    if (!header) return stats;
+    packets.push_back({0, header.packet.datagram, -1});
+    constexpr std::int64_t first_voice_ms = 20;
+    std::int64_t previous_arrival = 0;
+    bool previous_dropped = false;
+    for (std::size_t burst = 0U; burst < sim_bursts; ++burst) {
+        wirex::dmr_call::AmbeVoiceBurst ambe{};
+        for (std::size_t index = 0U; index < wirex::dmr_call::codewords_per_burst; ++index) {
+            const auto& codeword = codewords[burst * wirex::dmr_call::codewords_per_burst + index];
+            std::copy(codeword.begin(), codeword.end(),
+                      ambe.begin() + static_cast<std::ptrdiff_t>(index * codeword.size()));
+        }
+        const auto voice = transmitter.voice(ambe);
+        if (!voice) return stats;
+        const bool drop = burst >= 3U && burst + 2U < sim_bursts && !previous_dropped &&
+                          rng.chance(profile.drop_per_mille);
+        previous_dropped = drop;
+        const std::int64_t nominal = first_voice_ms + static_cast<std::int64_t>(burst) * 60;
+        const std::int64_t jitter = profile.network_jitter_ms == 0
+            ? 0 : rng.uniform(-profile.network_jitter_ms, profile.network_jitter_ms);
+        if (drop) {
+            ++stats.dropped_packets;
+            continue;
+        }
+        const std::int64_t arrival = std::max(previous_arrival, nominal + jitter);
+        previous_arrival = arrival;
+        arrivals[burst] = arrival;
+        packets.push_back({arrival, voice.packet.datagram, static_cast<std::int64_t>(burst)});
+    }
+    const auto eot = transmitter.finish();
+    if (!eot) return stats;
+    const std::int64_t last_arrival = std::max(previous_arrival,
+        first_voice_ms + static_cast<std::int64_t>(sim_bursts) * 60);
+    packets.push_back({last_arrival, eot.packet.datagram, -1});
+
+    FakeWaveOut device(sim_waveout_buffers);
+    // 每个待播 PCM 帧对应的 burst 到达时刻（-1 表示补偿帧）。
+    std::deque<std::int64_t> frame_tags;
+    std::size_t next_packet = 0U;
+    bool pending_start = false;
+    std::uint64_t last_generation = 0U;
+    std::int64_t now_ms = 0;
+    const std::int64_t hard_stop_ms = last_arrival + 10000;
+    while (now_ms < hard_stop_ms) {
+        device.advance(now_ms);
+
+        while (next_packet < packets.size() && packets[next_packet].arrival_ms <= now_ms) {
+            const auto& packet = packets[next_packet++];
+            const auto before = pipeline.snapshot();
+            (void)pipeline.ingest_rx(packet.datagram, at(now_ms));
+            const auto after = pipeline.snapshot();
+            const bool new_generation = after.receive_generation != before.receive_generation;
+            if (new_generation) frame_tags.clear();
+            if (packet.burst >= 0 &&
+                after.accepted_receive_voice_bursts !=
+                    (new_generation ? 0U : before.accepted_receive_voice_bursts)) {
+                const std::size_t previous = new_generation ? 0U : before.buffered_receive_frames;
+                const std::size_t added = after.buffered_receive_frames - previous;
+                for (std::size_t index = 0U; index + wirex::dmr_call::codewords_per_burst < added; ++index) {
+                    frame_tags.push_back(-1);
+                }
+                frame_tags.push_back(arrivals[static_cast<std::size_t>(packet.burst)]);
+                frame_tags.push_back(-2);
+                frame_tags.push_back(-2);
+            }
+        }
+
+        if (pipeline.tick(at(now_ms)) == Error::deadline_missed) ++stats.cancelled_calls;
+        while (const auto event = pipeline.take_event()) {
+            if (event->kind == EventKind::receive_started) pending_start = true;
+            if (event->kind == EventKind::receive_cancelled) ++stats.cancelled_calls;
+        }
+        const auto snapshot = pipeline.snapshot();
+        if (snapshot.receive_generation != last_generation && snapshot.receive_generation != 0U &&
+            snapshot.rx_state != wirex::bm_voice::RxState::idle) {
+            last_generation = snapshot.receive_generation;
+            ++stats.generations;
+        }
+        if (pending_start && snapshot.accepted_receive_voice_bursts != 0U) {
+            pending_start = false;
+            (void)pipeline.playback_ready(at(now_ms));
+        }
+
+        std::uint64_t completed_generation = 0U;
+        while (device.reap(completed_generation)) {
+            (void)pipeline.acknowledge_playback(completed_generation, 1U, at(now_ms));
+        }
+        for (std::size_t submitted = 0U;
+             submitted < sim_submit_per_loop && device.has_capacity(); ++submitted) {
+            PlaybackFrame frame{};
+            if (!pipeline.take_playback_pcm(frame)) break;
+            std::int64_t tag = -2;
+            if (frame.sample_count == wirex::bm_voice::pcm48_samples_per_frame && !frame_tags.empty()) {
+                tag = frame_tags.front();
+                frame_tags.pop_front();
+                if (tag == -1) ++stats.concealed_frames;
+            }
+            device.submit(frame, tag >= 0 ? tag : -1);
+        }
+
+        if (next_packet == packets.size() && device.empty() &&
+            pipeline.snapshot().rx_state == wirex::bm_voice::RxState::idle) {
+            break;
+        }
+        std::int64_t step = rng.uniform(profile.loop_min_ms, profile.loop_max_ms);
+        if (rng.chance(profile.stall_per_mille)) {
+            step += rng.uniform(profile.stall_min_ms, profile.stall_max_ms);
+        }
+        now_ms += step;
+    }
+    device.advance(now_ms + 1);
+
+    const auto& output = device.output();
+    const auto& starved = device.starved();
+    std::size_t first = 0U;
+    while (first < starved.size() && starved[first] != 0U) ++first;
+    std::size_t last = starved.size();
+    while (last > first && starved[last - 1U] != 0U) --last;
+    bool in_underrun = false;
+    std::size_t starved_samples = 0U;
+    for (std::size_t index = first; index < last; ++index) {
+        if (starved[index] != 0U) {
+            ++starved_samples;
+            if (!in_underrun) ++stats.underruns;
+            in_underrun = true;
+        } else {
+            in_underrun = false;
+        }
+        if (index > first && std::abs(output[index] - output[index - 1U]) > click_threshold) {
+            ++stats.clicks;
+        }
+    }
+    stats.underrun_ms = static_cast<double>(starved_samples) / static_cast<double>(samples_per_ms);
+    stats.played_ms = static_cast<double>(last - first) / static_cast<double>(samples_per_ms);
+    auto latencies = device.latencies();
+    stats.latency_samples = latencies.size();
+    if (!latencies.empty()) {
+        std::sort(latencies.begin(), latencies.end());
+        double sum = 0.0;
+        for (const auto value : latencies) sum += static_cast<double>(value);
+        stats.latency_avg_ms = sum / static_cast<double>(latencies.size());
+        stats.latency_p95_ms = latencies[(latencies.size() - 1U) * 95U / 100U];
+        stats.latency_max_ms = latencies.back();
+    }
+    return stats;
+}
+
+void print_stats(const Profile& profile, const Stats& stats)
+{
+    std::cout << "jitter_sim profile=" << profile.name
+              << " underruns=" << stats.underruns
+              << " underrun_ms=" << stats.underrun_ms
+              << " concealed_frames=" << stats.concealed_frames
+              << " dropped_packets=" << stats.dropped_packets
+              << " clicks=" << stats.clicks
+              << " cancelled=" << stats.cancelled_calls
+              << " generations=" << stats.generations
+              << " played_ms=" << stats.played_ms
+              << " latency_avg_ms=" << stats.latency_avg_ms
+              << " latency_p95_ms=" << stats.latency_p95_ms
+              << " latency_max_ms=" << stats.latency_max_ms
+              << " latency_n=" << stats.latency_samples << '\n';
+}
+
+} // namespace jitter_sim
+
+// 基线模式：只输出统计，不对音质设门限；修复提交再启用断言。
+[[nodiscard]] bool test_downlink_playback_under_jitter()
+{
+    using jitter_sim::Profile;
+    const auto codewords = jitter_sim::encode_tone(jitter_sim::sim_bursts * wirex::dmr_call::codewords_per_burst);
+    const auto natural_delta = jitter_sim::reference_max_delta(codewords);
+    const auto click_threshold = std::max<std::int32_t>(2 * natural_delta, 1000);
+    std::cout << "jitter_sim reference_max_delta=" << natural_delta
+              << " click_threshold=" << click_threshold
+              << " waveout_buffers=" << jitter_sim::sim_waveout_buffers
+              << " submit_per_loop=" << jitter_sim::sim_submit_per_loop
+              << " seed=" << jitter_sim::sim_seed << '\n';
+    const std::array<Profile, 4> profiles{{
+        {"ideal", 0, 0U, 5, 16, 0U, 0, 0},
+        {"sched_5_40ms", 0, 0U, 5, 16, 100U, 5, 40},
+        {"net_30ms_drop2pct", 30, 20U, 5, 16, 0U, 0, 0},
+        {"combined", 30, 20U, 5, 16, 100U, 5, 40},
+    }};
+    bool ok = true;
+    for (const auto& profile : profiles) {
+        const auto stats = jitter_sim::run_profile(profile, codewords, click_threshold);
+        jitter_sim::print_stats(profile, stats);
+        ok = require(stats.played_ms > 1000.0, "jitter simulation did not play any audio") && ok;
+    }
+    return ok;
+}
+
 } // namespace
 
 int main()
@@ -1204,7 +1597,8 @@ int main()
         !test_half_duplex_collision() || !test_rx_queue_bound_cancel_and_reentry() ||
         !test_rx_missing_eot_watchdog() || !test_nonmatching_calls_do_not_interrupt_active_rx() ||
         !test_absolute_tx_clock_with_waveinput_chunks_and_jitter() ||
-        !test_dmrd_sequence_statistics()) {
+        !test_dmrd_sequence_statistics() ||
+        !test_downlink_playback_under_jitter()) {
         return 1;
     }
     std::cout << "BM voice pipeline offline pacing, filters, lifecycle, bounds, reset, and RX acknowledgement checks passed.\n";
