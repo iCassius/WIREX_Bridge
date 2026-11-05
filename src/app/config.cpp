@@ -514,6 +514,16 @@ void write_typed(Value& doc, const AppConfig& config, const Value* gain_source)
     ui.set("legacy_rx_policy", config.ui.legacy_rx_policy);
     ui.set("language", Value::string(config.ui.language));
     doc.set("window", config.window);
+
+    // relay（R130，原生扩展）：文件已有该节或任一开关为 true 时才写入；默认配置保持与 PS 生成的字节一致。
+    Value* relay = doc.find("relay");
+    if (relay == nullptr && (config.relay.enabled || config.relay.fm_enabled)) {
+        relay = &doc.set("relay", Value::object());
+    }
+    if (relay != nullptr && relay->is_object()) {
+        relay->set("enabled", Value::boolean(config.relay.enabled));
+        relay->set("fm_enabled", Value::boolean(config.relay.fm_enabled));
+    }
 }
 
 // ConvertTo-WirexPortableConfig.
@@ -697,6 +707,25 @@ ConfigResult<AppConfig> validate(const Value& input)
     }
     config.ui.language = language->text;
     config.window = *merged.find("window");
+
+    // relay（可选根节，R130）：缺省或缺字段为 false；存在时必须是对象且已知字段为布尔值，其它成员原样保留。
+    if (const Value* relay = merged.find("relay")) {
+        if (!relay->is_object()) {
+            return make_error(ConfigErrorCode::not_object, "relay", "便携配置 relay 必须是对象。");
+        }
+        const auto relay_flag = [&](const char* key, bool& out) -> std::optional<ConfigError> {
+            const Value* flag = relay->find(key);
+            if (flag == nullptr) return std::nullopt;
+            if (!flag->is_bool()) {
+                return ConfigError{ConfigErrorCode::invalid_value, std::string("relay.") + key,
+                                   std::string("relay.") + key + " 必须是 true 或 false。"};
+            }
+            out = flag->boolean_value;
+            return std::nullopt;
+        };
+        if (auto error = relay_flag("enabled", config.relay.enabled)) return *error;
+        if (auto error = relay_flag("fm_enabled", config.relay.fm_enabled)) return *error;
+    }
 
     if (has_credential_path_key(merged)) {
         return make_error(ConfigErrorCode::credential_path_field, {}, "config.json 不能保存凭据文件路径；请把凭据值存入 connection。");

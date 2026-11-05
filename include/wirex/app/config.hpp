@@ -97,6 +97,16 @@ struct UiConfig {
     std::string language{"zh-CN"};   // "zh-CN" or "en-US"
 };
 
+// Optional root section "relay" (R130, native only; PortableConfig.psm1 keeps it
+// as an unknown section). Absent section or absent member = false. When present,
+// the section must be an object and each known member a JSON boolean; other
+// members are preserved verbatim. save() writes the section only when the file
+// already has it or a flag is true, so default files stay byte-identical to PS.
+struct RelayConfig {
+    bool enabled{false};     // relay.enabled：中继总开关（AP PC 模式 Y 模板）
+    bool fm_enabled{false};  // relay.fm_enabled：FM 中继（CAT 静噪触发；官方未支持）
+};
+
 struct AppConfig {
     ConnectionConfig connection{};
     DevicesConfig devices{};
@@ -105,6 +115,7 @@ struct AppConfig {
     std::string tx_channel_id{};
     RoutingConfig routing{};
     UiConfig ui{};
+    RelayConfig relay{};
     json::Value window{json::Value::object()};
 
     // Full normalized document the typed fields were read from. Unknown members

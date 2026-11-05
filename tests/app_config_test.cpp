@@ -459,6 +459,113 @@ void test_routing_ui_window()
     });
 }
 
+void test_relay_fields()
+{
+    using E = ConfigErrorCode;
+    const AppConfig defaults = wirex::app::default_config();
+    check(!defaults.relay.enabled && !defaults.relay.fm_enabled, "relay defaults are off");
+    check(defaults.document.find("relay") == nullptr, "default document has no relay section (PS layout unchanged)");
+
+    const auto relay = [](std::function<void(json::Value&)> fill) {
+        return [fill](json::Value& d) {
+            json::Value section = json::Value::object();
+            fill(section);
+            d.set("relay", section);
+        };
+    };
+    run_cases("relay", {
+        {"absent section", [](json::Value&) {}, std::nullopt,
+            [](const AppConfig& c) { return !c.relay.enabled && !c.relay.fm_enabled; }},
+        {"both true", relay([](json::Value& r) {
+                r.set("enabled", json::Value::boolean(true));
+                r.set("fm_enabled", json::Value::boolean(true));
+            }), std::nullopt,
+            [](const AppConfig& c) { return c.relay.enabled && c.relay.fm_enabled; }},
+        {"enabled only", relay([](json::Value& r) { r.set("enabled", json::Value::boolean(true)); }), std::nullopt,
+            [](const AppConfig& c) { return c.relay.enabled && !c.relay.fm_enabled; }},
+        {"empty object", relay([](json::Value&) {}), std::nullopt,
+            [](const AppConfig& c) { return !c.relay.enabled && !c.relay.fm_enabled; }},
+        {"unknown member kept", relay([](json::Value& r) {
+                r.set("enabled", json::Value::boolean(true));
+                r.set("c4fm_future", str("keep"));
+            }), std::nullopt,
+            [](const AppConfig& c) {
+                const auto* r = c.document.find("relay");
+                return r != nullptr && r->find("c4fm_future") != nullptr && r->find("c4fm_future")->text == "keep" &&
+                    r->find("fm_enabled") != nullptr && !r->find("fm_enabled")->boolean_value;
+            }},
+        {"section array", [](json::Value& d) { d.set("relay", json::Value::array()); }, E::not_object},
+        {"section null", [](json::Value& d) { d.set("relay", json::Value::null()); }, E::not_object},
+        {"enabled string", relay([](json::Value& r) { r.set("enabled", str("true")); }), E::invalid_value},
+        {"enabled number", relay([](json::Value& r) { r.set("enabled", num("1")); }), E::invalid_value},
+        {"fm_enabled null", relay([](json::Value& r) { r.set("fm_enabled", json::Value::null()); }), E::invalid_value},
+    });
+}
+
+void test_relay_round_trip(const fs::path& root)
+{
+    const fs::path dir = root / "relay";
+    fs::create_directories(dir);
+    const fs::path path = dir / "config.json";
+
+    // Default file: saving with both flags off must not add a relay section.
+    check(wirex::app::create_default(path).ok(), "relay: default file created");
+    auto c = wirex::app::load(path).value();
+    check(wirex::app::save(path, c).ok() && read_bytes(path) == default_text(),
+          "relay: save with flags off keeps the default bytes (no relay section)");
+
+    // Turning a flag on writes the section; reload reads it back.
+    c.relay.enabled = true;
+    check(wirex::app::save(path, c).ok(), "relay: save with relay enabled");
+    auto reread = wirex::app::load(path);
+    check(reread.ok() && reread.value().relay.enabled && !reread.value().relay.fm_enabled,
+          "relay: enabled persists and fm_enabled stays false");
+    json::Value raw;
+    check(json::parse(read_bytes(path), raw).ok() && raw.find("relay") != nullptr &&
+              raw.find("relay")->find("enabled") != nullptr && raw.find("relay")->find("enabled")->is_bool() &&
+              raw.find("relay")->find("fm_enabled") != nullptr,
+          "relay: stored section has boolean enabled and fm_enabled");
+
+    // Unknown member inside relay survives later edits; turning both off keeps the (existing) section.
+    write_bytes(path, [&]() {
+        json::Value doc;
+        (void)json::parse(read_bytes(path), doc);
+        doc.find("relay")->set("future_mode", str("c4fm"));
+        return wirex::app::serialize_config(doc);
+    }());
+    c = wirex::app::load(path).value();
+    c.relay.fm_enabled = true;
+    check(wirex::app::save(path, c).ok(), "relay: save with fm enabled");
+    reread = wirex::app::load(path);
+    check(reread.ok() && reread.value().relay.enabled && reread.value().relay.fm_enabled &&
+              reread.value().document.find("relay")->find("future_mode")->text == "c4fm",
+          "relay: fm_enabled persists and unknown relay member is preserved");
+    c = reread.value();
+    c.relay.enabled = false;
+    c.relay.fm_enabled = false;
+    check(wirex::app::save(path, c).ok(), "relay: save with both off");
+    reread = wirex::app::load(path);
+    check(reread.ok() && !reread.value().relay.enabled && !reread.value().relay.fm_enabled &&
+              reread.value().document.find("relay") != nullptr &&
+              reread.value().document.find("relay")->find("future_mode") != nullptr,
+          "relay: existing section is kept with both flags false");
+
+    // Invalid relay value in the file: load rejects, save keeps the original bytes.
+    std::string bad = read_bytes(path);
+    const auto at_flag = bad.find("\"enabled\":  false");
+    check(at_flag != std::string::npos, "relay: serialized flag found");
+    if (at_flag != std::string::npos) {
+        bad.replace(at_flag, std::string("\"enabled\":  false").size(), "\"enabled\":  \"yes\"");
+        write_bytes(path, bad);
+        const auto rejected = wirex::app::load(path);
+        check(!rejected.ok() && rejected.error().code == ConfigErrorCode::invalid_value &&
+                  rejected.error().field == "relay.enabled",
+              "relay: non-boolean enabled rejected on load");
+        check(!wirex::app::save(path, wirex::app::default_config()).ok() && read_bytes(path) == bad,
+              "relay: save keeps an invalid file untouched");
+    }
+}
+
 void test_json_strictness()
 {
     using E = ConfigErrorCode;
@@ -819,10 +926,12 @@ int main()
         test_audio_fields();
         test_channel_fields();
         test_routing_ui_window();
+        test_relay_fields();
         test_json_strictness();
         test_json_dom();
         test_file_round_trips(root);
         test_release_structure(root);
+        test_relay_round_trip(root);
         fs::remove_all(root);
     } catch (const std::exception& error) {
         std::cerr << "FAIL: unexpected exception: " << error.what() << '\n';
