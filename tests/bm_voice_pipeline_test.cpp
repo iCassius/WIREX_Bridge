@@ -459,6 +459,9 @@ struct RxSource {
                  pipeline.tick(tg91_start + 60ms) == Error::none &&
                  tg91.voice(tg91_voice) &&
                  pipeline.ingest_rx(tg91_voice.datagram, tg91_start + 61ms).error == Error::none &&
+                 pipeline.tick(tg91_start + 62ms) == Error::none &&
+                 tg91.voice(tg91_voice) &&
+                 pipeline.ingest_rx(tg91_voice.datagram, tg91_start + 63ms).error == Error::none &&
                  pipeline.tick(tg91_start + 120ms) == Error::none,
                  "TG91 voice packets did not reach the DMR decoder")) return false;
     PlaybackFrame tg91_pcm{};
@@ -495,6 +498,9 @@ struct RxSource {
                  pipeline.tick(parrot_start + 60ms) == Error::none &&
                  parrot.voice(parrot_voice) &&
                  pipeline.ingest_rx(parrot_voice.datagram, parrot_start + 61ms).error == Error::none &&
+                 pipeline.tick(parrot_start + 62ms) == Error::none &&
+                 parrot.voice(parrot_voice) &&
+                 pipeline.ingest_rx(parrot_voice.datagram, parrot_start + 63ms).error == Error::none &&
                  pipeline.tick(parrot_start + 120ms) == Error::none,
                  "parrot return voice packets did not reach the DMR decoder")) return false;
     PlaybackFrame pcm{};
@@ -566,8 +572,16 @@ struct RxSource {
     }
     (void)source.voice(voice);
     if (!require(pipeline.ingest_rx(voice.datagram, start + 61ms).error == Error::none &&
-                 pipeline.tick(start + 120ms) == Error::none,
-                 "RX failed to decode after its prebuffer filled")) {
+                 pipeline.tick(start + 62ms) == Error::none &&
+                 pipeline.snapshot().queued_playback_frames == 0U,
+                 "RX played before its three-burst jitter prebuffer")) {
+        return false;
+    }
+    (void)source.voice(voice);
+    if (!require(pipeline.ingest_rx(voice.datagram, start + 121ms).error == Error::none &&
+                 pipeline.tick(start + 122ms) == Error::none &&
+                 pipeline.snapshot().queued_playback_frames == 3U,
+                 "RX failed to decode exactly one burst after its prebuffer filled")) {
         return false;
     }
     PlaybackFrame frame{};
@@ -578,13 +592,24 @@ struct RxSource {
         }
         playback_generation = frame.generation;
     }
-    if (!require(pipeline.acknowledge_playback(playback_generation, 3U, start + 121ms) == Error::none &&
-                 pipeline.tick(start + 180ms) == Error::none,
+    if (!require(pipeline.acknowledge_playback(playback_generation, 3U, start + 123ms) == Error::none &&
+                 pipeline.tick(start + 124ms) == Error::none,
                  "RX first hardware completion was not acknowledged")) {
         return false;
     }
     for (std::size_t index = 0U; index < 3U; ++index) {
         if (!require(pipeline.take_playback_pcm(frame), "second RX burst did not produce PCM")) {
+            return false;
+        }
+        playback_generation = frame.generation;
+    }
+    if (!require(pipeline.acknowledge_playback(playback_generation, 3U, start + 125ms) == Error::none &&
+                 pipeline.tick(start + 126ms) == Error::none,
+                 "RX second hardware completion was not acknowledged")) {
+        return false;
+    }
+    for (std::size_t index = 0U; index < 3U; ++index) {
+        if (!require(pipeline.take_playback_pcm(frame), "third RX burst did not produce PCM")) {
             return false;
         }
         playback_generation = frame.generation;
@@ -653,6 +678,9 @@ struct RxSource {
     (void)pipeline.tick(start + 60ms);
     (void)selected.voice(voice);
     (void)pipeline.ingest_rx(voice.datagram, start + 61ms);
+    (void)pipeline.tick(start + 62ms);
+    (void)selected.voice(voice);
+    (void)pipeline.ingest_rx(voice.datagram, start + 63ms);
     if (!require(pipeline.tick(start + 120ms) == Error::none,
                  "selected RX call did not enter playback")) {
         return false;
@@ -691,7 +719,7 @@ struct RxSource {
     if (!require(during.rx_state == wirex::bm_voice::RxState::playing &&
                  during.receive_call.source_id == selected.call.source_id &&
                  during.receive_call.destination_id == selected.call.destination_id &&
-                 during.queued_rx_bursts == 1U && during.queued_playback_frames == 3U,
+                 during.queued_rx_bursts == 2U && during.queued_playback_frames == 3U,
                  "nonselected stream changed the active RX state or media queues")) {
         return false;
     }
@@ -762,11 +790,18 @@ struct RxSource {
             return false;
         }
     }
+    // 解码由播放水位驱动：无人取帧时PCM停在目标水位，其余积压保留为AMBE burst。
+    constexpr std::size_t target_frames = wirex::bm_voice::rx_playback_target_frames;
+    constexpr std::size_t decoded_bursts =
+        (target_frames + wirex::dmr_call::codewords_per_burst - 1U) / wirex::dmr_call::codewords_per_burst;
     if (!require(pipeline.snapshot().buffered_receive_frames == wirex::bm_voice::max_rx_queued_pcm_frames &&
-                 pipeline.snapshot().queued_playback_frames == 147U &&
-                 pipeline.snapshot().queued_rx_bursts == 1U &&
+                 pipeline.snapshot().queued_playback_frames ==
+                     decoded_bursts * wirex::dmr_call::codewords_per_burst &&
+                 pipeline.snapshot().queued_rx_bursts == 50U - decoded_bursts &&
                  pipeline.tick(start + 3060ms) == Error::none &&
-                 pipeline.snapshot().queued_playback_frames == wirex::bm_voice::max_rx_queued_pcm_frames,
+                 pipeline.snapshot().queued_playback_frames ==
+                     decoded_bursts * wirex::dmr_call::codewords_per_burst &&
+                 pipeline.snapshot().buffered_receive_frames == wirex::bm_voice::max_rx_queued_pcm_frames,
                  "RX media backlog did not stop at its fixed three-second frame bound")) {
         return false;
     }
@@ -790,14 +825,14 @@ struct RxSource {
         return false;
     }
     (void)pipeline.take_event();
-    for (std::size_t index = 0U; index < 2U; ++index) {
+    for (std::size_t index = 0U; index < wirex::bm_voice::rx_start_prebuffer_bursts; ++index) {
         (void)cancelled.voice(voice);
-        const auto now = overflow_at + std::chrono::milliseconds{2 + static_cast<std::int64_t>(index * 60U)};
+        const auto now = overflow_at + std::chrono::milliseconds{2 + static_cast<std::int64_t>(index * 20U)};
         if (!require(pipeline.ingest_rx(voice.datagram, now).error == Error::none,
                      "re-entered RX could not buffer voice")) {
             return false;
         }
-        if (index == 1U && !require(pipeline.tick(now) == Error::none,
+        if (index + 1U == wirex::bm_voice::rx_start_prebuffer_bursts && !require(pipeline.tick(now) == Error::none,
                                     "re-entered RX could not decode its first burst")) {
             return false;
         }
@@ -830,14 +865,14 @@ struct RxSource {
                  "RX did not accept a fresh stream after cancellation")) {
         return false;
     }
-    for (std::size_t index = 0U; index < 2U; ++index) {
+    for (std::size_t index = 0U; index < wirex::bm_voice::rx_start_prebuffer_bursts; ++index) {
         (void)after_cancel.voice(voice);
-        const auto now = new_start + std::chrono::milliseconds{2 + static_cast<std::int64_t>(index * 60U)};
+        const auto now = new_start + std::chrono::milliseconds{2 + static_cast<std::int64_t>(index * 20U)};
         if (!require(pipeline.ingest_rx(voice.datagram, now).error == Error::none,
                      "fresh RX after cancellation could not buffer voice")) {
             return false;
         }
-        if (index == 1U && !require(pipeline.tick(now) == Error::none,
+        if (index + 1U == wirex::bm_voice::rx_start_prebuffer_bursts && !require(pipeline.tick(now) == Error::none,
                                     "fresh RX after cancellation could not decode voice")) {
             return false;
         }
@@ -893,6 +928,9 @@ struct RxSource {
     (void)pipeline.tick(start + 60ms);
     (void)source.voice(voice);
     (void)pipeline.ingest_rx(voice.datagram, start + 61ms);
+    (void)pipeline.tick(start + 62ms);
+    (void)source.voice(voice);
+    (void)pipeline.ingest_rx(voice.datagram, start + 63ms);
     (void)pipeline.tick(start + 120ms);
     PlaybackFrame frame{};
     std::uint64_t playback_generation{};
@@ -907,7 +945,8 @@ struct RxSource {
                  "watchdog playback setup did not advance")) {
         return false;
     }
-    const auto timed_out_at = start + 421ms;
+    // watchdog 从最后一个 voice 到达（start + 63ms）起计 360 ms。
+    const auto timed_out_at = start + 423ms;
     if (!require(pipeline.tick(timed_out_at) == Error::none,
                  "lost EOT did not end the receive call at its watchdog deadline")) {
         return false;
@@ -922,22 +961,30 @@ struct RxSource {
                  "lost-EOT watchdog reason was not preserved while the audio tail drained")) {
         return false;
     }
-    for (std::size_t index = 0U; index < 3U; ++index) {
-        if (!require(pipeline.take_playback_pcm(frame), "watchdog tail PCM was dropped")) {
+    // 剩余两个 burst（6 帧）加 126 样本滤波尾部；解码由播放水位驱动，按 HRI 确认逐步排空。
+    std::size_t full_frames = 0U;
+    bool saw_filter_tail = false;
+    bool drained = false;
+    auto now = timed_out_at;
+    for (std::size_t step = 0U; step < 8U && !drained; ++step) {
+        while (pipeline.take_playback_pcm(frame)) {
+            if (frame.sample_count == wirex::bm_voice::pcm48_samples_per_frame) ++full_frames;
+            saw_filter_tail = saw_filter_tail || frame.sample_count == 126U;
+            now += 1ms;
+            if (!require(pipeline.acknowledge_playback(frame.generation, 1U, now) == Error::none,
+                         "watchdog tail PCM acknowledgement failed")) {
+                return false;
+            }
+        }
+        drained = drain_events(pipeline, EventKind::playback_drained);
+        now += 1ms;
+        if (!drained && !require(pipeline.tick(now) == Error::none, "watchdog tail tick failed")) {
             return false;
         }
-        playback_generation = frame.generation;
     }
-    if (!require(pipeline.acknowledge_playback(playback_generation, 3U, timed_out_at + 1ms) == Error::none &&
-                 pipeline.snapshot().rx_state == wirex::bm_voice::RxState::draining &&
-                 pipeline.take_playback_pcm(frame) && frame.sample_count == 126U &&
-                 pipeline.acknowledge_playback(frame.generation, 1U, timed_out_at + 2ms) == Error::none &&
-                 pipeline.snapshot().rx_state == wirex::bm_voice::RxState::idle &&
-                 drain_events(pipeline, EventKind::playback_drained),
-                 "watchdog tail did not finish after HRI acknowledged the filter tail")) {
-        return false;
-    }
-    return true;
+    return require(full_frames == 6U && saw_filter_tail && drained &&
+                       pipeline.snapshot().rx_state == wirex::bm_voice::RxState::idle,
+                   "watchdog tail did not finish after HRI acknowledged the filter tail");
 }
 
 [[nodiscard]] bool test_absolute_tx_clock_with_waveinput_chunks_and_jitter()
@@ -1202,10 +1249,10 @@ struct RxSource {
 // ingest → tick → playback_ready → ack → submit，并注入调度与网络抖动。
 namespace jitter_sim {
 
-// 与当前生产代码一致：WaveOutput::buffer_count == WaveInput::buffer_count，
-// engine_loop 每轮最多提交 3 帧。
-constexpr std::size_t sim_waveout_buffers = 4U;
-constexpr std::size_t sim_submit_per_loop = 3U;
+// 与生产代码一致：win_io::WaveOutput::buffer_count == 12，
+// engine_loop 每轮最多提交 max_unconfirmed_playback_frames 帧。
+constexpr std::size_t sim_waveout_buffers = 12U;
+constexpr std::size_t sim_submit_per_loop = wirex::bm_voice::max_unconfirmed_playback_frames;
 constexpr std::size_t sim_bursts = 500U; // 30 s 通话
 constexpr std::int64_t samples_per_ms = 48;
 constexpr std::uint64_t sim_seed = 20261105U;
@@ -1560,7 +1607,7 @@ void print_stats(const Profile& profile, const Stats& stats)
 
 } // namespace jitter_sim
 
-// 基线模式：只输出统计，不对音质设门限；修复提交再启用断言。
+// 同一种子下的回归门限：修复前 sched_5_40ms 为 147 次欠载/1204 ms，延迟累积到 1.2 s。
 [[nodiscard]] bool test_downlink_playback_under_jitter()
 {
     using jitter_sim::Profile;
@@ -1583,8 +1630,127 @@ void print_stats(const Profile& profile, const Stats& stats)
         const auto stats = jitter_sim::run_profile(profile, codewords, click_threshold);
         jitter_sim::print_stats(profile, stats);
         ok = require(stats.played_ms > 1000.0, "jitter simulation did not play any audio") && ok;
+        ok = require(stats.cancelled_calls == 0U && stats.generations == 1U,
+                     "jitter simulation cancelled or restarted the receive call") && ok;
+        ok = require(stats.clicks == 0U, "jitter simulation produced sample-step clicks") && ok;
+        // 网络与调度抖动同时叠加到丢包边沿时允许一次短欠载；单一抖动源不应欠载。
+        const bool combined = profile.network_jitter_ms != 0 && profile.stall_per_mille != 0U;
+        ok = require(combined ? stats.underruns <= 1U && stats.underrun_ms <= 20.0 : stats.underruns == 0U,
+                     "jitter simulation underran beyond the 200 ms playback headroom") && ok;
+        ok = require(stats.latency_p95_ms <= 250 && stats.latency_max_ms <= 250,
+                     "DMRD-to-playout latency exceeded 250 ms") && ok;
     }
     return ok;
+}
+
+// 丢 1 包补偿时：补零帧从上一输出样本线性淡出，恢复后的首个解码帧从 0 淡入。
+[[nodiscard]] bool test_rx_concealment_fades()
+{
+    BmVoicePipeline pipeline;
+    const auto start = TimePoint{} + 300s;
+    const auto codewords = jitter_sim::encode_tone(30U);
+    wirex::dmr_call::Transmitter transmitter;
+    const auto header = transmitter.start(make_call(7101U, 91U, 0x72U));
+    if (!require(static_cast<bool>(header) &&
+                 pipeline.ingest_rx(header.packet.datagram, start).error == Error::none &&
+                 pipeline.playback_ready(start) == Error::none,
+                 "concealment fade test could not start receive")) {
+        return false;
+    }
+    (void)drain_events(pipeline, EventKind::receive_started);
+    std::vector<std::int16_t> output;
+    std::vector<std::size_t> frame_starts;
+    auto now = start;
+    for (std::size_t burst = 0U; burst < 10U; ++burst) {
+        wirex::dmr_call::AmbeVoiceBurst ambe{};
+        for (std::size_t index = 0U; index < 3U; ++index) {
+            const auto& codeword = codewords[burst * 3U + index];
+            std::copy(codeword.begin(), codeword.end(),
+                      ambe.begin() + static_cast<std::ptrdiff_t>(index * codeword.size()));
+        }
+        const auto voice = transmitter.voice(ambe);
+        if (!require(static_cast<bool>(voice), "concealment fade test could not build voice")) return false;
+        now += 60ms;
+        if (burst == 5U) continue; // 丢第 6 个 burst
+        if (!require(pipeline.ingest_rx(voice.packet.datagram, now).error == Error::none,
+                     "concealment fade test rejected voice")) {
+            return false;
+        }
+        for (int pass = 0; pass < 4; ++pass) {
+            now += 1ms;
+            if (!require(pipeline.tick(now) == Error::none, "concealment fade tick failed")) return false;
+            PlaybackFrame frame{};
+            while (pipeline.take_playback_pcm(frame)) {
+                frame_starts.push_back(output.size());
+                output.insert(output.end(), frame.pcm.begin(),
+                              frame.pcm.begin() + static_cast<std::ptrdiff_t>(frame.sample_count));
+                if (!require(pipeline.acknowledge_playback(frame.generation, 1U, now) == Error::none,
+                             "concealment fade ack failed")) {
+                    return false;
+                }
+            }
+        }
+    }
+    // 第 6 个 burst 对应帧 15..17 为补偿；帧 18 是恢复后的第一个解码帧。
+    if (!require(frame_starts.size() >= 21U, "concealment fade test produced too few frames")) return false;
+    const std::size_t conceal = frame_starts[15];
+    const std::size_t resume = frame_starts[18];
+    const auto before = static_cast<std::int32_t>(output[conceal - 1U]);
+    std::int32_t max_step = 0;
+    for (std::size_t index = conceal; index < resume + wirex::bm_voice::rx_fade_samples; ++index) {
+        max_step = std::max(max_step, std::abs(output[index] - output[index - 1U]));
+    }
+    const bool silent_middle = std::all_of(
+        output.begin() + static_cast<std::ptrdiff_t>(conceal + wirex::bm_voice::rx_fade_samples),
+        output.begin() + static_cast<std::ptrdiff_t>(resume),
+        [](std::int16_t sample) { return sample == 0; });
+    std::cout << "concealment_fade last_sample=" << before << " max_step=" << max_step
+              << " resume_first=" << output[resume] << '\n';
+    return require(silent_middle && output[resume] == 0 && max_step <= 1000,
+                   "packet-loss concealment did not fade out to silence and fade back in");
+}
+
+// 引擎循环停顿 300 ms（超过设备余量但远小于停顿上限）后，后续 tick 逐个追赶积压 burst，
+// 不取消通话；超过 max_rx_schedule_stall 的停顿才按 deadline_missed 结束。
+[[nodiscard]] bool test_rx_catches_up_after_scheduler_stall()
+{
+    BmVoicePipeline pipeline;
+    RxSource source;
+    wirex::dmr_call::TxPacket packet{};
+    const auto start = TimePoint{} + 400s;
+    if (!require(source.start(make_call(7201U, 91U, 0x73U), packet) &&
+                 pipeline.ingest_rx(packet.datagram, start).error == Error::none &&
+                 pipeline.playback_ready(start) == Error::none,
+                 "stall test could not start receive")) {
+        return false;
+    }
+    (void)drain_events(pipeline, EventKind::receive_started);
+    for (std::size_t index = 0U; index < 3U; ++index) {
+        (void)source.voice(packet);
+        (void)pipeline.ingest_rx(packet.datagram, start + std::chrono::milliseconds{1 + 60 * index});
+    }
+    // 300 ms 内到达 5 个 burst，但期间没有 tick。
+    for (std::size_t index = 3U; index < 8U; ++index) {
+        (void)source.voice(packet);
+        (void)pipeline.ingest_rx(packet.datagram, start + std::chrono::milliseconds{1 + 60 * index});
+    }
+    auto now = start + 425ms;
+    std::size_t decoded_ticks = 0U;
+    for (int pass = 0; pass < 4; ++pass) {
+        const auto before = pipeline.snapshot().queued_rx_bursts;
+        if (!require(pipeline.tick(now) == Error::none, "stall recovery tick failed")) return false;
+        if (pipeline.snapshot().queued_rx_bursts + 1U == before) ++decoded_ticks;
+        now += 1ms;
+    }
+    if (!require(decoded_ticks == 4U && pipeline.snapshot().rx_state == wirex::bm_voice::RxState::playing,
+                 "RX did not decode one backlog burst per tick after a scheduler stall")) {
+        return false;
+    }
+    (void)source.voice(packet);
+    (void)pipeline.ingest_rx(packet.datagram, now);
+    return require(pipeline.tick(now + wirex::bm_voice::max_rx_schedule_stall + 1ms) == Error::deadline_missed &&
+                       pipeline.snapshot().rx_state == wirex::bm_voice::RxState::idle,
+                   "multi-second RX scheduler stop did not reject stale voice");
 }
 
 } // namespace
@@ -1598,7 +1764,8 @@ int main()
         !test_rx_missing_eot_watchdog() || !test_nonmatching_calls_do_not_interrupt_active_rx() ||
         !test_absolute_tx_clock_with_waveinput_chunks_and_jitter() ||
         !test_dmrd_sequence_statistics() ||
-        !test_downlink_playback_under_jitter()) {
+        !test_downlink_playback_under_jitter() || !test_rx_concealment_fades() ||
+        !test_rx_catches_up_after_scheduler_stall()) {
         return 1;
     }
     std::cout << "BM voice pipeline offline pacing, filters, lifecycle, bounds, reset, and RX acknowledgement checks passed.\n";

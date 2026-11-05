@@ -3193,7 +3193,9 @@ CommandResult run_loop(Shared& shared, StartConfig config)
                 const bool draining_silently = radio_output_playback_blocked ||
                     (local_route.call_active && !routed_rx_hri_start_attempted &&
                      local_route.route == wirex::bm_local_playback::Route::silent);
-                for (std::size_t submitted = 0U; submitted < 3U &&
+                // 一轮补满设备侧水位：调度迟到后可一次追回全部在途帧。
+                for (std::size_t submitted = 0U;
+                     submitted < wirex::bm_voice::max_unconfirmed_playback_frames &&
                      (draining_silently || radio_output->has_capacity()); ++submitted) {
                     wirex::bm_voice::PlaybackFrame frame{};
                     if (!pipeline->take_playback_pcm(frame)) break;

@@ -1405,8 +1405,11 @@ void test_watchdog_and_disconnect_generation_isolation()
         const auto burst = synth_voice_burst();
         const auto first = sender.voice(burst);
         const auto second = sender.voice(burst);
+        const auto third = sender.voice(burst);
         send_rx_packet(link, *pipeline, first.packet, 10060U);
         send_rx_packet(link, *pipeline, second.packet, 10120U);
+        // pipeline 起播预缓冲为 rx_start_prebuffer_bursts（3）个语音 burst。
+        send_rx_packet(link, *pipeline, third.packet, 10121U);
         check(pipeline->playback_ready(TimePoint{} + 10121ms) == Error::none,
               "watchdog call is permitted to play by synthetic HRI");
         check(pipeline->tick(TimePoint{} + 10121ms) == Error::none,
@@ -1436,7 +1439,7 @@ void test_watchdog_and_disconnect_generation_isolation()
                       "fake sink acknowledges watchdog-call audio without leaving buffers in flight");
             }
         }
-        check(pipeline->tick(TimePoint{} + 10480ms) == Error::none,
+        check(pipeline->tick(TimePoint{} + 10482ms) == Error::none,
               "missing EOT reaches DMR Receiver watchdog using virtual monotonic time");
         bool watchdog_end = false;
         while (const auto event = pipeline->take_event()) {
@@ -1467,8 +1470,10 @@ void test_watchdog_and_disconnect_generation_isolation()
         const auto burst = synth_voice_burst();
         const auto voice = sender.voice(burst);
         const auto next_voice = sender.voice(burst);
+        const auto third_voice = sender.voice(burst);
         send_rx_packet(link, *pipeline, voice.packet, 20060U);
         send_rx_packet(link, *pipeline, next_voice.packet, 20120U);
+        send_rx_packet(link, *pipeline, third_voice.packet, 20121U);
         check(pipeline->playback_ready(TimePoint{} + 20121ms) == Error::none,
               "reconnected BM call becomes playable after its new HRI readiness");
         check(pipeline->tick(TimePoint{} + 20121ms) == Error::none,
