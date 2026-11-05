@@ -2908,7 +2908,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             }
             synchronize_ptt_gate();
             const auto now = Clock::now();
-            const auto now_ms = elapsed_ms();
+            auto now_ms = elapsed_ms();
             if (now_ms >= next_runtime_snapshot_ms) {
                 status("runtime_snapshot");
                 next_runtime_snapshot_ms = now_ms + 1000U;
@@ -2940,6 +2940,9 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             }
             process_commands();
             begin_bm_disconnect_cleanup();
+            // 命令可能打开串口/创建会话并以更新的 elapsed_ms() 启动 HRI/流会话；之后的 tick 必须用
+            // 不早于该时刻的时间，否则 hri_session 判定 clock_regressed 并立即停止（R129 实机回归）。
+            now_ms = std::max(now_ms, elapsed_ms());
 
             if (!shutdown_requested && hri_active) {
                 const auto update = hri_session ? hri_session->tick(now_ms) : wirex::hri_session::Update{};
