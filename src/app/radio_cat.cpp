@@ -1,4 +1,5 @@
 #include "wirex/app/radio_cat.hpp"
+#include "wirex/app/radio_info.hpp"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -1009,6 +1010,122 @@ CatResult CatClient::run(const Request& request) const
     result.updated_at.reset();
     result.source.clear();
     return result;
+}
+
+// ---------- R130：静噪快速采样 ----------
+
+std::optional<unsigned> cat_parse_s_meter(std::string_view frame) noexcept
+{
+    // SM P1 P2P2P2 ;  P1 = 0（MAIN）；P2 = 000..255
+    if (frame.size() != 7U || frame[0] != 'S' || frame[1] != 'M' || frame[2] != '0' || frame[6] != ';') {
+        return std::nullopt;
+    }
+    unsigned value = 0U;
+    for (std::size_t i = 3U; i < 6U; ++i) {
+        if (frame[i] < '0' || frame[i] > '9') return std::nullopt;
+        value = value * 10U + static_cast<unsigned>(frame[i] - '0');
+    }
+    if (value > 255U) return std::nullopt;
+    return value;
+}
+
+CatSquelchSample CatClient::query_squelch(const CatConnection& connection, const std::atomic<bool>* cancel) const
+{
+    CatSquelchSample sample;
+    std::unique_ptr<CatTransport> transport;
+    bool is_open = false;
+    const auto fail = [&](CatError error, std::string message) {
+        sample.error = error;
+        sample.error_message = std::move(message);
+        sample.ri_frame.clear();
+    };
+    try {
+        const auto port = cat_normalize_port_name(connection.port_name);
+        if (port.empty() || !cat_is_valid_port_name(port)) {
+            fail(CatError::invalid_request, "CAT 串口必须是 COM1 到 COM999。");
+            return sample;
+        }
+        if (!connection.hri_port_name.empty() && port == cat_normalize_port_name(connection.hri_port_name)) {
+            fail(CatError::hri_port_conflict, "CAT-1 端口与当前 HRI 端口相同；本次未打开端口。");
+            return sample;
+        }
+        if (!cat_is_supported_baud_rate(connection.baud_rate) || connection.timeout < cat_min_timeout ||
+            connection.timeout > cat_max_timeout) {
+            fail(CatError::invalid_request, "CAT 连接参数无效。");
+            return sample;
+        }
+        if (cancel && cancel->load()) {
+            fail(CatError::cancelled, "CAT 操作已取消。");
+            return sample;
+        }
+        if (!factory_) {
+            fail(CatError::invalid_request, "CAT 传输未配置。");
+            return sample;
+        }
+        transport = factory_(connection);
+        if (!transport) {
+            fail(CatError::serial_io_error, "CAT 传输创建失败。");
+            return sample;
+        }
+        const auto deadline = steady::now() + connection.timeout;
+        const auto opened = transport->open();
+        if (opened != CatIo::ok) {
+            (void)transport->close();
+            fail(opened == CatIo::denied ? CatError::port_busy_or_denied : io_error_code(opened), "CAT-1 串口打开失败。");
+            return sample;
+        }
+        is_open = true;
+        if (transport->clear_input() != CatIo::ok) throw CatFailure(CatError::serial_io_error, "CAT-1 串口清空输入失败。");
+        Session session(*transport, deadline, cancel, transport->source_label());
+
+        // RI0：必须成功。只接受 radio_info::parse 通过的 11 字节应答；其它完整帧（异步 AI 等）跳过。
+        session.write(radio_info::query_command, "RI0 write");
+        for (;;) {
+            session.check_cancel();
+            const auto left = session.remaining();
+            if (left.count() <= 0) throw CatFailure(CatError::timeout, "CAT 命令 RI0; 在期限内没有应答。");
+            std::string frame;
+            const auto io = transport->read_frame(frame, left, cancel);
+            if (io == CatIo::timeout) throw CatFailure(CatError::timeout, "CAT 命令 RI0; 在期限内没有应答。");
+            if (io != CatIo::ok) throw CatFailure(io_error_code(io), "CAT-1 串口读写失败。");
+            if (frame == "?;") throw CatFailure(CatError::radio_rejected_command, "FTX-1 CAT 拒绝 RI0;。");
+            if (frame.size() < 2U || frame[0] != 'R' || frame[1] != 'I') continue;
+            if (!radio_info::parse(frame)) throw CatFailure(CatError::unexpected_response, "RI0; 应答无效：" + frame);
+            sample.ri_frame = frame;
+            break;
+        }
+
+        // SM0：尽力读取；任何失败都只让 s_meter 为空。
+        try {
+            session.write("SM0;", "SM0 write");
+            for (;;) {
+                const auto left = session.remaining();
+                if (left.count() <= 0) break;
+                std::string frame;
+                if (transport->read_frame(frame, left, cancel) != CatIo::ok) break;
+                if (frame == "?;") break;
+                if (frame.size() >= 2U && frame[0] == 'S' && frame[1] == 'M') {
+                    sample.s_meter = cat_parse_s_meter(frame);
+                    break;
+                }
+            }
+        } catch (const CatFailure&) {
+            sample.s_meter.reset();
+        }
+    } catch (const CatFailure& failure) {
+        fail(failure.code, failure.message);
+    } catch (const std::exception&) {
+        fail(CatError::serial_io_error, "CAT 静噪采样内部错误。");
+    }
+    if (transport && is_open) {
+        if (transport->close() != CatIo::ok) {
+            sample.cleanup = CatCleanup::close_failed;
+            if (sample.error == CatError::none) fail(CatError::serial_close_failed, "CAT-1 串口关闭失败。");
+        } else {
+            sample.cleanup = CatCleanup::closed;
+        }
+    }
+    return sample;
 }
 
 // ---------- 写授权 ----------

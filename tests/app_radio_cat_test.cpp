@@ -5,6 +5,7 @@
 #include <iostream>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -225,6 +226,8 @@ void test_gates()
 // ---------- Fake transport（照搬 PS fake） ----------
 
 struct FakeState {
+    std::string ri_answer{"RI00000000;"};   // R130 静噪采样
+    std::string sm_answer{"SM0080;"};       // 空字符串：SM0 不应答
     std::string radio_id{"0840"};
     bool ai{false};
     int tx{0};
@@ -285,6 +288,10 @@ public:
             if (!s.reject_power_write) { s.power_path = frame[2]; s.power_watts = std::stoi(frame.substr(3U, 3U)); }
         } else if (frame.size() == 12U && starts_with(frame, "FA")) {
             if (!s.reject_frequency_write) s.frequency_main = frame.substr(2U, 9U);
+        } else if (frame == "RI0;") {
+            if (!s.ri_answer.empty()) s.responses.push_back(s.ri_answer);
+        } else if (frame == "SM0;") {
+            if (!s.sm_answer.empty()) s.responses.push_back(s.sm_answer);
         } else {
             std::cerr << "FAIL: fake observed an unapproved CAT command: " << frame << '\n';
             std::exit(EXIT_FAILURE);
@@ -663,8 +670,69 @@ void test_worker_disconnect_drops_queue()
 
 } // namespace
 
+// R130：FM 中继静噪快速采样只发 RI0;/SM0;，SM0 失败不影响 RI。
+void test_squelch_sample()
+{
+    struct SmCase { const char* frame; std::optional<unsigned> value; };
+    const SmCase sm_cases[] = {
+        {"SM0134;", 134U}, {"SM0000;", 0U}, {"SM0255;", 255U}, {"SM0256;", std::nullopt},
+        {"SM1134;", std::nullopt}, {"SM013;", std::nullopt}, {"?;", std::nullopt}, {"SM01a4;", std::nullopt},
+    };
+    for (const auto& c : sm_cases) {
+        check(cat_parse_s_meter(c.frame) == c.value, std::string("S meter parse ") + c.frame);
+    }
+    {
+        auto s = std::make_shared<FakeState>();
+        s->ri_answer = "RI00000001;";
+        s->sm_answer = "SM0134;";
+        const auto r = fake_client(s).query_squelch(connection());
+        check(r.error == CatError::none && r.ri_frame == "RI00000001;" && r.s_meter == 134U,
+              "squelch sample returns RI frame and S meter");
+        const std::vector<std::string> expected{"RI0;", "SM0;"};
+        check(s->writes == expected, "squelch sample sends only RI0; and SM0;");
+        check(s->closed && r.cleanup == CatCleanup::closed, "squelch sample closes its short session");
+    }
+    {
+        auto s = std::make_shared<FakeState>();
+        s->sm_answer = "?;";
+        const auto r = fake_client(s).query_squelch(connection());
+        check(r.error == CatError::none && r.ri_frame == "RI00000000;" && !r.s_meter,
+              "SM0 rejection leaves s_meter empty but keeps the RI sample");
+    }
+    {
+        auto s = std::make_shared<FakeState>();
+        s->sm_answer.clear();
+        auto c = connection();
+        c.timeout = 150ms;
+        const auto r = fake_client(s).query_squelch(c);
+        check(r.error == CatError::none && !r.s_meter, "SM0 silence does not fail the RI sample");
+    }
+    {
+        auto s = std::make_shared<FakeState>();
+        s->ri_answer.clear();
+        auto c = connection();
+        c.timeout = 150ms;
+        const auto r = fake_client(s).query_squelch(c);
+        check(r.error == CatError::timeout && r.ri_frame.empty() && s->closed,
+              "missing RI0 answer is a timeout and still closes the port");
+        check(count_writes(*s, "SM0;") == 0, "SM0 is not sent after RI0 fails");
+    }
+    {
+        auto s = std::make_shared<FakeState>();
+        s->ri_answer = "RI00000003;";
+        const auto r = fake_client(s).query_squelch(connection());
+        check(r.error == CatError::unexpected_response, "out-of-range RI0 answer is rejected");
+    }
+    {
+        auto s = std::make_shared<FakeState>();
+        const auto r = fake_client(s).query_squelch(connection(L"COM5", L"COM5"));
+        check(r.error == CatError::hri_port_conflict && !s->opened, "squelch sample refuses the HRI port");
+    }
+}
+
 int main()
 {
+    test_squelch_sample();
     test_parse_table();
     test_command_builders();
     test_gates();

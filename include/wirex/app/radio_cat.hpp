@@ -270,6 +270,19 @@ using CatTransportFactory = std::function<std::unique_ptr<CatTransport>(const Ca
 /// Win32 串口：CreateFileW + SetCommState(8 数据位、无校验、指定停止位、关闭 DTR/RTS 与流控) + SetCommTimeouts。
 [[nodiscard]] std::unique_ptr<CatTransport> make_win32_cat_transport(const CatConnection& connection);
 
+// ---------- R130：FM 中继静噪快速采样（只读） ----------
+
+/// `SM0nnn;` → 0..255；其它（含 `?;`）返回 nullopt。
+[[nodiscard]] std::optional<unsigned> cat_parse_s_meter(std::string_view frame) noexcept;
+
+struct CatSquelchSample {
+    CatError error{CatError::none};       // none：RI0 应答已取得且通过 radio_info::parse
+    std::string error_message{};
+    std::string ri_frame{};               // 原始 `RI........;`（error==none 时有效）
+    std::optional<unsigned> s_meter{};    // SM0 值；不应答 / `?;` / 超时时为空，不影响 RI 结果
+    CatCleanup cleanup{CatCleanup::not_opened};
+};
+
 // ---------- 同步客户端 ----------
 
 class CatClient final {
@@ -292,6 +305,10 @@ public:
     [[nodiscard]] CatResult set_power(const CatConnection& connection, int watts,
                                       const CatCoreStateProvider& core,
                                       const std::atomic<bool>* cancel = nullptr) const;
+    /// R130 只读静噪采样：短会话只发 `RI0;` 与 `SM0;`（不发 ID/AI，身份由 1 s 周期 query 保证）。
+    /// SM0 失败不影响 RI 结果。不改动任何写授权或观测值。
+    [[nodiscard]] CatSquelchSample query_squelch(const CatConnection& connection,
+                                                 const std::atomic<bool>* cancel = nullptr) const;
 
 private:
     struct Request;
