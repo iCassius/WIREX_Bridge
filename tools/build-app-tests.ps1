@@ -27,6 +27,7 @@ $libraries = 'advapi32.lib setupapi.lib winmm.lib ole32.lib icuuc.lib winhttp.li
 $tests = @(
     @{ Name = 'app_config_test'; Sources = @('tests\app_config_test.cpp', 'src\app\config.cpp', 'src\app\json.cpp') },
     @{ Name = 'app_devices_test'; Sources = @('tests\app_devices_test.cpp', 'src\app\devices.cpp') },
+    @{ Name = 'app_radio_info_test'; Sources = @('tests\app_radio_info_test.cpp', 'src\app\radio_info.cpp') },
     @{ Name = 'app_radio_cat_test'; Sources = @('tests\app_radio_cat_test.cpp', 'src\app\radio_cat.cpp') },
     @{ Name = 'gui_fake_cat_lifecycle_test'; Sources = @('tests\gui_fake_cat_lifecycle_test.cpp', 'src\gui\fake_engine.cpp') },
     @{ Name = 'gui_cat_form_sync_test'; Sources = @('tests\gui_cat_form_sync_test.cpp') },
