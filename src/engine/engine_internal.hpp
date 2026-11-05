@@ -58,6 +58,8 @@ enum class CommandKind : std::uint8_t {
     set_audio_endpoints,
     upsert_radio_identity,
     manual_ptt_toggle,
+    relay_fm_start,   // R130
+    relay_fm_stop,    // R130
 };
 
 struct Command {

@@ -410,6 +410,13 @@ CommandResult run_loop(Shared& shared, StartConfig config)
 
     // ---------- 快照与事件发布 ----------
     std::optional<CallInfo> published_rx_call;
+    // R130 FM 中继：一段中继上行与手咪 PTT 共用同一个 Router PTT lease（begin_routed_tx），同一时刻只有一个。
+    bool relay_fm_active = false;
+    std::uint64_t relay_fm_started_ms = 0U;
+    wirex::talkgroup_routing::TxTarget relay_fm_target{};
+    std::uint64_t relay_fm_rejected_busy = 0U;
+    const std::uint64_t relay_fm_max_ms = config.relay_fm_max_duration_ms != 0U
+        ? config.relay_fm_max_duration_ms : wirex::engine::relay_fm_max_duration_ms;
     bool published_tx_active = false;
     BmLink published_bm_link = BmLink::disabled;
     std::uint64_t last_published_ms = 0U;
@@ -474,6 +481,9 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         next.counters.ptt_tx_starts = counters.ptt_tx_starts;
         next.counters.ptt_tx_timeouts = counters.ptt_tx_timeouts;
         next.counters.rx_filtered_datagrams = counters.rx_filtered_datagrams;
+        next.counters.relay_fm_rejected_busy = relay_fm_rejected_busy;
+        next.relay_fm_active = relay_fm_active;
+        next.relay_fm_started_ms = relay_fm_active ? relay_fm_started_ms : 0U;
         next.last_filtered = last_filtered;
         {
             const auto bm_now = bm_session.snapshot();
@@ -765,7 +775,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             routing_state.media_owner == wirex::talkgroup_routing::MediaOwner::idle &&
             !routing_state.ptt_release_required;
     };
-    auto start_tx_call = [&]() {
+    auto start_tx_call = [&](bool from_relay_fm = false) {
         if (!tx_start_permitted()) {
             ++counters.rejected_calls;
             status("tx_start_rejected_busy_or_endpoint_not_ready");
@@ -828,6 +838,10 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         }
         radio_input_open = true;
         if (!manual_ptt) ++counters.ptt_tx_starts;
+        if (from_relay_fm) {
+            status("tx_started_from_relay_fm");
+            return true;
+        }
         status(manual_ptt ? "tx_started_explicitly_by_t_key" : "tx_started_from_radio_ptt_down");
         console(u8"上行已开始，请继续讲话。\n");
         return true;
@@ -972,9 +986,123 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             hri_state.y_zero_acknowledged && hri_state.phase != HriPhase::stopped;
         handle_ptt_gate_action(ptt_gate.set_ready(ready), "ptt_aborted_endpoint_not_ready");
     };
+    // ---------- R130 FM 中继 ----------
+    // 结束一段中继：发布 relay_fm_ended（时长 = 开始到结束请求），并解除 Router 的“需松开 PTT”锁存——
+    // 中继 lease 以 PTT 用途建立，被强制停止（超时/撤销）时 Router 会要求观察到松开才允许下一段；中继的“松开”就是本段结束。
+    auto finish_relay_fm = [&](std::string_view reason) {
+        if (!relay_fm_active) return;
+        const auto now_ms = elapsed_ms();
+        Event event{};
+        event.kind = EventKind::relay_fm_ended;
+        event.at_ms = now_ms;
+        event.end_reason.assign(reason);
+        event.relay_fm = RelayFmInfo{relay_fm_target, relay_fm_started_ms,
+                                     now_ms >= relay_fm_started_ms ? now_ms - relay_fm_started_ms : 0U};
+        relay_fm_active = false;
+        relay_fm_started_ms = 0U;
+        (void)pipeline->observe_routed_ptt_release();
+        shared.push_event(std::move(event));
+        status(std::string("relay_fm_tx_ended_") + std::string(reason));
+    };
+    // 强制收尾（超时等）：与手咪 PTT call_timeout 相同，先排空 WaveIn，再发终止帧或在 BM 不可用时取消。
+    auto stop_relay_fm_tx = [&](std::string_view reason) {
+        if (!relay_fm_active) return;
+        const bool capture_closed = finish_tx_capture();
+        if (!capture_closed) set_failure("wavein_relay_fm_cleanup_failed");
+        const auto state = pipeline->snapshot();
+        if (state.tx_state != wirex::bm_voice::TxState::idle) {
+            if (network_ready_seen && bm_session.snapshot().state == wirex::bm::State::ready) {
+                if (pipeline->stop_tx(Clock::now()) != wirex::bm_voice::Error::none) {
+                    pipeline->cancel_tx();
+                    report_routed_tx_eot(false);
+                    set_failure("relay_fm_terminator_failed");
+                }
+            } else {
+                pipeline->cancel_tx();
+                report_routed_tx_eot(false);
+            }
+        }
+        finish_relay_fm(reason);
+    };
+    // 其它路径（BM 断开/重连、电台断开、权限撤销、发送失败、deadline、停机）终止上行后，按当前状态推断原因结束中继段。
+    auto reconcile_relay_fm = [&]() {
+        if (!relay_fm_active) return;
+        const auto tx_state = pipeline->snapshot().tx_state;
+        if (tx_state == wirex::bm_voice::TxState::active && radio_input_open) return;
+        std::string_view reason = "aborted";
+        if (shutdown_requested) reason = "shutdown";
+        else if (!live_tx_permission()) reason = "transmit_disabled";
+        else if (bm_connection->disable_pending() || !network_ready_seen ||
+                 bm_session.snapshot().state != wirex::bm::State::ready) reason = "bm_not_ready";
+        else if (port == nullptr || !hri_ready) reason = "radio_lost";
+        if (tx_state == wirex::bm_voice::TxState::active) {
+            stop_relay_fm_tx(reason);  // 采集已被关闭但上行仍在：补发终止帧
+        } else {
+            finish_relay_fm(reason);
+        }
+    };
+    auto relay_fm_downlink_busy = [&]() {
+        using wirex::talkgroup_routing::MediaOwner;
+        const auto owner = pipeline->routing_snapshot().router.media_owner;
+        const auto stream_phase = stream_session->snapshot().phase;
+        return owner == MediaOwner::rx_active || owner == MediaOwner::rx_draining ||
+            owner == MediaOwner::rx_stopping ||
+            pipeline->snapshot().rx_state != wirex::bm_voice::RxState::idle ||
+            (stream_phase != StreamPhase::idle && stream_phase != StreamPhase::faulted) ||
+            pending_receive_start || pending_playback_drain || published_rx_call.has_value();
+    };
+    auto process_relay_fm_start = [&]() -> CommandResult {
+        reconcile_relay_fm();
+        if (manual_ptt) return CommandResult{CommandStatus::forbidden, 0U, "relay_fm_manual_ptt_mode"};
+        if (relay_fm_active) return CommandResult{CommandStatus::idempotent, 0U, "relay_fm_already_active"};
+        if (shutdown_requested) return CommandResult{CommandStatus::not_ready, 0U, "engine_stopping"};
+        if (!live_tx_permission()) return CommandResult{CommandStatus::forbidden, 0U, "relay_fm_transmit_disabled"};
+        if (!network_ready_seen || bm_session.snapshot().state != wirex::bm::State::ready ||
+            bm_connection->disable_pending() || bm_ptt_release_required) {
+            return CommandResult{CommandStatus::not_ready, 0U, "relay_fm_bm_not_ready"};
+        }
+        if (port == nullptr || !hri_ready || !hri_state.y_zero_acknowledged || hri_state.phase == HriPhase::stopped) {
+            return CommandResult{CommandStatus::not_ready, 0U, "relay_fm_radio_not_ready"};
+        }
+        const auto busy = [&](const char* detail) {
+            ++relay_fm_rejected_busy;
+            status(std::string("relay_fm_start_rejected_") + detail);
+            return CommandResult{CommandStatus::busy, 0U, std::string("relay_fm_busy") +
+                (detail[0] == '\0' ? "" : "_") + detail};
+        };
+        // 半双工：手咪 PTT 上行占用 → 拒绝；BM/HRI 下行进行中 → 拒绝（不打断正在播放的来话）。
+        if (ptt_gate.snapshot().tx_active || pipeline->snapshot().tx_state != wirex::bm_voice::TxState::idle) {
+            return busy("ptt");
+        }
+        if (relay_fm_downlink_busy()) return busy("downlink");
+        if (!start_tx_call(true)) return busy("");
+        const auto* tx = pipeline->routed_tx_policy();
+        relay_fm_target = tx != nullptr ? tx->target
+            : wirex::talkgroup_routing::TxTarget{call_template.destination_id, call_template.kind, call_template.slot};
+        relay_fm_active = true;
+        relay_fm_started_ms = elapsed_ms();
+        Event event{};
+        event.kind = EventKind::relay_fm_started;
+        event.at_ms = relay_fm_started_ms;
+        event.relay_fm = RelayFmInfo{relay_fm_target, relay_fm_started_ms, 0U};
+        shared.push_event(std::move(event));
+        status("relay_fm_tx_started");
+        return CommandResult{CommandStatus::accepted, 0U, ""};
+    };
+    auto process_relay_fm_stop = [&]() -> CommandResult {
+        reconcile_relay_fm();
+        if (!relay_fm_active) return CommandResult{CommandStatus::idempotent, 0U, "relay_fm_not_active"};
+        if (!end_tx_call()) {
+            finish_relay_fm("aborted");
+            return CommandResult{CommandStatus::failed, 0U, "relay_fm_end_failed"};
+        }
+        finish_relay_fm("squelch_closed");
+        return CommandResult{CommandStatus::accepted, 0U, ""};
+    };
     process_ptt_observation = [&](const wirex::hri_session::PttObservation& observation) {
         if (manual_ptt || !observation.y_zero_acknowledged) return;
-        if (observation.level == wirex::hri_session::PttLevel::released &&
+        // FM 中继进行中：手咪松开不得释放中继 lease（中继段由静噪门控结束）。
+        if (observation.level == wirex::hri_session::PttLevel::released && !relay_fm_active &&
             pipeline->observe_routed_ptt_release() != wirex::talkgroup_routing::OperationStatus::completed) {
             set_failure("routed_physical_ptt_release_observation_rejected");
         }
@@ -2758,6 +2886,10 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             if (!manual_ptt) return CommandResult{CommandStatus::forbidden, 0U, "manual_ptt_disabled"};
             process_t_key();
             return CommandResult{CommandStatus::accepted, 0U, ""};
+        case CommandKind::relay_fm_start:
+            return process_relay_fm_start();
+        case CommandKind::relay_fm_stop:
+            return process_relay_fm_stop();
         }
         return CommandResult{CommandStatus::invalid, 0U, "unknown_command"};
     };
@@ -2965,6 +3097,9 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             }
             if (!manual_ptt) {
                 handle_ptt_gate_action(ptt_gate.tick(now_ms), "ptt_call_timer_event");
+            }
+            if (relay_fm_active && now_ms >= relay_fm_started_ms && now_ms - relay_fm_started_ms >= relay_fm_max_ms) {
+                stop_relay_fm_tx("timeout");
             }
             if (!shutdown_requested && !continuous_run && now_ms >= bm_bridge_window_ms) {
                 begin_shutdown("120s_run_window_expired");
@@ -3398,6 +3533,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
                 shutdown_media_cleanup_complete()) {
                 break;
             }
+            reconcile_relay_fm();
             publish_if_needed();
             {
                 // 原 Sleep(5)：命令或停止请求到达时立即唤醒。
@@ -3438,6 +3574,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
 
     // 收尾期间仍在队列中的命令：明确拒绝，避免调用方永久等待。
     try { process_commands(); } catch (...) {}
+    try { if (relay_fm_active) finish_relay_fm("shutdown"); } catch (...) {}
     if (!shutdown_requested) begin_shutdown("runtime_loop_ended");
     report_shutdown_terminator_not_sent("shutdown_tx_terminator_not_sent_cleanup_ended");
     if (pipeline->snapshot().tx_state != wirex::bm_voice::TxState::idle) {

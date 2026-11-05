@@ -81,6 +81,8 @@ struct StartConfig {
     bool manual_ptt{false};
     // 原始诊断钩子（status.jsonl 兼容输出、控制台提示、收尾通知）；GUI 可留空。
     DiagnosticsHooks diagnostics{};
+    // R130 增补：FM 中继单段最长时长（默认 relay_fm_max_duration_ms = 180 s；离线测试可调小）。0 视为默认值。
+    std::uint64_t relay_fm_max_duration_ms{0U};
 };
 
 // ---------- 状态快照（只读、不可变） ----------
@@ -115,6 +117,8 @@ struct Counters {
     std::uint64_t ptt_tx_timeouts{};
     // BM 已送达但不在收听策略内（Router 未准入）的语音包；用于提示“有流量但未收听”。
     std::uint64_t rx_filtered_datagrams{};
+    // R130 增补：FM 中继 start 因 BM 下行/HRI 下行或手咪 PTT 占用而被拒绝的次数。
+    std::uint64_t relay_fm_rejected_busy{};
 };
 
 // BM 网络质量：RTT 来自 RPTPING/MSTPONG 往返；丢包来自 DMRD 序号（本次 BM 会话累计 + 当前/最近一次通话）。
@@ -187,6 +191,20 @@ struct Snapshot {
     bool bm_resolving{};
     std::string routing_json{};            // routing_state::routing_json 视图；未启用路由时为空
     // failure_reason 在 phase==stopping 且本次运行已失败时也会填写（有界收尾进行中）。
+
+    // R130 增补（只增不改）：FM 中继上行（CAT 静噪触发，经 WaveIn → AMBE → BM）。
+    bool relay_fm_active{};
+    std::uint64_t relay_fm_started_ms{};   // 相对 clock_origin_ms；relay_fm_active=false 时为 0
+};
+
+// FM 中继单段上行的最长时长；超时后引擎自动结束本段（end_reason "timeout"）。
+inline constexpr std::uint64_t relay_fm_max_duration_ms = 180000U;
+
+// relay_fm_started / relay_fm_ended 事件附带的信息。
+struct RelayFmInfo {
+    talkgroup_routing::TxTarget target{};  // 本段使用的 tx_policy 目标
+    std::uint64_t started_ms{};            // 相对 clock_origin_ms
+    std::uint64_t duration_ms{};           // relay_fm_ended：开始到结束请求的时长；started 时为 0
 };
 
 // ---------- 离散事件 ----------
@@ -200,14 +218,18 @@ enum class EventKind : std::uint8_t {
     quick_call_result,
     warning,      // 可恢复问题；text 为中文源文案（UI 负责翻译）
     fatal,        // 引擎即将进入 failed
+    // R130 增补（只增不改，追加在末尾）：
+    relay_fm_started,
+    relay_fm_ended,  // end_reason: squelch_closed / timeout / transmit_disabled / bm_not_ready / radio_lost / aborted / shutdown
 };
 
 struct Event {
     EventKind kind{};
     std::uint64_t at_ms{};
     std::optional<CallInfo> call{};        // rx_call_* 事件
-    std::string end_reason{};              // rx_call_ended: terminator/watchdog/...
+    std::string end_reason{};              // rx_call_ended: terminator/watchdog/...；relay_fm_ended 见上
     std::string text{};
+    std::optional<RelayFmInfo> relay_fm{}; // relay_fm_* 事件（R130 增补）
 };
 
 // ---------- 命令结果 ----------
@@ -278,6 +300,14 @@ public:
     [[nodiscard]] bool wait_stopped(std::chrono::milliseconds timeout);
     // 键盘诊断模式（StartConfig::manual_ptt）：等价于原 T 键。
     std::future<CommandResult> manual_ptt_toggle();
+
+    // ---------- R130 增补（只增不改）：FM 中继 ----------
+    // 开始一段 FM 中继上行：复用手咪 PTT 上行管线（WaveIn → 增益 → AMBE → DMRD → BM），目标为当前 tx_policy.target。
+    //   accepted；idempotent（已在中继）；busy（BM/HRI 下行进行中或手咪 PTT 上行中，detail relay_fm_busy_*）；
+    //   not_ready（BM 未就绪 / 电台未就绪）；forbidden（transmit_enabled=false 或 manual_ptt 模式）。
+    std::future<CommandResult> relay_fm_start();
+    // 结束当前 FM 中继段（end_reason "squelch_closed"）。未在中继时 idempotent。
+    std::future<CommandResult> relay_fm_stop();
 
 private:
     struct Impl;

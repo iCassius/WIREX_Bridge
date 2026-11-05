@@ -95,6 +95,10 @@ struct DeviceLog {
     std::atomic<int> version_queries{0};
     std::atomic<int> y_records{0};
     std::atomic<int> t_records{0};
+    // R130 FM 中继测试：FakeInput 打开时每次 take_captured 投喂 20 ms PCM；HRI X 记录注入（PTT 电平字节 [12]）。
+    std::atomic<bool> input_feeds_pcm{false};
+    std::mutex x_mutex{};
+    std::deque<char> pending_x_levels{};
 };
 
 enum class FakeHriBehavior {
@@ -143,6 +147,16 @@ public:
         if (log_->serial_blocked.load()) {
             received = 0U;
             return wirex::engine::SerialReadStatus::transport_error;
+        }
+        {
+            std::lock_guard<std::mutex> x_lock(log_->x_mutex);
+            while (!log_->pending_x_levels.empty()) {
+                std::vector<std::uint8_t> payload(wirex::hri_session::y_body_size, '0');
+                payload[12] = static_cast<std::uint8_t>(log_->pending_x_levels.front());
+                log_->pending_x_levels.pop_front();
+                std::lock_guard<std::mutex> lock(mutex_);
+                queue_record('X', std::move(payload));
+            }
         }
         std::lock_guard<std::mutex> lock(mutex_);
         received = std::min(capacity, inbound_.size());
@@ -213,8 +227,26 @@ public:
         return true;
     }
     bool is_open() const noexcept override { return open_; }
-    wirex::engine::CaptureStatus take_captured(const Sink&, bool, std::uint32_t) noexcept override
+    wirex::engine::CaptureStatus take_captured(const Sink& sink, bool, std::uint32_t) noexcept override
     {
+        if (!open_ || !log_->input_feeds_pcm.load() || !sink) return wirex::engine::CaptureStatus::ok;
+        // 实时节拍：按经过时间投喂 20 ms（960 样本）块，避免一次性灌满 TX 队列。
+        const auto now = std::chrono::steady_clock::now();
+        if (fed_ == 0U) feed_started_ = now;
+        const auto due = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - feed_started_).count() / 20) + 1U;
+        try {
+            while (fed_ < due) {
+                std::vector<std::int16_t> pcm(960U);
+                for (std::size_t i = 0U; i < pcm.size(); ++i) {
+                    pcm[i] = static_cast<std::int16_t>(((i / 24U) % 2U) == 0U ? 400 : -400);
+                }
+                if (!sink(pcm.data(), pcm.size())) return wirex::engine::CaptureStatus::buffer_failed;
+                ++fed_;
+            }
+        } catch (...) {
+            return wirex::engine::CaptureStatus::buffer_failed;
+        }
         return wirex::engine::CaptureStatus::ok;
     }
     bool stop_capture() noexcept override { return true; }
@@ -223,6 +255,7 @@ public:
         if (open_ && log_->input_close_fails_while_open.load()) return false;
         if (open_) ++log_->input_closed;
         open_ = false;
+        fed_ = 0U;
         return true;
     }
 
@@ -230,6 +263,8 @@ private:
     std::shared_ptr<DeviceLog> log_;
     std::wstring endpoint_;
     bool open_{};
+    std::uint64_t fed_{};
+    std::chrono::steady_clock::time_point feed_started_{};
 };
 
 class FakeOutput final : public wirex::engine::AudioOutput {
@@ -416,6 +451,7 @@ public:
     [[nodiscard]] unsigned auth_count() const noexcept { return auth_count_.load(); }
     [[nodiscard]] unsigned config_count() const noexcept { return config_count_.load(); }
     [[nodiscard]] unsigned disconnect_count() const noexcept { return disconnect_count_.load(); }
+    [[nodiscard]] unsigned dmrd_count() const noexcept { return dmrd_count_.load(); }
     void reject_auth(bool value) noexcept { reject_auth_ = value; }
     [[nodiscard]] bool send_downlink(const wirex::dmr_call::TxPacket& packet) noexcept
     {
@@ -466,6 +502,8 @@ private:
                 } else {
                     make_acknowledgement(response, response_size);
                 }
+            } else if (marker == "DMRD") {
+                ++dmrd_count_;
             } else if (packet.size() >= 5U && packet.substr(0U, 5U) == "RPTCL") {
                 ++disconnect_count_;
             } else if (marker == "RPTC") {
@@ -501,6 +539,7 @@ private:
     std::atomic<unsigned> auth_count_{0U};
     std::atomic<unsigned> config_count_{0U};
     std::atomic<unsigned> disconnect_count_{0U};
+    std::atomic<unsigned> dmrd_count_{0U};
     std::mutex remote_mutex_{};
     sockaddr_in remote_{};
     bool remote_valid_{};
@@ -2630,6 +2669,258 @@ void test_failed_local_waveout_handoff_latches_serial_close_uncertainty()
           "shutdown reports the unresolved serial cleanup without retrying the consumed handle");
 }
 
+// ---------- R130 FM 中继 ----------
+
+wirex::engine::StartConfig relay_config(const LoopbackMaster& master, const char* password)
+{
+    auto config = base_config();
+    config.bm.master_host = "127.0.0.1";
+    config.bm.master_port = master.endpoint().port;
+    config.bm.profile.password = password;
+    config.resolved_master = master.endpoint();
+    config.bm_start_disconnected = false;
+    return config;
+}
+
+bool wait_hri_and_bm_ready(wirex::engine::Engine& engine)
+{
+    return wait_for_snapshot(engine, 4s, [](const wirex::engine::Snapshot& s) {
+        return s.hri_ready && s.bm_link == wirex::engine::BmLink::connected &&
+            s.bm_state == wirex::bm::State::ready;
+    });
+}
+
+std::optional<wirex::engine::Event> wait_relay_event(wirex::engine::Engine& engine, wirex::engine::EventKind kind,
+                                                     std::chrono::milliseconds timeout)
+{
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+        for (auto& event : engine.drain_events()) {
+            if (event.kind == kind) return event;
+        }
+        std::this_thread::sleep_for(5ms);
+    }
+    return std::nullopt;
+}
+
+void push_x_level(DeviceLog& log, char level)
+{
+    std::lock_guard<std::mutex> lock(log.x_mutex);
+    log.pending_x_levels.push_back(level);
+}
+
+void test_relay_fm_start_stop_sends_dmrd_uplink()
+{
+    LoopbackMaster master(100U);
+    master.reject_auth(false);
+    auto log = std::make_shared<DeviceLog>();
+    log->input_feeds_pcm = true;
+    wirex::engine::Engine engine(std::make_shared<FakeDevices>(log, FakeOptions{}));
+    check(get_within(engine.start(relay_config(master, "offline-relay-uplink")), 5s, "start relay uplink").status ==
+              CommandStatus::accepted, "runtime starts for FM relay uplink");
+    check(wait_hri_and_bm_ready(engine), "HRI and BM ready before FM relay");
+    (void)engine.drain_events();
+    const auto dmrd_before = master.dmrd_count();
+
+    const auto started = get_within(engine.relay_fm_start(), 2s, "relay_fm_start");
+    check(started.status == CommandStatus::accepted, "relay_fm_start is accepted: " + started.detail);
+    const auto snapshot = engine.snapshot();
+    check(snapshot->relay_fm_active && snapshot->wave_in_open && snapshot->tx_active,
+          "snapshot reports relay active with WaveIn open and TX active");
+    const auto started_event = wait_relay_event(engine, wirex::engine::EventKind::relay_fm_started, 1s);
+    check(started_event && started_event->relay_fm && started_event->relay_fm->target.destination_id == 91U,
+          "relay_fm_started carries the tx_policy target");
+    check(get_within(engine.relay_fm_start(), 2s, "second relay_fm_start").status == CommandStatus::idempotent,
+          "repeated relay_fm_start is idempotent");
+
+    // 半双工：中继上行期间 BM 来话被 Router 拒绝（media_busy），中继继续。
+    wirex::dmr_call::Transmitter downlink;
+    check(send_test_downlink_header(master, downlink, 77U), "fake Master sends a downlink during the relay");
+    std::this_thread::sleep_for(400ms);
+    check(!engine.snapshot()->active_rx_call && engine.snapshot()->relay_fm_active,
+          "BM downlink is not admitted while the FM relay uplink is active");
+
+    const auto stopped = get_within(engine.relay_fm_stop(), 2s, "relay_fm_stop");
+    check(stopped.status == CommandStatus::accepted, "relay_fm_stop is accepted: " + stopped.detail);
+    const auto ended = wait_relay_event(engine, wirex::engine::EventKind::relay_fm_ended, 1s);
+    check(ended && ended->end_reason == "squelch_closed" && ended->relay_fm && ended->relay_fm->duration_ms > 0U &&
+              ended->relay_fm->target.destination_id == 91U &&
+              ended->relay_fm->target.slot == wirex::dmr_call::Slot::ts2,
+          "relay_fm_ended reports squelch_closed, duration and target");
+    check(wait_for_snapshot(engine, 3s, [](const wirex::engine::Snapshot& s) {
+              return !s.relay_fm_active && !s.tx_active && !s.wave_in_open;
+          }), "relay segment drains and releases WaveIn");
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (std::chrono::steady_clock::now() < deadline && master.dmrd_count() < dmrd_before + 3U) {
+        std::this_thread::sleep_for(10ms);
+    }
+    check(master.dmrd_count() >= dmrd_before + 3U,
+          "fake Master receives DMRD header, voice and terminator from the relay: " +
+              std::to_string(master.dmrd_count() - dmrd_before));
+    check(get_within(engine.relay_fm_stop(), 2s, "idle relay_fm_stop").status == CommandStatus::idempotent,
+          "relay_fm_stop without a segment is idempotent");
+    check(get_within(engine.stop(), 5s, "stop after relay uplink").status == CommandStatus::accepted,
+          "runtime stops cleanly after the FM relay");
+}
+
+void test_relay_fm_rejected_during_bm_downlink()
+{
+    LoopbackMaster master(100U);
+    master.reject_auth(false);
+    auto log = std::make_shared<DeviceLog>();
+    wirex::engine::Engine engine(std::make_shared<FakeDevices>(log, FakeOptions{}));
+    check(get_within(engine.start(relay_config(master, "offline-relay-downlink")), 5s, "start relay downlink").status ==
+              CommandStatus::accepted, "runtime starts for downlink half-duplex test");
+    check(wait_hri_and_bm_ready(engine), "HRI and BM ready before downlink");
+    wirex::dmr_call::Transmitter transmitter;
+    const auto voice = make_test_downlink_voice();
+    check(send_test_downlink_header(master, transmitter, 91U), "fake Master sends downlink header");
+    for (int i = 0; i < 4 && !engine.snapshot()->active_rx_call; ++i) {
+        std::this_thread::sleep_for(60ms);
+        (void)send_test_downlink_voice(master, transmitter, voice);
+    }
+    check(wait_for_local_rx_active(engine, 2s), "BM downlink becomes active");
+    const auto rejected = get_within(engine.relay_fm_start(), 2s, "relay_fm_start during downlink");
+    check(rejected.status == CommandStatus::busy && rejected.detail == "relay_fm_busy_downlink",
+          "relay_fm_start is busy during BM downlink: " + rejected.detail);
+    check(engine.snapshot()->counters.relay_fm_rejected_busy == 1U && !engine.snapshot()->relay_fm_active,
+          "busy rejection is counted and no relay starts");
+    const auto ended_before = engine.snapshot()->counters.calls_ended;
+    (void)send_test_downlink_terminator(master, transmitter);
+    (void)wait_for_local_rx_idle(engine, ended_before, 4s);
+    check(get_within(engine.stop(), 5s, "stop after downlink rejection").status == CommandStatus::accepted,
+          "runtime stops after downlink rejection test");
+}
+
+void test_relay_fm_rejected_while_mic_ptt_active()
+{
+    LoopbackMaster master(100U);
+    master.reject_auth(false);
+    auto log = std::make_shared<DeviceLog>();
+    log->input_feeds_pcm = true;
+    wirex::engine::Engine engine(std::make_shared<FakeDevices>(log, FakeOptions{}));
+    check(get_within(engine.start(relay_config(master, "offline-relay-ptt")), 5s, "start relay ptt").status ==
+              CommandStatus::accepted, "runtime starts for mic PTT conflict test");
+    check(wait_hri_and_bm_ready(engine), "HRI and BM ready before mic PTT");
+    push_x_level(*log, '0');  // 松开：ptt_gate armed
+    std::this_thread::sleep_for(100ms);
+    push_x_level(*log, '2');  // 按下：手咪上行
+    check(wait_for_snapshot(engine, 2s, [](const wirex::engine::Snapshot& s) { return s.tx_active; }),
+          "mic PTT press starts the uplink");
+    const auto rejected = get_within(engine.relay_fm_start(), 2s, "relay_fm_start during mic PTT");
+    check(rejected.status == CommandStatus::busy && rejected.detail == "relay_fm_busy_ptt",
+          "relay_fm_start is busy while mic PTT is transmitting: " + rejected.detail);
+    auto snapshot = engine.snapshot();
+    check(snapshot->counters.relay_fm_rejected_busy == 1U && !snapshot->relay_fm_active && snapshot->tx_active &&
+              snapshot->counters.ptt_tx_starts == 1U,
+          "only the mic PTT lease exists after the rejected relay start");
+    push_x_level(*log, '0');
+    const bool released = wait_for_snapshot(engine, 3s, [](const wirex::engine::Snapshot& s) {
+        return !s.tx_active && s.media_owner == wirex::talkgroup_routing::MediaOwner::idle;
+    });
+    snapshot = engine.snapshot();
+    check(released, "mic PTT release ends its uplink; tx=" + std::to_string(snapshot->tx_active) +
+              " media=" + std::to_string(static_cast<unsigned>(snapshot->media_owner)) +
+              " wavein=" + std::to_string(snapshot->wave_in_open) +
+              " ptt_starts=" + std::to_string(snapshot->counters.ptt_tx_starts));
+
+    // 反向：中继进行中按手咪 PTT 不产生第二个上行。
+    check(get_within(engine.relay_fm_start(), 2s, "relay_fm_start after PTT").status == CommandStatus::accepted,
+          "relay starts once the mic PTT is released");
+    push_x_level(*log, '2');
+    std::this_thread::sleep_for(300ms);
+    snapshot = engine.snapshot();
+    check(snapshot->relay_fm_active && snapshot->tx_active && snapshot->counters.ptt_tx_starts == 2U,
+          "mic PTT press during the relay does not start a second uplink");
+    push_x_level(*log, '0');
+    std::this_thread::sleep_for(150ms);
+    check(engine.snapshot()->relay_fm_active, "mic PTT release does not end the relay segment");
+    check(get_within(engine.relay_fm_stop(), 2s, "relay_fm_stop after PTT").status == CommandStatus::accepted,
+          "relay stops normally after the ignored mic PTT");
+    check(get_within(engine.stop(), 5s, "stop after PTT conflict").status == CommandStatus::accepted,
+          "runtime stops after PTT conflict test");
+}
+
+void test_relay_fm_timeout()
+{
+    LoopbackMaster master(100U);
+    master.reject_auth(false);
+    auto log = std::make_shared<DeviceLog>();
+    log->input_feeds_pcm = true;
+    wirex::engine::Engine engine(std::make_shared<FakeDevices>(log, FakeOptions{}));
+    auto config = relay_config(master, "offline-relay-timeout");
+    config.relay_fm_max_duration_ms = 300U;
+    check(get_within(engine.start(std::move(config)), 5s, "start relay timeout").status == CommandStatus::accepted,
+          "runtime starts for relay timeout test");
+    check(wait_hri_and_bm_ready(engine), "HRI and BM ready before relay timeout");
+    (void)engine.drain_events();
+    check(get_within(engine.relay_fm_start(), 2s, "relay_fm_start for timeout").status == CommandStatus::accepted,
+          "relay starts for timeout test");
+    const auto ended = wait_relay_event(engine, wirex::engine::EventKind::relay_fm_ended, 3s);
+    check(ended && ended->end_reason == "timeout" && ended->relay_fm && ended->relay_fm->duration_ms >= 300U,
+          "relay segment ends with reason timeout after the configured limit");
+    check(wait_for_snapshot(engine, 3s, [](const wirex::engine::Snapshot& s) {
+              return !s.relay_fm_active && !s.tx_active && !s.wave_in_open &&
+                  s.media_owner == wirex::talkgroup_routing::MediaOwner::idle;
+          }), "TX returns to idle after the relay timeout");
+    check(get_within(engine.relay_fm_start(), 2s, "relay_fm_start after timeout").status == CommandStatus::accepted,
+          "a new relay segment can start after a timeout");
+    check(get_within(engine.relay_fm_stop(), 2s, "relay_fm_stop after timeout").status == CommandStatus::accepted,
+          "the follow-up segment stops normally");
+    check(get_within(engine.stop(), 5s, "stop after relay timeout").status == CommandStatus::accepted,
+          "runtime stops after relay timeout test");
+}
+
+void test_relay_fm_rejected_when_bm_not_ready()
+{
+    auto log = std::make_shared<DeviceLog>();
+    wirex::engine::Engine engine(std::make_shared<FakeDevices>(log, FakeOptions{}));
+    check(get_within(engine.start(base_config()), 5s, "start relay bm not ready").status == CommandStatus::accepted,
+          "runtime starts without BM");
+    check(wait_for_snapshot(engine, 3s, [](const wirex::engine::Snapshot& s) { return s.hri_ready; }),
+          "HRI ready without BM");
+    const auto not_ready = get_within(engine.relay_fm_start(), 2s, "relay_fm_start without BM");
+    check(not_ready.status == CommandStatus::not_ready && not_ready.detail == "relay_fm_bm_not_ready",
+          "relay_fm_start is not_ready without BM: " + not_ready.detail);
+    const auto revision = engine.snapshot()->tx_policy_revision;
+    check(get_within(engine.replace_tx_policy(revision,
+              {91U, wirex::dmr_call::CallKind::group, wirex::dmr_call::Slot::ts2}, false), 2s,
+              "disable transmit").status == CommandStatus::accepted, "transmit can be disabled");
+    const auto forbidden = get_within(engine.relay_fm_start(), 2s, "relay_fm_start with transmit disabled");
+    check(forbidden.status == CommandStatus::forbidden && forbidden.detail == "relay_fm_transmit_disabled",
+          "relay_fm_start is forbidden when transmit is disabled: " + forbidden.detail);
+    check(engine.snapshot()->counters.relay_fm_rejected_busy == 0U && !engine.snapshot()->relay_fm_active,
+          "not_ready/forbidden rejections do not count as busy");
+    check(get_within(engine.stop(), 5s, "stop after bm not ready").status == CommandStatus::accepted,
+          "runtime stops after BM-not-ready test");
+}
+
+void test_relay_fm_transmit_revoked_ends_segment()
+{
+    LoopbackMaster master(100U);
+    master.reject_auth(false);
+    auto log = std::make_shared<DeviceLog>();
+    log->input_feeds_pcm = true;
+    wirex::engine::Engine engine(std::make_shared<FakeDevices>(log, FakeOptions{}));
+    check(get_within(engine.start(relay_config(master, "offline-relay-revoke")), 5s, "start relay revoke").status ==
+              CommandStatus::accepted, "runtime starts for relay revoke test");
+    check(wait_hri_and_bm_ready(engine), "HRI and BM ready before relay revoke");
+    (void)engine.drain_events();
+    check(get_within(engine.relay_fm_start(), 2s, "relay_fm_start before revoke").status == CommandStatus::accepted,
+          "relay starts before transmit revoke");
+    const auto revision = engine.snapshot()->tx_policy_revision;
+    (void)get_within(engine.replace_tx_policy(revision,
+        {91U, wirex::dmr_call::CallKind::group, wirex::dmr_call::Slot::ts2}, false), 2s, "revoke transmit");
+    const auto ended = wait_relay_event(engine, wirex::engine::EventKind::relay_fm_ended, 2s);
+    check(ended && ended->end_reason == "transmit_disabled",
+          "revoking transmit ends the relay segment with reason transmit_disabled");
+    check(wait_for_snapshot(engine, 3s, [](const wirex::engine::Snapshot& s) {
+              return !s.relay_fm_active && !s.tx_active && !s.wave_in_open;
+          }), "relay resources are released after the revoke");
+    check(get_within(engine.stop(), 5s, "stop after relay revoke").status == CommandStatus::accepted,
+          "runtime stops after relay revoke test");
+}
+
 void test_destructor_stops_running_engine()
 {
     auto log = std::make_shared<DeviceLog>();
@@ -2724,6 +3015,12 @@ int main()
         test_hri_failure_preserves_pending_bm_local_receive();
         test_failed_local_waveout_handoff_latches_serial_close_uncertainty();
         test_destructor_stops_running_engine();
+        test_relay_fm_start_stop_sends_dmrd_uplink();
+        test_relay_fm_rejected_during_bm_downlink();
+        test_relay_fm_rejected_while_mic_ptt_active();
+        test_relay_fm_timeout();
+        test_relay_fm_rejected_when_bm_not_ready();
+        test_relay_fm_transmit_revoked_ends_segment();
     } catch (const std::exception& error) {
         std::cerr << "FAILED: unexpected exception: " << error.what() << '\n';
         return 1;
