@@ -290,6 +290,7 @@ namespace wirex::gui {
     X(static_remove_both,   "从 BM 移除并取消收听",                "Remove from BM and stop listening") /* new */ \
     X(static_remove_listen_only,"仅取消收听",                      "Stop listening only")           /* new */ \
     X(btn_cancel,           "取消",                                "Cancel")                        /* new */ \
+    X(status_local_playback_tip_fmt,"%s：%s",                      "%s: %s")                        /* new */ \
     X(channel_idle,         "空闲",                                "Idle")                          /* new */ \
     X(last_call_fmt,        "上次 %s",                             "Last %s")                       /* new */ \
     X(auto_select,          "自动",                                "Auto")                          /* new */ \

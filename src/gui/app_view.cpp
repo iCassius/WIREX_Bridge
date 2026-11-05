@@ -621,17 +621,22 @@ bool gain_slider(const char* id, int& value, float width, float scale) {
     return commit;
 }
 
-void status_dot(bool on, const char* label) {
-    const ImVec2 p = ImGui::GetCursorScreenPos();
+// 状态行圆点项：圆点 + 文字作为一个整体（一个 item，悬停提示覆盖两者），与 row_text 同样按行高居中。
+void status_dot(const Row& row, ImU32 dot_col, ImU32 text_col, const char* label) {
     const float h = ImGui::GetTextLineHeight();
-    ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x + h * 0.3F, p.y + h * 0.5F), h * 0.22F,
-                                                on ? rgb(color::green) : rgb(0x5A666C));
-    ImGui::Dummy(ImVec2(h * 0.7F, h));
-    ImGui::SameLine(0.0F, 2.0F);
-    ImGui::PushStyleColor(ImGuiCol_Text, on ? vec(color::text) : vec(color::muted));
-    ImGui::TextUnformatted(label);
-    ImGui::PopStyleColor();
+    const float dot_w = std::round(h * 0.7F);
+    const float gap = 2.0F;
+    row.place(h);
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const ImVec2 text_sz = ImGui::CalcTextSize(label);
+    ImGui::Dummy(ImVec2(dot_w + gap + text_sz.x, h));
+    auto* draw = ImGui::GetWindowDrawList();
+    draw->AddCircleFilled(ImVec2(p.x + std::round(h * 0.3F), p.y + std::round(h * 0.5F)), h * 0.22F, dot_col);
+    draw->AddText(ImVec2(p.x + dot_w + gap, p.y), text_col, label);
 }
+
+ImU32 dot_on(bool on) { return on ? rgb(color::green) : rgb(0x5A666C); }
+ImU32 dot_text(bool on) { return on ? rgb(color::text) : rgb(color::muted); }
 
 std::string source_label(const engine::CallInfo& call) {
     if (!call.callsign.empty()) return fmt("%s · DMR ID %u", call.callsign.c_str(), call.source_id);
@@ -2197,28 +2202,18 @@ void AppView::draw_daily_panel(float width, float height) {
             }
             first = false;
         };
+        // 所有项（含“状态”标签）同一字号 kFontBody、同一行高居中，因此文字基线一致。
         ImGui::PushFont(nullptr, layout::kFontBody);
-        const float dot_w = std::round(ImGui::GetTextLineHeight() * 0.7F) + px(2.0F);
+        const float dot_w = std::round(ImGui::GetTextLineHeight() * 0.7F) + 2.0F;
         auto text_w = [](const char* t) { return ImGui::CalcTextSize(t).x; };
-        auto dot = [&](bool on, const char* label) {
+        auto dot_colored = [&](ImU32 dot_col, ImU32 text_col, const char* label) {
             fit(dot_w + text_w(label), inline_gap * 1.5F);
-            row.place(ImGui::GetTextLineHeight());
-            status_dot(on, label);
+            status_dot(row, dot_col, text_col, label);
         };
-        auto label_value = [&](const char* label, const char* value, ImU32 col) {
-            ImGui::PushFont(nullptr, layout::kFontCaption);
-            const float lw = ImGui::CalcTextSize(label).x;
-            ImGui::PopFont();
-            fit(lw + inline_gap + text_w(value), inline_gap * 2.0F);
-            row_text(row, label, rgb(color::muted), nullptr, layout::kFontCaption);
-            ImGui::SameLine(0.0F, inline_gap);
-            row_text(row, value, col, nullptr, layout::kFontBody);
-        };
+        auto dot = [&](bool on, const char* label) { dot_colored(dot_on(on), dot_text(on), label); };
 
-        ImGui::PushFont(nullptr, layout::kFontCaption);
         fit(text_w(tr(Str::status)), 0.0F);
-        ImGui::PopFont();
-        row_text(row, tr(Str::status), rgb(color::muted), nullptr, layout::kFontCaption);
+        row_text(row, tr(Str::status), rgb(color::muted), nullptr, layout::kFontBody);
         const auto device_status = vm_.device_selection();
         dot(s.serial_open, tr(Str::status_serial));
         dot(s.hri_ready, tr(Str::status_hri));
@@ -2240,21 +2235,26 @@ void AppView::draw_daily_panel(float width, float height) {
         const char* playback_text = output_error ? tr(Str::local_playback_failed)
             : radio_route ? local_playback_route_text(wirex::bm_local_playback::Route::radio)
                           : local_playback_state_text(audio_state);
-        label_value(tr(radio_route ? Str::local_audio_route_status : Str::local_playback), playback_text,
-                    rgb(output_error ? color::error : radio_route ? color::green : local_playback_color(audio_state)));
+        // 电脑播放/音频路由：与其它项相同的圆点形式；圆点颜色表示状态，状态文字放在悬停提示里。
+        const std::uint32_t playback_color =
+            output_error ? color::error : radio_route ? color::green : local_playback_color(audio_state);
+        const bool playback_on = playback_color != color::muted;
+        const char* playback_label = radio_route ? playback_text : tr(Str::local_playback);
+        dot_colored(playback_on ? rgb(playback_color) : dot_on(false), dot_text(playback_on || output_error),
+                    playback_label);
+        std::string playback_tip = fmt(tr(Str::status_local_playback_tip_fmt),
+                                       tr(radio_route ? Str::local_audio_route_status : Str::local_playback), playback_text);
         if (output_error) {
             const char* category = local_playback_error_text(local_audio.output_error);
             const char* detail = !s.local_audio_error.empty() ? s.local_audio_error.c_str() : category;
             if (language() == Language::en_us && category[0] != '\0') detail = category;
-            ImGui::SetItemTooltip("%s", detail);
+            if (detail[0] != '\0') playback_tip += std::string("\n") + detail;
         } else {
             const auto& resolved = device_status.wave_out;
-            const std::string tooltip = !resolved.name.empty() ? resolved.name : device_selection_text(resolved, true);
-            ImGui::SetItemTooltip("%s", tooltip.c_str());
+            const std::string device = !resolved.name.empty() ? resolved.name : device_selection_text(resolved, true);
+            if (!device.empty()) playback_tip += "\n" + device;
         }
-        label_value(tr(Str::core), phase_short_text(s.phase),
-                    s.phase == Phase::running ? rgb(color::green) : s.phase == Phase::failed ? rgb(color::error)
-                                                                                         : rgb(color::text));
+        ImGui::SetItemTooltip("%s", playback_tip.c_str());
         ImGui::PopFont();
         row.end();
     }
