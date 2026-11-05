@@ -49,6 +49,21 @@
 namespace wirex::engine::detail {
 namespace {
 
+std::string summarize_rx_policy(const wirex::talkgroup_routing::RxPolicy& policy, std::uint64_t revision)
+{
+    std::string text = "rev=" + std::to_string(revision) +
+        (policy.group_mode == wirex::talkgroup_routing::GroupMode::all_delivered ? " groups=all" : " groups=");
+    for (const auto& g : policy.allowed_groups) {
+        text += std::to_string(g.destination_id) + "/TS" + std::to_string(static_cast<unsigned>(g.slot)) + " ";
+    }
+    text += "private=";
+    for (const auto& p : policy.private_peers) {
+        text += std::to_string(p.source_id) + "/TS" + std::to_string(static_cast<unsigned>(p.slot)) + " ";
+    }
+    text += "blocked_sources=" + std::to_string(policy.blocked_source_ids.size());
+    return text;
+}
+
 constexpr std::uint64_t bm_bridge_window_ms = 120000U;
 constexpr std::uint64_t bm_bridge_cleanup_ms = 3000U;
 constexpr std::uint64_t snapshot_heartbeat_ms = 100U;
@@ -314,6 +329,11 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         return CommandResult{CommandStatus::invalid, 0U, "routing_policy_invalid"};
     }
     counters.media_owner = "idle";
+    auto report_rx_policy = [&](const wirex::talkgroup_routing::RxPolicy& policy, std::uint64_t revision) {
+        if (!hooks.rx_policy) return;
+        try { hooks.rx_policy(summarize_rx_policy(policy, revision)); } catch (...) {}
+    };
+    report_rx_policy(config.rx_policy, 1U);
     auto live_tx_permission = [&]() {
         const auto* current = pipeline->routed_tx_policy();
         return current != nullptr ? current->transmit_enabled : launch_transmit_allowed;
@@ -394,6 +414,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
     BmLink published_bm_link = BmLink::disabled;
     std::uint64_t last_published_ms = 0U;
     bool publish_dirty = true;
+    std::optional<wirex::engine::FilteredTraffic> last_filtered;  // 最近一次策略过滤的 BM 流（心跳快照携带）
     auto push_event = [&](EventKind kind, std::string text = {}, std::optional<CallInfo> call = std::nullopt,
                           std::string end_reason = {}) {
         Event event{};
@@ -452,6 +473,8 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         next.counters.reconnects = counters.reconnects;
         next.counters.ptt_tx_starts = counters.ptt_tx_starts;
         next.counters.ptt_tx_timeouts = counters.ptt_tx_timeouts;
+        next.counters.rx_filtered_datagrams = counters.rx_filtered_datagrams;
+        next.last_filtered = last_filtered;
         next.bm_state = connection.bm_state;
         next.hri_phase = hri_state.phase;
         const auto hri_stream = stream_session->snapshot();
@@ -562,7 +585,8 @@ CommandResult run_loop(Shared& shared, StartConfig config)
     std::string radio_fault_reason;
     auto serial_trace = [&](bool tx, const std::uint8_t* data, std::size_t size) {
         if (!hooks.serial || data == nullptr || size == 0U) return;
-        try { hooks.serial(tx, data[0], size, elapsed_ms()); } catch (...) {}
+        const std::uint8_t record_type = (size >= 2U && data[0] == 0x01U) ? data[1] : 0U;
+        try { hooks.serial(tx, record_type, size, elapsed_ms()); } catch (...) {}
     };
     auto serial_write = [&](const std::uint8_t* data, std::size_t size) {
         const bool ok = port != nullptr && port->write_all(data, size);
@@ -2304,6 +2328,9 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         switch (command.kind) {
         case CommandKind::replace_rx_policy: {
             const auto update = pipeline->replace_rx_policy(command.revision, command.rx_policy);
+            if (update.status == wirex::talkgroup_routing::PolicyUpdateStatus::applied) {
+                report_rx_policy(command.rx_policy, update.revision);
+            }
             return CommandResult{policy_status(update.status), update.revision, policy_detail(update.status)};
         }
         case CommandKind::replace_tx_policy: {
@@ -2657,6 +2684,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             config.local_source_id = source_id;
             config.rx_policy = target.rx_policy;
             config.tx_policy = target.tx_policy;
+            report_rx_policy(config.rx_policy, 1U);
             call_template.source_id = source_id;
             call_template.gateway_id = gateway_id;
             call_template.destination_id = tx_target.destination_id;
@@ -3079,6 +3107,8 @@ CommandResult run_loop(Shared& shared, StartConfig config)
                         // routed mode可能拒绝策略不符或retired stream；不再用legacy单滤镜
                         // 推断原因，避免报告与实际Router准入结果不一致。
                         ++counters.rx_filtered_routed_path;
+                        last_filtered = wirex::engine::FilteredTraffic{datagram.source_id, datagram.destination_id,
+                            received_slot, received_call_kind, elapsed_ms()};
                     }
                     if (accepted.error != wirex::bm_voice::Error::none &&
                         accepted.error != wirex::bm_voice::Error::filtered &&

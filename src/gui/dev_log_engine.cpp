@@ -48,11 +48,17 @@ void DevLog::attach(engine::DiagnosticsHooks& hooks, std::string_view run_label)
     };
 
     auto previous_serial = hooks.serial;
-    hooks.serial = [self, previous_serial](bool tx, std::uint8_t first_byte, std::size_t bytes,
+    hooks.serial = [self, previous_serial](bool tx, std::uint8_t record_type, std::size_t bytes,
                                            std::uint64_t elapsed_ms) {
-        if (previous_serial) previous_serial(tx, first_byte, bytes, elapsed_ms);
-        self->line("hri", std::string(tx ? "TX " : "RX ") + printable_type(first_byte) + " bytes=" +
+        if (previous_serial) previous_serial(tx, record_type, bytes, elapsed_ms);
+        self->line("hri", std::string(tx ? "TX " : "RX ") +
+                              (record_type == 0U ? std::string("(cont)") : printable_type(record_type)) + " bytes=" +
                               std::to_string(bytes) + " t=" + std::to_string(elapsed_ms) + "ms");
+    };
+    auto previous_rx_policy = hooks.rx_policy;
+    hooks.rx_policy = [self, previous_rx_policy](std::string_view summary) {
+        if (previous_rx_policy) previous_rx_policy(summary);
+        self->line("rx-policy", summary);
     };
     line("dev", "engine hooks attached run=" + run_id);
 }

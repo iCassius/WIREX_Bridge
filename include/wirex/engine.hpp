@@ -110,6 +110,17 @@ struct Counters {
     std::uint64_t reconnects{};
     std::uint64_t ptt_tx_starts{};
     std::uint64_t ptt_tx_timeouts{};
+    // BM 已送达但不在收听策略内（Router 未准入）的语音包；用于提示“有流量但未收听”。
+    std::uint64_t rx_filtered_datagrams{};
+};
+
+// 最近一次被收听策略过滤的 BM 流（只用于界面提示，不参与路由）。
+struct FilteredTraffic {
+    std::uint32_t source_id{};
+    std::uint32_t destination_id{};
+    dmr_call::Slot slot{dmr_call::Slot::ts1};
+    dmr_call::CallKind kind{dmr_call::CallKind::group};
+    std::uint64_t last_ms{};               // 相对 clock_origin_ms
 };
 
 struct Snapshot {
@@ -145,6 +156,7 @@ struct Snapshot {
     std::uint64_t audio_gains_revision{};
     AudioLevels levels{};
     Counters counters{};
+    std::optional<FilteredTraffic> last_filtered{};
 
     // R128 增补（只增不改）：原 control-v2 status / routing.status 需要的原始状态。
     bm::State bm_state{bm::State::stopped};
