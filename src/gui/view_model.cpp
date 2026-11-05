@@ -323,8 +323,8 @@ std::optional<std::uint32_t> ViewModel::idle_timeout_ms() const {
             return static_cast<std::uint32_t>(std::clamp<long long>(left + 1, 1, 1000));
         }
     }
-    // 有来话时显示通话时长，需要每秒刷新。
-    if (snapshot_->active_rx_call) return 1000U;
+    // 有来话时显示通话时长、有过滤流量提示时显示“N 秒前”，都需要每秒刷新（提示过期后自然停止）。
+    if (snapshot_->active_rx_call || filtered_hint()) return 1000U;
     if (!transient_text_.empty()) {
         const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(transient_until_ - std::chrono::steady_clock::now());
         return static_cast<std::uint32_t>(std::max<long long>(left.count(), 0) + 10);
@@ -880,17 +880,72 @@ void ViewModel::add_channel() {
     entry.id = id;
     entry.kind = add_channel_kind == 1 ? dmr_call::CallKind::private_call : dmr_call::CallKind::group;
     entry.slot = dmr_call::Slot::ts2; // bridge-ui.ps1 channelEditorSlot 默认 TS2（BM 热点为单时隙 TS2）
-    entry.name = config_bridge::known_channel_name(id, entry.kind);
     const auto k = key_of(entry);
     if (std::any_of(config_.channels.begin(), config_.channels.end(), [&](const auto& e) { return key_of(e) == k; })) {
         flash(tr(Str::channel_exists), true);
         return;
     }
-    config_.channels.push_back(entry);
     add_channel_id.clear();
+    add_channel_entry(std::move(entry));
+}
+
+void ViewModel::add_channel_entry(services::ChannelEntry entry) {
+    entry.name = config_bridge::known_channel_name(entry.id, entry.kind);
+    config_.channels.push_back(std::move(entry));
     set_channel_page(channel_page_count() - 1U);
     persist();
     push_rx_policy();
+}
+
+std::optional<FilteredHint> ViewModel::filtered_hint() const {
+    if (!snapshot_ || !snapshot_->last_filtered || snapshot_->bm_link != BmLink::connected) return std::nullopt;
+    const auto& traffic = *snapshot_->last_filtered;
+    const auto age = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now() - to_wall(traffic.last_ms));
+    if (age >= FilteredHint::window) return std::nullopt;
+    FilteredHint hint;
+    hint.traffic = traffic;
+    hint.age_s = static_cast<std::uint32_t>(std::max<long long>(age.count(), 0));
+    // 组呼按 TG/时隙收听；私呼的频道 ID 是对端（来源）ID，与 make_rx_policy 的 PrivatePeerRoute 一致。
+    hint.key = traffic.kind == dmr_call::CallKind::group
+                   ? ChannelKey{traffic.destination_id, traffic.kind, traffic.slot}
+                   : ChannelKey{traffic.source_id, traffic.kind, traffic.slot};
+    // 已加入且未屏蔽：过滤记录是加入前的旧流量，不再提示。
+    const bool listening = muted_.count(hint.key) == 0U &&
+        std::any_of(config_.channels.begin(), config_.channels.end(),
+                    [&](const auto& e) { return key_of(e) == hint.key; });
+    if (listening) return std::nullopt;
+    return hint;
+}
+
+void ViewModel::listen_filtered() {
+    const auto hint = filtered_hint();
+    if (!hint) return;
+    if (!can_mutate_channels()) {
+        flash(tr(Str::channel_not_ready), true);
+        return;
+    }
+    const auto& key = hint->key;
+    if (key.id == 0U || key.id > 16777215U) {
+        flash(tr(Str::channel_id_invalid), true);
+        return;
+    }
+    const bool exists = std::any_of(config_.channels.begin(), config_.channels.end(),
+                                    [&](const auto& e) { return key_of(e) == key; });
+    if (exists) {
+        // 已在列表但被屏蔽：恢复收听；否则说明策略尚未生效，提示已存在。
+        if (muted_.erase(key) != 0U) {
+            push_rx_policy();
+        } else {
+            flash(tr(Str::channel_exists), true);
+        }
+        return;
+    }
+    services::ChannelEntry entry;
+    entry.id = key.id;
+    entry.kind = key.kind;
+    entry.slot = key.slot;
+    add_channel_entry(std::move(entry));
 }
 
 void ViewModel::quick_call(const ChannelKey& key) {

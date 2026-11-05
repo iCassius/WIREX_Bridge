@@ -2109,6 +2109,7 @@ void AppView::draw_daily_panel(float width, float height) {
     flow.next(true);
 
     // 状态区：所有项共用 kRowHeight 行并垂直居中；放不下时整项换到下一行（同样的行高与左缘）。
+    if (const auto hint = vm_.filtered_hint()) draw_filtered_hint(*hint, inner_w);
     {
         const float x0 = ImGui::GetCursorPosX();
         const float right = x0 + inner_w;
@@ -2188,6 +2189,35 @@ void AppView::draw_daily_panel(float width, float height) {
     }
     if (flow.finish()) continuous_ = true;
     end_panel();
+}
+
+// 有 BM 流量但被收听策略过滤时的弱提示：一行文字 + “加入收听”小按钮，同一行垂直居中。
+void AppView::draw_filtered_hint(const FilteredHint& hint, float inner_w) {
+    const auto& t = hint.traffic;
+    const int slot = static_cast<int>(t.slot);
+    const std::string text = t.kind == dmr_call::CallKind::group
+        ? fmt(tr(Str::filtered_group_fmt), t.destination_id, slot, t.source_id, hint.age_s)
+        : fmt(tr(Str::filtered_private_fmt), slot, t.source_id, hint.age_s);
+    const float bh = px(layout::kRowHeight);
+    ImGui::PushFont(nullptr, layout::kFontCaption);
+    const float button_w = ImGui::CalcTextSize(tr(Str::filtered_join)).x + px(layout::kInlineGap) * 2.0F;
+    const Row row = begin_row(bh);
+    row.place(ImGui::GetTextLineHeight());
+    const float text_w = std::max(px(40.0F), inner_w - button_w - px(layout::kInlineGap));
+    text_ellipsis(text.c_str(), text_w, rgb(color::warn));
+    ImGui::SetItemTooltip("%s", text.c_str());
+    ImGui::SameLine(ImGui::GetStyle().WindowPadding.x + inner_w - button_w);
+    row.place(bh);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0F, 0.0F));
+    if (button(fmt("%s##listen-filtered", tr(Str::filtered_join)).c_str(), ImVec2(button_w, bh), Tone::normal,
+               vm_.can_mutate_channels())) {
+        vm_.listen_filtered();
+    }
+    ImGui::PopStyleVar();
+    ImGui::SetItemTooltip("%s", tr(t.kind == dmr_call::CallKind::group ? Str::tip_filtered_join
+                                                                         : Str::tip_filtered_private_join));
+    ImGui::PopFont();
+    row.end();
 }
 
 // BM 静态组（BmManagementUi.ps1）：标题行 [设备 · 分页 · 刷新 · 移除]，每页 3 条，下方 TG 输入 + 添加。

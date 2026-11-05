@@ -294,6 +294,35 @@ struct FakeEngine::Impl {
         });
     }
 
+    // 模拟被收听策略过滤的 BM 流量：每隔几秒在一个当前未收听的 TG 上出现一段流量。
+    void filtered_tick(std::uint64_t epoch) {
+        post_after(8000ms, [this, epoch]() {
+            if (epoch != bm_epoch) return;
+            if (state.bm_link == BmLink::connected && state.phase == Phase::running) note_filtered(now_ms());
+            filtered_tick(epoch);
+        });
+    }
+
+    void note_filtered(std::uint64_t at_ms) {
+        constexpr std::array<std::uint32_t, 3> kUnheardGroups{91U, 3100U, 46020U};
+        for (const auto tg : kUnheardGroups) {
+            const talkgroup_routing::GroupRoute route{tg, dmr_call::Slot::ts2};
+            const bool allowed = std::any_of(rx_policy.allowed_groups.begin(), rx_policy.allowed_groups.end(),
+                                             [&](const auto& g) { return same_group(g, route); });
+            if (allowed) continue;
+            engine::FilteredTraffic traffic;
+            traffic.source_id = 2233333U;
+            traffic.destination_id = tg;
+            traffic.slot = dmr_call::Slot::ts2;
+            traffic.kind = dmr_call::CallKind::group;
+            traffic.last_ms = at_ms;
+            state.last_filtered = traffic;
+            ++state.counters.rx_filtered_datagrams;
+            publish();
+            return;
+        }
+    }
+
     void drop_bm() {
         ++bm_epoch;
         ++call_epoch;
@@ -316,6 +345,7 @@ struct FakeEngine::Impl {
                 bm_step(epoch, BmLink::connected, 800ms);
             } else if (next == BmLink::connected) {
                 schedule_next_call(1500ms);
+                filtered_tick(epoch);
             }
         });
     }
@@ -372,11 +402,23 @@ struct FakeEngine::Impl {
         }
         state.counters.calls_started = history.size();
         state.counters.calls_ended = history.size() - 1U;
+        // 演示：3 秒前在未收听的 TG 上出现过滤流量（seed 时 rx_policy 已设，note_filtered 会跳过已收听的 TG）。
+        {
+            engine::FilteredTraffic traffic;
+            traffic.source_id = 2233333U;
+            traffic.destination_id = 3100U;
+            traffic.slot = dmr_call::Slot::ts2;
+            traffic.kind = dmr_call::CallKind::group;
+            traffic.last_ms = now - 3'000U;
+            state.last_filtered = traffic;
+            state.counters.rx_filtered_datagrams = 42U;
+        }
         state.seq = 1U;
         published = std::make_shared<const engine::Snapshot>(state);
         // 演示用的进行中来话持续约 30 s，之后进入随机来话循环。
         const auto this_call = ++call_epoch;
         level_tick(bm_epoch, this_call, 300);
+        filtered_tick(bm_epoch);
     }
 };
 

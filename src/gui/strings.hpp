@@ -302,7 +302,16 @@ namespace wirex::gui {
     X(startup_group_failure_fmt, \
                             "TG %u TS%d：本机 Quick Call 失败（%s）。", \
                             "TG %u TS%d: local Quick Call failed (%s).") /* new */ \
-    X(muted_badge,          "已屏蔽",                              "Muted")                         /* new */
+    X(muted_badge,          "已屏蔽",                              "Muted")                         /* new */ \
+    X(filtered_group_fmt,   "BM 有流量未收听：TG %u TS%d（来自 %u）· %u 秒前", \
+                            "Unheard BM traffic: TG %u TS%d (from %u) · %us ago") /* new */ \
+    X(filtered_private_fmt, "BM 有流量未收听：单呼 TS%d（来自 %u）· %u 秒前", \
+                            "Unheard BM traffic: private TS%d (from %u) · %us ago") /* new */ \
+    X(filtered_join,        "加入收听",                            "Listen")                        /* new */ \
+    X(tip_filtered_join,    "把该 TG/时隙加入频道列表并开始收听。", \
+                            "Add this TG/slot to the channel list and start listening.") /* new */ \
+    X(tip_filtered_private_join, "把该私呼对端加入私呼频道并开始收听。", \
+                            "Add this private-call peer as a private channel and start listening.") /* new */
 // clang-format on
 
 enum class Str : std::uint16_t {

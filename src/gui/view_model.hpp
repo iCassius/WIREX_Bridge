@@ -81,6 +81,14 @@ struct StaticGroupsView {
 
 enum class FontStatus : std::uint8_t { segoe_deng, segoe_simhei, fallback_default };
 
+// 最近被收听策略过滤的 BM 流量（Snapshot::last_filtered），只在 window 内显示提示。
+struct FilteredHint {
+    static constexpr std::chrono::seconds window{30};
+    engine::FilteredTraffic traffic{};
+    std::uint32_t age_s{};
+    ChannelKey key{};             // “加入收听”要加入的频道：组呼为 TG，私呼为对端 ID
+};
+
 struct CatForm {
     std::string port{};
     int baud_index{3};            // 4800/9600/19200/38400/115200
@@ -138,6 +146,7 @@ public:
     // 当前来话（呼号缺失时用身份查询结果补全）。
     [[nodiscard]] std::optional<engine::CallInfo> active_call() const;
     [[nodiscard]] engine::CallInfo with_callsign(engine::CallInfo call) const;
+    [[nodiscard]] std::optional<FilteredHint> filtered_hint() const;
     [[nodiscard]] const StaticGroupsView& static_groups() const noexcept { return static_; }
     [[nodiscard]] std::uint32_t bm_device_id() const noexcept { return services::effective_gateway_id(config_); }
     [[nodiscard]] bool bm_api_available() const noexcept { return static_cast<bool>(services_.bm_api.list_static_groups); }
@@ -172,6 +181,7 @@ public:
     void remove_channel(const ChannelKey& key);  // engine.replace_rx_policy
     void toggle_mute(const ChannelKey& key);     // engine.replace_rx_policy
     void add_channel();                          // engine.replace_rx_policy
+    void listen_filtered();                      // 把 filtered_hint() 的 TG/私呼加入频道（已屏蔽则恢复）
     void quick_call(const ChannelKey& key);      // engine.quick_call_join
     void commit_gains();                         // engine.set_audio_gains
     void set_audio_devices(std::wstring wave_in_endpoint_id, std::wstring wave_out_endpoint_id);
@@ -225,6 +235,7 @@ private:
     [[nodiscard]] std::optional<talkgroup_routing::TxTarget> current_tx_target() const;
     void push_rx_policy();
     void persist();
+    void add_channel_entry(services::ChannelEntry entry);
     [[nodiscard]] std::chrono::system_clock::time_point to_wall(std::uint64_t engine_ms) const;
     // BM 静态组 / 身份查询
     void static_sync();

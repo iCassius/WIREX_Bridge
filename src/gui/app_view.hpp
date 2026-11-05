@@ -59,6 +59,7 @@ private:
     void draw_daily_panel(float width, float height);
     void update_connection_log();
     void draw_audio_devices(const FieldGrid& grid, float caption_h);
+    void draw_filtered_hint(const FilteredHint& hint, float inner_w);
     void begin_panel(const char* id, float width, float height);
     void end_panel();
     void draw_static_groups(float inner_w);
