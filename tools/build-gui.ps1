@@ -38,7 +38,7 @@ if (Test-Path -LiteralPath $outputDirectory) { throw "GUI 输出目录已存在�
 
 $imguiFiles = @('imgui.cpp', 'imgui_draw.cpp', 'imgui_tables.cpp', 'imgui_widgets.cpp',
     'backends\imgui_impl_win32.cpp', 'backends\imgui_impl_dx11.cpp') | ForEach-Object { 'third_party\imgui\' + $_ }
-$guiFiles = @('gui_main.cpp', 'app_view.cpp', 'view_model.cpp', 'fake_engine.cpp', 'config_bridge.cpp', 'real_services.cpp', 'dev_log.cpp') |
+$guiFiles = @('gui_main.cpp', 'app_view.cpp', 'view_model.cpp', 'fake_engine.cpp', 'config_bridge.cpp', 'real_services.cpp', 'dev_log.cpp', 'dev_log_engine.cpp') |
     ForEach-Object { 'src\gui\' + $_ }
 # GUI 用到的 app 服务与 native 公共模块（与 tools/build-app-tests.ps1 同一组源文件）。
 $serviceFiles = @('app\config.cpp', 'app\json.cpp', 'app\devices.cpp', 'app\radio_cat.cpp', 'app\bm_api.cpp',

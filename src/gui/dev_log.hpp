@@ -30,6 +30,8 @@ public:
     void attach(engine::DiagnosticsHooks& hooks, std::string_view run_label);
 
     [[nodiscard]] const std::filesystem::path& path() const noexcept;
+    // 每次 attach 递增的运行序号（日志里区分同一进程内的多次引擎运行）。
+    [[nodiscard]] std::uint64_t next_run_seq();
 
     ~DevLog();
     DevLog(const DevLog&) = delete;
