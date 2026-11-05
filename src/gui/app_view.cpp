@@ -1013,53 +1013,43 @@ void AppView::draw_header() {
     }
 
     draw_connection_log_popup();
-    draw_relay_status_line();
     const ImVec2 pos = ImGui::GetCursorPos();
     ImGui::SetCursorPos(ImVec2(pos.x, pos.y + px(layout::kGap)));
 }
 
-// FM 开关 + “官方未支持”标注（中继开启时显示在“停用中继”右侧）。
+// FM 开关（中继开启时显示在“停用中继”右侧）。状态并入按钮本身：
+// 关闭“○ FM”；开启后“● FM · 等待静噪开启 / FM 中继进行中 / CAT 未连接”，颜色随状态；
+// “官方未支持”与 C4FM 未支持提示放在 tooltip，避免在标题栏下方再插一行而推移整页布局。
 void AppView::draw_relay_fm_controls(float row_x, float row_top, float row_h, float btn_h) {
     const Row row{row_x, row_top, row_h};
     const float x0 = ImGui::GetCursorScreenPos().x;
     const bool fm_on = vm_.relay_fm_enabled();
     const bool supported = vm_.relay_fm_supported();
-    row.place(btn_h);
-    const auto label = fmt("%s %s##relay-fm", fm_on ? "●" : "○", tr(Str::relay_fm));
-    if (button(label.c_str(), ImVec2(px(54.0F), btn_h), fm_on ? Tone::ok : Tone::normal, supported)) {
-        vm_.toggle_relay_fm();
+    const auto status = vm_.relay_status();
+    std::string label = std::string(fm_on ? "● " : "○ ") + tr(Str::relay_fm);
+    Tone tone = Tone::normal;
+    if (fm_on) {
+        switch (status) {
+        case RelayStatus::active: label += std::string(" · ") + tr(Str::relay_status_active); tone = Tone::ok; break;
+        case RelayStatus::waiting: label += std::string(" · ") + tr(Str::relay_status_waiting); tone = Tone::ok; break;
+        case RelayStatus::no_cat: label += std::string(" · ") + tr(Str::relay_status_no_cat); tone = Tone::normal; break;
+        case RelayStatus::off:
+        case RelayStatus::c4fm_only: break;
+        }
     }
-    ImGui::SetItemTooltip("%s", tr(Str::relay_fm_tip));
-    ImGui::SameLine(0.0F, px(layout::kLabelGap));
-    row_text(row, tr(Str::relay_fm_unofficial), rgb(color::warn), nullptr, layout::kFontCaption);
-    ImGui::SetItemTooltip("%s", tr(Str::relay_fm_tip));
+    label += "##relay-fm";
+    row.place(btn_h);
+    const float text_w = ImGui::CalcTextSize(label.c_str(), nullptr, true).x;
+    const float w = std::max(px(54.0F), std::round(text_w + px(20.0F)));
+    if (button(label.c_str(), ImVec2(w, btn_h), tone, supported)) vm_.toggle_relay_fm();
+    std::string tip = tr(Str::relay_fm_tip);
+    if (!fm_on) tip = std::string(tr(Str::relay_c4fm_unsupported)) + "\n" + tip;
+    ImGui::SetItemTooltip("%s", tip.c_str());
     const float measured = std::round(ImGui::GetItemRectMax().x - x0);
     if (std::abs(measured - header_relay_w_) >= 1.0F) {
         header_relay_w_ = measured;
         continuous_ = true;
     }
-}
-
-// 中继开启时在顶栏下方显示一行状态：C4FM 未支持提示，或 FM 中继状态。
-void AppView::draw_relay_status_line() {
-    const auto status = vm_.relay_status();
-    if (status == RelayStatus::off) return;
-    const char* text = nullptr;
-    ImU32 col = rgb(color::muted);
-    switch (status) {
-    case RelayStatus::off: return;
-    case RelayStatus::c4fm_only: text = tr(Str::relay_c4fm_unsupported); col = rgb(color::warn); break;
-    case RelayStatus::no_cat: text = tr(Str::relay_status_no_cat); col = rgb(color::warn); break;
-    case RelayStatus::waiting: text = tr(Str::relay_status_waiting); break;
-    case RelayStatus::active: text = tr(Str::relay_status_active); col = rgb(color::green); break;
-    }
-    const auto line = status == RelayStatus::c4fm_only
-        ? std::string(text)
-        : fmt("%s (%s) · %s", tr(Str::relay_fm), tr(Str::relay_fm_unofficial), text);
-    ImGui::PushFont(nullptr, layout::kFontCaption);
-    text_ellipsis(line.c_str(), ImGui::GetContentRegionAvail().x, col);
-    ImGui::PopFont();
-    ImGui::SetItemTooltip("%s", tr(Str::relay_fm_tip));
 }
 
 void AppView::update_connection_log() {

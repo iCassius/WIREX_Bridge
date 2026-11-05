@@ -50,7 +50,6 @@ private:
 
     void draw_header();
     void draw_relay_fm_controls(float row_x, float row_top, float row_h, float btn_h);
-    void draw_relay_status_line();
     void draw_connection_log_popup();
     void add_connection_event(Str source, std::string message, bool failed);
     void resolve_connection_error(Str source, std::string message);
