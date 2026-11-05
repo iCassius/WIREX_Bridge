@@ -1,6 +1,7 @@
 #include "real_services.hpp"
 
 #include "config_bridge.hpp"
+#include "dev_log.hpp"
 #include "cat_state_sync.hpp"
 
 #include "wirex/app/bm_api.hpp"
@@ -214,7 +215,13 @@ services::ConfigService make_config_service(const std::shared_ptr<ConfigState>& 
             std::lock_guard<std::mutex> lock(st->mutex);
             if (st->base) color_code = st->base->connection.color_code;
         }
-        return config_bridge::make_runtime_config(gui, color_code, error);
+        auto runtime = config_bridge::make_runtime_config(gui, color_code, error);
+        if (runtime) {
+            if (auto log = dev_log()) log->attach(runtime->diagnostics, "engine");
+        } else if (auto log = dev_log()) {
+            log->line("gui", "runtime config rejected: " + error);
+        }
+        return runtime;
     };
     return svc;
 }

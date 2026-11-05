@@ -560,8 +560,14 @@ CommandResult run_loop(Shared& shared, StartConfig config)
     bool serial_failed = false;
     bool radio_fault_pending = false;
     std::string radio_fault_reason;
+    auto serial_trace = [&](bool tx, const std::uint8_t* data, std::size_t size) {
+        if (!hooks.serial || data == nullptr || size == 0U) return;
+        try { hooks.serial(tx, data[0], size, elapsed_ms()); } catch (...) {}
+    };
     auto serial_write = [&](const std::uint8_t* data, std::size_t size) {
-        return port != nullptr && port->write_all(data, size);
+        const bool ok = port != nullptr && port->write_all(data, size);
+        if (ok) serial_trace(true, data, size);
+        return ok;
     };
     // GUI 事件：来话在 HRI T3 准入时开始，在 call_finished 或任何收尾时结束。
     auto finish_published_rx_call = [&](std::string_view reason) {
@@ -2957,6 +2963,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
                     radio_fault_reason = "serial_read_failed";
                 } else {
                     if (actual != 0U) {
+                        serial_trace(false, serial_bytes.data(), actual);
                         if (hri_active && !shutdown_requested) {
                             if (hri_session) apply_hri_update(hri_session->feed(serial_bytes.data(), actual, elapsed_ms()));
                             hri_active = hri_state.phase != HriPhase::stopped && hri_session != nullptr;

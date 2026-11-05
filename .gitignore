@@ -16,7 +16,7 @@
 /.env.*
 !/.env.example
 /private/
-/logs/
+logs/
 /tools/audio-settings.json
 /tools/connection-profile.json
 # 用户运行配置随便携目录移动；配置正文与原子写入期间的备份不进入 Git。

@@ -1,5 +1,8 @@
 ﻿[CmdletBinding()]
-param()
+param(
+    # 正式版：dev 日志默认关闭（仍可用 --dev-log 临时开启）。默认构建为开发版，dev 日志默认开启。
+    [switch]$Release
+)
 
 # R128 原生 GUI 外壳：Dear ImGui + Win32 + DirectX 11，MSVC 2019 /MT 静态链接为单个 WirexBridge.exe。
 # 产物：build/_work/wirex-gui-<commit7>[-dirty]-<UTC 时间>/WirexBridge.exe，附 gui-build.log 与 gui-build-provenance.json。
@@ -35,7 +38,7 @@ if (Test-Path -LiteralPath $outputDirectory) { throw "GUI 输出目录已存在�
 
 $imguiFiles = @('imgui.cpp', 'imgui_draw.cpp', 'imgui_tables.cpp', 'imgui_widgets.cpp',
     'backends\imgui_impl_win32.cpp', 'backends\imgui_impl_dx11.cpp') | ForEach-Object { 'third_party\imgui\' + $_ }
-$guiFiles = @('gui_main.cpp', 'app_view.cpp', 'view_model.cpp', 'fake_engine.cpp', 'config_bridge.cpp', 'real_services.cpp') |
+$guiFiles = @('gui_main.cpp', 'app_view.cpp', 'view_model.cpp', 'fake_engine.cpp', 'config_bridge.cpp', 'real_services.cpp', 'dev_log.cpp') |
     ForEach-Object { 'src\gui\' + $_ }
 # GUI 用到的 app 服务与 native 公共模块（与 tools/build-app-tests.ps1 同一组源文件）。
 $serviceFiles = @('app\config.cpp', 'app\json.cpp', 'app\devices.cpp', 'app\radio_cat.cpp', 'app\bm_api.cpp',
@@ -101,7 +104,7 @@ function Invoke-MsvcStep {
     return @($output | ForEach-Object { [string]$_ })
 }
 
-$common = '/nologo /c /O2 /MT /EHsc /std:c++17 /permissive- /utf-8 /DUNICODE /D_UNICODE /DIMGUI_DISABLE_DEMO_WINDOWS /DWIREX_GUI_REAL_ENGINE=1 /I third_party\imgui /I include /I third_party\dmr_signal /I third_party\droidstar_mbe\upstream'
+$common = '/nologo /c /O2 /MT /EHsc /std:c++17 /permissive- /utf-8 /DUNICODE /D_UNICODE /DIMGUI_DISABLE_DEMO_WINDOWS /DWIREX_GUI_REAL_ENGINE=1 /DWIREX_DEV_BUILD={0} /I third_party\imgui /I include /I third_party\dmr_signal /I third_party\droidstar_mbe\upstream' -f $(if ($Release) { 0 } else { 1 })
 Push-Location $appRoot
 try {
     [void](Invoke-MsvcStep -Name 'ImGui (/W3)' -CommandLine ('cl.exe {0} /W3 /Fo"{1}\\" {2}' -f $common, $objImgui, ($imguiFiles -join ' ')))
@@ -124,6 +127,7 @@ $relativeOutput = $outputDirectory.Substring($appRoot.TrimEnd($separator).Length
 $executable = Get-Item -LiteralPath $executablePath
 $provenance = [ordered]@{
     schema_version = 1
+    dev_build = -not [bool]$Release
     result = 'passed'
     source = [ordered]@{ commit = $commit; tree_clean = ($statusLines.Count -eq 0) }
     imgui = [ordered]@{ version = $imguiVersion; path = 'third_party/imgui' }

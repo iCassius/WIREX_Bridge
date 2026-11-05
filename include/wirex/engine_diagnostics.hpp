@@ -110,6 +110,9 @@ struct DiagnosticsHooks {
     // 收尾时（关闭串口、发送 RPTCL 之后，最终 stopped 状态之前）调用；返回 false 记为
     // owned_resource_cleanup_failed。CLI 用它释放控制台关闭处理器。
     std::function<bool()> cleanup_complete{};
+    // 可选（dev 日志）：HRI 串口每次成功写入/读到数据时在引擎线程调用。只给首字节（HRI 记录类型）
+    // 与字节数，不传正文；必须非阻塞，异常被吞掉。tx=true 为 PC→电台。
+    std::function<void(bool tx, std::uint8_t first_byte, std::size_t bytes, std::uint64_t elapsed_ms)> serial{};
 };
 
 // 与 R127 append_bridge_status 输出逐字节一致（含换行），写入后 flush。seq 由调用方递增。

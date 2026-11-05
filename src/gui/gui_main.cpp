@@ -38,6 +38,7 @@
 #include "resource.h"
 #include "strings.hpp"
 #include "view_model.hpp"
+#include "dev_log.hpp"
 
 #ifndef WIREX_GUI_REAL_ENGINE
 #define WIREX_GUI_REAL_ENGINE 0
@@ -353,6 +354,7 @@ bool save_back_buffer_png(const std::wstring& path, std::string& error) {
 // ---------------------------------------------------------------- 命令行
 
 struct Options {
+    bool dev_log{WIREX_DEV_BUILD != 0};
     bool fake{};
     bool fake_services{};
     bool check_config{};
@@ -371,7 +373,11 @@ Options parse_args() {
     }
     for (int i = 1; i < argc; ++i) {
         const std::wstring a = argv[i];
-        if (a == L"--fake") {
+        if (a == L"--dev-log") {
+            o.dev_log = true;
+        } else if (a == L"--no-dev-log") {
+            o.dev_log = false;
+        } else if (a == L"--fake") {
             o.fake = true;
         } else if (a == L"--fake-services") {
             o.fake_services = true;
@@ -507,6 +513,12 @@ int run(HINSTANCE instance) {
         return 2;
     }
     if (opts.check_config) return check_config(opts);
+    if (opts.dev_log) {
+        if (auto log = wirex::gui::DevLog::open(wirex::gui::executable_directory())) {
+            log->line("dev", opts.fake ? "mode=fake" : "mode=real");
+            wirex::gui::set_dev_log(std::move(log));
+        }
+    }
 #if !WIREX_GUI_REAL_ENGINE
     if (!opts.fake) {
         fail_box(widen(wirex::gui::tr(wirex::gui::Str::engine_unavailable)));

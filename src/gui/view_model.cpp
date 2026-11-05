@@ -1,6 +1,7 @@
 #include "view_model.hpp"
 
 #include "config_bridge.hpp"
+#include "dev_log.hpp"
 #include "cat_form_sync.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -377,6 +378,7 @@ void ViewModel::handle_event(const engine::Event& event) {
 }
 
 void ViewModel::flash(std::string text, bool failed, Str operation) {
+    if (auto log = dev_log()) log->line(failed ? "gui-error" : "gui", text);
     if (failed) enqueue_operation_event(operation, text, true);
     transient_text_ = std::move(text);
     transient_failed_ = failed;
@@ -431,6 +433,10 @@ bool ViewModel::transient_visible() const {
 }
 
 void ViewModel::report(Str op, const CommandResult& r) {
+    if (auto log = dev_log()) {
+        log->line("result", std::string(tr(op)) + " status=" + std::to_string(static_cast<int>(r.status)) +
+                                " detail=" + r.detail);
+    }
     if (op == Str::op_start && suppress_cancelled_start_report_) {
         suppress_cancelled_start_report_ = false;
         return;
