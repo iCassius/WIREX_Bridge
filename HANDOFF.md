@@ -1,5 +1,35 @@
 ﻿# WIREX Bridge 交接入口
 
+## 当前交接摘要（2026-11-05 · R128 · a7081af）
+
+### HRI 实机连接待核查
+- 用户报告当前实机无法连接。“两串口波特率混淆”只是待验证假说。源码证据：`src/engine/win_io.hpp:168–193` 固定 HRI 为 115200、8N1；`src/app/radio_cat.cpp:473–476` 按配置波特率建立 CAT 8N2 会话；默认 38400 见 `include/wirex/app/config.hpp`。GUI 波特率选择只设置 CAT。
+- HRI 打开串口后会预排空最多 250 ms/4096 B，观察 20 ms 安静，再等待 V 响应最多 2500 ms；随后每 1000 ms 发 Y，等待 Y/0 最多 3000 ms。只有收到 Y/0 且 WaveOut 打开后才报告 `hri_ready`（`src/engine/win_io.hpp:725–764`、`include/wirex/hri_session.hpp:11–15`、`src/engine/engine_loop.cpp`）。`hri_session` 在 8e2 到 a7081af 之间未改；`engine_loop` 的连接编排变化较大，现场失败原因仍未确定。
+- [ ] 获得用户授权后，核对实际 COM 与设备的对应关系、电台当前串口设置；使用相同配置对照旧/新版本，并保存完整 V/Y 收发记录。测试前保留现有配置，过程不发射。
+
+### BM 本机播放与射频边界
+- BM 本机 WaveOut 离线路径已通过。`tests/engine_test.cpp` 中已有 `test_hri_healthy_waveout_downlink_end_to_end`，覆盖健康假 HRI/WaveOut 下行路径；旧文档称缺少此测试的内容已过时，本摘要不重写旧文档。真实 BM 来话听音仍待验。
+- Native 41/41 的记录来自 `source_commit=8e2` 且标记 dirty 的构建 provenance；该快照包含 BM-only Engine fake 测试。app 14/14 来自当时的离线执行记录，没有逐文件 provenance。本轮两组测试均未重跑；没有证据断言两组结果对应同一逐文件源码快照，也未核对它们与 a7081af 的逐文件关系。
+- AP/PC C4FM/FM 射频转发尚未实现。旧文档中涉及转发路径的推断仍待验证，不能作为已实现行为引用。
+
+### UI、音频待办与本机交付
+- 100% DPI 的 1360×900 同尺寸文字截图只显示有限的边缘改善；125% DPI 尚未验证。
+- `app/TODO.md` 中预先存在的 112 行音频专项保持原样，其中的根因判断与修复建议是待验证假设，不作为已确认结果。
+- R128/a7081af 单 EXE 交付保留在本机，未推送。交付时目录只有 EXE；运行后已生成 `config.json` 和 `private/`，现存文件保留。本轮没有读取或修改这些配置及运行数据。
+
+### 后续待办
+- [ ] 验证 TG46001 的真实接收，以及自动组呼流程与 BM 连接之间的联动。
+- [ ] 将 BM RTT 指标接入主界面，并核对数据来源与暂无数据状态。
+- [ ] 在 125% DPI 下验收字体、控件边界与 IME 输入/候选窗口。
+- [ ] 先获用户授权进行只读接收观察，检查 AP/PC CAT 静噪及 FM/C4FM 链路；如需发射完成双向验收，另行取得明确授权。
+- [ ] 后续整理 `docs/ARCHITECTURE.md`、R128 交接及相关架构文档，更新为当前实现事实。
+- [ ] 核对单 EXE 首次启动时的配置生成、版本追溯信息与发布范围，保留现存配置和运行数据。
+- [ ] 音频专项原文继续保留；根因和修复建议仍待测量、听音验证后再确认。
+
+---
+
+以下为 2026-11-04 R127 历史记录，当前状态以上述摘要为准。
+
 更新：2026-11-04（R127）。本文只记录当前状态。更早的逐轮交接（R103–R125）可通过 `git log -- HANDOFF.md` 或 `git show 1283f86:HANDOFF.md` 查看。系统组成见 [ARCHITECTURE](docs/ARCHITECTURE.md)，待办以 [TODO](TODO.md) 为准。
 
 ## 当前版本
