@@ -297,6 +297,8 @@ struct FakeOptions {
     bool hri_responds{true};
     FakeHriBehavior hri_behavior{FakeHriBehavior::normal};
     bool acknowledge_t_records{true};
+    // 真实 open_serial 包含 CreateFile、DCB 配置与最长 250 ms 的预排空；>0 时模拟这段耗时。
+    unsigned open_delay_ms{0U};
 };
 
 class FakeDevices final : public wirex::engine::Devices {
@@ -317,6 +319,7 @@ public:
             failure_reason = "serial_open_or_configure_failed";
             return nullptr;
         }
+        if (options_.open_delay_ms != 0U) std::this_thread::sleep_for(std::chrono::milliseconds(options_.open_delay_ms));
         ++log_->serial_opened;
         return std::make_unique<FakeSerial>(log_, options_.hri_responds, options_.hri_behavior,
                                             options_.acknowledge_t_records);
@@ -1179,6 +1182,38 @@ void test_bm_auth_rejection_does_not_fail_runtime_stop()
     const auto stopped = get_within(engine.stop(), 5s, "stop runtime after BM authentication rejection");
     check(stopped.status == CommandStatus::accepted && engine.wait_stopped(1s),
           "a terminal BM authentication rejection does not fail clean Engine shutdown");
+}
+
+// 回归（R129 实机）：GUI 先 start（不带电台）再 connect_radio。主循环在 process_commands 之前采样 now_ms，
+// connect_radio 内部打开串口耗时后以更新的时刻 start HRI；随后同一轮 tick(旧 now_ms) 触发 clock_regressed，
+// HRI 立刻停止，现场表现为“CAT 能连、HRI 连不上”，日志只发出一条 V 查询。
+void test_connect_radio_after_slow_serial_open_reaches_hri_ready()
+{
+    auto log = std::make_shared<DeviceLog>();
+    FakeOptions options{};
+    options.open_delay_ms = 30U;
+    wirex::engine::Engine engine(std::make_shared<FakeDevices>(log, options));
+    auto config = base_config();
+    config.start_radio = false;
+    config.hri_port.clear();
+    const auto started = get_within(engine.start(config), 5s, "start runtime without radio");
+    check(started.status == CommandStatus::accepted, "runtime starts without radio");
+
+    wirex::engine::RadioStartConfig radio{};
+    radio.hri_port = L"COM99";
+    radio.hri_body_file = "C:/fake/device-y.bin";
+    radio.audio.expected_wave_in_endpoint_id = L"fake-input-1";
+    radio.audio.expected_wave_out_endpoint_id = L"fake-output-1";
+    const auto attached = get_within(engine.connect_radio(std::move(radio)), 3s, "attach radio with slow serial open");
+    check(attached.status == CommandStatus::accepted, "connect_radio accepted with slow serial open");
+    check(wait_for_snapshot(engine, 4s, [](const wirex::engine::Snapshot& snapshot) {
+              return snapshot.serial_open && snapshot.hri_ready;
+          }),
+          "HRI reaches ready after connect_radio even when opening the serial port takes time");
+    const auto snapshot = engine.snapshot();
+    check(snapshot->failure_reason.find("clock_regressed") == std::string::npos,
+          "HRI session is not stopped by clock regression after connect_radio");
+    (void)get_within(engine.stop(), 5s, "stop after slow-open attach");
 }
 
 void test_radio_bm_independent_lifecycle_and_master_rejection()
@@ -2631,6 +2666,7 @@ int main()
         test_bm_connection_semantics();
         test_invalid_initial_bm_profile_does_not_fail_runtime_stop();
         test_bm_auth_rejection_does_not_fail_runtime_stop();
+        test_connect_radio_after_slow_serial_open_reaches_hri_ready();
         test_radio_bm_independent_lifecycle_and_master_rejection();
         test_rejected_bm_commands_wipe_password_before_completion();
         test_failed_bm_reconfigure_blocks_old_profile_enable();
