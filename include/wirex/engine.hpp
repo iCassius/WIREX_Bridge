@@ -83,6 +83,9 @@ struct StartConfig {
     DiagnosticsHooks diagnostics{};
     // R130 增补：FM 中继单段最长时长（默认 relay_fm_max_duration_ms = 180 s；离线测试可调小）。0 视为默认值。
     std::uint64_t relay_fm_max_duration_ms{0U};
+    // R131 增补：HRI 自动重连间隔（0 = 默认 hri_reconnect_interval_ms / hri_reconnect_max_interval_ms；离线测试可调小）。
+    std::uint64_t hri_reconnect_interval_ms{0U};
+    std::uint64_t hri_reconnect_max_interval_ms{0U};
 };
 
 // ---------- 状态快照（只读、不可变） ----------
@@ -198,6 +201,9 @@ struct Snapshot {
 
     // R131 增补（只增不改）：
     bool relay_fm_muted{};                 // 中继段内 relay_fm_mute(true) 生效中（上行送静音）
+    // HRI 掉线（串口错误、Y/0 超时、会话异常停止）后按 connect_radio 时的配置自动重连；用户断开即停止。
+    bool hri_reconnecting{};
+    std::uint64_t hri_reconnect_attempts{};  // 本轮自动重连已尝试次数（下一轮掉线时清零）
 };
 
 // FM 中继单段上行的最长时长；超时后引擎自动结束本段（end_reason "timeout"）。
@@ -206,6 +212,10 @@ inline constexpr std::uint64_t relay_fm_max_duration_ms = 180000U;
 // R131：FM 中继上行在 WaveIn 与 AMBE 管线之间的前瞻延迟。relay_fm_mute(true) 到达时缓冲内尚未送出的样本一并清零，
 // 用来覆盖 CAT 静噪检测（约 100 ms 轮询）之前已采集到的尾噪。只用于 FM 中继，手咪 PTT 不经过该缓冲。
 inline constexpr std::uint64_t kRelayLookaheadMs = 120U;
+
+// R131：HRI 自动重连。串口可打开时按固定间隔重试握手；串口打开失败（设备拔出）逐次加倍退避到最长间隔。
+inline constexpr std::uint64_t hri_reconnect_interval_ms = 3000U;
+inline constexpr std::uint64_t hri_reconnect_max_interval_ms = 10000U;
 
 // relay_fm_started / relay_fm_ended 事件附带的信息。
 struct RelayFmInfo {
@@ -228,6 +238,9 @@ enum class EventKind : std::uint8_t {
     // R130 增补（只增不改，追加在末尾）：
     relay_fm_started,
     relay_fm_ended,  // end_reason: squelch_closed / timeout / transmit_disabled / bm_not_ready / radio_lost / aborted / shutdown
+    // R131 增补（只增不改，追加在末尾）：
+    hri_lost,      // HRI 掉线并开始自动重连；end_reason 为机器可读原因（如 hri_y_ack_timeout、serial_transport_error）
+    hri_restored,  // 自动重连成功（Y/0 已确认，hri_ready 恢复）
 };
 
 struct Event {

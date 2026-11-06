@@ -416,6 +416,17 @@ void ViewModel::handle_event(const engine::Event& event) {
     case engine::EventKind::relay_fm_ended:
         finish_relay_record(event);
         break;
+    case engine::EventKind::hri_lost: {
+        // 引擎保留 connect_radio 的配置并每 3 s 重试；BM 照常运行。用户点“断开”即停止重连。
+        const auto& reason = event.end_reason.empty() ? event.text : event.end_reason;
+        if (auto log = dev_log()) log->line("radio", "hri lost reason=" + reason + "; auto reconnect");
+        flash(fmt(tr(Str::hri_lost_fmt), reason.c_str()), false);
+        break;
+    }
+    case engine::EventKind::hri_restored:
+        if (auto log = dev_log()) log->line("radio", "hri restored after auto reconnect");
+        flash(tr(Str::hri_restored), false);
+        break;
     case engine::EventKind::rx_call_ended:
     case engine::EventKind::tx_started:
     case engine::EventKind::tx_ended:
@@ -932,8 +943,8 @@ void ViewModel::stop() {
         });
     }
     if (snapshot_->phase == Phase::running &&
-        (snapshot_->serial_open || pending(Str::op_start))) {
-        // 即使 attach 命令仍在队列中，也排入 detach；BM runtime 始终保留。
+        (snapshot_->serial_open || snapshot_->hri_reconnecting || pending(Str::op_start))) {
+        // 即使 attach 命令仍在队列中，也排入 detach；BM runtime 始终保留。HRI 自动重连中同样发 detach 以停止重连。
         track(Str::op_stop, engine_.disconnect_radio());
     } else {
         CommandResult result;

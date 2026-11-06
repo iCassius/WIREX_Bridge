@@ -698,6 +698,8 @@ std::future<CommandResult> FakeEngine::disconnect_radio() {
         }
         s->state.serial_open = false;
         s->state.hri_ready = false;
+        s->state.hri_reconnecting = false;
+        s->state.radio_error.clear();
         s->state.wave_in_open = false;
         s->state.wave_out_open = false;
         s->state.hri_port.clear();
@@ -901,6 +903,45 @@ std::future<CommandResult> FakeEngine::relay_fm_mute(bool muted) {
         if (s->state.relay_fm_muted == muted) return result(CommandStatus::idempotent);
         s->state.relay_fm_muted = muted;
         return result(CommandStatus::accepted);
+    });
+}
+
+void FakeEngine::simulate_hri_lost(std::string reason) {
+    auto* s = impl_.get();
+    s->post_after(0ms, [s, reason = std::move(reason)]() {
+        if (s->state.phase != Phase::running || !s->state.hri_ready) return;
+        s->state.serial_open = false;
+        s->state.hri_ready = false;
+        s->state.hri_port.clear();
+        s->state.wave_in_open = false;
+        s->state.hri_reconnecting = true;
+        s->state.hri_reconnect_attempts = 0U;
+        s->state.radio_error = reason;
+        Event e;
+        e.kind = EventKind::hri_lost;
+        e.at_ms = now_ms();
+        e.text = reason;
+        e.end_reason = reason;
+        s->push_event(std::move(e));
+        s->publish();
+    });
+}
+
+void FakeEngine::simulate_hri_restored() {
+    auto* s = impl_.get();
+    s->post_after(0ms, [s]() {
+        if (!s->state.hri_reconnecting) return;
+        ++s->state.hri_reconnect_attempts;
+        s->state.hri_reconnecting = false;
+        s->state.serial_open = true;
+        s->state.hri_ready = true;
+        s->state.wave_in_open = true;
+        s->state.radio_error.clear();
+        Event e;
+        e.kind = EventKind::hri_restored;
+        e.at_ms = now_ms();
+        s->push_event(std::move(e));
+        s->publish();
     });
 }
 

@@ -53,6 +53,9 @@ public:
     std::future<engine::CommandResult> relay_fm_mute(bool muted) override;
     // 仅截图验收：立即注入一段已结束的 FM 中继（relay_fm_started/ended 事件）。
     void seed_relay_fm_demo();
+    // R131 离线测试：模拟 HRI 掉线进入自动重连（hri_lost）与重连成功（hri_restored）。disconnect_radio 停止重连。
+    void simulate_hri_lost(std::string reason);
+    void simulate_hri_restored();
 
     [[nodiscard]] std::shared_ptr<const engine::Snapshot> snapshot() const override;
     [[nodiscard]] std::vector<engine::Event> drain_events(std::size_t max) override;
