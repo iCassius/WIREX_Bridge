@@ -83,6 +83,8 @@ WirexBridge.exe
   - `ap_mode=false`：只接受 `'2'` 与 DIRECT 哈希（与中继功能加入前相同）。
   - `ap_mode=true`：接受 DIRECT 或 AP 两个哈希之一，通过后统一把 offset 5 设为 `'1'` 使用。
 - `RadioStartConfig::ap_mode` 由 GUI 按 `relay.enabled` 设置（`view_model.cpp`），引擎据此选模板，并把 `hri_session::Config::ap_mode` 传给会话：`hri_session` 默认只接受 `y_body_[5] == '2'`，`ap_mode` 时另外接受 `'1'`。dev 日志记录本次使用的模板（`hri_y_template_direct` / `hri_y_template_ap`）。启动时随 `start()` 打开电台的路径（`StartConfig`）不带 `ap_mode`，只用 DIRECT；GUI 实际通过 `connect_radio` 连接电台。
+- **动态 Y 正文（R132 P0）**：HRI 模式下电台每收到一次 Y 就按正文重设射频参数，PC 是功率/频率的权威来源。`src/hri_y_body.*` 以已批准模板为底板生成正文，白名单只有 `0x05`（DIRECT `'2'` / AP `'1'`）、`0x0C`（X→Y PTT 镜像，任意字节，更新时保留当前值）、`0x2F..0x32`（LCH 发射功率，`%04d`，单位 0.1 W，允许 50–500 且为 10 的倍数）；其余 94 字节与底板逐字节相同。默认 250（25 W）生成的正文与 DIRECT 模板逐字节一致。`Session::set_y_body` 经 `hri_y::validate` 后在下一次周期 Y 生效。
+- 功率命令 `Engine::set_hri_tx_power(deciwatts)`；`RadioStartConfig::initial_tx_power_deciwatts` 使首条 Y 即为目标功率；HRI 正在向电台播放下行时请求记为 pending（`deferred_hri_downlink`），下行结束后应用；自动重连沿用最近设定值。Snapshot：`hri_y_tx_power_deciwatts`、`hri_y_tx_power_pending`；dev 日志 `y_tx_power=<dw>`。GUI 在 HRI 已连接时功率走“引擎 Y + CAT `PC` + 约 1.2 s 后 `PC;` 读回”，功率与模式/频率分开提交，结果写 `devices.desired_power_watts`。字段依据见父目录 `research/planning/R132_Y动态字段与官方生成时机.md`。
 - HRI 串口固定 115200、8N1、无流控（`win_io::configure_serial`）。打开后先预排空（最多 250 ms / 4096 B，需 20 ms 安静），等待 V 响应最多 2500 ms，然后每 1000 ms 发 Y，等待 Y/0 最多 3000 ms（`hri_session.hpp`）。
 
 ## 7. 设备自动识别（`src/app/devices.cpp`）
