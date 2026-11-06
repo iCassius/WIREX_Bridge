@@ -523,6 +523,9 @@ void write_typed(Value& doc, const AppConfig& config, const Value* gain_source)
     if (relay != nullptr && relay->is_object()) {
         relay->set("enabled", Value::boolean(config.relay.enabled));
         relay->set("fm_enabled", Value::boolean(config.relay.fm_enabled));
+        if (relay->find("y_template") != nullptr || config.relay.y_template_ap) {
+            relay->set("y_template", Value::string(config.relay.y_template_ap ? "ap" : "direct"));
+        }
     }
 }
 
@@ -725,6 +728,13 @@ ConfigResult<AppConfig> validate(const Value& input)
         };
         if (auto error = relay_flag("enabled", config.relay.enabled)) return *error;
         if (auto error = relay_flag("fm_enabled", config.relay.fm_enabled)) return *error;
+        if (const Value* y_template = relay->find("y_template")) {
+            if (!y_template->is_string() || (y_template->text != "direct" && y_template->text != "ap")) {
+                return make_error(ConfigErrorCode::invalid_value, "relay.y_template",
+                                  "relay.y_template 只接受 direct 或 ap。");
+            }
+            config.relay.y_template_ap = y_template->text == "ap";
+        }
     }
 
     if (has_credential_path_key(merged)) {

@@ -1008,8 +1008,12 @@ std::optional<engine::RadioStartConfig> ViewModel::make_radio_start_config(std::
     result.hri_port = std::move(parsed->hri_port);
     result.hri_body_file = std::move(parsed->hri_body_file);
     result.audio = std::move(parsed->audio);
-    result.ap_mode = config_.relay_enabled; // 中继开启：AP PC 模式 Y 模板
-    if (auto log = dev_log()) log->line("gui", result.ap_mode ? "radio connect y_template=ap" : "radio connect y_template=direct");
+    // R131：中继开启默认仍用 DIRECT 模板（实机确认 AP 模板对中继无区别）；relay.y_template="ap" 时才用 AP 变体。
+    result.ap_mode = config_.relay_enabled && config_.relay_y_template_ap;
+    if (auto log = dev_log()) {
+        log->line("gui", std::string(result.ap_mode ? "radio connect y_template=ap" : "radio connect y_template=direct") +
+                             " relay=" + (config_.relay_enabled ? "on" : "off"));
+    }
     return result;
 }
 

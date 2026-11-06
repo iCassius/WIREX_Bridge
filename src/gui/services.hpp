@@ -159,6 +159,7 @@ struct GuiConfig {
     std::vector<std::uint32_t> blocked_source_ids{};  // routing.blocked_source_ids（只读透传）
     bool relay_enabled{false};                  // relay.enabled（R130）
     bool relay_fm_enabled{false};               // relay.fm_enabled（R130，官方未支持）
+    bool relay_y_template_ap{false};            // relay.y_template == "ap"（R131；默认 DIRECT）
 };
 
 // BM 设备 ID（Hotspot ID）：两位设备编号时为 DMR ID×100+编号，否则沿用已保存的 gateway_id。

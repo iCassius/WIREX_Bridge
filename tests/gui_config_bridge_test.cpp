@@ -602,6 +602,14 @@ void test_relay_round_trip() {
     next = cb::apply_gui(*next, gui, error);
     check(next.has_value() && !next->relay.enabled && next->relay.fm_enabled,
           "relay master switch is independent of the stored FM toggle");
+    // R131：relay.y_template 默认 DIRECT，"ap" 往返。
+    check(!gui.relay_y_template_ap && next.has_value() && !next->relay.y_template_ap,
+          "relay y_template defaults to direct");
+    gui.relay_y_template_ap = true;
+    next = cb::apply_gui(*next, gui, error);
+    check(next.has_value() && next->relay.y_template_ap, "apply_gui writes relay.y_template=ap");
+    check(next.has_value() && cb::to_gui(*next).relay_y_template_ap,
+          "to_gui reads relay.y_template=ap");
 }
 
 int main() {

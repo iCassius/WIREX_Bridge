@@ -1,5 +1,5 @@
 // R130 FM 中继：ViewModel 开关持久化、静噪轮询开关、静噪事件 → 引擎 relay_fm_start/stop、
-// relay_fm_ended → 来话历史 FM 记录与 relay-log 行、ap_mode 透传。全部离线（FakeEngine + 内存 services）。
+// relay_fm_ended → 来话历史 FM 记录与 relay-log 行、ap_mode（relay.y_template）透传。全部离线（FakeEngine + 内存 services）。
 
 #include "../src/gui/fake_engine.hpp"
 #include "../src/gui/view_model.hpp"
@@ -226,7 +226,8 @@ void test_relay_fm_flow()
         return vm.snapshot().phase == wirex::engine::Phase::running && vm.snapshot().serial_open &&
             vm.snapshot().bm_link == wirex::engine::BmLink::connected && vm.cat().connected;
     }), "fake runtime, radio, BM and CAT connect");
-    check(engine.connect_calls.load() >= 1 && engine.last_ap_mode.load(), "relay on passes ap_mode=true to connect_radio");
+    check(engine.connect_calls.load() >= 1 && !engine.last_ap_mode.load(),
+          "relay on keeps the DIRECT Y template by default (ap_mode=false)");
     check(pump_until(vm, [&]() { return last_polling(probe, true); }), "CAT connected + relay + FM enables squelch polling");
 
     // 等 fake 随机来话结束、媒体空闲后开门。
@@ -319,6 +320,45 @@ void test_relay_fm_flow()
           "turning relay off disables polling while keeping the stored FM choice");
 }
 
+// relay.y_template="ap" 且中继开启时才传 ap_mode=true；中继关闭时始终 DIRECT。
+void test_y_template_selection()
+{
+    struct Case {
+        const char* name;
+        bool relay;
+        bool ap;
+        bool expected;
+    };
+    const Case cases[] = {
+        {"relay off, direct", false, false, false},
+        {"relay off, ap configured", false, true, false},
+        {"relay on, direct default", true, false, false},
+        {"relay on, ap configured", true, true, true},
+    };
+    for (const auto& c : cases) {
+        wirex::gui::FakeEngine fake;
+        RecordingEngine engine(fake);
+        auto probe = std::make_shared<Probe>();
+        auto sv = probe_services(fake, probe);
+        auto load = sv.config.load;
+        sv.config.load = [load, c](std::string& error) -> std::optional<services::GuiConfig> {
+            auto config = load(error);
+            if (config) {
+                config->relay_enabled = c.relay;
+                config->relay_y_template_ap = c.ap;
+            }
+            return config;
+        };
+        wirex::gui::ViewModel vm(engine, std::move(sv), true);
+        vm.start();
+        check(pump_until(vm, [&]() { return engine.connect_calls.load() >= 1; }),
+              std::string(c.name) + ": connect_radio is called");
+        check(engine.last_ap_mode.load() == c.expected, std::string(c.name) + ": ap_mode matches relay.y_template");
+        vm.stop();
+        (void)pump_until(vm, [&]() { return !vm.pending(wirex::gui::Str::op_stop); });
+    }
+}
+
 void test_opened_while_busy_does_not_flash_failure()
 {
     wirex::gui::FakeEngine fake;
@@ -341,6 +381,7 @@ void test_opened_while_busy_does_not_flash_failure()
 int main()
 {
     test_relay_fm_flow();
+    test_y_template_selection();
     test_opened_while_busy_does_not_flash_failure();
     std::cout << "PASS: " << assertions << " relay FM ViewModel assertions\n";
     return EXIT_SUCCESS;

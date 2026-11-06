@@ -102,9 +102,15 @@ struct UiConfig {
 // the section must be an object and each known member a JSON boolean; other
 // members are preserved verbatim. save() writes the section only when the file
 // already has it or a flag is true, so default files stay byte-identical to PS.
+// relay.y_template (R131, optional): "direct" (default) or "ap"; any other value
+// or type is rejected. save() writes it only when the member already exists or
+// the value is "ap".
 struct RelayConfig {
-    bool enabled{false};     // relay.enabled：中继总开关（AP PC 模式 Y 模板）
+    bool enabled{false};     // relay.enabled：中继总开关
     bool fm_enabled{false};  // relay.fm_enabled：FM 中继（CAT 静噪触发；官方未支持）
+    // relay.y_template：中继开启时连接电台使用的 HRI Y 模板。默认 DIRECT（实机确认与 AP 对中继无区别）；
+    // "ap" 时使用 AP PC 模式变体（offset 0x05 为 '1'）。中继关闭时始终 DIRECT。
+    bool y_template_ap{false};
 };
 
 struct AppConfig {
