@@ -413,8 +413,8 @@ namespace wirex::gui {
     X(advanced_gain,        "高级：数字增益（默认 1×）",           "Advanced: digital gain (default 1×)") /* new */ \
     X(advanced_gain_tip,    "软件内部的额外数字增益，只在本次运行生效；正常情况下保持 1×，用上面的 Windows 音量调节。", \
                             "Extra in-app digital gain for this session only. Normally keep 1× and use the Windows volume above.") /* new */ \
-    X(meter_dbfs_tip,       "峰值电平（dBFS，最近 200 ms）。虚线为 -18 dBFS 参考：对方反馈听感合适的电平约在此附近。", \
-                            "Peak level (dBFS, last 200 ms). The dashed line marks -18 dBFS, near the level reported to sound right.") /* new */ \
+    X(meter_dbfs_tip,       "峰值电平（dBFS，最近 200 ms 峰值）。虚线为 -18 dBFS 参考（常用的平均电平参考）；语音峰值通常比平均高 9–12 dB，实测对方听感合适时峰值约 -9 dBFS。", \
+                            "Peak level (dBFS, 200 ms peak). The dashed line marks the common -18 dBFS average reference; speech peaks run 9-12 dB above average, and the level reported to sound right peaked near -9 dBFS.") /* new */ \
     X(cat_deferred_tx,      "正在发射，设置未发送；草稿已保留，发射结束后自动应用。", \
                             "Transmitting; the setting was not sent. Your draft is kept and will be applied after TX ends.") /* new */ \
     X(cat_deferred_hri,     "HRI 正在向电台播放来话，改频率/模式会打断 RF；草稿已保留，来话结束后自动应用。", \
