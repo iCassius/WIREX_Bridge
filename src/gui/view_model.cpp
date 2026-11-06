@@ -781,6 +781,25 @@ bool ViewModel::pending(Str op) const {
 
 bool ViewModel::engine_running() const noexcept { return snapshot_->phase == Phase::running; }
 
+bool ViewModel::engine_stopped() const noexcept {
+    return snapshot_->phase == Phase::stopped || snapshot_->phase == Phase::failed;
+}
+
+bool ViewModel::radio_link_active() const noexcept {
+    if (pending(Str::op_start) || snapshot_->phase == Phase::starting) return true;
+    if (engine_stopped()) return false;
+    return snapshot_->serial_open || snapshot_->hri_ready || snapshot_->hri_reconnecting ||
+           cat_.connected || cat_.busy;
+}
+
+std::string ViewModel::engine_failure_banner() const {
+    if (!engine_stopped() || snapshot_->failure_reason.empty()) return {};
+    const auto& reason = snapshot_->failure_reason;
+    std::string banner = fmt(tr(Str::engine_stopped_banner_fmt), reason.c_str());
+    if (reason.find("waveout") != std::string::npos) banner = std::string(tr(Str::err_core_waveout)) + " " + banner;
+    return banner;
+}
+
 bool ViewModel::can_mutate_channels() const noexcept {
     return !pending(Str::op_rx_policy) && !pending(Str::op_tx_policy) &&
            (snapshot_->phase == Phase::running || snapshot_->phase == Phase::stopped);

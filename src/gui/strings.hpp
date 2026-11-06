@@ -81,6 +81,12 @@ namespace wirex::gui {
     X(radio_error_fmt,      "电台连接失败：%s",                    "Radio connection failed: %s")    /* new */ \
     X(cat_error_fmt,        "CAT 连接失败：%s",                    "CAT connection failed: %s")      /* new */ \
     X(core_error_fmt,       "核心错误：%s",                        "Core error: %s")                 /* new */ \
+    X(engine_stopped_banner_fmt,"核心已停止，所有连接已断开；点“连接电台”重新启动。（%s）", \
+                            "Core stopped and all links are down. Click Connect to restart. (%s)") /* new */ \
+    X(err_core_waveout,     "电台音频输出（WaveOut）故障导致核心停止；请检查 USB 声卡后重新连接。", \
+                            "A radio audio output (WaveOut) fault stopped the core. Check the USB audio device and reconnect.") /* new */ \
+    X(err_radio_waveout_unavailable,"电台音频输出暂不可用，正在自动重试；本通来话已拒绝。", \
+                            "Radio audio output is temporarily unavailable and is being retried; this call was rejected.") /* new */ \
     X(bm_config_changed_while_connecting,"BM 连接已启用或正在进行；请先断开 BM，再保存账户配置。", \
                             "BM is connected or a connection attempt is in progress. Disconnect BM before saving account settings.") /* new */ \
     X(bm_config_saved_during_connection,"连接期间 BM 配置已更改；本次不会连接旧配置，请再次连接 BM。", \

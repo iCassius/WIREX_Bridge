@@ -968,6 +968,33 @@ std::future<CommandResult> FakeEngine::relay_fm_mute(bool muted) {
     });
 }
 
+void FakeEngine::simulate_runtime_failure(std::string reason, bool keep_stale_links) {
+    auto* s = impl_.get();
+    s->post_after(0ms, [s, reason = std::move(reason), keep_stale_links]() {
+        if (s->state.phase != Phase::running) return;
+        s->drop_bm();
+        s->state.phase = Phase::failed;
+        s->state.failure_reason = reason;
+        s->state.bm_link = BmLink::disabled;
+        s->state.bm_requested_enabled = false;
+        s->state.active_rx_call.reset();
+        s->state.tx_active = false;
+        if (!keep_stale_links) {
+            s->state.serial_open = false;
+            s->state.hri_ready = false;
+            s->state.hri_port.clear();
+            s->state.wave_in_open = false;
+            s->state.wave_out_open = false;
+        }
+        Event e;
+        e.kind = EventKind::fatal;
+        e.at_ms = now_ms();
+        e.text = reason;
+        s->push_event(std::move(e));
+        s->publish();
+    });
+}
+
 void FakeEngine::simulate_hri_lost(std::string reason) {
     auto* s = impl_.get();
     s->post_after(0ms, [s, reason = std::move(reason)]() {

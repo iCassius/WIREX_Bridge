@@ -249,11 +249,52 @@ void test_hri_auto_reconnect_wiring()
     check(vm.snapshot().bm_link == wirex::engine::BmLink::connected, "BM stays connected through the reconnect");
 }
 
+// R131 实机：引擎异常停止后界面仍显示 HRI 已连接，点“连接/断开”只发 stop()（idempotent）没有反应。
+void test_engine_failure_display_and_reconnect_restarts_engine()
+{
+    for (const bool stale_links : {true, false}) {
+        wirex::gui::FakeEngine fake;
+        RecordingEngine engine(fake);
+        auto services = wirex::gui::make_fake_services(fake);
+        install_config(services, usable_config());
+        wirex::gui::ViewModel vm(engine, std::move(services), false);
+        check(pump_until(vm, [&]() {
+            return vm.snapshot().phase == wirex::engine::Phase::running && vm.snapshot().hri_ready &&
+                vm.snapshot().bm_link == wirex::engine::BmLink::connected && !vm.pending(wirex::gui::Str::op_start);
+        }), "fake radio and BM connect before the engine failure");
+        check(vm.radio_link_active() && !vm.engine_stopped() && vm.engine_failure_banner().empty(),
+              "running engine reports an active radio link and no failure banner");
+
+        fake.simulate_runtime_failure("radio_waveout_reopen_failed", stale_links);
+        check(pump_until(vm, [&]() { return vm.snapshot().phase == wirex::engine::Phase::failed; }),
+              "the view model observes the failed engine phase");
+        check(vm.engine_stopped() && !vm.engine_running(), "failed phase counts as stopped");
+        check(!vm.radio_link_active(),
+              "a stopped engine never reports an active radio link, even with stale serial/HRI flags");
+        const auto banner = vm.engine_failure_banner();
+        check(banner.find("radio_waveout_reopen_failed") != std::string::npos &&
+                  banner.find(wirex::gui::tr(wirex::gui::Str::err_core_waveout)) != std::string::npos,
+              "the failure banner carries the friendly WaveOut text and the machine detail");
+
+        const int disconnects_before = engine.disconnect_calls;
+        vm.start(); // “连接电台”：引擎已停止时重新 start() 引擎再连接电台与 BM
+        check(pump_until(vm, [&]() {
+            return vm.snapshot().phase == wirex::engine::Phase::running && vm.snapshot().hri_ready &&
+                vm.snapshot().serial_open && vm.snapshot().bm_link == wirex::engine::BmLink::connected;
+        }), "connect after an engine failure restarts the engine, reattaches the radio and reconnects BM");
+        check(engine.disconnect_calls == disconnects_before,
+              "reconnecting a stopped engine does not send disconnect_radio");
+        check(vm.engine_failure_banner().empty() && vm.radio_link_active(),
+              "the failure banner clears once the restarted engine is running");
+    }
+}
+
 int main()
 {
     test_production_mode_autostarts_independent_services_and_radio_stop_keeps_bm();
     test_empty_bm_profile_does_not_block_radio_and_startup_stop_cancels_only_radio();
     test_hri_auto_reconnect_wiring();
+    test_engine_failure_display_and_reconnect_restarts_engine();
     std::cout << "PASS: " << assertions << " VM radio/BM lifecycle assertions\n";
     return EXIT_SUCCESS;
 }

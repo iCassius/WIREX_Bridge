@@ -194,6 +194,13 @@ public:
         return startup_group_activation_.active();
     }
     [[nodiscard]] bool engine_running() const noexcept;
+    // 引擎线程已结束（stopped/failed）：串口、HRI、音频、BM 都不可能仍在工作。
+    [[nodiscard]] bool engine_stopped() const noexcept;
+    // 电台链路是否处于“已连接/连接中”（决定连接按钮是断开还是连接）。引擎已停止时恒为 false，
+    // 即使最后一份快照仍残留 serial_open/hri_ready。
+    [[nodiscard]] bool radio_link_active() const noexcept;
+    // 引擎停止且带失败原因时的标题栏文案（友好文案 + 机器码 detail）；否则为空。
+    [[nodiscard]] std::string engine_failure_banner() const;
     [[nodiscard]] bool can_mutate_channels() const noexcept;
     [[nodiscard]] FontStatus font_status() const noexcept { return font_status_; }
     // R130 中继

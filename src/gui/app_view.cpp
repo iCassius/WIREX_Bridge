@@ -354,9 +354,14 @@ std::string friendly_error_detail(Str source, const std::string& detail) {
         {Str::brandmeister, "master_rejected", Str::err_bm_rejected},
         {Str::brandmeister, "session_failed", Str::err_bm_session},
         {Str::dynamic_group, "quick_call_partial_send", Str::err_quick_call_partial},
+        {Str::core, "waveout", Str::err_core_waveout},
     };
     for (const auto& mapping : mappings) {
-        if (source == mapping.source && detail.find(mapping.token) != std::string::npos) return tr(mapping.message);
+        if (source == mapping.source && detail.find(mapping.token) != std::string::npos) {
+            // 核心失败保留机器码，便于对照 dev 日志。
+            if (source == Str::core) return std::string(tr(mapping.message)) + "（" + detail + "）";
+            return tr(mapping.message);
+        }
     }
     return detail;
 }
@@ -869,6 +874,10 @@ void AppView::draw_header() {
         }
     }
     if (!summary && !connection_events_.empty()) summary = &connection_events_.back();
+    // 核心异常停止：标题栏优先显示失败原因（友好文案 + 机器码），直到重新启动。
+    const std::string engine_banner = vm_.engine_failure_banner();
+    const ConnectionLogEntry banner_entry{std::string{}, Str::core, engine_banner, true, false};
+    if (!engine_banner.empty()) summary = &banner_entry;
     const bool summary_error = summary && summary->failed && !summary->resolved;
     std::string summary_text;
     if (summary) {
@@ -1812,14 +1821,16 @@ void AppView::draw_radio_panel(float width, float height) {
     std::vector<std::string> cat_port_ids{"auto"};
     cat_port_labels.insert(cat_port_labels.end(), serial_port_labels.begin(), serial_port_labels.end());
     cat_port_ids.insert(cat_port_ids.end(), serial_port_ids.begin(), serial_port_ids.end());
-    const bool radio_idle = !s.serial_open && !s.hri_ready && !cat.connected && !cat.busy;
-    const bool radio_active = s.serial_open || s.hri_ready || cat.connected || cat.busy;
+    // 引擎已停止时最后一份快照可能残留连接标志；按停止处理（按钮显示“连接”）。
+    const bool engine_down = vm_.engine_stopped();
+    const bool radio_active = !engine_down && (s.serial_open || s.hri_ready || cat.connected || cat.busy);
+    const bool radio_idle = !radio_active && !cat.busy;
     const bool radio_start_pending = vm_.pending(Str::op_start);
     const bool radio_stop_pending = vm_.pending(Str::op_stop);
     const bool radio_cancelable = radio_start_pending || (s.phase == Phase::starting && !radio_active);
     const bool port_settings_enabled = radio_idle && s.phase != Phase::starting && s.phase != Phase::stopping &&
                                        !radio_start_pending && !radio_stop_pending;
-    const bool radio_connecting = cat.busy || (s.serial_open && !s.hri_ready);
+    const bool radio_connecting = !engine_down && (cat.busy || (s.serial_open && !s.hri_ready));
     const char* radio_label = radio_stop_pending || s.phase == Phase::stopping ? tr(Str::disconnecting_serial)
                               : radio_cancelable ? tr(Str::disconnect_serial)
                               : radio_connecting ? tr(Str::connecting_radio)
@@ -2447,21 +2458,33 @@ void AppView::draw_daily_panel(float width, float height) {
             fit(dot_w + text_w(label), inline_gap * 1.5F);
             status_dot(row, dot_col, text_col, label);
         };
-        auto dot = [&](bool on, const char* label) { dot_colored(dot_on(on), dot_text(on), label); };
+        const bool core_failed = s.phase == Phase::failed;
+        auto dot = [&](bool on, const char* label) {
+            // 核心异常停止：依赖引擎的灯显示红色（熄灭 + 错误色），提示需要重新连接。
+            if (!on && core_failed) dot_colored(rgb(color::error), dot_text(false), label);
+            else dot_colored(dot_on(on), dot_text(on), label);
+        };
 
         fit(text_w(tr(Str::status)), 0.0F);
         row_text(row, tr(Str::status), rgb(color::muted), nullptr, layout::kFontBody);
         const auto device_status = vm_.device_selection();
-        dot(s.serial_open, tr(Str::status_serial));
-        dot(s.hri_ready, tr(Str::status_hri));
+        // 引擎停止（含异常）：所有依赖引擎的灯熄灭，不显示最后一份运行快照里的残留状态。
+        const bool live = !vm_.engine_stopped();
+        dot(live && s.serial_open, tr(Str::status_serial));
+        dot(live && s.hri_ready, tr(Str::status_hri));
         ImGui::SetItemTooltip("%s", device_selection_text(device_status.hri, true).c_str());
         dot(cat.connected, tr(Str::status_cat));
         ImGui::SetItemTooltip("%s", cat.error.empty() ? device_selection_text(device_status.cat, true).c_str()
                                                        : cat.error.c_str());
-        dot(s.bm_link == BmLink::connected, tr(Str::status_bm));
-        dot(s.wave_in_open, tr(Str::status_wave_in));
+        dot(live && s.bm_link == BmLink::connected, tr(Str::status_bm));
+        dot(live && s.wave_in_open, tr(Str::status_wave_in));
         ImGui::SetItemTooltip("%s", device_selection_text(device_status.wave_in, false).c_str());
-        dot(s.wave_out_open, tr(Str::status_wave_out));
+        if (live && !s.wave_out_open && s.hri_ready && s.local_audio_error == "radio_waveout_unavailable") {
+            dot_colored(rgb(color::warn), rgb(color::warn), tr(Str::status_wave_out));
+            ImGui::SetItemTooltip("%s", tr(Str::err_radio_waveout_unavailable));
+        } else {
+            dot(live && s.wave_out_open, tr(Str::status_wave_out));
+        }
         ImGui::SetItemTooltip("%s", device_selection_text(device_status.wave_out, false).c_str());
 
         const auto& local_audio = s.local_audio;
@@ -2722,8 +2745,8 @@ void AppView::toggle_language() {
 
 void AppView::toggle_radio() {
     const auto& s = vm_.snapshot();
-    const bool active = s.serial_open || s.hri_ready || vm_.cat().connected || vm_.cat().busy ||
-                        vm_.pending(Str::op_start) || s.phase == Phase::starting;
+    // 引擎已停止（含异常停止）时 radio_link_active() 为 false：按钮执行“连接”，ViewModel::start 重新启动引擎。
+    const bool active = vm_.radio_link_active();
     if (!active) {
         if (!vm_.pending(Str::op_start) && !vm_.pending(Str::op_stop)) vm_.start();
     } else if (s.phase != Phase::stopping && !vm_.pending(Str::op_stop)) {

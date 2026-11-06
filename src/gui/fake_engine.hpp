@@ -61,6 +61,9 @@ public:
     // R131 离线测试：模拟 HRI 掉线进入自动重连（hri_lost）与重连成功（hri_restored）。disconnect_radio 停止重连。
     void simulate_hri_lost(std::string reason);
     void simulate_hri_restored();
+    // R131 离线测试：模拟引擎线程异常结束（phase=failed）。keep_stale_links=true 时保留串口/HRI/音频标志，
+    // 复现旧版最后快照沿用运行状态的问题，用于验证界面不再显示“已连接”且“连接”能重新启动引擎。
+    void simulate_runtime_failure(std::string reason, bool keep_stale_links);
 
     [[nodiscard]] std::shared_ptr<const engine::Snapshot> snapshot() const override;
     [[nodiscard]] std::vector<engine::Event> drain_events(std::size_t max) override;
