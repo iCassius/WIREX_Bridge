@@ -50,8 +50,13 @@ public:
     // R130 FM 中继（简化规则：需 running + BM connected + 允许发射 + 媒体空闲）。
     std::future<engine::CommandResult> relay_fm_start() override;
     std::future<engine::CommandResult> relay_fm_stop() override;
+    // R131 按组静音（静音组的来话照常发布，rx_peak 记 0）/ TG4000 断开动态组。
+    std::future<engine::CommandResult> set_muted_groups(std::vector<talkgroup_routing::GroupRoute> groups) override;
+    std::future<engine::CommandResult> disconnect_dynamic_groups(dmr_call::Slot slot) override;
     // 仅截图验收：立即注入一段已结束的 FM 中继（relay_fm_started/ended 事件）。
     void seed_relay_fm_demo();
+    // 仅截图验收（--screenshot-bm-cooldown）：模拟“刚断开 BM”（bm_link disabled），触发界面冷却倒计时。
+    void seed_bm_disconnected_demo();
 
     [[nodiscard]] std::shared_ptr<const engine::Snapshot> snapshot() const override;
     [[nodiscard]] std::vector<engine::Event> drain_events(std::size_t max) override;

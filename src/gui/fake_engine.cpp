@@ -70,6 +70,7 @@ struct FakeEngine::Impl {
     // ---- 只在模拟线程访问 ----
     engine::Snapshot state{};
     talkgroup_routing::RxPolicy rx_policy{};
+    std::vector<talkgroup_routing::GroupRoute> muted_groups{};
     bool transmit_enabled{};
     std::uint32_t local_id{};
     bool bm_profile_valid{};
@@ -286,11 +287,19 @@ struct FakeEngine::Impl {
                 return;
             }
             std::uniform_real_distribution<float> level(0.15F, 0.85F);
-            state.levels.rx_peak = 0.6F * state.levels.rx_peak + 0.4F * level(rng);
+            state.levels.rx_peak = active_call_muted() ? 0.0F : 0.6F * state.levels.rx_peak + 0.4F * level(rng);
             ++state.counters.rx_datagrams;
             tick_network();
             publish();
             level_tick(epoch, this_call, remaining - 1);
+        });
+    }
+
+    bool active_call_muted() const {
+        const auto& c = state.active_rx_call;
+        if (!c || c->kind != dmr_call::CallKind::group) return false;
+        return std::any_of(muted_groups.begin(), muted_groups.end(), [&](const auto& g) {
+            return g.destination_id == c->destination_id && g.slot == c->slot;
         });
     }
 
@@ -815,6 +824,59 @@ std::future<CommandResult> FakeEngine::quick_call_join(talkgroup_routing::GroupR
     });
 }
 
+std::future<CommandResult> FakeEngine::set_muted_groups(std::vector<talkgroup_routing::GroupRoute> groups) {
+    auto* s = impl_.get();
+    return s->command(40ms, [s, groups = std::move(groups)]() mutable {
+        for (const auto& g : groups) {
+            if (g.destination_id == 0U || g.destination_id > 16777215U) {
+                return result(CommandStatus::invalid, s->state.muted_groups_revision, "invalid_muted_group");
+            }
+        }
+        const auto less = [](const auto& a, const auto& b) {
+            return a.destination_id != b.destination_id ? a.destination_id < b.destination_id : a.slot < b.slot;
+        };
+        // 只用字段比较（fake_engine 在部分测试中不链接 talkgroup_routing.cpp 的 operator==）。
+        const auto same = [](const auto& a, const auto& b) { return a.destination_id == b.destination_id && a.slot == b.slot; };
+        std::sort(groups.begin(), groups.end(), less);
+        groups.erase(std::unique(groups.begin(), groups.end(), same), groups.end());
+        if (std::equal(groups.begin(), groups.end(), s->muted_groups.begin(), s->muted_groups.end(), same)) {
+            return result(CommandStatus::idempotent, s->state.muted_groups_revision);
+        }
+        s->muted_groups = std::move(groups);
+        ++s->state.muted_groups_revision;
+        if (s->active_call_muted()) s->state.levels.rx_peak = 0.0F;
+        return result(CommandStatus::accepted, s->state.muted_groups_revision);
+    });
+}
+
+std::future<CommandResult> FakeEngine::disconnect_dynamic_groups(dmr_call::Slot slot) {
+    auto* s = impl_.get();
+    return s->command(500ms, [s, slot]() {
+        const auto& st = s->state;
+        if (st.phase != Phase::running || st.bm_link != BmLink::connected) {
+            return result(CommandStatus::not_ready, 0U, "quick_call_not_ready");
+        }
+        if (st.tx_active) return result(CommandStatus::busy, 0U, "media_busy");
+        Event e;
+        e.kind = EventKind::quick_call_result;
+        e.at_ms = now_ms();
+        e.text = "TG 4000 TS" + std::to_string(static_cast<int>(slot)) + " 断开请求已发送";
+        s->push_event(std::move(e));
+        return result(CommandStatus::accepted, 2U, "");
+    });
+}
+
+void FakeEngine::seed_bm_disconnected_demo() {
+    auto* s = impl_.get();
+    s->post_after(0ms, [s]() {
+        s->state.bm_requested_enabled = false;
+        ++s->state.bm_connection_revision;
+        s->drop_bm();
+        s->state.bm_link = BmLink::disabled;
+        s->publish();
+    });
+}
+
 std::future<CommandResult> FakeEngine::set_audio_gains(std::uint32_t radio_playback_gain_milli,
                                                        std::uint32_t mic_transmit_gain_milli) {
     auto* s = impl_.get();
@@ -1227,6 +1289,28 @@ services::Services make_fake_services(FakeEngine& engine) {
     };
     sv.bm_api.remove_static_group = [write](std::uint32_t, std::string, std::uint32_t tg, int slot, services::BmApiDone done) {
         write(false, tg, slot, std::move(done));
+    };
+
+    // R131 Windows 端点音量：内存模拟（播放 45%，录音 70%）。
+    auto volumes = std::make_shared<std::map<std::wstring, float>>();
+    sv.audio_volume.get = [st, volumes](const std::wstring& id, std::string& error) -> std::optional<float> {
+        std::lock_guard<std::mutex> lock(st->mutex);
+        if (id.empty()) {
+            error = "未选择音频端点。";
+            return std::nullopt;
+        }
+        auto it = volumes->find(id);
+        if (it == volumes->end()) it = volumes->emplace(id, id.find(L"fake-in") != std::wstring::npos ? 0.70F : 0.45F).first;
+        return it->second;
+    };
+    sv.audio_volume.set = [st, volumes](const std::wstring& id, float scalar, std::string& error) {
+        std::lock_guard<std::mutex> lock(st->mutex);
+        if (id.empty()) {
+            error = "未选择音频端点。";
+            return false;
+        }
+        (*volumes)[id] = std::clamp(scalar, 0.0F, 1.0F);
+        return true;
     };
 
     // RadioID：模拟查询（kCallers 中未命中的 ID 返回演示呼号）。

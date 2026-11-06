@@ -17,6 +17,7 @@
 #include <string_view>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 namespace wirex::gui {
 namespace {
@@ -621,6 +622,43 @@ bool gain_slider(const char* id, int& value, float width, float scale) {
     return commit;
 }
 
+// 0..100 的 Windows 音量滑块（外观同 gain_slider）。changed：本帧数值有变化；active：正在拖动（外部同步暂停覆盖）。
+struct PercentSliderResult {
+    bool changed{};
+    bool active{};
+};
+PercentSliderResult percent_slider(const char* id, int& value, float width, float scale) {
+    const ImVec2 pos = ImGui::GetCursorScreenPos();
+    const float h = ImGui::GetFrameHeight();
+    const float rail_h = 16.0F * scale;
+    const float y0 = pos.y + (h - rail_h) * 0.5F;
+    auto* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(ImVec2(pos.x, y0), ImVec2(pos.x + width, y0 + rail_h), rgb(color::slider_rail), rail_h * 0.5F);
+    const float grab_padding = 2.0F;
+    const float slider_sz = width - grab_padding * 2.0F;
+    const float grab_sz = std::max(slider_sz / 101.0F, ImGui::GetStyle().GrabMinSize);
+    const float t = static_cast<float>(std::clamp(value, 0, 100)) / 100.0F;
+    const float grab_center = pos.x + grab_padding + grab_sz * 0.5F + t * (slider_sz - grab_sz);
+    dl->AddRectFilled(ImVec2(pos.x, y0), ImVec2(grab_center, y0 + rail_h), rgb(color::slider_fill), rail_h * 0.5F,
+                      ImDrawFlags_RoundCornersLeft);
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, IM_COL32(255, 255, 255, 12));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, IM_COL32(255, 255, 255, 20));
+    ImGui::PushStyleColor(ImGuiCol_SliderGrab, vec(0xFFFFFF));
+    ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, vec(0xDDE7FF));
+    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(0, 0, 0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, h * 0.5F);
+    ImGui::PushStyleVar(ImGuiStyleVar_GrabRounding, h * 0.5F);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0F);
+    ImGui::SetNextItemWidth(width);
+    PercentSliderResult r;
+    r.changed = ImGui::SliderInt(id, &value, 0, 100, "%d", ImGuiSliderFlags_AlwaysClamp);
+    r.active = ImGui::IsItemActive();
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(6);
+    return r;
+}
+
 // 状态行圆点项：圆点 + 文字作为一个整体（一个 item，悬停提示覆盖两者），与 row_text 同样按行高居中。
 void status_dot(const Row& row, ImU32 dot_col, ImU32 text_col, const char* label) {
     const float h = ImGui::GetTextLineHeight();
@@ -954,8 +992,14 @@ void AppView::draw_header() {
             const bool core_ok = s.phase == Phase::running;
             row_text(row, tr(Str::brandmeister), rgb(color::muted), nullptr, layout::kFontCaption);
             ImGui::SameLine(0.0F, px(layout::kLabelGap));
-            row_text(row, bm_short_text(s.bm_link), bm_ok ? rgb(color::green) : bm_bad ? rgb(color::warn) : rgb(color::text),
+            const bool bm_stale = vm_.bm_stale_session_retry_s().has_value();
+            row_text(row, bm_stale ? tr(Str::bm_waiting_release) : bm_short_text(s.bm_link),
+                     bm_ok ? rgb(color::green) : bm_bad || bm_stale ? rgb(color::warn) : rgb(color::text),
                      fonts_.bold, layout::kFontBody);
+            if (const auto retry = vm_.bm_stale_session_retry_s()) {
+                ImGui::SetItemTooltip("%s", *retry == 0U ? tr(Str::bm_stale_retrying)
+                                                         : fmt(tr(Str::bm_stale_retry_fmt), *retry).c_str());
+            }
             ImGui::SameLine(0.0F, px(layout::kGroupGap));
             draw_net_metrics();
             ImGui::SameLine(0.0F, px(layout::kGroupGap));
@@ -1063,7 +1107,11 @@ void AppView::update_connection_log() {
     if (s.bm_error != last_bm_error_) {
         const bool was_error = !last_bm_error_.empty() && last_bm_error_ != "none";
         last_bm_error_ = s.bm_error;
-        if (!s.bm_error.empty() && s.bm_error != "none") {
+        if (s.bm_error == "master_rejected" && vm_.bm_stale_session_retry_s()) {
+            // 服务器尚未释放上次会话：ViewModel 自动重试，不记为失败。
+            const auto retry = *vm_.bm_stale_session_retry_s();
+            add_connection_event(Str::brandmeister, fmt(tr(Str::bm_stale_retry_fmt), retry), false);
+        } else if (!s.bm_error.empty() && s.bm_error != "none") {
             const auto detail = friendly_error_detail(Str::brandmeister, s.bm_error);
             add_connection_event(Str::brandmeister, fmt(tr(Str::bm_error_fmt), detail.c_str()), true);
         } else if (was_error) {
@@ -1148,7 +1196,7 @@ void AppView::update_connection_log() {
                 add_connection_event(Str::brandmeister, tr(Str::bm_connecting), false);
             } else if (s.bm_link == BmLink::backoff) {
                 add_connection_event(Str::brandmeister, tr(Str::bm_backoff), false);
-            } else if (s.bm_link == BmLink::failed) {
+            } else if (s.bm_link == BmLink::failed && !vm_.bm_stale_session_retry_s()) {
                 add_connection_event(Str::brandmeister, tr(Str::bm_failed), true);
             }
         }
@@ -1351,7 +1399,7 @@ void AppView::draw_channels(float height) {
 void AppView::draw_channel_card(const ChannelView& ch, float width, float height) {
     const std::uint32_t bg = ch.is_tx_active ? color::card_tx_active
                              : ch.is_tx_target ? color::card_tx_selected
-                             : ch.is_muted     ? color::card_muted
+                             : ch.is_disabled  ? color::card_muted
                                                : color::panel;
     const std::uint32_t call_bg = ch.is_tx_active   ? color::call_tx_active
                                   : ch.is_tx_target ? color::call_tx_selected
@@ -1370,27 +1418,53 @@ void AppView::draw_channel_card(const ChannelView& ch, float width, float height
     const Row title_row = begin_row(px(layout::kRowHeight));
     ImGui::PushFont(fonts_.bold, 15.0F);
     title_row.place(ImGui::GetTextLineHeight());
-    std::string badge;
-    if (ch.is_tx_active) {
-        badge = tr(Str::tx_active_badge);
-    } else if (ch.is_muted) {
-        badge = tr(Str::muted_badge);
-    } else if (ch.is_tx_target) {
-        badge = std::string("PTT");
+    // 右上角：状态徽标（静态组 / 静音 / 动态·已激活 / 动态·未激活 / 已停用）+ 发射/PTT 徽标。
+    struct Badge {
+        const char* text;
+        ImU32 bg;
+        ImU32 fg;
+    };
+    std::vector<Badge> badges;
+    switch (ch.state) {
+    case ChannelState::static_live: badges.push_back({tr(Str::ch_badge_static), rgb(0x2E5E8A), rgb(0xFFFFFF)}); break;
+    case ChannelState::static_muted: badges.push_back({tr(Str::ch_badge_muted), rgb(0x8A6A2E), rgb(0xFFFFFF)}); break;
+    case ChannelState::dynamic_active: badges.push_back({tr(Str::ch_badge_dyn_active), rgb(0x3E8A5C), rgb(0xFFFFFF)}); break;
+    case ChannelState::dynamic_inactive: badges.push_back({tr(Str::ch_badge_dyn_inactive), rgb(0x3D484D), rgb(0xD0D6D9)}); break;
+    case ChannelState::disabled: badges.push_back({tr(Str::ch_badge_disabled), rgb(0x2A3236), rgb(0x8A969B)}); break;
+    case ChannelState::listen: break;
     }
-    const float badge_w = badge.empty() ? 0.0F : ImGui::CalcTextSize(badge.c_str()).x + px(12.0F);
-    text_ellipsis(ch.title.c_str(), inner.x - badge_w - px(4.0F), ch.is_muted ? rgb(0x8A969B) : rgb(0xFFFFFF));
+    if (ch.is_tx_active) {
+        badges.push_back({tr(Str::tx_active_badge), rgb(0xC0474F), rgb(0xFFFFFF)});
+    } else if (ch.is_tx_target) {
+        badges.push_back({"PTT", rgb(0x3E8A5C), rgb(0xFFFFFF)});
+    }
+    ImGui::PushFont(fonts_.bold, 12.0F);
+    const float badge_pad = px(5.0F);
+    const float badge_gap = px(3.0F);
+    float badges_w = 0.0F;
+    for (const auto& b : badges) badges_w += ImGui::CalcTextSize(b.text).x + badge_pad * 2.0F + badge_gap;
+    ImGui::PopFont();
+    text_ellipsis(ch.title.c_str(), inner.x - badges_w - px(2.0F), ch.is_disabled ? rgb(0x8A969B) : rgb(0xFFFFFF));
     ImGui::SetItemTooltip("%s", ch.tooltip.c_str());
-    if (!badge.empty()) {
-        ImGui::SameLine(inner.x - badge_w + ImGui::GetStyle().WindowPadding.x);
-        title_row.place(ImGui::GetTextLineHeight());
-        const ImVec2 p = ImGui::GetCursorScreenPos();
-        const ImVec2 sz = ImGui::CalcTextSize(badge.c_str());
-        const ImU32 badge_bg = ch.is_tx_active ? rgb(0xC0474F) : ch.is_muted ? rgb(0x3D484D) : rgb(0x3E8A5C);
-        ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(p.x, p.y - px(1.0F)), ImVec2(p.x + sz.x + px(10.0F), p.y + sz.y + px(1.0F)),
-                                                  badge_bg, px(3.0F));
-        ImGui::SetCursorScreenPos(ImVec2(p.x + px(5.0F), p.y));
-        ImGui::TextUnformatted(badge.c_str());
+    if (!badges.empty()) {
+        ImGui::PushFont(fonts_.bold, 12.0F);
+        float x = ImGui::GetCursorStartPos().x + inner.x - badges_w + badge_gap;
+        for (const auto& b : badges) {
+            const ImVec2 sz = ImGui::CalcTextSize(b.text);
+            ImGui::SameLine(x);
+            title_row.place(sz.y);
+            const ImVec2 p = ImGui::GetCursorScreenPos();
+            ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(p.x, p.y - px(2.0F)),
+                                                      ImVec2(p.x + sz.x + badge_pad * 2.0F, p.y + sz.y + px(2.0F)),
+                                                      b.bg, px(3.0F));
+            ImGui::SetCursorScreenPos(ImVec2(p.x + badge_pad, p.y));
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(b.fg));
+            ImGui::TextUnformatted(b.text);
+            ImGui::PopStyleColor();
+            ImGui::SetItemTooltip("%s", ch.tooltip.c_str());
+            x += sz.x + badge_pad * 2.0F + badge_gap;
+        }
+        ImGui::PopFont();
     }
     ImGui::PopFont();
     title_row.end();
@@ -1452,27 +1526,49 @@ void AppView::draw_channel_card(const ChannelView& ch, float width, float height
             vm_.remove_channel(ch.key);
         }
     }
-    if (button(ch.is_muted ? tr(Str::btn_unmute_short) : tr(Str::btn_mute_short), bsize, Tone::normal, can_mutate)) {
-        vm_.toggle_mute(ch.key);
-    }
-    ImGui::SameLine();
-    if (ch.quick_call_allowed) {
-        const bool any_pending = vm_.pending(Str::op_quick_call);
-        const char* label = ch.is_static            ? tr(Str::static_group)
-                            : ch.quick_call_pending ? tr(Str::btn_joining_short)
-                            : ch.quick_call_sent    ? tr(Str::btn_rejoin_short)
-                                                    : tr(Str::btn_join_short);
+    // 主操作按钮（整行宽）：按状态机显示 静音/取消静音（静态组）或 停用/启用（动态组、其它频道）。
+    {
         const bool bm_ready = vm_.snapshot().bm_link == BmLink::connected;
-        if (button(label, bsize, Tone::normal,
-                   !ch.is_static && !any_pending && !vm_.startup_group_activation_active() &&
-                       bm_ready && !ch.is_muted)) {
-            vm_.quick_call(ch.key);
+        const bool qc_busy = vm_.pending(Str::op_quick_call) || vm_.pending(Str::op_disconnect_dynamic) ||
+                             vm_.startup_group_activation_active();
+        const char* label = tr(Str::ch_btn_disable);
+        const char* tip = tr(Str::ch_tip_disable_listen);
+        bool enabled = can_mutate;
+        Tone tone = Tone::normal;
+        switch (ch.state) {
+        case ChannelState::static_live:
+            label = tr(Str::ch_btn_mute);
+            tip = tr(Str::ch_tip_mute);
+            break;
+        case ChannelState::static_muted:
+            label = tr(Str::ch_btn_unmute);
+            tip = tr(Str::ch_tip_unmute);
+            tone = Tone::ok;
+            break;
+        case ChannelState::dynamic_active:
+            label = ch.quick_call_pending ? tr(Str::ch_btn_working) : tr(Str::ch_btn_disable);
+            tip = tr(Str::ch_tip_disable);
+            enabled = can_mutate && !qc_busy;
+            break;
+        case ChannelState::dynamic_inactive:
+            label = ch.quick_call_pending ? tr(Str::ch_btn_working) : tr(Str::ch_btn_enable);
+            tip = bm_ready ? tr(Str::ch_tip_enable) : tr(Str::ch_tip_need_bm);
+            enabled = can_mutate && !qc_busy && bm_ready;
+            tone = Tone::ok;
+            break;
+        case ChannelState::disabled:
+            label = tr(Str::ch_btn_enable);
+            tip = ch.quick_call_allowed ? tr(Str::ch_tip_enable) : tr(Str::ch_tip_enable_listen);
+            enabled = can_mutate && (!ch.quick_call_allowed || !qc_busy);
+            tone = Tone::ok;
+            break;
+        case ChannelState::listen:
+            break;
         }
-        ImGui::SetItemTooltip("%s", ch.is_static ? ch.tooltip.c_str()
-                                    : any_pending ? tr(Str::tip_quick_pending)
-                                                  : tr(Str::tip_quick_call));
-    } else {
-        ImGui::Dummy(bsize);
+        if (button(fmt("%s##primary", label).c_str(), ImVec2(bsize.x * 2.0F + bgap, bsize.y), tone, enabled)) {
+            vm_.channel_primary_action(ch.key);
+        }
+        ImGui::SetItemTooltip("%s", tip);
     }
     ImGui::PopFont();
     ImGui::PopStyleVar(2);
@@ -1529,7 +1625,7 @@ void AppView::draw_history(float width, float height) {
     title.place(bh);
     if (button("›##hnext", ImVec2(px(layout::kPagerWidth), bh), Tone::normal, page + 1U < pages)) vm_.set_history_page(page + 1U);
     const float target_w = px(layout::kActionWidth);
-    ImGui::SameLine(inner_w - target_w + ImGui::GetStyle().WindowPadding.x);
+    ImGui::SameLine(inner_w - target_w + ImGui::GetCursorStartPos().x);
     title.place(bh);
     if (button(tr(Str::set_history_target), ImVec2(target_w, bh), Tone::normal,
                vm_.selected_history().has_value() && vm_.can_mutate_channels())) {
@@ -1601,7 +1697,7 @@ void AppView::draw_current_call(float width, float height) {
             ImGui::PushFont(nullptr, layout::kFontBody);
             const float dur_w = ImGui::CalcTextSize(dur.c_str()).x;
             ImGui::PopFont();
-            ImGui::SameLine(inner_w - dur_w + ImGui::GetStyle().WindowPadding.x);
+            ImGui::SameLine(inner_w - dur_w + ImGui::GetCursorStartPos().x);
             row_text(title, dur.c_str(), rgb(color::green), nullptr, layout::kFontBody);
         }
     }
@@ -1664,7 +1760,7 @@ void AppView::draw_recent_calls(float width, float height) {
             ImGui::Text("%u", rec.call.source_id);
             ImGui::PopStyleColor();
         }
-        ImGui::SameLine(inner_w - clock_w + ImGui::GetStyle().WindowPadding.x);
+        ImGui::SameLine(inner_w - clock_w + ImGui::GetCursorStartPos().x);
         caption(clock.c_str());
     }
     ImGui::EndChild();
@@ -1859,6 +1955,13 @@ void AppView::draw_radio_panel(float width, float height) {
         row.end();
     }
     ImGui::EndDisabled();
+    if (!vm_.cat_deferred_text().empty()) {
+        ImGui::PushFont(nullptr, layout::kFontCaption);
+        ImGui::PushStyleColor(ImGuiCol_Text, vec(color::warn));
+        ImGui::TextWrapped("%s", vm_.cat_deferred_text().c_str());
+        ImGui::PopStyleColor();
+        ImGui::PopFont();
+    }
     flow.next(true);
     draw_audio_devices(grid, caption_h);
     flow.next(true);
@@ -1867,6 +1970,15 @@ void AppView::draw_radio_panel(float width, float height) {
     const char* bm_label = !s.bm_requested_enabled ? tr(Str::connect_bm)
                            : bm_connecting ? tr(Str::connecting_bm) : tr(Str::disconnect_bm);
     if (vm_.pending(Str::op_bm)) bm_label = s.bm_requested_enabled ? tr(Str::disconnecting_bm) : tr(Str::connecting_bm);
+    // R131：断开后 5 s 冷却（服务器释放上次会话需要时间），按钮显示倒计时。
+    const unsigned bm_cooldown = s.bm_requested_enabled ? 0U : vm_.bm_cooldown_remaining_s();
+    const auto bm_stale_retry = vm_.bm_stale_session_retry_s();
+    std::string bm_label_text = bm_label;
+    if (!s.bm_requested_enabled && !vm_.pending(Str::op_bm)) {
+        if (bm_stale_retry) bm_label_text = fmt("%s##bm", tr(Str::bm_waiting_release));
+        else if (bm_cooldown != 0U) bm_label_text = fmt(tr(Str::bm_cooldown_fmt), bm_cooldown);
+    }
+    if (bm_cooldown != 0U || bm_stale_retry) continuous_ = true;
     const bool bm_runtime_available = s.phase == Phase::running;
     section_title(tr(Str::bm_account), fonts_.bold, layout::kFontSubtitle);
     {
@@ -1936,17 +2048,26 @@ void AppView::draw_radio_panel(float width, float height) {
         cell_w = row.cell(4, nullptr);
         if (button(tr(Str::save_settings), ImVec2(cell_w, frame_h), Tone::normal)) save_bm_config();
         cell_w = row.cell(5, nullptr);
-        if (button(bm_label, ImVec2(cell_w, frame_h), s.bm_requested_enabled ? Tone::normal : Tone::ok,
-                   bm_runtime_available && !vm_.pending(Str::op_bm) &&
+        const bool bm_cooling = !s.bm_requested_enabled && (bm_cooldown != 0U || bm_stale_retry.has_value());
+        if (button(fmt("%s##bm-toggle", bm_label_text.c_str()).c_str(), ImVec2(cell_w, frame_h),
+                   s.bm_requested_enabled ? Tone::normal : Tone::ok,
+                   bm_runtime_available && !vm_.pending(Str::op_bm) && !bm_cooling &&
                        (s.bm_requested_enabled || (!bm_config_dirty && bm_config_complete)))) toggle_bm();
-        if (!s.bm_requested_enabled && (bm_config_dirty || !bm_config_complete)) {
+        if (bm_cooling) {
+            ImGui::SetItemTooltip("%s", tr(Str::bm_cooldown_tip));
+        } else if (!s.bm_requested_enabled && (bm_config_dirty || !bm_config_complete)) {
             ImGui::SetItemTooltip("%s", tr(Str::bm_save_before_connect));
         }
         row.end();
     }
     ImGui::PushFont(nullptr, layout::kFontCaption);
-    ImGui::PushStyleColor(ImGuiCol_Text, vec(settings_error_.empty() ? color::muted : color::warn));
-    ImGui::TextWrapped("%s", settings_error_.empty() ? tr(Str::bm_changes_next_connection) : settings_error_.c_str());
+    std::string bm_note = settings_error_.empty() ? tr(Str::bm_changes_next_connection) : settings_error_;
+    if (settings_error_.empty() && bm_stale_retry) {
+        bm_note = *bm_stale_retry == 0U ? std::string(tr(Str::bm_stale_retrying))
+                                        : fmt(tr(Str::bm_stale_retry_fmt), *bm_stale_retry);
+    }
+    ImGui::PushStyleColor(ImGuiCol_Text, vec(settings_error_.empty() && !bm_stale_retry ? color::muted : color::warn));
+    ImGui::TextWrapped("%s", bm_note.c_str());
     ImGui::PopStyleColor();
     ImGui::PopFont();
     if (vm_.pending(Str::op_start) || vm_.pending(Str::op_bm) || s.phase == Phase::starting ||
@@ -2191,27 +2312,68 @@ void AppView::draw_daily_panel(float width, float height) {
     draw_static_groups(inner_w);
     flow.next(true);
 
-    // 收发增益：标题与数值同一行（垂直居中），滑块在下
+    // 收发音量：直接对应所选 WaveOut / WaveIn 端点的 Windows 音量（0–100%）。标题与数值同一行，滑块在下。
     const auto& s = vm_.snapshot();
     const auto& cat = vm_.cat();
     const float slider_w = inner_w;
-    auto gain_row = [&](const char* label, const char* id, int& step) {
+    auto volume_row = [&](const char* label, const char* id, const std::optional<int>& current,
+                          const std::string& error, bool playback, const char* tip) {
         const Row row = begin_row(caption_h);
         row_text(row, label, rgb(color::muted), nullptr, layout::kFontCaption);
-        const auto value = fmt("%d×", step);
+        ImGui::SetItemTooltip("%s", tip);
+        int& edit = playback ? playback_volume_edit_ : transmit_volume_edit_;
+        const bool editing = playback ? playback_volume_editing_ : transmit_volume_editing_;
+        if (!editing) edit = current.value_or(0);
+        const auto value = current ? fmt("%d%%", edit) : std::string(tr(Str::volume_unknown));
         ImGui::PushFont(nullptr, layout::kFontBody);
         const float value_w = ImGui::CalcTextSize(value.c_str()).x;
         ImGui::PopFont();
-        ImGui::SameLine(ImGui::GetStyle().WindowPadding.x + inner_w - value_w);
-        row_text(row, value.c_str(), rgb(color::green), nullptr, layout::kFontBody);
+        ImGui::SameLine(ImGui::GetCursorStartPos().x + inner_w - value_w);
+        row_text(row, value.c_str(), current ? rgb(color::green) : rgb(color::muted), nullptr, layout::kFontBody);
+        if (!error.empty()) ImGui::SetItemTooltip("%s", error.c_str());
+        else if (!current) ImGui::SetItemTooltip("%s", tr(Str::volume_no_device));
         row.end();
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y + row_gap);
-        if (gain_slider(id, step, slider_w, scale_)) vm_.commit_gains();
+        ImGui::BeginDisabled(!current.has_value());
+        const auto r = percent_slider(id, edit, slider_w, scale_);
+        ImGui::EndDisabled();
+        if (playback) playback_volume_editing_ = r.active;
+        else transmit_volume_editing_ = r.active;
+        if (r.changed) vm_.commit_volume(playback, edit); // 拖动中实时写入 Windows 音量
+        ImGui::SetItemTooltip("%s", tip);
     };
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(px(4.0F), px(3.0F)));
-    gain_row(tr(Str::playback_gain), "##playback", vm_.playback_step);
-    gain_row(tr(Str::transmit_gain), "##transmit-right", vm_.transmit_step);
+    volume_row(tr(Str::volume_playback), "##playback-volume", vm_.playback_volume(), vm_.playback_volume_error(), true,
+               tr(Str::volume_tip_playback));
+    volume_row(tr(Str::volume_transmit), "##transmit-volume", vm_.transmit_volume(), vm_.transmit_volume_error(), false,
+               tr(Str::volume_tip_transmit));
     ImGui::PopStyleVar();
+    // 高级：额外数字增益（默认收起，默认 1×）
+    ImGui::PushFont(nullptr, layout::kFontCaption);
+    ImGui::PushStyleColor(ImGuiCol_Text, vec(color::muted));
+    const bool advanced_open = ImGui::TreeNodeEx(tr(Str::advanced_gain), ImGuiTreeNodeFlags_NoTreePushOnOpen);
+    ImGui::PopStyleColor();
+    ImGui::PopFont();
+    ImGui::SetItemTooltip("%s", tr(Str::advanced_gain_tip));
+    if (advanced_open) {
+        auto gain_row = [&](const char* label, const char* id, int& step) {
+            const Row row = begin_row(caption_h);
+            row_text(row, label, rgb(color::muted), nullptr, layout::kFontCaption);
+            const auto value = fmt("%d×", step);
+            ImGui::PushFont(nullptr, layout::kFontBody);
+            const float value_w = ImGui::CalcTextSize(value.c_str()).x;
+            ImGui::PopFont();
+            ImGui::SameLine(ImGui::GetCursorStartPos().x + inner_w - value_w);
+            row_text(row, value.c_str(), rgb(color::green), nullptr, layout::kFontBody);
+            row.end();
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y + row_gap);
+            if (gain_slider(id, step, slider_w, scale_)) vm_.commit_gains();
+        };
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(px(4.0F), px(3.0F)));
+        gain_row(tr(Str::playback_gain), "##playback", vm_.playback_step);
+        gain_row(tr(Str::transmit_gain), "##transmit-right", vm_.transmit_step);
+        ImGui::PopStyleVar();
+    }
     flow.next(true);
 
     // 实时 RX/TX 峰值：标签列宽取两者最大值，进度条与百分比按行高垂直居中
@@ -2219,27 +2381,39 @@ void AppView::draw_daily_panel(float width, float height) {
         ImGui::PushFont(nullptr, layout::kFontCaption);
         const float label_w = std::max(ImGui::CalcTextSize(tr(Str::rx_live_peak)).x,
                                        ImGui::CalcTextSize(tr(Str::tx_live_peak)).x);
-        const float pct_w = ImGui::CalcTextSize("100%").x;
+        const float pct_w = ImGui::CalcTextSize("-60 dB").x;
         ImGui::PopFont();
         const float bar_h = px(8.0F);
         const float x0 = ImGui::GetCursorPosX();
+        // 峰值（0..1，满刻度归一化）→ dBFS；刻度 -60..0 dBFS 线性映射到条长，-18 dBFS 处画参考线。
         auto meter = [&](const char* label, float value) {
-            const float v = std::clamp(value, 0.0F, 1.0F);
+            const float peak = std::clamp(value, 0.0F, 1.0F);
+            const float db = peak > 0.001F ? 20.0F * std::log10(peak) : -60.0F;
+            const float v = std::clamp((db + 60.0F) / 60.0F, 0.0F, 1.0F);
             const Row row = begin_row(caption_h);
             row_text(row, label, rgb(color::muted), nullptr, layout::kFontCaption);
+            ImGui::SetItemTooltip("%s", tr(Str::meter_dbfs_tip));
             ImGui::SameLine(x0 + label_w + inline_gap * 2.0F);
             const float bar_w = std::max(px(40.0F), inner_w - label_w - pct_w - inline_gap * 4.0F);
             row.place(bar_h);
-            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, vec(value > 0.9F ? color::warn : color::green));
+            const ImVec2 bar_pos = ImGui::GetCursorScreenPos();
+            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, vec(db > -3.0F ? color::warn : color::green));
             ImGui::PushStyleColor(ImGuiCol_FrameBg, vec(color::inset));
             ImGui::ProgressBar(v, ImVec2(bar_w, bar_h), "");
             ImGui::PopStyleColor(2);
-            const auto pct = fmt("%d%%", static_cast<int>(std::lround(v * 100.0F)));
+            ImGui::SetItemTooltip("%s", tr(Str::meter_dbfs_tip));
+            const float ref_x = std::round(bar_pos.x + bar_w * (60.0F - 18.0F) / 60.0F);
+            auto* dl = ImGui::GetWindowDrawList();
+            for (float y = bar_pos.y - px(2.0F); y < bar_pos.y + bar_h + px(2.0F); y += px(3.0F)) {
+                dl->AddLine(ImVec2(ref_x, y), ImVec2(ref_x, std::min(y + px(2.0F), bar_pos.y + bar_h + px(2.0F))),
+                            rgb(0xE0E0E0), 1.0F);
+            }
+            const auto text = peak > 0.001F ? fmt("%.0f dB", db) : std::string("-∞ dB");
             ImGui::PushFont(nullptr, layout::kFontCaption);
-            const float w = ImGui::CalcTextSize(pct.c_str()).x;
+            const float w = ImGui::CalcTextSize(text.c_str()).x;
             ImGui::PopFont();
-            ImGui::SameLine(ImGui::GetStyle().WindowPadding.x + inner_w - w);
-            row_text(row, pct.c_str(), rgb(color::text), nullptr, layout::kFontCaption);
+            ImGui::SameLine(ImGui::GetCursorStartPos().x + inner_w - w);
+            row_text(row, text.c_str(), rgb(color::text), nullptr, layout::kFontCaption);
             row.end();
         };
         meter(tr(Str::rx_live_peak), s.levels.rx_peak);
@@ -2405,7 +2579,7 @@ void AppView::draw_filtered_hint(const FilteredHint& hint, float inner_w) {
     const float text_w = std::max(px(40.0F), inner_w - button_w - px(layout::kInlineGap));
     text_ellipsis(text.c_str(), text_w, rgb(color::warn));
     ImGui::SetItemTooltip("%s", text.c_str());
-    ImGui::SameLine(ImGui::GetStyle().WindowPadding.x + inner_w - button_w);
+    ImGui::SameLine(ImGui::GetCursorStartPos().x + inner_w - button_w);
     row.place(bh);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0F, 0.0F));
     if (button(fmt("%s##listen-filtered", tr(Str::filtered_join)).c_str(), ImVec2(button_w, bh), Tone::normal,
@@ -2445,7 +2619,7 @@ void AppView::draw_static_groups(float inner_w) {
     ImGui::PopFont();
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
     const float right_w = small_w * 2.0F + page_w + refresh_w + remove_w + spacing * 4.0F;
-    ImGui::SameLine(ImGui::GetStyle().WindowPadding.x + inner_w - right_w);
+    ImGui::SameLine(ImGui::GetCursorStartPos().x + inner_w - right_w);
     title.place(bh);
     if (button("‹##sgprev", ImVec2(small_w, bh), Tone::normal, sg.loaded && sg.page > 0U)) vm_.static_set_page(sg.page - 1U);
     ImGui::SameLine();

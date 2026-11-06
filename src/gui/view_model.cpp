@@ -183,10 +183,9 @@ ViewModel::ViewModel(EngineApi& engine, services::Services services, bool fake)
     } else {
         set_language(Language::zh_cn);
     }
-    playback_step = gain_step(snapshot_->phase == Phase::running ? snapshot_->radio_playback_gain_milli
-                                                                 : config_.playback_gain_step * 1000U);
-    transmit_step = gain_step(snapshot_->phase == Phase::running ? snapshot_->mic_transmit_gain_milli
-                                                                 : config_.transmit_gain_step * 1000U);
+    // R131：数字增益固定 1×（旧 config 的增益档位保留不改写、不再使用）；主控件是 Windows 端点音量。
+    playback_step = snapshot_->phase == Phase::running ? gain_step(snapshot_->radio_playback_gain_milli) : 1;
+    transmit_step = snapshot_->phase == Phase::running ? gain_step(snapshot_->mic_transmit_gain_milli) : 1;
     cat_form.port = to_utf8(config_.cat_port);
     for (int i = 0; i < 5; ++i) {
         if (kBaudRates[i] == config_.cat_baud_rate) cat_form.baud_index = i;
@@ -200,6 +199,9 @@ ViewModel::ViewModel(EngineApi& engine, services::Services services, bool fake)
         }
     }
     last_phase_ = snapshot_->phase;
+    last_bm_link_ = snapshot_->bm_link;
+    last_bm_requested_ = snapshot_->bm_requested_enabled;
+    if (last_bm_link_ == BmLink::connected) bm_connected_profile_generation_ = bm_profile_generation_;
     if (services_.cat.set_squelch_callback) {
         // CAT 线程回调 → 经信箱切回 UI 线程。
         services_.cat.set_squelch_callback([mailbox = mailbox_, this](const services::SquelchEvent& event) {
@@ -209,11 +211,20 @@ ViewModel::ViewModel(EngineApi& engine, services::Services services, bool fake)
     update_squelch_polling();
     // 顺序：先冻结启动组呼计划，再读取 BM 静态组；静态组读取结束（或超时）前不激活启动组呼，
     // 读到的静态组频道从计划中剔除（无需 Quick Call），未在收听表中的静态组补进频道。
-    startup_group_activation_.freeze(config_.channels);
+    {
+        // 已停用的频道不参与启动组呼。
+        std::vector<services::ChannelEntry> enabled;
+        for (const auto& e : config_.channels) {
+            if (!e.disabled) enabled.push_back(e);
+        }
+        startup_group_activation_.freeze(enabled);
+    }
     static_import_pending_ = true;
     static_sync(); // 已有 API Key 与设备 ID 时读取 BM 静态组
     if (!static_.busy) resolve_startup_static(); // 无 API Key / 设备 ID：不等待
     update_startup_group_activation_status();
+    sync_volume_targets();
+    if (snapshot_->phase == Phase::running && !muted_groups().empty()) push_muted_groups();
     // 正常产品启动时自动独立连接 BM runtime、CAT 与电台；--fake 保持静止，供截图和演示控制。
     if (!fake_) start();
 }
@@ -266,6 +277,7 @@ bool ViewModel::pump() {
             last_phase_ = snapshot_->phase;
             if (last_phase_ == Phase::running) on_engine_running();
         }
+        observe_bm_link();
         if (snapshot_->active_rx_call && snapshot_->active_rx_call->callsign.empty()) {
             lookup_identity(*snapshot_->active_rx_call);
         }
@@ -340,7 +352,26 @@ bool ViewModel::pump() {
         push_rx_policy();
         changed = true;
     }
+    if (muted_groups_dirty_ && snapshot_->phase == Phase::running && !pending(Str::op_muted_groups)) {
+        muted_groups_dirty_ = false;
+        push_muted_groups();
+        changed = true;
+    }
     if (pump_startup_group_activation()) changed = true;
+    if (bm_stale_retry_at_ && !bm_stale_retry_pending_ && std::chrono::steady_clock::now() >= *bm_stale_retry_at_) {
+        // 服务器尚未释放上次会话：到期后自动重连一次（不受用户冷却限制）。
+        bm_stale_retry_at_.reset();
+        bm_stale_retry_pending_ = true;
+        ++bm_stale_retries_;
+        if (snapshot_->phase == Phase::running && !snapshot_->bm_requested_enabled && !pending(Str::op_bm)) {
+            toggle_bm();
+        } else {
+            bm_stale_retry_pending_ = false;
+        }
+        changed = true;
+    }
+    sync_volume_targets();
+    retry_deferred_cat();
     if (!transient_text_.empty() && !transient_visible()) {
         transient_text_.clear();
         changed = true;
@@ -359,6 +390,8 @@ std::optional<std::uint32_t> ViewModel::idle_timeout_ms() const {
             return static_cast<std::uint32_t>(std::clamp<long long>(left + 1, 1, 1000));
         }
     }
+    // BM 冷却倒计时 / 旧会话自动重试倒计时：每秒刷新按钮与提示。
+    if (bm_cooldown_remaining_s() != 0U || bm_stale_retry_at_ || cat_deferred_) return 250U;
     // 有来话时显示通话时长、有过滤流量提示时显示“N 秒前”，都需要每秒刷新（提示过期后自然停止）。
     if (snapshot_->active_rx_call || filtered_hint()) return 1000U;
     if (!transient_text_.empty()) {
@@ -581,6 +614,30 @@ void ViewModel::preview_relay_enabled() noexcept {
     last_squelch_close_ = std::chrono::steady_clock::now();
 }
 
+void ViewModel::preview_channel_states() {
+    using dmr_call::CallKind;
+    using dmr_call::Slot;
+    for (auto& e : config_.channels) {
+        if (e.kind != CallKind::group) continue;
+        if (e.id == 46001U) {
+            e.muted = true;
+        } else if (e.id == 91U) {
+            e.id = 2345U;
+            e.name.clear();
+        } else if (e.id == 4600U) {
+            e.id = 3100U;
+            e.name.clear();
+        } else if (e.id == 46025U) {
+            e.id = 46002U;
+            e.name.clear();
+            e.disabled = true;
+        }
+    }
+    quick_call_sent_.insert(ChannelKey{3100U, CallKind::group, Slot::ts2});
+    push_rx_policy();
+    push_muted_groups();
+}
+
 void ViewModel::flash(std::string text, bool failed, Str operation) {
     if (auto log = dev_log()) log->line(failed ? "gui-error" : "gui", text);
     if (failed) enqueue_operation_event(operation, text, true);
@@ -651,6 +708,9 @@ void ViewModel::report(Str op, const CommandResult& r) {
         return; // Busy/断线由持久队列状态显示；避免 500ms 重试时刷屏或把暂缓误报为失败。
     }
     if (op == Str::op_relay_fm) return; // FM 中继启停结果由 on_squelch 的回调按状态提示，避免 busy 刷屏
+    if (op == Str::op_cat && r.status == CommandStatus::busy && r.detail.rfind("cat_gate_", 0) == 0 && cat_deferred_) {
+        return; // 门控延后：cat_deferred_text() 已说明原因并会自动重试
+    }
     if (op == Str::op_auto_quick_call) {
         if (r.status == CommandStatus::accepted) return;
         if (startup_group_activation_last_target_) {
@@ -724,12 +784,16 @@ std::vector<ChannelView> ViewModel::channel_page() const {
         v.key = key_of(entry);
         v.is_tx_target = tx && tx->destination_id == entry.id && tx->kind == entry.kind && tx->slot == entry.slot;
         v.is_tx_active = v.is_tx_target && tx_active;
-        v.is_muted = muted_.count(v.key) != 0U;
         v.quick_call_allowed = entry.kind == dmr_call::CallKind::group && entry.id != 4000U;
         v.is_static = v.quick_call_allowed && is_static_channel(entry);
+        v.is_muted = entry.kind == dmr_call::CallKind::group && entry.muted;
+        v.is_disabled = entry.disabled;
         v.quick_call_sent = quick_call_sent_.count(v.key) != 0U;
         v.quick_call_pending = quick_call_pending_ && *quick_call_pending_ == v.key;
-        if (!v.is_muted && snapshot_->active_rx_call && call_matches(*snapshot_->active_rx_call, entry, config_.dmr_id)) {
+        v.state = channel_state(entry, v.is_static);
+        // 静音频道照常显示来话；停用频道不在 RX 策略中，只显示最近记录。
+        if (!v.is_disabled && snapshot_->active_rx_call &&
+            call_matches(*snapshot_->active_rx_call, entry, config_.dmr_id)) {
             v.current_call = with_callsign(*snapshot_->active_rx_call);
         } else {
             for (const auto& rec : history_) {
@@ -746,12 +810,22 @@ std::vector<ChannelView> ViewModel::channel_page() const {
         if (const auto name = channel_display_name(entry); !name.empty()) v.title += " · " + name;
         v.tooltip = v.title;
         const int slot = static_cast<int>(entry.slot);
-        if (v.is_static) {
-            v.title += std::string(" · ") + tr(Str::static_group);
+        switch (v.state) {
+        case ChannelState::static_live:
+        case ChannelState::static_muted:
             v.tooltip = v.title + "\n" + fmt(tr(Str::tip_static), entry.id, slot);
-        } else if (v.quick_call_sent) {
-            v.title += std::string(" · ") + tr(Str::dynamic_group);
+            break;
+        case ChannelState::dynamic_active:
             v.tooltip = v.title + "\n" + fmt(tr(Str::tip_dynamic_sent), entry.id, slot);
+            break;
+        case ChannelState::dynamic_inactive:
+            v.tooltip = v.title + "\n" + fmt(tr(Str::ch_tip_dynamic_inactive_fmt), entry.id, slot);
+            break;
+        case ChannelState::disabled:
+            v.tooltip = v.title + "\n" + tr(Str::ch_tip_disabled);
+            break;
+        case ChannelState::listen:
+            break;
         }
         out.push_back(std::move(v));
     }
@@ -1010,11 +1084,45 @@ std::optional<engine::BmTarget> ViewModel::make_bm_target(std::string& error) co
     return target;
 }
 
-// Get-UiNativeRxPolicyForChannels：屏蔽 = 从 allow 列表中移除（Router 拒绝同时出现在 allow 与 block 的组）。
+// Get-UiNativeRxPolicyForChannels：停用 = 从 allow 列表中移除（make_rx_policy 跳过 disabled）；静音不影响策略。
 talkgroup_routing::RxPolicy ViewModel::build_rx_policy() const {
-    std::set<std::string> muted;
-    for (const auto& k : muted_) muted.insert(config_bridge::channel_key(k.id, k.kind, k.slot));
-    return config_bridge::make_rx_policy(config_.channels, muted, config_.dmr_id, config_.blocked_source_ids);
+    return config_bridge::make_rx_policy(config_.channels, {}, config_.dmr_id, config_.blocked_source_ids);
+}
+
+std::vector<talkgroup_routing::GroupRoute> ViewModel::muted_groups() const {
+    std::vector<talkgroup_routing::GroupRoute> out;
+    for (const auto& e : config_.channels) {
+        if (e.kind == dmr_call::CallKind::group && e.muted && !e.disabled) out.push_back({e.id, e.slot});
+    }
+    return out;
+}
+
+void ViewModel::push_muted_groups() {
+    if (snapshot_->phase != Phase::running) {
+        if (snapshot_->phase == Phase::starting || pending(Str::op_start)) muted_groups_dirty_ = true;
+        return;
+    }
+    if (pending(Str::op_muted_groups)) {
+        muted_groups_dirty_ = true;
+        return;
+    }
+    track(Str::op_muted_groups, engine_.set_muted_groups(muted_groups()));
+}
+
+services::ChannelEntry* ViewModel::find_channel(const ChannelKey& key) {
+    for (auto& e : config_.channels) {
+        if (key_of(e) == key) return &e;
+    }
+    return nullptr;
+}
+
+ChannelState ViewModel::channel_state(const services::ChannelEntry& entry, bool is_static) const {
+    if (entry.disabled) return ChannelState::disabled;
+    if (entry.kind != dmr_call::CallKind::group || entry.id == 4000U) return ChannelState::listen;
+    // muted 标志优先：静态组读回前（或 BM 侧已移除）也显示“静音”，与引擎实际静音输出一致，用户可直接取消。
+    if (entry.muted) return ChannelState::static_muted;
+    if (is_static) return ChannelState::static_live;
+    return quick_call_sent_.count(key_of(entry)) != 0U ? ChannelState::dynamic_active : ChannelState::dynamic_inactive;
 }
 
 void ViewModel::push_rx_policy() {
@@ -1027,7 +1135,13 @@ void ViewModel::push_rx_policy() {
         rx_policy_dirty_ = true; // revision 会过期：等在途命令完成后按最新频道重发
         return;
     }
-    track(Str::op_rx_policy, engine_.replace_rx_policy(snapshot_->rx_policy_revision, build_rx_policy()));
+    track(Str::op_rx_policy, engine_.replace_rx_policy(snapshot_->rx_policy_revision, build_rx_policy()),
+        [this](const CommandResult& r) {
+            if (!enable_after_policy_ || rx_policy_dirty_) return;
+            const auto key = *enable_after_policy_;
+            enable_after_policy_.reset();
+            if (r.status == CommandStatus::accepted || r.status == CommandStatus::idempotent) quick_call(key);
+        });
 }
 
 void ViewModel::persist() {
@@ -1060,9 +1174,10 @@ void ViewModel::remove_channel(const ChannelKey& key) {
 
 void ViewModel::erase_channel(const ChannelKey& key) {
     auto& chs = config_.channels;
+    const bool was_muted = std::any_of(chs.begin(), chs.end(), [&](const auto& e) { return key_of(e) == key && e.muted; });
     chs.erase(std::remove_if(chs.begin(), chs.end(), [&](const auto& e) { return key_of(e) == key; }), chs.end());
-    muted_.erase(key);
     quick_call_sent_.erase(key);
+    if (was_muted) push_muted_groups();
     if (config_.tx_target && config_.tx_target->destination_id == key.id && config_.tx_target->kind == key.kind &&
         config_.tx_target->slot == key.slot) {
         config_.tx_target.reset();
@@ -1112,10 +1227,82 @@ void ViewModel::remove_static_channel(const ChannelKey& key) {
         });
 }
 
+// 静态组静音：BM 单时隙热点上静态组本来就会占用时隙（BM 侧限制），所以不改 RX 策略，
+// 来话照常进入历史/来话卡，只让引擎把该组的播放 PCM 清零（本机与电台扬声器都不出声）。
 void ViewModel::toggle_mute(const ChannelKey& key) {
     if (!can_mutate_channels()) return;
-    if (!muted_.erase(key)) muted_.insert(key);
+    auto* entry = find_channel(key);
+    if (!entry || entry->kind != dmr_call::CallKind::group) return;
+    entry->muted = !entry->muted;
+    persist();
+    push_muted_groups();
+}
+
+// 停用：从 RX 策略移除；动态组另向 BM 发送 TG4000（断开该时隙全部动态组，BM 只提供这一种断开方式），
+// 同时隙其它“已激活”标记一并清除。静态组的停用用“移除”（BM 静态组需经 API 删除），这里不发 TG4000。
+void ViewModel::disable_channel(const ChannelKey& key) {
+    if (!can_mutate_channels()) return;
+    auto* entry = find_channel(key);
+    if (!entry || entry->disabled) return;
+    const bool dynamic = entry->kind == dmr_call::CallKind::group && entry->id != 4000U && !is_static_channel(*entry);
+    entry->disabled = true;
+    const bool was_muted = entry->muted;
+    if (enable_after_policy_ && *enable_after_policy_ == key) enable_after_policy_.reset();
+    persist();
     push_rx_policy();
+    if (was_muted) push_muted_groups();
+    if (!dynamic) return;
+    const bool bm_ready = snapshot_->phase == Phase::running && snapshot_->bm_link == BmLink::connected;
+    if (!bm_ready) {
+        quick_call_sent_.erase(key);
+        flash(fmt(tr(Str::ch_disabled_offline_fmt), key.id), false);
+        return;
+    }
+    track(Str::op_disconnect_dynamic, engine_.disconnect_dynamic_groups(key.slot),
+        [this, key](const CommandResult& r) {
+            if (r.status != CommandStatus::accepted) return; // 失败由 report() 提示；卡片仍为已停用（不收听）
+            for (auto it = quick_call_sent_.begin(); it != quick_call_sent_.end();) {
+                it = it->slot == key.slot ? quick_call_sent_.erase(it) : std::next(it);
+            }
+            flash(fmt(tr(Str::ch_disabled_tg4000_fmt), key.id, static_cast<int>(key.slot)), false);
+        });
+}
+
+// 启用：加回 RX 策略；动态组在策略下发后 Quick Call 激活（未停用但未激活的动态组，“启用”就是激活）。
+void ViewModel::enable_channel(const ChannelKey& key) {
+    if (!can_mutate_channels()) return;
+    auto* entry = find_channel(key);
+    if (!entry) return;
+    const bool dynamic = entry->kind == dmr_call::CallKind::group && entry->id != 4000U && !is_static_channel(*entry);
+    if (entry->disabled) {
+        entry->disabled = false;
+        const bool muted = entry->muted;
+        persist();
+        push_rx_policy();
+        if (muted) push_muted_groups();
+        if (dynamic) {
+            if (pending(Str::op_rx_policy) || rx_policy_dirty_) {
+                enable_after_policy_ = key;
+            } else {
+                quick_call(key);
+            }
+        }
+        return;
+    }
+    if (dynamic) quick_call(key);
+}
+
+void ViewModel::channel_primary_action(const ChannelKey& key) {
+    const auto* entry = find_channel(key);
+    if (!entry) return;
+    switch (channel_state(*entry, is_static_channel(*entry))) {
+    case ChannelState::static_live:
+    case ChannelState::static_muted: toggle_mute(key); break;
+    case ChannelState::dynamic_active:
+    case ChannelState::listen: disable_channel(key); break;
+    case ChannelState::dynamic_inactive:
+    case ChannelState::disabled: enable_channel(key); break;
+    }
 }
 
 void ViewModel::add_channel() {
@@ -1172,9 +1359,8 @@ std::optional<FilteredHint> ViewModel::filtered_hint() const {
                    ? ChannelKey{traffic.destination_id, traffic.kind, traffic.slot}
                    : ChannelKey{traffic.source_id, traffic.kind, traffic.slot};
     // 已加入且未屏蔽：过滤记录是加入前的旧流量，不再提示。
-    const bool listening = muted_.count(hint.key) == 0U &&
-        std::any_of(config_.channels.begin(), config_.channels.end(),
-                    [&](const auto& e) { return key_of(e) == hint.key; });
+    const bool listening = std::any_of(config_.channels.begin(), config_.channels.end(),
+                                       [&](const auto& e) { return key_of(e) == hint.key && !e.disabled; });
     if (listening) return std::nullopt;
     return hint;
 }
@@ -1194,9 +1380,9 @@ void ViewModel::listen_filtered() {
     const bool exists = std::any_of(config_.channels.begin(), config_.channels.end(),
                                     [&](const auto& e) { return key_of(e) == key; });
     if (exists) {
-        // 已在列表但被屏蔽：恢复收听；否则说明策略尚未生效，提示已存在。
-        if (muted_.erase(key) != 0U) {
-            push_rx_policy();
+        // 已在列表但被停用：重新启用；否则说明策略尚未生效，提示已存在。
+        if (const auto* entry = find_channel(key); entry && entry->disabled) {
+            enable_channel(key);
         } else {
             flash(tr(Str::channel_exists), true);
         }
@@ -1211,6 +1397,7 @@ void ViewModel::listen_filtered() {
 
 void ViewModel::quick_call(const ChannelKey& key) {
     if (quick_call_pending_ || startup_group_activation_.active() || key.kind != dmr_call::CallKind::group) return;
+    if (const auto* entry = find_channel(key); entry && entry->disabled) return;
     quick_call_pending_ = key;
     track(Str::op_quick_call, engine_.quick_call_join({key.id, key.slot}), [this, key](const CommandResult& r) {
         quick_call_pending_.reset();
@@ -1218,10 +1405,8 @@ void ViewModel::quick_call(const ChannelKey& key) {
     });
 }
 
+// 高级数字增益：只在本次运行生效，不写回 config（旧 config 的增益值保持原样）。
 void ViewModel::commit_gains() {
-    config_.playback_gain_step = static_cast<std::uint32_t>(playback_step);
-    config_.transmit_gain_step = static_cast<std::uint32_t>(transmit_step);
-    persist();
     if (snapshot_->phase != Phase::running) return;
     track(Str::op_gains, engine_.set_audio_gains(gain_milli(playback_step), gain_milli(transmit_step)));
 }
@@ -1353,6 +1538,13 @@ void ViewModel::cat_toggle_connection() {
 }
 
 void ViewModel::cat_apply() {
+    const bool auto_retry = std::exchange(cat_retry_now_, false);
+    if (!auto_retry) {
+        // 用户手动 Apply：放弃之前的延后请求，重新计一次自动重试机会。
+        cat_deferred_.reset();
+        cat_deferred_text_.clear();
+        cat_deferred_retried_ = false;
+    }
     if (!services_.cat.apply) return;
     if (cat_form.mode_index < 0 || cat_form.mode_index >= 4 ||
         cat_form.power_index < 0 || cat_form.power_index >= 5) {
@@ -1376,9 +1568,19 @@ void ViewModel::cat_apply() {
 
     const std::array<bool, 3> submitted{true, !cat_form.frequency_mhz.empty(), true};
     const auto submitted_revision = cat_form_edit_revision_;
-    services_.cat.apply(s, [this, submitted, submitted_revision](CommandResult r) {
-        post_to_ui([this, r = std::move(r), submitted, submitted_revision]() {
+    services_.cat.apply(s, [this, s, submitted, submitted_revision](CommandResult r) {
+        post_to_ui([this, s, r = std::move(r), submitted, submitted_revision]() {
             const bool ok = r.status == CommandStatus::accepted || r.status == CommandStatus::idempotent;
+            const bool gated = r.status == CommandStatus::busy && r.detail.rfind("cat_gate_", 0) == 0;
+            if (gated && !cat_deferred_retried_) {
+                // 软件门控（发射中 / HRI 下行播放中）：保留表单草稿，门控解除后自动重试一次。
+                cat_deferred_ = s;
+                cat_deferred_text_ = tr(r.detail == "cat_gate_hri_downlink" ? Str::cat_deferred_hri : Str::cat_deferred_tx);
+                flash(cat_deferred_text_, false, Str::op_cat);
+                return;
+            }
+            cat_deferred_.reset();
+            cat_deferred_text_.clear();
             if (ok) {
                 cat_form_sync::clear_applied_dirty(cat_form_dirty_, submitted_revision,
                                                    cat_form_edit_revision_, submitted);
@@ -1709,6 +1911,8 @@ void ViewModel::push_identity(std::uint32_t source_id, std::optional<std::string
 }
 
 void ViewModel::on_engine_running() {
+    // 引擎每次进入 running 时静音集合为空：补发已保存的静音组。
+    if (!muted_groups().empty()) push_muted_groups();
     // Initialize-UiNativeIdentitySync：预载缓存中的新鲜映射，再回放本次会话查到的结果。
     identity_revision_ = 0U;
     std::set<std::uint32_t> pushed;
@@ -1868,5 +2072,141 @@ void ViewModel::set_channel_page(std::size_t page) { channel_page_ = std::min(pa
 void ViewModel::set_history_page(std::size_t page) { history_page_ = std::min(page, history_page_count() - 1U); }
 
 void ViewModel::select_history(std::optional<std::size_t> index) { selected_history_ = index; }
+
+// ---------------------------------------------------------------- R131 BM 冷却 / 旧会话重试
+
+namespace {
+constexpr auto kBmStaleWindow = 60s;          // 断开后多久内的 master_rejected 视为“上次会话尚未释放”
+constexpr auto kBmStaleRetryDelay = 5s;
+constexpr unsigned kBmStaleMaxRetries = 4U;
+
+unsigned ceil_seconds(std::chrono::steady_clock::duration left) {
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(left).count();
+    return ms <= 0 ? 0U : static_cast<unsigned>((ms + 999) / 1000);
+}
+} // namespace
+
+unsigned ViewModel::bm_cooldown_remaining_s() const {
+    if (!bm_disconnected_at_) return 0U;
+    return ceil_seconds(*bm_disconnected_at_ + bm_reconnect_cooldown - std::chrono::steady_clock::now());
+}
+
+std::optional<unsigned> ViewModel::bm_stale_session_retry_s() const {
+    if (bm_stale_retry_at_) return ceil_seconds(*bm_stale_retry_at_ - std::chrono::steady_clock::now());
+    if (bm_stale_retry_pending_) return 0U;
+    return std::nullopt;
+}
+
+// 观察 BM 连接边沿：
+// - 一次已连接的会话结束（用户断开或链路丢失）→ 记录时间，“连接 BM”冷却 5 s；
+// - 同一资料在该会话结束后 60 s 内被 Master 以 master_rejected 拒绝 → 视为服务器尚未释放上次会话，
+//   不当作失败，5 s 后自动重连（最多 4 次）；超出后按普通失败显示。认证真正被拒（从未用该资料连上过）不重试。
+void ViewModel::observe_bm_link() {
+    const auto now = std::chrono::steady_clock::now();
+    const auto link = snapshot_->bm_link;
+    const bool requested = snapshot_->bm_requested_enabled;
+    if (link == BmLink::connected && last_bm_link_ != BmLink::connected) {
+        bm_connected_profile_generation_ = bm_profile_generation_;
+        bm_stale_retries_ = 0U;
+        bm_stale_retry_at_.reset();
+        bm_stale_retry_pending_ = false;
+    }
+    if (last_bm_link_ == BmLink::connected && link != BmLink::connected) {
+        bm_last_connected_at_ = now; // 会话结束时刻
+        bm_disconnected_at_ = now;
+    }
+    if (requested) {
+        bm_stale_retry_pending_ = false;
+    } else if (last_bm_requested_) {
+        const bool stale = snapshot_->bm_error == "master_rejected" && bm_last_connected_at_ &&
+                           now - *bm_last_connected_at_ <= kBmStaleWindow &&
+                           bm_connected_profile_generation_ == bm_profile_generation_ &&
+                           bm_stale_retries_ < kBmStaleMaxRetries;
+        if (stale) {
+            bm_stale_retry_at_ = now + kBmStaleRetryDelay;
+            if (auto log = dev_log()) log->line("gui", "bm master_rejected shortly after disconnect; auto retry scheduled");
+        } else {
+            bm_stale_retry_at_.reset();
+            bm_disconnected_at_ = now;
+        }
+        bm_stale_retry_pending_ = false;
+    }
+    last_bm_link_ = link;
+    last_bm_requested_ = requested;
+}
+
+// ---------------------------------------------------------------- R131 Windows 端点音量
+
+void ViewModel::sync_volume_targets() {
+    const auto selection = device_selection();
+    const auto pick = [](bool open, const std::wstring& active, const services::ResolvedDeviceSelection& sel) {
+        if (open && !active.empty()) return active;
+        return sel.state == services::DeviceResolutionState::resolved ? sel.resolved_id : std::wstring{};
+    };
+    sync_volume_target(playback_volume_, pick(snapshot_->wave_out_open, snapshot_->wave_out_endpoint_id, selection.wave_out), true);
+    sync_volume_target(transmit_volume_, pick(snapshot_->wave_in_open, snapshot_->wave_in_endpoint_id, selection.wave_in), false);
+}
+
+void ViewModel::sync_volume_target(VolumeTarget& target, const std::wstring& endpoint_id, bool playback) {
+    if (endpoint_id == target.endpoint_id) return;
+    const auto generation = target.generation + 1U;
+    target = VolumeTarget{};
+    target.endpoint_id = endpoint_id;
+    target.generation = generation;
+    if (endpoint_id.empty() || !services_.audio_volume.get) return;
+    std::string error;
+    if (const auto scalar = services_.audio_volume.get(endpoint_id, error)) {
+        target.percent = static_cast<int>(std::lround(std::clamp(*scalar, 0.0F, 1.0F) * 100.0F));
+    } else {
+        target.error = error;
+        return;
+    }
+    if (!services_.audio_volume.watch) return;
+    error.clear();
+    // 外部（Windows 设置）改动：音频服务线程回调 → 信箱切回 UI 线程；端点切换后旧代次的通知被丢弃。
+    target.watch = services_.audio_volume.watch(endpoint_id,
+        [mailbox = mailbox_, this, playback, generation](float scalar) {
+            mailbox->post([this, playback, generation, scalar]() {
+                auto& t = playback ? playback_volume_ : transmit_volume_;
+                if (t.generation != generation) return;
+                t.percent = static_cast<int>(std::lround(std::clamp(scalar, 0.0F, 1.0F) * 100.0F));
+                t.error.clear();
+            });
+        }, error);
+    if (!target.watch && !error.empty()) {
+        if (auto log = dev_log()) log->line("gui-error", "endpoint volume watch failed: " + error);
+    }
+}
+
+void ViewModel::commit_volume(bool playback, int percent) {
+    auto& target = playback ? playback_volume_ : transmit_volume_;
+    if (target.endpoint_id.empty() || !services_.audio_volume.set) return;
+    percent = std::clamp(percent, 0, 100);
+    std::string error;
+    if (!services_.audio_volume.set(target.endpoint_id, static_cast<float>(percent) / 100.0F, error)) {
+        target.error = error;
+        flash(fmt(tr(Str::volume_set_failed_fmt), error.c_str()), true, Str::audio_devices);
+        return;
+    }
+    target.percent = percent;
+    target.error.clear();
+}
+
+// ---------------------------------------------------------------- R131 CAT 门控延后重试
+
+void ViewModel::retry_deferred_cat() {
+    if (!cat_deferred_ || cat_deferred_retried_ || cat_.busy || !cat_.connected) return;
+    using talkgroup_routing::MediaOwner;
+    const auto& s = *snapshot_;
+    const bool transmitting = s.tx_active || s.relay_fm_active || s.media_owner == MediaOwner::tx_active ||
+                              s.media_owner == MediaOwner::tx_draining;
+    const bool hri_downlink = s.hri_ready && (s.media_owner == MediaOwner::rx_active ||
+                                              s.media_owner == MediaOwner::rx_draining ||
+                                              s.media_owner == MediaOwner::rx_stopping);
+    if (transmitting || hri_downlink) return;
+    cat_deferred_retried_ = true;
+    cat_retry_now_ = true;
+    cat_apply(); // 用当前表单（含用户草稿）重新提交一次
+}
 
 } // namespace wirex::gui

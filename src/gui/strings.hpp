@@ -360,7 +360,65 @@ namespace wirex::gui {
     X(tip_filtered_join,    "把该 TG/时隙加入频道列表并开始收听。", \
                             "Add this TG/slot to the channel list and start listening.") /* new */ \
     X(tip_filtered_private_join, "把该私呼对端加入私呼频道并开始收听。", \
-                            "Add this private-call peer as a private channel and start listening.") /* new */
+                            "Add this private-call peer as a private channel and start listening.") /* new */ \
+    /* ---------- R131：频道状态机 / BM 冷却 / 端点音量 / CAT 门控（独立块，追加在末尾） ---------- */ \
+    X(op_muted_groups,      "静音频道",                            "Muted channels")                /* new */ \
+    X(op_disconnect_dynamic,"停用动态组",                          "Disable dynamic group")         /* new */ \
+    X(ch_badge_static,      "静态组",                              "Static")                        /* new */ \
+    X(ch_badge_muted,       "静音",                                "Muted")                         /* new */ \
+    X(ch_badge_dyn_active,  "动态·已激活",                         "Dynamic · active")              /* new */ \
+    X(ch_badge_dyn_inactive,"动态·未激活",                         "Dynamic · inactive")            /* new */ \
+    X(ch_badge_disabled,    "已停用",                              "Disabled")                      /* new */ \
+    X(ch_btn_mute,          "静音",                                "Mute")                          /* new */ \
+    X(ch_btn_unmute,        "取消静音",                            "Unmute")                        /* new */ \
+    X(ch_btn_disable,       "停用",                                "Disable")                       /* new */ \
+    X(ch_btn_enable,        "启用",                                "Enable")                        /* new */ \
+    X(ch_btn_working,       "处理中",                              "Working…")                      /* new */ \
+    X(ch_tip_mute,          "静音：照常接收并显示来话，只是本机和电台扬声器都不出声。\n注意：BM 单时隙热点上静态组仍会占用时隙，这是 BM 侧限制。", \
+                            "Mute: calls are still received and shown, but neither the PC nor the radio speaker plays them.\nNote: on a single-slot BM hotspot a static group still occupies the slot (a BM limitation).") /* new */ \
+    X(ch_tip_unmute,        "取消静音：恢复播放该静态组的来话。", "Unmute: play calls on this static group again.") /* new */ \
+    X(ch_tip_disable,       "停用：不再收听该组，并向 BM 发送 TG4000 断开该时隙的动态组。", \
+                            "Disable: stop listening and send TG4000 to BM to drop dynamic groups on this slot.") /* new */ \
+    X(ch_tip_disable_listen,"停用：不再收听该频道（只改本机收听策略）。", \
+                            "Disable: stop listening on this channel (local receive policy only).") /* new */ \
+    X(ch_tip_enable,        "启用：恢复收听，并向 BM 发送 Quick Call 激活该动态组。", \
+                            "Enable: listen again and send a Quick Call to BM to activate this dynamic group.") /* new */ \
+    X(ch_tip_enable_listen, "启用：恢复收听该频道。",              "Enable: listen on this channel again.") /* new */ \
+    X(ch_tip_need_bm,       "需要 BM 已连接才能激活动态组。",      "BM must be connected to activate a dynamic group.") /* new */ \
+    X(ch_tip_dynamic_inactive_fmt, "TG %u TS%d；本次运行尚未激活，点击“启用”发送 Quick Call。", \
+                            "TG %u TS%d; not activated in this session. Click Enable to send a Quick Call.") /* new */ \
+    X(ch_tip_disabled,      "已停用：不在收听策略中，来话会被过滤。", \
+                            "Disabled: not in the receive policy; its calls are filtered.") /* new */ \
+    X(ch_disabled_offline_fmt, "TG %u 已停用；BM 未连接，未发送 TG4000。", \
+                            "TG %u disabled; BM is not connected, so TG4000 was not sent.") /* new */ \
+    X(ch_disabled_tg4000_fmt,  "TG %u 已停用；已由本机向 BM 发送 TG4000（TS%d）。", \
+                            "TG %u disabled; TG4000 (TS%d) was sent to BM locally.") /* new */ \
+    X(bm_cooldown_fmt,      "连接BM (%us)",                        "Connect (%us)")                 /* new */ \
+    X(bm_cooldown_tip,      "刚断开 BM：等待服务器释放上次会话后再连接。", \
+                            "BM was just disconnected; waiting for the server to release the previous session.") /* new */ \
+    X(bm_stale_retry_fmt,   "服务器尚未释放上次会话，%u 秒后自动重试", \
+                            "Server has not released the previous session; retrying in %u s") /* new */ \
+    X(bm_stale_retrying,    "服务器尚未释放上次会话，正在自动重试", \
+                            "Server has not released the previous session; retrying now") /* new */ \
+    X(bm_waiting_release,   "等待释放",                            "Waiting")                       /* new */ \
+    X(volume_playback,      "播放音量（Windows）",                 "Playback volume (Windows)")     /* new */ \
+    X(volume_transmit,      "发送音量（Windows 录音）",            "Transmit volume (Windows input)") /* new */ \
+    X(volume_unknown,       "—",                                   "—")                             /* new */ \
+    X(volume_tip_playback,  "直接调节所选播放设备（WaveOut）的 Windows 音量；在 Windows 设置中调整会同步到这里。", \
+                            "Sets the Windows volume of the selected playback device (WaveOut); changes made in Windows settings are mirrored here.") /* new */ \
+    X(volume_tip_transmit,  "直接调节所选录音设备（WaveIn，USB Audio Mic）的 Windows 音量；实测约 70% 时对方听感合适。", \
+                            "Sets the Windows volume of the selected recording device (WaveIn, USB Audio Mic); about 70% sounded right in field tests.") /* new */ \
+    X(volume_no_device,     "未选择唯一的音频设备",                "No unique audio device selected") /* new */ \
+    X(volume_set_failed_fmt,"设置 Windows 音量失败：%s",           "Failed to set Windows volume: %s") /* new */ \
+    X(advanced_gain,        "高级：数字增益（默认 1×）",           "Advanced: digital gain (default 1×)") /* new */ \
+    X(advanced_gain_tip,    "软件内部的额外数字增益，只在本次运行生效；正常情况下保持 1×，用上面的 Windows 音量调节。", \
+                            "Extra in-app digital gain for this session only. Normally keep 1× and use the Windows volume above.") /* new */ \
+    X(meter_dbfs_tip,       "峰值电平（dBFS，最近 200 ms）。虚线为 -18 dBFS 参考：对方反馈听感合适的电平约在此附近。", \
+                            "Peak level (dBFS, last 200 ms). The dashed line marks -18 dBFS, near the level reported to sound right.") /* new */ \
+    X(cat_deferred_tx,      "正在发射，设置未发送；草稿已保留，发射结束后自动应用。", \
+                            "Transmitting; the setting was not sent. Your draft is kept and will be applied after TX ends.") /* new */ \
+    X(cat_deferred_hri,     "HRI 正在向电台播放来话，改频率/模式会打断 RF；草稿已保留，来话结束后自动应用。", \
+                            "HRI is playing a call through the radio; changing frequency/mode would interrupt RF. Your draft is kept and will be applied after the call.") /* new */
 // clang-format on
 
 enum class Str : std::uint16_t {

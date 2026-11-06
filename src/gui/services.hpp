@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -133,6 +134,11 @@ struct ChannelEntry {
     dmr_call::CallKind kind{dmr_call::CallKind::group};
     dmr_call::Slot slot{dmr_call::Slot::ts1};
     std::string name{};                         // 可空，UTF-8
+    // R131：channels[].muted / disabled（可选，缺省 false）。
+    // muted：静态组静音——照常接收显示，只是不出声（Engine::set_muted_groups）；不改 RX 策略。
+    // disabled：停用——从 RX 策略移除（动态组另向 BM 发送 TG4000）。
+    bool muted{};
+    bool disabled{};
 };
 
 struct GuiConfig {
@@ -222,8 +228,19 @@ struct IdentityService {
     std::function<void(std::uint32_t source_id, IdentityDone done)> lookup{};
 };
 
+// ---------- Windows 端点音量（R131） ----------
+// 播放/发送滑块直接对应所选 WaveOut / WaveIn 端点的 Windows 主音量（IAudioEndpointVolume，0..1）。
+struct AudioVolumeService {
+    std::function<std::optional<float>(const std::wstring& endpoint_id, std::string& error)> get{};
+    std::function<bool(const std::wstring& endpoint_id, float scalar, std::string& error)> set{};
+    // 订阅外部改动（Windows 设置）；返回句柄析构即注销。回调可在任意线程调用。
+    std::function<std::shared_ptr<void>(const std::wstring& endpoint_id, std::function<void(float scalar)> on_change,
+                                        std::string& error)> watch{};
+};
+
 struct Services {
     DeviceService devices{};
+    AudioVolumeService audio_volume{};
     CatService cat{};
     ConfigService config{};
     BmApiService bm_api{};

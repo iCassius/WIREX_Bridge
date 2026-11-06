@@ -16,6 +16,7 @@
 #include <deque>
 #include <functional>
 #include <future>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -54,6 +55,26 @@ struct ChannelKey {
     }
 };
 
+// ---------------------------------------------------------------- 频道卡片状态机（R131）
+//
+// 每张卡片右上角一个状态徽标，按钮只有“设为PTT”“移除”和一个主操作按钮。
+//
+//   状态                徽标             主按钮      主按钮事件 → 新状态
+//   static_live         静态组           静音        toggle_mute → static_muted（引擎静音输出，仍收听）
+//   static_muted        静音             取消静音    toggle_mute → static_live
+//   dynamic_inactive    动态·未激活      启用        enable → Quick Call；accepted → dynamic_active
+//   dynamic_active      动态·已激活      停用        disable → 移出 RX 策略 + TG4000 → disabled
+//   disabled            已停用（灰卡）   启用        enable → 加回 RX 策略 + Quick Call → dynamic_active
+//   listen              —（私呼/TG4000） 停用        disable → disabled（只改 RX 策略）
+//
+// 其它事件：
+//   - 启动组呼 / Quick Call accepted                   → dynamic_inactive → dynamic_active
+//   - TG4000 accepted（断开该时隙全部动态组）          → 同时隙其它 dynamic_active → dynamic_inactive
+//   - BM 静态组读回包含该 TG                           → dynamic_* → static_live（保留 muted 标志）
+//   - Quick Call 只表示两帧已由本机发出，不表示 BM 已确认（见 R128_NATIVE_GUI“启动组呼”）。
+// muted / disabled 持久化到 config.json channels[].muted / disabled；dynamic_active 只在本次进程内有效。
+enum class ChannelState : std::uint8_t { listen, static_live, static_muted, dynamic_inactive, dynamic_active, disabled };
+
 struct ChannelView {
     services::ChannelEntry entry{};
     ChannelKey key{};
@@ -61,8 +82,10 @@ struct ChannelView {
     std::string tooltip{};
     bool is_tx_target{};
     bool is_tx_active{};
-    bool is_muted{};
+    bool is_muted{};              // 静音输出（照常接收显示）
+    bool is_disabled{};           // 已停用（不在 RX 策略中）
     bool is_static{};
+    ChannelState state{ChannelState::listen};
     bool quick_call_sent{};
     bool quick_call_pending{};
     bool quick_call_allowed{};    // 组呼且不是 TG 4000
@@ -178,12 +201,26 @@ public:
     [[nodiscard]] bool relay_fm_enabled() const noexcept { return config_.relay_fm_enabled; }
     [[nodiscard]] bool relay_fm_supported() const noexcept { return static_cast<bool>(services_.cat.set_squelch_polling); }
     [[nodiscard]] RelayStatus relay_status() const noexcept;
+    // R131 BM 重连冷却：断开后 5 s 内“连接 BM”不可用，返回剩余整秒（向上取整）；0 表示可连接。
+    static constexpr std::chrono::seconds bm_reconnect_cooldown{5};
+    [[nodiscard]] unsigned bm_cooldown_remaining_s() const;
+    // R131 服务器尚未释放上次会话（master_rejected，紧随本进程内一次成功连接后的断开）：
+    // ViewModel 自动重试；返回距下次重试的整秒（0 表示正在重试）。无此状态时为空。
+    [[nodiscard]] std::optional<unsigned> bm_stale_session_retry_s() const;
+    // R131 Windows 端点音量（0..100），未知时为空；error 为最近一次读写失败原因。
+    [[nodiscard]] const std::optional<int>& playback_volume() const noexcept { return playback_volume_.percent; }
+    [[nodiscard]] const std::optional<int>& transmit_volume() const noexcept { return transmit_volume_.percent; }
+    [[nodiscard]] const std::string& playback_volume_error() const noexcept { return playback_volume_.error; }
+    [[nodiscard]] const std::string& transmit_volume_error() const noexcept { return transmit_volume_.error; }
+    // R131 CAT：被门控拒绝、等待自动重试的提示（空表示无）。
+    [[nodiscard]] const std::string& cat_deferred_text() const noexcept { return cat_deferred_text_; }
     void set_font_status(FontStatus status) noexcept { font_status_ = status; }
 
     // 视图可直接编辑的表单状态
     CatForm cat_form{};
+    // 高级：额外数字增益（默认 1×，只在本次运行有效，不写入 config）。主控件是 Windows 端点音量。
     int playback_step{1};
-    int transmit_step{16};
+    int transmit_step{1};
     std::string add_channel_id{};
     int add_channel_kind{0};      // 0 请选择 / 1 单呼 / 2 组呼
 
@@ -196,11 +233,15 @@ public:
     // 静态组频道：先从 BM 移除静态组（保留原 API slot），成功后再取消收听；失败时频道保留。
     // 未设置 API Key 时只取消收听并提示 BM 未改动。
     void remove_static_channel(const ChannelKey& key);
-    void toggle_mute(const ChannelKey& key);     // engine.replace_rx_policy
+    void toggle_mute(const ChannelKey& key);     // 静态组静音（engine.set_muted_groups；不改 RX 策略）
+    void disable_channel(const ChannelKey& key); // 停用：移出 RX 策略；动态组另发 TG4000
+    void enable_channel(const ChannelKey& key);  // 启用：加回 RX 策略；动态组 Quick Call 激活
+    void channel_primary_action(const ChannelKey& key); // 按卡片状态执行主按钮（见状态机）
     void add_channel();                          // engine.replace_rx_policy
     void listen_filtered();                      // 把 filtered_hint() 的 TG/私呼加入频道（已屏蔽则恢复）
     void quick_call(const ChannelKey& key);      // engine.quick_call_join
-    void commit_gains();                         // engine.set_audio_gains
+    void commit_gains();                         // engine.set_audio_gains（高级数字增益，不保存）
+    void commit_volume(bool playback, int percent); // 写所选 WaveOut / WaveIn 端点的 Windows 音量（0..100）
     void set_audio_devices(std::wstring wave_in_endpoint_id, std::wstring wave_out_endpoint_id);
     void set_audio_output(std::wstring wave_out_endpoint_id); // BM-only output selection; no HRI/WaveIn required
     void set_history_target();                   // engine.replace_tx_policy（来话历史所选条目）
@@ -208,6 +249,9 @@ public:
     void toggle_relay_fm();                      // relay.fm_enabled（仅中继开启时可切换）
     // 仅截图验收（--screenshot-relay-demo）：在内存中开启中继与 FM，不写配置。
     void preview_relay_enabled() noexcept;
+    // 仅截图验收（--screenshot-channel-states）：在内存中造出全部卡片状态（不写配置）：
+    // 46001 静态组静音、2345 动态·未激活、3100 动态·已激活、46002 已停用、46010 静态组。
+    void preview_channel_states();
 
     // ---------- 其它服务 ----------
     void cat_toggle_connection();
@@ -258,6 +302,21 @@ private:
     [[nodiscard]] std::optional<talkgroup_routing::TxTarget> current_tx_target() const;
     void push_rx_policy();
     void persist();
+    void push_muted_groups();
+    [[nodiscard]] std::vector<talkgroup_routing::GroupRoute> muted_groups() const;
+    [[nodiscard]] services::ChannelEntry* find_channel(const ChannelKey& key);
+    [[nodiscard]] ChannelState channel_state(const services::ChannelEntry& entry, bool is_static) const;
+    void observe_bm_link();
+    struct VolumeTarget {
+        std::wstring endpoint_id{};
+        std::optional<int> percent{};
+        std::string error{};
+        std::shared_ptr<void> watch{};
+        std::uint64_t generation{};
+    };
+    void sync_volume_target(VolumeTarget& target, const std::wstring& endpoint_id, bool playback);
+    void sync_volume_targets();
+    void retry_deferred_cat();
     void add_channel_entry(services::ChannelEntry entry);
     [[nodiscard]] std::chrono::system_clock::time_point to_wall(std::uint64_t engine_ms) const;
     // BM 静态组 / 身份查询
@@ -295,8 +354,26 @@ private:
     std::array<bool, 3> cat_form_editing_{};
     std::array<std::uint64_t, 3> cat_form_edit_revision_{};
     std::uint64_t last_cat_observed_revision_{};
-    std::set<ChannelKey> muted_{};
     std::set<ChannelKey> quick_call_sent_{};
+    std::optional<ChannelKey> enable_after_policy_{};      // 启用动态组：RX 策略下发后再 Quick Call
+    bool muted_groups_dirty_{};
+    // BM 冷却 / 旧会话重试
+    std::optional<std::chrono::steady_clock::time_point> bm_disconnected_at_{};
+    std::optional<std::chrono::steady_clock::time_point> bm_last_connected_at_{};
+    std::uint64_t bm_connected_profile_generation_{std::numeric_limits<std::uint64_t>::max()};
+    std::optional<std::chrono::steady_clock::time_point> bm_stale_retry_at_{};
+    unsigned bm_stale_retries_{};
+    bool bm_stale_retry_pending_{};
+    engine::BmLink last_bm_link_{engine::BmLink::disabled};
+    bool last_bm_requested_{};
+    // Windows 端点音量
+    VolumeTarget playback_volume_{};
+    VolumeTarget transmit_volume_{};
+    // CAT 门控草稿
+    std::optional<services::CatSettings> cat_deferred_{};
+    std::string cat_deferred_text_{};
+    bool cat_deferred_retried_{};
+    bool cat_retry_now_{};
     std::optional<ChannelKey> quick_call_pending_{};
     StartupGroupActivation startup_group_activation_{};
     std::optional<ChannelKey> startup_group_activation_last_target_{};

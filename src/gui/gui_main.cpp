@@ -367,6 +367,8 @@ struct Options {
     std::optional<std::wstring> screenshot{};
     bool screenshot_modal_remove_static{};  // 仅截图验收：打开“移除静态组”确认弹窗
     bool screenshot_relay_demo{};           // 仅截图验收：开启中继/FM 并注入一段 FM 中继历史（R130）
+    bool screenshot_channel_states{};       // 仅截图验收：造出全部频道卡片状态（R131）
+    bool screenshot_bm_cooldown{};          // 仅截图验收：模拟刚断开 BM，显示冷却倒计时（R131）
     std::optional<std::filesystem::path> config{};
     std::wstring error{};
 };
@@ -404,6 +406,10 @@ Options parse_args() {
             o.screenshot_modal_remove_static = true;
         } else if (a == L"--screenshot-relay-demo") {
             o.screenshot_relay_demo = true;
+        } else if (a == L"--screenshot-channel-states") {
+            o.screenshot_channel_states = true;
+        } else if (a == L"--screenshot-bm-cooldown") {
+            o.screenshot_bm_cooldown = true;
         } else if (a == L"--check-config") {
             o.check_config = true;
         } else if (a == L"--config") {
@@ -434,6 +440,7 @@ Options parse_args() {
             o.error = L"未知参数：" + a +
                       L"\n用法：WirexBridge.exe [--fake [--fake-services]] [--config <json>] [--screenshot <png>] [--lang zh-CN|en-US] "
                       L"[--screenshot-modal remove-static] [--screenshot-relay-demo] "
+                      L"[--screenshot-channel-states] [--screenshot-bm-cooldown] "
                       L"[--check-config]";
             break;
         }
@@ -442,6 +449,9 @@ Options parse_args() {
     if (o.error.empty() && o.fake_services && !o.fake) o.error = L"--fake-services 只能与 --fake 一起使用。";
     if (o.error.empty() && o.screenshot_modal_remove_static && (!o.screenshot || !o.fake)) {
         o.error = L"--screenshot-modal 只能与 --fake 和 --screenshot 一起使用。";
+    }
+    if (o.error.empty() && (o.screenshot_channel_states || o.screenshot_bm_cooldown) && (!o.screenshot || !o.fake)) {
+        o.error = L"--screenshot-channel-states / --screenshot-bm-cooldown 只能与 --fake 和 --screenshot 一起使用。";
     }
     if (o.error.empty() && o.screenshot_relay_demo && (!o.screenshot || !o.fake)) {
         o.error = L"--screenshot-relay-demo 只能与 --fake 和 --screenshot 一起使用。";
@@ -659,6 +669,8 @@ int run(HINSTANCE instance) {
                 vm.preview_relay_enabled();
                 backend->fake->seed_relay_fm_demo();
             }
+            if (opts.screenshot_bm_cooldown && backend->fake) backend->fake->seed_bm_disconnected_demo();
+            bool channel_states_applied = false;
             vm.set_wakeup([wake]() { SetEvent(wake); });
             wirex::gui::AppView view(vm, fonts);
             const ImVec4 clear = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];
@@ -752,6 +764,11 @@ int run(HINSTANCE instance) {
                     vm.static_groups().loaded) {
                     view.preview_static_remove_modal();
                     modal_opened = true;
+                }
+                // 截图验收：静态组读取完成后再造卡片状态（静态组判定依赖读回结果）。
+                if (opts.screenshot_channel_states && !channel_states_applied && vm.static_groups().loaded) {
+                    vm.preview_channel_states();
+                    channel_states_applied = true;
                 }
                 view.draw(g_shell.dpi_scale);
                 const bool mouse_down = ImGui::IsAnyMouseDown();

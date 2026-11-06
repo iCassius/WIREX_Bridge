@@ -117,6 +117,11 @@ private:
     bool audio_selection_pending_{};
     bool pending_radio_audio_change_{};
     bool audio_operation_failed_{};
+    // R131 Windows 音量滑块：拖动中不被外部通知覆盖
+    int playback_volume_edit_{};
+    int transmit_volume_edit_{};
+    bool playback_volume_editing_{};
+    bool transmit_volume_editing_{};
 };
 
 } // namespace wirex::gui

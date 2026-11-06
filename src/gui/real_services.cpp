@@ -288,8 +288,6 @@ CommandResult to_command_result(const app::CatResult& r) {
     case app::CatResultStatus::identity_mismatch: return make_result(CommandStatus::forbidden, r.error_message);
     case app::CatResultStatus::rejected:
         switch (r.error) {
-        case app::CatError::core_not_stopped:
-        case app::CatError::core_not_idle:
         case app::CatError::write_not_authorized:
         case app::CatError::hri_port_conflict: return make_result(CommandStatus::forbidden, r.error_message);
         case app::CatError::invalid_request:
@@ -303,19 +301,16 @@ CommandResult to_command_result(const app::CatResult& r) {
     return make_result(CommandStatus::failed, r.error_message.empty() ? std::string(app::to_string(r.error)) : r.error_message);
 }
 
-// 核心门控输入：进程内 Snapshot 由引擎线程同步发布，读取时即为最新状态，因此“空闲确认时间”取读取时刻。
-// （PS 版用 status.jsonl 的 timestamp_utc_ms，要求 3 s 内；Snapshot 没有 rx 队列深度，以 media_owner==idle 代替。）
+// 核心门控输入（R131）：引擎常驻，只按发射中 / HRI 下行播放中门控，见 app::CatCoreState。
 app::CatCoreState core_state_from(const std::shared_ptr<const engine::Snapshot>& s) {
     app::CatCoreState c;
     if (!s) return c;
     using talkgroup_routing::MediaOwner;
-    c.core_stopped = s->phase == engine::Phase::stopped;
-    c.active_call = s->active_rx_call.has_value();
-    c.tx_active = s->tx_active || s->media_owner == MediaOwner::tx_active || s->media_owner == MediaOwner::tx_draining;
-    c.receive_media_idle = s->media_owner == MediaOwner::idle;
-    if (!c.core_stopped && s->phase == engine::Phase::running && !c.active_call && !c.tx_active && c.receive_media_idle) {
-        c.idle_status_at = steady::now();
-    }
+    c.transmitting = s->tx_active || s->relay_fm_active || s->media_owner == MediaOwner::tx_active ||
+                     s->media_owner == MediaOwner::tx_draining;
+    const bool rx_media = s->media_owner == MediaOwner::rx_active || s->media_owner == MediaOwner::rx_draining ||
+                          s->media_owner == MediaOwner::rx_stopping;
+    c.hri_downlink_active = s->hri_ready && rx_media;
     return c;
 }
 
@@ -728,6 +723,21 @@ private:
         }
         if (!ok) {
             auto cr = to_command_result(r);
+            // 门控（软件侧）在 busy 中带 gate_* 机器码，供 ViewModel 保留草稿并在门控解除后重试。
+            if (r.error == app::CatError::gate_transmitting || r.error == app::CatError::busy) {
+                cr.detail = "cat_gate_transmitting"; // busy 只来自电台 TX; 非 0
+            }
+            if (r.error == app::CatError::gate_hri_downlink) cr.detail = "cat_gate_hri_downlink";
+            // 电台自己拒绝（?; 或读回不符）：如实说明，不归咎于软件门控。
+            if (r.operation == app::CatOperation::set_frequency &&
+                (r.error == app::CatError::radio_rejected_command || r.error == app::CatError::readback_mismatch)) {
+                cr.status = CommandStatus::failed;
+                cr.detail = "电台拒绝修改频率（可能处于 HRI/WIRES-X 模式）。";
+            } else if (r.operation == app::CatOperation::set_mode &&
+                       (r.error == app::CatError::radio_rejected_command || r.error == app::CatError::readback_mismatch)) {
+                cr.status = CommandStatus::failed;
+                cr.detail = "电台拒绝修改模式（可能处于 HRI/WIRES-X 模式）。";
+            }
             if (steps > 1) cr.detail += "（已完成的步骤不回滚）";
             finish(generation, done, cr, [&](services::CatState& s) { s.error = r.error_message; });
             return;
@@ -1145,6 +1155,21 @@ services::Services make_real_services(EngineApi& engine, RealServiceOptions opti
     services::Services sv;
     sv.config = make_config_service(config);
     sv.devices = make_device_service(config);
+    // R131：滑块直接读写所选端点的 Windows 主音量（IAudioEndpointVolume）。
+    sv.audio_volume.get = [](const std::wstring& id, std::string& error) {
+        return app::devices::get_endpoint_volume(narrow(id), error);
+    };
+    sv.audio_volume.set = [](const std::wstring& id, float scalar, std::string& error) {
+        return app::devices::set_endpoint_volume(narrow(id), scalar, error);
+    };
+    sv.audio_volume.watch = [](const std::wstring& id, std::function<void(float)> on_change,
+                               std::string& error) -> std::shared_ptr<void> {
+        auto watch = app::devices::watch_endpoint_volume(narrow(id),
+            [on_change = std::move(on_change)](const app::devices::EndpointVolumeChange& change) {
+                if (!change.self_initiated) on_change(change.scalar);
+            }, error);
+        return std::shared_ptr<void>(std::move(watch));
+    };
 
     auto cat = std::make_shared<CatRunner>(engine, config);
     sv.cat.state = [cat]() { return cat->state(); };

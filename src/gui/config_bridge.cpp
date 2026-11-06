@@ -149,6 +149,8 @@ services::GuiConfig to_gui(const app::AppConfig& config) {
         e.kind = ch.kind == app::ChannelKind::group ? CallKind::group : CallKind::private_call;
         e.slot = to_slot(ch.slot);
         e.name = ch.name;
+        e.muted = ch.muted;
+        e.disabled = ch.disabled;
         g.channels.push_back(std::move(e));
     }
     g.tx_target = parse_channel_key(config.tx_channel_id);
@@ -225,6 +227,8 @@ std::optional<app::AppConfig> apply_gui(const app::AppConfig& base, const servic
         ch.name = trim(e.name);
         if (ch.name.empty()) ch.name = known_channel_name(e.id, e.kind);
         if (ch.name.empty()) ch.name = std::to_string(e.id);
+        ch.muted = e.muted;
+        ch.disabled = e.disabled;
         out.channels.push_back(std::move(ch));
     }
     out.tx_channel_id.clear();
@@ -249,7 +253,8 @@ talkgroup_routing::RxPolicy make_rx_policy(const std::vector<services::ChannelEn
     p.group_mode = talkgroup_routing::GroupMode::selected;
     p.private_mode = talkgroup_routing::PrivateMode::disabled;
     for (const auto& ch : channels) {
-        if (muted_keys.count(channel_key(ch.id, ch.kind, ch.slot)) != 0U) continue;
+        // 停用（disabled）的频道不在 RX 策略中；静音（muted）的仍收听，只在引擎侧静音输出。
+        if (ch.disabled || muted_keys.count(channel_key(ch.id, ch.kind, ch.slot)) != 0U) continue;
         if (ch.kind == CallKind::group) {
             const talkgroup_routing::GroupRoute route{ch.id, ch.slot};
             if (std::find(p.allowed_groups.begin(), p.allowed_groups.end(), route) == p.allowed_groups.end()) {
