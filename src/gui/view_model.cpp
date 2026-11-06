@@ -456,7 +456,24 @@ void ViewModel::request_relay_fm_stop() {
     });
 }
 
+void ViewModel::request_relay_fm_mute(bool muted) {
+    // 静噪 hang 期间静音上行（去掉关门前的尾噪）；未在中继时引擎返回 idempotent。
+    track(Str::op_relay_fm, engine_.relay_fm_mute(muted), [muted](const CommandResult& result) {
+        if (auto log = dev_log()) {
+            log->line("relay", std::string("relay_fm_mute muted=") + (muted ? "1" : "0") + " status=" +
+                                   std::to_string(static_cast<int>(result.status)) + " detail=" + result.detail);
+        }
+    });
+}
+
 void ViewModel::on_squelch(const services::SquelchEvent& event) {
+    if (event.edge == services::SquelchEdge::muted || event.edge == services::SquelchEdge::unmuted) {
+        // 门仍开启（squelch_open_ 不变）；只在中继段内有意义，空闲时不发命令。
+        if (snapshot_->relay_fm_active || pending(Str::op_relay_fm)) {
+            request_relay_fm_mute(event.edge == services::SquelchEdge::muted);
+        }
+        return;
+    }
     if (event.edge == services::SquelchEdge::opened) {
         squelch_open_ = true;
         if (!(config_.relay_enabled && config_.relay_fm_enabled)) return;

@@ -195,10 +195,17 @@ struct Snapshot {
     // R130 增补（只增不改）：FM 中继上行（CAT 静噪触发，经 WaveIn → AMBE → BM）。
     bool relay_fm_active{};
     std::uint64_t relay_fm_started_ms{};   // 相对 clock_origin_ms；relay_fm_active=false 时为 0
+
+    // R131 增补（只增不改）：
+    bool relay_fm_muted{};                 // 中继段内 relay_fm_mute(true) 生效中（上行送静音）
 };
 
 // FM 中继单段上行的最长时长；超时后引擎自动结束本段（end_reason "timeout"）。
 inline constexpr std::uint64_t relay_fm_max_duration_ms = 180000U;
+
+// R131：FM 中继上行在 WaveIn 与 AMBE 管线之间的前瞻延迟。relay_fm_mute(true) 到达时缓冲内尚未送出的样本一并清零，
+// 用来覆盖 CAT 静噪检测（约 100 ms 轮询）之前已采集到的尾噪。只用于 FM 中继，手咪 PTT 不经过该缓冲。
+inline constexpr std::uint64_t kRelayLookaheadMs = 120U;
 
 // relay_fm_started / relay_fm_ended 事件附带的信息。
 struct RelayFmInfo {
@@ -308,6 +315,11 @@ public:
     std::future<CommandResult> relay_fm_start();
     // 结束当前 FM 中继段（end_reason "squelch_closed"）。未在中继时 idempotent。
     std::future<CommandResult> relay_fm_stop();
+
+    // ---------- R131 增补（只增不改） ----------
+    // 中继段内静音/恢复上行（静噪疑似关门/重新开门）。muted=true 时送入管线的样本清零（帧节奏不变），
+    // 前瞻缓冲内尚未送出的部分一并清零；段结束自动恢复。未在中继时 idempotent（relay_fm_not_active）。
+    std::future<CommandResult> relay_fm_mute(bool muted);
 
 private:
     struct Impl;

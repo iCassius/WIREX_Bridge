@@ -401,6 +401,7 @@ struct FakeEngine::Impl {
                                          ended >= state.relay_fm_started_ms ? ended - state.relay_fm_started_ms : 0U};
         push_event(std::move(e));
         state.relay_fm_active = false;
+        state.relay_fm_muted = false;
         state.relay_fm_started_ms = 0U;
         state.tx_active = false;
         state.media_owner = MediaOwner::idle;
@@ -893,6 +894,16 @@ std::future<CommandResult> FakeEngine::relay_fm_stop() {
     });
 }
 
+std::future<CommandResult> FakeEngine::relay_fm_mute(bool muted) {
+    auto* s = impl_.get();
+    return s->command(20ms, [s, muted]() {
+        if (!s->state.relay_fm_active) return result(CommandStatus::idempotent, 0U, "relay_fm_not_active");
+        if (s->state.relay_fm_muted == muted) return result(CommandStatus::idempotent);
+        s->state.relay_fm_muted = muted;
+        return result(CommandStatus::accepted);
+    });
+}
+
 void FakeEngine::seed_relay_fm_demo() {
     auto* s = impl_.get();
     s->post_after(0ms, [s]() {
@@ -1111,6 +1122,17 @@ services::Services make_fake_services(FakeEngine& engine) {
                 open.at = std::chrono::steady_clock::now();
                 open.s_meter = 176U;
                 emit(st, open);
+                engine.post_after(2400ms, [st, epoch]() {
+                    {
+                        std::lock_guard<std::mutex> lock(st->mutex);
+                        if (epoch != st->squelch_epoch) return;
+                    }
+                    services::SquelchEvent muted;
+                    muted.edge = services::SquelchEdge::muted;
+                    muted.at = std::chrono::steady_clock::now();
+                    muted.s_meter = 84U;
+                    emit(st, muted);
+                });
                 engine.post_after(3000ms, [st, &engine, epoch]() {
                     {
                         std::lock_guard<std::mutex> lock(st->mutex);

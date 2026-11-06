@@ -2921,6 +2921,167 @@ void test_relay_fm_transmit_revoked_ends_segment()
           "runtime stops after relay revoke test");
 }
 
+// ---------- R131 FM 中继尾音：静音 + 前瞻延迟 ----------
+
+// 引擎线程 status 钩子记录的上行计数（tx_pipeline_* 为实际送入 AMBE 管线的样本）。
+struct TxProbePoint {
+    std::string event;
+    std::uint64_t audio_samples{};
+    std::uint64_t pipeline_samples{};
+    std::uint64_t pipeline_sum_squares{};
+};
+
+struct TxProbe {
+    std::mutex mutex{};
+    std::vector<TxProbePoint> points{};
+
+    std::optional<TxProbePoint> last(std::string_view event)
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        for (auto it = points.rbegin(); it != points.rend(); ++it) {
+            if (it->event == event) return *it;
+        }
+        return std::nullopt;
+    }
+};
+
+void attach_tx_probe(wirex::engine::StartConfig& config, const std::shared_ptr<TxProbe>& probe)
+{
+    config.diagnostics.status = [probe](const wirex::engine::StatusRecord& record) {
+        std::lock_guard<std::mutex> lock(probe->mutex);
+        probe->points.push_back({std::string(record.event), record.counters.tx_audio_samples,
+                                 record.counters.tx_pipeline_samples,
+                                 record.counters.tx_pipeline_stats.sum_squares});
+        return true;
+    };
+}
+
+void test_relay_fm_mute_zeroes_tail_and_keeps_frame_cadence()
+{
+    LoopbackMaster master(100U);
+    master.reject_auth(false);
+    auto log = std::make_shared<DeviceLog>();
+    log->input_feeds_pcm = true;  // 假采集：±400 方波（增益后 ±6400），代表“语音”，静音后应全部变为 0
+    auto probe = std::make_shared<TxProbe>();
+    wirex::engine::Engine engine(std::make_shared<FakeDevices>(log, FakeOptions{}));
+    auto config = relay_config(master, "offline-relay-mute");
+    attach_tx_probe(config, probe);
+    check(get_within(engine.start(std::move(config)), 5s, "start relay mute").status == CommandStatus::accepted,
+          "runtime starts for relay mute test");
+    check(wait_hri_and_bm_ready(engine), "HRI and BM ready before relay mute");
+    (void)engine.drain_events();
+
+    const auto idle_mute = get_within(engine.relay_fm_mute(true), 2s, "relay_fm_mute without segment");
+    check(idle_mute.status == CommandStatus::idempotent && idle_mute.detail == "relay_fm_not_active",
+          "relay_fm_mute outside a segment is idempotent: " + idle_mute.detail);
+
+    check(get_within(engine.relay_fm_start(), 2s, "relay_fm_start for mute").status == CommandStatus::accepted,
+          "relay starts for mute test");
+    std::this_thread::sleep_for(500ms);  // 语音段
+    check(get_within(engine.relay_fm_mute(true), 2s, "mute #1").status == CommandStatus::accepted,
+          "relay_fm_mute(true) is accepted during the segment");
+    check(engine.snapshot()->relay_fm_muted && engine.snapshot()->relay_fm_active,
+          "snapshot reports relay_fm_muted during the segment");
+    check(get_within(engine.relay_fm_mute(true), 2s, "mute #1 again").status == CommandStatus::idempotent,
+          "repeated mute is idempotent");
+    const auto dmrd_at_mute = master.dmrd_count();
+    std::this_thread::sleep_for(400ms);  // 尾噪段（假采集仍在送非零样本）
+    const auto dmrd_after_mute = master.dmrd_count();
+    check(get_within(engine.relay_fm_mute(false), 2s, "unmute").status == CommandStatus::accepted,
+          "relay_fm_mute(false) restores the uplink");
+    check(!engine.snapshot()->relay_fm_muted, "snapshot clears relay_fm_muted after unmute");
+    std::this_thread::sleep_for(400ms);  // 重新开门后的语音
+    check(get_within(engine.relay_fm_mute(true), 2s, "mute #2").status == CommandStatus::accepted,
+          "second mute (squelch closing again) is accepted");
+    std::this_thread::sleep_for(300ms);
+    check(get_within(engine.relay_fm_stop(), 2s, "relay_fm_stop after mute").status == CommandStatus::accepted,
+          "relay_fm_stop after mute is accepted");
+    const auto ended = wait_relay_event(engine, wirex::engine::EventKind::relay_fm_ended, 2s);
+    check(ended && ended->end_reason == "squelch_closed", "muted segment still ends with squelch_closed");
+    check(wait_for_snapshot(engine, 3s, [](const wirex::engine::Snapshot& s) {
+              return !s.relay_fm_active && !s.relay_fm_muted && !s.tx_active && !s.wave_in_open &&
+                  s.media_owner == wirex::talkgroup_routing::MediaOwner::idle;
+          }), "segment end clears the mute and drains TX (EOT sent)");
+
+    const auto start = probe->last("relay_fm_tx_started");
+    const auto unmuted = probe->last("relay_fm_unmuted");
+    std::optional<TxProbePoint> muted1;
+    std::optional<TxProbePoint> muted2;
+    {
+        std::lock_guard<std::mutex> lock(probe->mutex);
+        for (const auto& point : probe->points) {
+            if (point.event != "relay_fm_muted") continue;
+            if (!muted1) muted1 = point;
+            else muted2 = point;
+        }
+    }
+    const auto stopped = probe->last("tx_audio_draining_after_radio_ptt_release");
+    check(start && muted1 && unmuted && muted2 && stopped, "status probe captured every relay step");
+    if (start && muted1 && unmuted && muted2 && stopped) {
+        // 语音段：前瞻延迟 120 ms 后开始送出非零样本。
+        check(muted1->pipeline_sum_squares > start->pipeline_sum_squares,
+              "voice before the mute reaches the pipeline");
+        check(muted1->audio_samples >= muted1->pipeline_samples &&
+                  muted1->audio_samples - muted1->pipeline_samples <= 120U * 48U + 960U,
+              "lookahead holds back at most ~120 ms of captured audio (held " +
+                  std::to_string(muted1->audio_samples - muted1->pipeline_samples) + ")");
+        // 静音段：样本照常送入（帧节奏不变）但全为 0。
+        check(unmuted->pipeline_sum_squares == muted1->pipeline_sum_squares,
+              "every sample delivered while muted is zero");
+        const auto muted_samples = unmuted->pipeline_samples - muted1->pipeline_samples;
+        check(muted_samples >= 300U * 48U,
+              "muted uplink keeps feeding the pipeline (" + std::to_string(muted_samples) + " samples in ~400 ms)");
+        check(dmrd_after_mute >= dmrd_at_mute + 4U,
+              "DMRD voice bursts keep flowing while muted (" + std::to_string(dmrd_after_mute - dmrd_at_mute) + ")");
+        // 恢复段：重新出现非零样本。
+        check(muted2->pipeline_sum_squares > unmuted->pipeline_sum_squares, "unmute restores the voice");
+        // 第二次静音到结束：缓冲内尾部被丢弃，只送零；捕获计数与送出计数之差不超过一个缓冲。
+        check(stopped->pipeline_sum_squares == muted2->pipeline_sum_squares,
+              "the muted tail (including the lookahead buffer) never reaches the pipeline");
+        check(stopped->pipeline_samples > muted2->pipeline_samples, "frames continue after the second mute");
+        check(stopped->audio_samples - stopped->pipeline_samples <= 120U * 48U + 960U,
+              "end of segment discards at most the lookahead buffer");
+    }
+    check(get_within(engine.relay_fm_start(), 2s, "relay_fm_start after muted segment").status == CommandStatus::accepted,
+          "a new segment after a muted one starts unmuted");
+    check(!engine.snapshot()->relay_fm_muted, "new segment starts unmuted");
+    check(get_within(engine.relay_fm_stop(), 2s, "relay_fm_stop second segment").status == CommandStatus::accepted,
+          "second segment stops");
+    check(get_within(engine.stop(), 5s, "stop after relay mute").status == CommandStatus::accepted,
+          "runtime stops after relay mute test");
+}
+
+void test_mic_ptt_bypasses_relay_lookahead()
+{
+    LoopbackMaster master(100U);
+    master.reject_auth(false);
+    auto log = std::make_shared<DeviceLog>();
+    log->input_feeds_pcm = true;
+    auto probe = std::make_shared<TxProbe>();
+    wirex::engine::Engine engine(std::make_shared<FakeDevices>(log, FakeOptions{}));
+    auto config = relay_config(master, "offline-ptt-no-lookahead");
+    attach_tx_probe(config, probe);
+    check(get_within(engine.start(std::move(config)), 5s, "start mic PTT lookahead").status == CommandStatus::accepted,
+          "runtime starts for mic PTT lookahead test");
+    check(wait_hri_and_bm_ready(engine), "HRI and BM ready before mic PTT");
+    push_x_level(*log, '0');
+    std::this_thread::sleep_for(100ms);
+    push_x_level(*log, '2');
+    check(wait_for_snapshot(engine, 2s, [](const wirex::engine::Snapshot& s) { return s.tx_active && s.wave_in_open; }),
+          "mic PTT starts an uplink");
+    std::this_thread::sleep_for(300ms);
+    push_x_level(*log, '0');
+    check(wait_for_snapshot(engine, 3s, [](const wirex::engine::Snapshot& s) { return !s.tx_active && !s.wave_in_open; }),
+          "mic PTT release drains the uplink");
+    const auto stopped = probe->last("tx_audio_draining_after_radio_ptt_release");
+    check(stopped && stopped->audio_samples > 0U && stopped->audio_samples == stopped->pipeline_samples,
+          "mic PTT sends every captured sample straight to the pipeline (no lookahead delay)");
+    check(get_within(engine.relay_fm_mute(true), 2s, "mute without relay").status == CommandStatus::idempotent,
+          "relay_fm_mute does not affect a mic PTT runtime");
+    check(get_within(engine.stop(), 5s, "stop after mic PTT lookahead").status == CommandStatus::accepted,
+          "runtime stops after mic PTT lookahead test");
+}
+
 void test_destructor_stops_running_engine()
 {
     auto log = std::make_shared<DeviceLog>();
@@ -3021,6 +3182,8 @@ int main()
         test_relay_fm_timeout();
         test_relay_fm_rejected_when_bm_not_ready();
         test_relay_fm_transmit_revoked_ends_segment();
+        test_relay_fm_mute_zeroes_tail_and_keeps_frame_cadence();
+        test_mic_ptt_bypasses_relay_lookahead();
     } catch (const std::exception& error) {
         std::cerr << "FAILED: unexpected exception: " << error.what() << '\n';
         return 1;

@@ -50,6 +50,10 @@ public:
     virtual std::future<engine::CommandResult> relay_fm_stop() {
         return ready_result(engine::CommandStatus::idempotent, "relay_fm_unsupported");
     }
+    // R131：静噪 hang 期间静音上行。默认实现 idempotent。
+    virtual std::future<engine::CommandResult> relay_fm_mute(bool) {
+        return ready_result(engine::CommandStatus::idempotent, "relay_fm_unsupported");
+    }
 
     [[nodiscard]] virtual std::shared_ptr<const engine::Snapshot> snapshot() const = 0;
     [[nodiscard]] virtual std::vector<engine::Event> drain_events(std::size_t max) = 0;
@@ -110,6 +114,7 @@ public:
     }
     std::future<engine::CommandResult> relay_fm_start() override { return engine_.relay_fm_start(); }
     std::future<engine::CommandResult> relay_fm_stop() override { return engine_.relay_fm_stop(); }
+    std::future<engine::CommandResult> relay_fm_mute(bool muted) override { return engine_.relay_fm_mute(muted); }
     [[nodiscard]] std::shared_ptr<const engine::Snapshot> snapshot() const override { return engine_.snapshot(); }
     [[nodiscard]] std::vector<engine::Event> drain_events(std::size_t max) override {
         return engine_.drain_events(max);

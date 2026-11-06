@@ -417,6 +417,13 @@ CommandResult run_loop(Shared& shared, StartConfig config)
     std::uint64_t relay_fm_rejected_busy = 0U;
     const std::uint64_t relay_fm_max_ms = config.relay_fm_max_duration_ms != 0U
         ? config.relay_fm_max_duration_ms : wirex::engine::relay_fm_max_duration_ms;
+    // R131 FM 中继尾音：WaveIn 与管线之间的前瞻延迟（kRelayLookaheadMs）与静音。只在中继段内启用。
+    constexpr std::size_t relay_lookahead_samples =
+        static_cast<std::size_t>(wirex::engine::kRelayLookaheadMs) * 48U;  // 48 kHz 单声道
+    bool relay_fm_muted = false;
+    bool relay_lookahead_active = false;
+    std::vector<std::int16_t> relay_lookahead;
+    relay_lookahead.reserve(relay_lookahead_samples + wirex::bm_voice::max_tx_audio_samples_per_push);
     bool published_tx_active = false;
     BmLink published_bm_link = BmLink::disabled;
     std::uint64_t last_published_ms = 0U;
@@ -484,6 +491,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         next.counters.relay_fm_rejected_busy = relay_fm_rejected_busy;
         next.relay_fm_active = relay_fm_active;
         next.relay_fm_started_ms = relay_fm_active ? relay_fm_started_ms : 0U;
+        next.relay_fm_muted = relay_fm_active && relay_fm_muted;
         next.last_filtered = last_filtered;
         {
             const auto bm_now = bm_session.snapshot();
@@ -846,12 +854,59 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         console(u8"上行已开始，请继续讲话。\n");
         return true;
     };
+    // 实际送入 AMBE 管线的 PCM（手咪直送；FM 中继经前瞻延迟/静音）。
+    auto push_pipeline_pcm = [&](const std::int16_t* samples, std::size_t count) {
+        if (count == 0U) return true;
+        if (!pipeline->push_tx_audio(samples, count, Clock::now())) return false;
+        counters.tx_pipeline_samples += count;
+        wirex::pcm_gain::accumulate(counters.tx_pipeline_stats, wirex::pcm_gain::measure(samples, count));
+        return true;
+    };
+    // 从前瞻缓冲头部送出 count 个样本（静音时送零，帧节奏不变），每次不超过 20 ms。
+    auto relay_lookahead_emit = [&](std::size_t count) {
+        std::array<std::int16_t, wirex::bm_voice::pcm48_samples_per_frame> chunk{};
+        std::size_t offset = 0U;
+        bool ok = true;
+        while (ok && offset < count) {
+            const auto n = std::min(chunk.size(), count - offset);
+            if (relay_fm_muted) {
+                std::fill(chunk.begin(), chunk.begin() + static_cast<std::ptrdiff_t>(n), std::int16_t{0});
+            } else {
+                std::copy(relay_lookahead.begin() + static_cast<std::ptrdiff_t>(offset),
+                          relay_lookahead.begin() + static_cast<std::ptrdiff_t>(offset + n), chunk.begin());
+            }
+            ok = push_pipeline_pcm(chunk.data(), n);
+            offset += n;
+        }
+        relay_lookahead.erase(relay_lookahead.begin(), relay_lookahead.begin() + static_cast<std::ptrdiff_t>(offset));
+        chunk.fill(0);
+        return ok;
+    };
+    auto relay_lookahead_push = [&](const std::int16_t* samples, std::size_t count) {
+        try {
+            relay_lookahead.insert(relay_lookahead.end(), samples, samples + count);
+        } catch (...) {
+            return false;
+        }
+        if (relay_lookahead.size() <= relay_lookahead_samples) return true;
+        return relay_lookahead_emit(relay_lookahead.size() - relay_lookahead_samples);
+    };
+    // 中继段收尾：静音中的尾部直接丢弃（EOT 不再被静音帧推迟）；未静音（超时等）时把剩余语音送出。
+    auto relay_lookahead_flush = [&]() {
+        if (!relay_lookahead_active) return true;
+        bool ok = true;
+        if (!relay_fm_muted && !relay_lookahead.empty()) ok = relay_lookahead_emit(relay_lookahead.size());
+        std::fill(relay_lookahead.begin(), relay_lookahead.end(), std::int16_t{0});
+        relay_lookahead.clear();
+        return ok;
+    };
     // 原 consume_tx_wave_buffer 的 PCM 部分；缓冲长度、重新排队与擦除由 AudioInput 实现负责。
     const AudioInput::Sink consume_tx_pcm = [&](std::int16_t* samples, std::size_t count) {
         if (count == 0U) return true;
         const auto gain = wirex::pcm_gain::apply(samples, count, mic_transmit_gain_milli);
         if (!gain.valid) return false;
-        const auto pushed = pipeline->push_tx_audio(samples, count, Clock::now());
+        const bool pushed = relay_lookahead_active ? relay_lookahead_push(samples, count)
+                                                   : push_pipeline_pcm(samples, count);
         if (!pushed) return false;
         counters.tx_audio_samples += count;
         wirex::pcm_gain::accumulate(counters.tx_pcm_input_stats, gain.before);
@@ -875,6 +930,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         if (succeeded) {
             succeeded = radio_input->take_captured(consume_tx_pcm, false, 100U) == CaptureStatus::ok;
         }
+        if (!relay_lookahead_flush()) succeeded = false;
         const bool closed = radio_input->close();
         radio_input_open = radio_input->is_open();
         record_routed_tx_input_cleanup(closed);
@@ -1000,6 +1056,10 @@ CommandResult run_loop(Shared& shared, StartConfig config)
                                      now_ms >= relay_fm_started_ms ? now_ms - relay_fm_started_ms : 0U};
         relay_fm_active = false;
         relay_fm_started_ms = 0U;
+        relay_fm_muted = false;  // 段结束自动恢复
+        relay_lookahead_active = false;
+        std::fill(relay_lookahead.begin(), relay_lookahead.end(), std::int16_t{0});
+        relay_lookahead.clear();
         (void)pipeline->observe_routed_ptt_release();
         shared.push_event(std::move(event));
         status(std::string("relay_fm_tx_ended_") + std::string(reason));
@@ -1081,6 +1141,9 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             : wirex::talkgroup_routing::TxTarget{call_template.destination_id, call_template.kind, call_template.slot};
         relay_fm_active = true;
         relay_fm_started_ms = elapsed_ms();
+        relay_fm_muted = false;
+        relay_lookahead.clear();
+        relay_lookahead_active = true;  // WaveIn 采集在本次命令之后才开始交付，首块即经过前瞻缓冲
         Event event{};
         event.kind = EventKind::relay_fm_started;
         event.at_ms = relay_fm_started_ms;
@@ -1097,6 +1160,18 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             return CommandResult{CommandStatus::failed, 0U, "relay_fm_end_failed"};
         }
         finish_relay_fm("squelch_closed");
+        return CommandResult{CommandStatus::accepted, 0U, ""};
+    };
+    // R131：静噪疑似关门（hang 期间）静音上行；重新开门恢复。静音时把前瞻缓冲中尚未送出的部分一并清零。
+    auto process_relay_fm_mute = [&](bool muted) -> CommandResult {
+        reconcile_relay_fm();
+        if (!relay_fm_active) return CommandResult{CommandStatus::idempotent, 0U, "relay_fm_not_active"};
+        if (relay_fm_muted == muted) {
+            return CommandResult{CommandStatus::idempotent, 0U, muted ? "relay_fm_already_muted" : "relay_fm_not_muted"};
+        }
+        relay_fm_muted = muted;
+        if (muted) std::fill(relay_lookahead.begin(), relay_lookahead.end(), std::int16_t{0});
+        status(muted ? "relay_fm_muted" : "relay_fm_unmuted");
         return CommandResult{CommandStatus::accepted, 0U, ""};
     };
     process_ptt_observation = [&](const wirex::hri_session::PttObservation& observation) {
@@ -2890,6 +2965,8 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             return process_relay_fm_start();
         case CommandKind::relay_fm_stop:
             return process_relay_fm_stop();
+        case CommandKind::relay_fm_mute:
+            return process_relay_fm_mute(command.flag);
         }
         return CommandResult{CommandStatus::invalid, 0U, "unknown_command"};
     };

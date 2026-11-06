@@ -60,6 +60,7 @@ enum class CommandKind : std::uint8_t {
     manual_ptt_toggle,
     relay_fm_start,   // R130
     relay_fm_stop,    // R130
+    relay_fm_mute,    // R131：flag = muted
 };
 
 struct Command {

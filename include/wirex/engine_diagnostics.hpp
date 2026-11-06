@@ -88,6 +88,10 @@ struct BridgeCounters {
     std::string lcd_source_identity_label_kind{"none"};
     std::uint64_t lcd_source_identity_cache_revision{};
     std::string lcd_source_identity_serial_write_state{"not_sent"};
+    // R131 增补：实际送入 AMBE 管线的上行 PCM（FM 中继为经前瞻延迟/静音后的样本；手咪 PTT 等于增益后样本）。
+    // 只用于诊断与离线测试，不写入 status 行。
+    std::uint64_t tx_pipeline_samples{};
+    pcm_gain::SignalStats tx_pipeline_stats{};
 };
 
 // 一次状态事件的完整原始输入（引用只在回调期间有效）。

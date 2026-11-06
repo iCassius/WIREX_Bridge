@@ -50,6 +50,7 @@ public:
     // R130 FM 中继（简化规则：需 running + BM connected + 允许发射 + 媒体空闲）。
     std::future<engine::CommandResult> relay_fm_start() override;
     std::future<engine::CommandResult> relay_fm_stop() override;
+    std::future<engine::CommandResult> relay_fm_mute(bool muted) override;
     // 仅截图验收：立即注入一段已结束的 FM 中继（relay_fm_started/ended 事件）。
     void seed_relay_fm_demo();
 

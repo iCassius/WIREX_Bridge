@@ -103,7 +103,8 @@ struct CatState {
 // R130 FM 中继静噪检测。CatService 在 CAT 已连接且 set_squelch_polling(true) 时每 100 ms 只读查询一次 `RI0;`
 // （同一会话内顺带读 `SM0;` S 表），交给 app::radio_info::parse 与 SquelchGate；其它查询仍为 1 s 周期。
 // CAT 断开、身份不符或关闭轮询时门控 reset，若门处于开启状态则发出 closed。回调在 CAT 线程触发。
-enum class SquelchEdge : std::uint8_t { opened, closed };
+// R131：门开启期间第一个关门采样发 muted（hang 内疑似关门，上行先静音），hang 内重新开门发 unmuted。
+enum class SquelchEdge : std::uint8_t { opened, closed, muted, unmuted };
 
 struct SquelchEvent {
     SquelchEdge edge{SquelchEdge::closed};
