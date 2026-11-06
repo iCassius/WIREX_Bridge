@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -315,6 +316,63 @@ void test_enumeration_smoke()
               << audio.render_endpoints.size() << " MMDevice capture/render, mmdevice_ok=" << audio.mmdevice_ok << '\n';
 }
 
+// Never sets the volume of a real endpoint: set_endpoint_volume is only called with invalid IDs.
+void test_endpoint_volume_errors()
+{
+    const std::string missing = "{0.0.1.00000000}.{00000000-0000-0000-0000-000000000000}";
+    struct Case { const char* name; std::string id; };
+    const std::vector<Case> cases{
+        {"empty id", ""},
+        {"missing id", missing},
+        {"invalid utf-8", std::string("{0.0.0.00000000}.\xC3\x28")},
+        {"embedded nul", std::string("{0.0.0\0x}", 9)},
+    };
+    for (const Case& c : cases) {
+        std::string error;
+        check(!dev::get_endpoint_volume(c.id, error) && !error.empty(), std::string("get volume rejects ") + c.name);
+        error.clear();
+        check(!dev::set_endpoint_volume(c.id, 0.5F, error) && !error.empty(), std::string("set volume rejects ") + c.name);
+        error.clear();
+        int calls = 0;
+        auto watch = dev::watch_endpoint_volume(c.id, [&calls](const dev::EndpointVolumeChange&) { ++calls; }, error);
+        check(!watch && !error.empty() && calls == 0, std::string("watch volume rejects ") + c.name);
+    }
+    struct ScalarCase { const char* name; float scalar; };
+    const std::vector<ScalarCase> scalars{{"-1", -1.0F}, {"2", 2.0F}, {"0", 0.0F}, {"1", 1.0F}};
+    for (const ScalarCase& c : scalars) {
+        std::string error;
+        check(!dev::set_endpoint_volume(missing, c.scalar, error) && !error.empty(),
+            std::string("set volume with scalar ") + c.name + " on missing id only errors");
+    }
+    std::string error;
+    check(!dev::set_endpoint_volume(missing, std::numeric_limits<float>::quiet_NaN(), error) && !error.empty(),
+        "set volume rejects NaN");
+    error.clear();
+    check(dev::get_endpoint_volume(missing, error) == std::nullopt && error.find("HRESULT 0x") != std::string::npos,
+        "error carries HRESULT");
+    error.clear();
+    check(!dev::watch_endpoint_volume(missing, nullptr, error) && !error.empty(), "watch rejects empty callback");
+}
+
+// Read-only check on real hardware: reads the volume and opens/closes a watch, never sets it.
+void test_endpoint_volume_read_only()
+{
+    std::vector<dev::AudioEndpoint> endpoints;
+    if (!dev::enumerate_mm_endpoints(dev::Direction::render, endpoints) || endpoints.empty()) {
+        std::cout << "INFO: no render endpoint, volume read-only check skipped\n";
+        return;
+    }
+    const std::string& id = endpoints.front().endpoint_id;
+    std::string error;
+    const auto volume = dev::get_endpoint_volume(id, error);
+    check(volume.has_value() && error.empty(), "read render endpoint volume: " + error);
+    if (volume) check(*volume >= 0.0F && *volume <= 1.0F, "render endpoint volume within 0..1");
+    error.clear();
+    auto watch = dev::watch_endpoint_volume(id, [](const dev::EndpointVolumeChange&) {}, error);
+    check(watch != nullptr && error.empty(), "watch render endpoint volume: " + error);
+    watch.reset();
+}
+
 } // namespace
 
 int main()
@@ -326,6 +384,8 @@ int main()
         test_audio_mapping();
         test_audio_selection();
         test_enumeration_smoke();
+        test_endpoint_volume_errors();
+        test_endpoint_volume_read_only();
     } catch (const std::exception& error) {
         std::cerr << "FAIL: unexpected exception: " << error.what() << '\n';
         return 1;

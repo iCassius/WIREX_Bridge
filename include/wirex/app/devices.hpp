@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -179,5 +181,34 @@ struct AudioOutputSelection {
 [[nodiscard]] AudioPair resolve_audio_endpoints(const std::vector<WaveDevice>& inputs,
     const std::vector<WaveDevice>& outputs, std::string_view wave_in_selector, std::string_view wave_out_selector,
     bool hri_identified);
+
+// ---------------------------------------------------------------------------
+// Endpoint master volume (Windows device volume via IAudioEndpointVolume; scalar 0..1).
+// endpoint_id is an MMDevice endpoint ID (UTF-8, same as AudioEndpoint::endpoint_id).
+// Each call initializes COM (MTA) on the calling thread when needed. Failures
+// return nullopt / false / nullptr and write a Chinese message with the HRESULT.
+
+[[nodiscard]] std::optional<float> get_endpoint_volume(std::string_view endpoint_id, std::string& error);
+// `scalar` is clamped to 0..1 (NaN rejected). Uses this module's fixed event context GUID so
+// watchers can tell self-initiated changes apart.
+[[nodiscard]] bool set_endpoint_volume(std::string_view endpoint_id, float scalar, std::string& error);
+
+struct EndpointVolumeChange {
+    float scalar{};         // 0..1
+    bool muted{};
+    bool self_initiated{};  // caused by set_endpoint_volume (guidEventContext equals the fixed GUID)
+};
+
+// Destroying the handle unregisters the notification and releases it; no
+// callbacks are delivered afterwards. Do not destroy it from inside on_change.
+class EndpointVolumeWatch {
+public:
+    virtual ~EndpointVolumeWatch() = default;
+};
+
+// on_change runs on a COM/audio service thread and must be fast and non-blocking;
+// exceptions it throws are swallowed. Returns nullptr and writes error on failure.
+[[nodiscard]] std::unique_ptr<EndpointVolumeWatch> watch_endpoint_volume(std::string_view endpoint_id,
+    std::function<void(const EndpointVolumeChange&)> on_change, std::string& error);
 
 } // namespace wirex::app::devices

@@ -10,6 +10,7 @@
 #include <mmsystem.h>
 #include <mmddk.h>
 #include <mmdeviceapi.h>
+#include <endpointvolume.h>
 #include <propidl.h>
 #include <setupapi.h>
 #include <icu.h>
@@ -17,9 +18,13 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <map>
+#include <mutex>
 
 namespace wirex::app::devices {
 namespace {
@@ -893,6 +898,254 @@ AudioPair resolve_audio_endpoints(const std::vector<WaveDevice>& inputs, const s
         return result;
     }
     return result;
+}
+
+// ---------------------------------------------------------------------------
+// Endpoint master volume
+
+namespace {
+
+// Event context passed to SetMasterVolumeLevelScalar so watchers can recognize
+// changes made by this module. {6F1C2B7E-3D8A-4C55-9E21-57A0B3C4D9F1}
+constexpr GUID volume_event_context{0x6f1c2b7e, 0x3d8a, 0x4c55, {0x9e, 0x21, 0x57, 0xa0, 0xb3, 0xc4, 0xd9, 0xf1}};
+
+void set_hr_error(std::string& error, const char* what, HRESULT hr)
+{
+    char code[16]{};
+    std::snprintf(code, sizeof(code), "0x%08lX", static_cast<unsigned long>(hr));
+    error = std::string(what) + "（HRESULT " + code + "）";
+}
+
+// Strict UTF-8 -> UTF-16; rejects empty input, invalid sequences and embedded NUL.
+bool endpoint_id_to_wide(std::string_view endpoint_id, std::wstring& out, std::string& error)
+{
+    out.clear();
+    if (endpoint_id.empty()) {
+        set_hr_error(error, "音频端点 ID 为空", E_INVALIDARG);
+        return false;
+    }
+    if (endpoint_id.find('\0') != std::string_view::npos ||
+        endpoint_id.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        set_hr_error(error, "音频端点 ID 无效", E_INVALIDARG);
+        return false;
+    }
+    const int length = static_cast<int>(endpoint_id.size());
+    const int required = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, endpoint_id.data(), length, nullptr, 0);
+    if (required <= 0) {
+        set_hr_error(error, "音频端点 ID 不是有效的 UTF-8", HRESULT_FROM_WIN32(GetLastError()));
+        return false;
+    }
+    std::wstring wide(static_cast<std::size_t>(required), L'\0');
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, endpoint_id.data(), length, wide.data(), required) != required) {
+        set_hr_error(error, "音频端点 ID 不是有效的 UTF-8", HRESULT_FROM_WIN32(GetLastError()));
+        return false;
+    }
+    out = std::move(wide);
+    return true;
+}
+
+bool com_ready(const ComScope& com, std::string& error)
+{
+    if (com.usable()) return true;
+    set_hr_error(error, "COM 初始化失败", E_FAIL);
+    return false;
+}
+
+// Resolves endpoint_id to its IAudioEndpointVolume. COM must be usable on the calling thread.
+ComPtr<IAudioEndpointVolume> open_endpoint_volume(std::string_view endpoint_id, std::string& error)
+{
+    std::wstring wide;
+    if (!endpoint_id_to_wide(endpoint_id, wide, error)) return nullptr;
+    ComPtr<IMMDeviceEnumerator> enumerator;
+    HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&enumerator));
+    if (FAILED(hr)) {
+        set_hr_error(error, "无法创建 MMDevice 枚举器", hr);
+        return nullptr;
+    }
+    ComPtr<IMMDevice> device;
+    hr = enumerator->GetDevice(wide.c_str(), &device);
+    if (FAILED(hr) || !device) {
+        set_hr_error(error, "找不到音频端点", FAILED(hr) ? hr : E_POINTER);
+        return nullptr;
+    }
+    ComPtr<IAudioEndpointVolume> volume;
+    hr = device->Activate(__uuidof(IAudioEndpointVolume), CLSCTX_ALL, nullptr,
+        reinterpret_cast<void**>(volume.GetAddressOf()));
+    if (FAILED(hr) || !volume) {
+        set_hr_error(error, "无法打开音频端点音量控制", FAILED(hr) ? hr : E_POINTER);
+        return nullptr;
+    }
+    return volume;
+}
+
+class VolumeCallback final : public IAudioEndpointVolumeCallback {
+public:
+    explicit VolumeCallback(std::function<void(const EndpointVolumeChange&)> on_change)
+        : on_change_(std::move(on_change)) {}
+    VolumeCallback(const VolumeCallback&) = delete;
+    VolumeCallback& operator=(const VolumeCallback&) = delete;
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** object) override
+    {
+        if (object == nullptr) return E_POINTER;
+        if (riid == __uuidof(IUnknown) || riid == __uuidof(IAudioEndpointVolumeCallback)) {
+            *object = static_cast<IAudioEndpointVolumeCallback*>(this);
+            AddRef();
+            return S_OK;
+        }
+        *object = nullptr;
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++references_; }
+    ULONG STDMETHODCALLTYPE Release() override
+    {
+        const ULONG remaining = --references_;
+        if (remaining == 0) delete this;
+        return remaining;
+    }
+
+    HRESULT STDMETHODCALLTYPE OnNotify(PAUDIO_VOLUME_NOTIFICATION_DATA data) override
+    {
+        if (data == nullptr) return E_POINTER;
+        try {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!on_change_) return S_OK;
+            EndpointVolumeChange change;
+            change.scalar = std::clamp(data->fMasterVolume, 0.0F, 1.0F);
+            change.muted = data->bMuted != FALSE;
+            change.self_initiated = IsEqualGUID(data->guidEventContext, volume_event_context) != FALSE;
+            on_change_(change);
+        } catch (...) {
+            // Never let exceptions cross the COM boundary.
+        }
+        return S_OK;
+    }
+
+    // Waits for an in-flight OnNotify to finish; afterwards on_change is never invoked.
+    void disable() noexcept
+    {
+        try {
+            std::lock_guard<std::mutex> lock(mutex_);
+            on_change_ = nullptr;
+        } catch (...) {
+        }
+    }
+
+private:
+    ~VolumeCallback() = default;
+    std::atomic<ULONG> references_{1};
+    std::mutex mutex_;
+    std::function<void(const EndpointVolumeChange&)> on_change_;
+};
+
+// Releases everything acquired by watch_endpoint_volume, in order.
+void release_watch(CO_MTA_USAGE_COOKIE mta, ComPtr<IAudioEndpointVolume>& volume, VolumeCallback* callback,
+    bool registered) noexcept
+{
+    if (registered && volume) (void)volume->UnregisterControlChangeNotify(callback);
+    if (callback != nullptr) {
+        callback->disable();
+        callback->Release();
+    }
+    volume.Reset();
+    if (mta != nullptr) (void)CoDecrementMTAUsage(mta);
+}
+
+class EndpointVolumeWatchImpl final : public EndpointVolumeWatch {
+public:
+    EndpointVolumeWatchImpl(CO_MTA_USAGE_COOKIE mta, ComPtr<IAudioEndpointVolume> volume, VolumeCallback* callback) noexcept
+        : mta_(mta), volume_(std::move(volume)), callback_(callback) {}
+    EndpointVolumeWatchImpl(const EndpointVolumeWatchImpl&) = delete;
+    EndpointVolumeWatchImpl& operator=(const EndpointVolumeWatchImpl&) = delete;
+    ~EndpointVolumeWatchImpl() override { release_watch(mta_, volume_, callback_, true); }
+
+private:
+    CO_MTA_USAGE_COOKIE mta_{};
+    ComPtr<IAudioEndpointVolume> volume_;
+    VolumeCallback* callback_{};
+};
+
+} // namespace
+
+std::optional<float> get_endpoint_volume(std::string_view endpoint_id, std::string& error)
+{
+    error.clear();
+    ComScope com;
+    if (!com_ready(com, error)) return std::nullopt;
+    const ComPtr<IAudioEndpointVolume> volume = open_endpoint_volume(endpoint_id, error);
+    if (!volume) return std::nullopt;
+    float scalar = 0.0F;
+    const HRESULT hr = volume->GetMasterVolumeLevelScalar(&scalar);
+    if (FAILED(hr)) {
+        set_hr_error(error, "读取音频端点音量失败", hr);
+        return std::nullopt;
+    }
+    return std::clamp(scalar, 0.0F, 1.0F);
+}
+
+bool set_endpoint_volume(std::string_view endpoint_id, float scalar, std::string& error)
+{
+    error.clear();
+    if (std::isnan(scalar)) {
+        set_hr_error(error, "音量值无效", E_INVALIDARG);
+        return false;
+    }
+    const float clamped = std::clamp(scalar, 0.0F, 1.0F);
+    ComScope com;
+    if (!com_ready(com, error)) return false;
+    const ComPtr<IAudioEndpointVolume> volume = open_endpoint_volume(endpoint_id, error);
+    if (!volume) return false;
+    const HRESULT hr = volume->SetMasterVolumeLevelScalar(clamped, &volume_event_context);
+    if (FAILED(hr)) {
+        set_hr_error(error, "设置音频端点音量失败", hr);
+        return false;
+    }
+    return true;
+}
+
+std::unique_ptr<EndpointVolumeWatch> watch_endpoint_volume(std::string_view endpoint_id,
+    std::function<void(const EndpointVolumeChange&)> on_change, std::string& error)
+{
+    error.clear();
+    if (!on_change) {
+        set_hr_error(error, "音量变化回调为空", E_INVALIDARG);
+        return nullptr;
+    }
+    ComScope com;
+    if (!com_ready(com, error)) return nullptr;
+    // Keep the MTA alive for the watch's lifetime, independent of the creating thread.
+    CO_MTA_USAGE_COOKIE mta{};
+    HRESULT hr = CoIncrementMTAUsage(&mta);
+    if (FAILED(hr)) {
+        set_hr_error(error, "COM 初始化失败", hr);
+        return nullptr;
+    }
+    ComPtr<IAudioEndpointVolume> volume = open_endpoint_volume(endpoint_id, error);
+    if (!volume) {
+        release_watch(mta, volume, nullptr, false);
+        return nullptr;
+    }
+    VolumeCallback* callback = nullptr;
+    try {
+        callback = new VolumeCallback(std::move(on_change));
+    } catch (...) {
+        release_watch(mta, volume, nullptr, false);
+        set_hr_error(error, "内存不足", E_OUTOFMEMORY);
+        return nullptr;
+    }
+    hr = volume->RegisterControlChangeNotify(callback);
+    if (FAILED(hr)) {
+        release_watch(mta, volume, callback, false);
+        set_hr_error(error, "注册音频端点音量通知失败", hr);
+        return nullptr;
+    }
+    try {
+        return std::make_unique<EndpointVolumeWatchImpl>(mta, std::move(volume), callback);
+    } catch (...) {
+        release_watch(mta, volume, callback, true);
+        set_hr_error(error, "内存不足", E_OUTOFMEMORY);
+        return nullptr;
+    }
 }
 
 } // namespace wirex::app::devices
