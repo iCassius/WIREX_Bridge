@@ -54,8 +54,9 @@ GateEvent SquelchGate::sample(const std::optional<RadioInfo>& info, Clock::time_
     last_good_sample_ = now;
     if (info->tx != TxState::rx) return close_gate();  // 电台在发射：不是来话
     if (info->squelch_open) {
+        const bool was_muted = closed_since_.has_value();
         closed_since_.reset();
-        if (open_) return GateEvent::none;
+        if (open_) return was_muted ? GateEvent::unmuted : GateEvent::none;
         if (++consecutive_open_ >= config_.open_samples) {
             open_ = true;
             consecutive_open_ = 0U;
@@ -65,7 +66,11 @@ GateEvent SquelchGate::sample(const std::optional<RadioInfo>& info, Clock::time_
     }
     consecutive_open_ = 0U;
     if (!open_) return GateEvent::none;
-    if (!closed_since_) closed_since_ = now;
+    if (!closed_since_) {
+        closed_since_ = now;
+        // hang 为 0 时直接关门，不先报 muted。
+        if (config_.hang.count() > 0) return GateEvent::muted;
+    }
     if (now - *closed_since_ >= config_.hang) return close_gate();
     return GateEvent::none;
 }
