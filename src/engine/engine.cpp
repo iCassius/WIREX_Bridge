@@ -483,6 +483,22 @@ std::future<CommandResult> Engine::relay_fm_stop()
     return impl_->enqueue(std::move(command));
 }
 
+std::future<CommandResult> Engine::set_muted_groups(std::vector<talkgroup_routing::GroupRoute> groups)
+{
+    Command command{};
+    command.kind = CommandKind::set_muted_groups;
+    command.groups = std::move(groups);
+    return impl_->enqueue(std::move(command));
+}
+
+std::future<CommandResult> Engine::disconnect_dynamic_groups(dmr_call::Slot slot)
+{
+    Command command{};
+    command.kind = CommandKind::disconnect_dynamic_groups;
+    command.group = talkgroup_routing::GroupRoute{4000U, slot};
+    return impl_->enqueue(std::move(command));
+}
+
 std::shared_ptr<const Snapshot> Engine::snapshot() const
 {
     std::lock_guard<std::mutex> lock(impl_->shared->mutex);

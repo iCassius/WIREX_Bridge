@@ -99,6 +99,8 @@ struct DeviceLog {
     std::atomic<bool> input_feeds_pcm{false};
     std::mutex x_mutex{};
     std::deque<char> pending_x_levels{};
+    // R131 静音组测试：FakeOutput::submit 收到含非零样本的帧时 +1。
+    std::atomic<int> output_nonzero_frames{0};
 };
 
 enum class FakeHriBehavior {
@@ -297,11 +299,14 @@ public:
         return true;
     }
     bool has_capacity() noexcept override { return open_; }
-    bool submit(const std::int16_t*, std::size_t, std::uint64_t generation) noexcept override
+    bool submit(const std::int16_t* pcm, std::size_t sample_count, std::uint64_t generation) noexcept override
     {
         if (!open_ || !submit_succeeds_) return false;
         completed_.emplace_back(generation, 1U);
         ++log_->output_submitted;
+        if (pcm != nullptr && std::any_of(pcm, pcm + sample_count, [](std::int16_t sample) { return sample != 0; })) {
+            ++log_->output_nonzero_frames;
+        }
         return true;
     }
     bool all_drained() noexcept override { return log_->output_drained.load() && completed_.empty(); }
@@ -452,6 +457,8 @@ public:
     [[nodiscard]] unsigned config_count() const noexcept { return config_count_.load(); }
     [[nodiscard]] unsigned disconnect_count() const noexcept { return disconnect_count_.load(); }
     [[nodiscard]] unsigned dmrd_count() const noexcept { return dmrd_count_.load(); }
+    // R131：目标为 TG4000 的 DMRD 数（DMRD 布局：marker 4 + seq 1 + src 3 + dst 3）。
+    [[nodiscard]] unsigned dmrd_tg4000_count() const noexcept { return dmrd_tg4000_count_.load(); }
     void reject_auth(bool value) noexcept { reject_auth_ = value; }
     [[nodiscard]] bool send_downlink(const wirex::dmr_call::TxPacket& packet) noexcept
     {
@@ -504,6 +511,12 @@ private:
                 }
             } else if (marker == "DMRD") {
                 ++dmrd_count_;
+                if (packet.size() >= 11U) {
+                    const auto byte_at = [&](std::size_t index) {
+                        return static_cast<std::uint32_t>(static_cast<unsigned char>(packet[index]));
+                    };
+                    if (((byte_at(8U) << 16U) | (byte_at(9U) << 8U) | byte_at(10U)) == 4000U) ++dmrd_tg4000_count_;
+                }
             } else if (packet.size() >= 5U && packet.substr(0U, 5U) == "RPTCL") {
                 ++disconnect_count_;
             } else if (marker == "RPTC") {
@@ -540,6 +553,7 @@ private:
     std::atomic<unsigned> config_count_{0U};
     std::atomic<unsigned> disconnect_count_{0U};
     std::atomic<unsigned> dmrd_count_{0U};
+    std::atomic<unsigned> dmrd_tg4000_count_{0U};
     std::mutex remote_mutex_{};
     sockaddr_in remote_{};
     bool remote_valid_{};
@@ -1845,6 +1859,116 @@ void test_bm_only_local_playback_quick_call_and_reconnect()
           "BM-only playback runtime shuts down cleanly after local output loss");
 }
 
+// R131：静音组的来话照常发布（active_rx_call / 事件），但提交给 WaveOut 的 PCM 全为 0；解除静音后恢复出声。
+void test_muted_group_call_is_visible_but_silent()
+{
+    LoopbackMaster master(100U);
+    master.reject_auth(false);
+    auto log = std::make_shared<DeviceLog>();
+    wirex::engine::Engine engine(std::make_shared<FakeDevices>(log, FakeOptions{}));
+    auto config = make_bm_only_config(master, L"fake-output-muted");
+    check(get_within(engine.start(std::move(config)), 5s, "start BM-only muted-group runtime").status ==
+              CommandStatus::accepted,
+          "muted-group runtime starts with a selected WaveOut");
+    check(get_within(engine.set_bm_connection(true, 1U), 2s, "connect muted-group runtime").status ==
+              CommandStatus::accepted,
+          "muted-group runtime accepts its BM connection request");
+    const auto connected_deadline = std::chrono::steady_clock::now() + 4s;
+    while (std::chrono::steady_clock::now() < connected_deadline &&
+           engine.snapshot()->bm_link != wirex::engine::BmLink::connected) std::this_thread::sleep_for(5ms);
+    check(engine.snapshot()->bm_link == wirex::engine::BmLink::connected,
+          "muted-group runtime reaches BM ready");
+
+    const auto invalid = get_within(engine.set_muted_groups({{0U, wirex::dmr_call::Slot::ts2}}), 2s,
+                                    "reject invalid muted group");
+    check(invalid.status == CommandStatus::invalid && invalid.detail == "invalid_muted_group",
+          "set_muted_groups rejects destination_id 0");
+    const auto muted = get_within(engine.set_muted_groups({{91U, wirex::dmr_call::Slot::ts2},
+                                                           {91U, wirex::dmr_call::Slot::ts2}}),
+                                  2s, "mute TG91 TS2");
+    check(muted.status == CommandStatus::accepted && muted.revision == 1U &&
+              engine.snapshot()->muted_groups_revision == 1U,
+          "set_muted_groups accepts a new set, merges duplicates and publishes its revision");
+    const auto repeated = get_within(engine.set_muted_groups({{91U, wirex::dmr_call::Slot::ts2}}), 2s,
+                                     "repeat TG91 TS2 mute");
+    check(repeated.status == CommandStatus::idempotent && repeated.revision == 1U,
+          "set_muted_groups with the same set is idempotent");
+
+    // 非静音的三角波 PCM，保证解码后非零。
+    wirex::dmr_vocoder::Encoder encoder;
+    wirex::dmr_vocoder::PcmFrame tone{};
+    for (std::size_t index = 0U; index < tone.size(); ++index) {
+        const auto phase = static_cast<int>(index % 20U);
+        tone[index] = static_cast<std::int16_t>((phase < 10 ? phase : 20 - phase) * 1600 - 8000);
+    }
+    wirex::dmr_call::AmbeVoiceBurst voice{};
+    for (std::size_t index = 0U; index < wirex::dmr_call::codewords_per_burst; ++index) {
+        const auto codeword = encoder.encode(tone);
+        std::copy(codeword.begin(), codeword.end(),
+                  voice.begin() + static_cast<std::ptrdiff_t>(index * codeword.size()));
+    }
+
+    const auto run_call = [&](std::uint8_t stream_tail, const char* label) {
+        wirex::dmr_call::Transmitter transmitter;
+        check(send_test_downlink_header(master, transmitter, stream_tail), label);
+        std::this_thread::sleep_for(60ms);
+        bool saw_active = false;
+        for (std::size_t index = 0U; index < 7U; ++index) {
+            check(send_test_downlink_voice(master, transmitter, voice), label);
+            if (index == 1U) {
+                saw_active = wait_for_local_rx_active(engine, 1s);
+                const auto active = engine.snapshot();
+                saw_active = saw_active && active->active_rx_call &&
+                    active->active_rx_call->destination_id == 91U &&
+                    active->active_rx_call->slot == wirex::dmr_call::Slot::ts2;
+            }
+            std::this_thread::sleep_for(60ms);
+        }
+        check(send_test_downlink_terminator(master, transmitter), label);
+        const auto ended_before = engine.snapshot()->counters.calls_ended;
+        check(wait_for_local_rx_idle(engine, ended_before, 4s), label);
+        bool saw_start = false;
+        bool saw_end = false;
+        for (const auto& event : engine.drain_events(1024U)) {
+            saw_start = saw_start || event.kind == wirex::engine::EventKind::rx_call_started;
+            saw_end = saw_end || event.kind == wirex::engine::EventKind::rx_call_ended;
+        }
+        return saw_active && saw_start && saw_end;
+    };
+
+    check(run_call(51U, "muted TG91 TS2 downlink call"),
+          "a muted group call is still published as active_rx_call with start/end events");
+    check(log->output_submitted.load() > 0 && log->output_nonzero_frames.load() == 0,
+          "muted group playback is still submitted to WaveOut but every PCM sample is zero");
+
+    const auto cleared = get_within(engine.set_muted_groups({}), 2s, "clear muted groups");
+    check(cleared.status == CommandStatus::accepted && cleared.revision == 2U,
+          "clearing the muted set is accepted");
+    const auto submitted_before = log->output_submitted.load();
+    check(run_call(52U, "unmuted TG91 TS2 downlink call"),
+          "an unmuted group call is published as before");
+    check(log->output_submitted.load() > submitted_before && log->output_nonzero_frames.load() > 0,
+          "after clearing the muted set the group call PCM is audible again");
+
+    // R131：TG4000 动态组断开走专用命令；quick_call_join 对 4000 仍然禁止。
+    const auto forbidden = get_within(engine.quick_call_join({4000U, wirex::dmr_call::Slot::ts2}), 2s,
+                                      "quick_call_join TG4000");
+    check(forbidden.status == CommandStatus::forbidden && forbidden.detail == "disconnect_group_forbidden",
+          "quick_call_join still forbids TG4000");
+    const auto tg4000_before = master.dmrd_tg4000_count();
+    const auto disconnected = get_within(engine.disconnect_dynamic_groups(wirex::dmr_call::Slot::ts2), 2s,
+                                         "disconnect dynamic groups TS2");
+    check(disconnected.status == CommandStatus::accepted && disconnected.revision == 2U,
+          "disconnect_dynamic_groups sends TG4000 header and terminator and returns accepted");
+    const auto tg4000_deadline = std::chrono::steady_clock::now() + 2s;
+    while (std::chrono::steady_clock::now() < tg4000_deadline &&
+           master.dmrd_tg4000_count() < tg4000_before + 2U) std::this_thread::sleep_for(5ms);
+    check(master.dmrd_tg4000_count() >= tg4000_before + 2U,
+          "fake Master receives two DMRD datagrams addressed to TG4000");
+    check(get_within(engine.stop(), 5s, "stop muted-group runtime").status == CommandStatus::accepted,
+          "muted-group runtime shuts down cleanly");
+}
+
 void test_bm_only_unavailable_output_still_displays_and_drains()
 {
     LoopbackMaster master(100U);
@@ -3021,6 +3145,7 @@ int main()
         test_relay_fm_timeout();
         test_relay_fm_rejected_when_bm_not_ready();
         test_relay_fm_transmit_revoked_ends_segment();
+        test_muted_group_call_is_visible_but_silent();
     } catch (const std::exception& error) {
         std::cerr << "FAILED: unexpected exception: " << error.what() << '\n';
         return 1;

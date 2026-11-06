@@ -228,7 +228,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
     }
     auto& bm_session = bm_connection->session();
     auto& transport = bm_connection->transport();
-    std::function<CommandResult(const wirex::talkgroup_routing::GroupRoute&)> process_quick_call;
+    std::function<CommandResult(const wirex::talkgroup_routing::GroupRoute&, bool)> process_quick_call;
     PttGate ptt_gate;
     std::function<void(PttAction, std::string_view)> handle_ptt_gate_action;
     std::function<void()> synchronize_ptt_gate;
@@ -410,6 +410,16 @@ CommandResult run_loop(Shared& shared, StartConfig config)
 
     // ---------- 快照与事件发布 ----------
     std::optional<CallInfo> published_rx_call;
+    // R131 按组静音输出：已排序去重的 (TG, 时隙) 集合；当前来话命中时播放 PCM 清零，来话发布不变。
+    std::vector<wirex::talkgroup_routing::GroupRoute> muted_groups;
+    std::uint64_t muted_groups_revision = 0U;
+    auto published_rx_call_muted = [&]() {
+        if (!published_rx_call || published_rx_call->kind != wirex::dmr_call::CallKind::group) return false;
+        return std::any_of(muted_groups.begin(), muted_groups.end(), [&](const auto& group) {
+            return group.destination_id == published_rx_call->destination_id &&
+                group.slot == published_rx_call->slot;
+        });
+    };
     // R130 FM 中继：一段中继上行与手咪 PTT 共用同一个 Router PTT lease（begin_routed_tx），同一时刻只有一个。
     bool relay_fm_active = false;
     std::uint64_t relay_fm_started_ms = 0U;
@@ -484,6 +494,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         next.counters.relay_fm_rejected_busy = relay_fm_rejected_busy;
         next.relay_fm_active = relay_fm_active;
         next.relay_fm_started_ms = relay_fm_active ? relay_fm_started_ms : 0U;
+        next.muted_groups_revision = muted_groups_revision;
         next.last_filtered = last_filtered;
         {
             const auto bm_now = bm_session.snapshot();
@@ -2229,7 +2240,9 @@ CommandResult run_loop(Shared& shared, StartConfig config)
     };
 
     // 结果映射与 control-v2 Dispatcher 对 QuickCallStatus 的错误码一致；revision 字段携带已发帧数。
-    process_quick_call = [&](const wirex::talkgroup_routing::GroupRoute& group) -> CommandResult {
+    // disconnect=true（R131）：改用 TG4000 断开计划，其余门控、发送与结果完全相同。
+    process_quick_call = [&](const wirex::talkgroup_routing::GroupRoute& group,
+                             bool disconnect) -> CommandResult {
         const auto pipeline_state = pipeline->snapshot();
         const auto routing_state = pipeline->routing_snapshot().router;
         const auto hri_stream_state = stream_session->snapshot();
@@ -2264,9 +2277,13 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         std::array<std::uint8_t, 4U> stream_id{};
         if (!random_stream_id(stream_id)) return CommandResult{CommandStatus::failed, 0U, "quick_call_send_failed"};
 
-        const auto plan_result = wirex::quick_call::make_group_plan(
-            call_template.source_id, call_template.gateway_id, group,
-            call_template.color_code, stream_id);
+        const auto plan_result = disconnect
+            ? wirex::quick_call::make_disconnect_plan(
+                  call_template.source_id, call_template.gateway_id, group.slot,
+                  call_template.color_code, stream_id)
+            : wirex::quick_call::make_group_plan(
+                  call_template.source_id, call_template.gateway_id, group,
+                  call_template.color_code, stream_id);
         if (!plan_result) {
             return plan_result.error == wirex::quick_call::PlanError::disconnect_group_forbidden
                 ? CommandResult{CommandStatus::forbidden, 0U, "disconnect_group_forbidden"}
@@ -2495,7 +2512,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             return CommandResult{policy_status(update.status), update.revision, policy_detail(update.status)};
         }
         case CommandKind::quick_call_join:
-            return process_quick_call(command.group);
+            return process_quick_call(command.group, false);
         case CommandKind::set_audio_gains:
             // 命令与 PCM 消费在同一线程：两个值在下一块 WaveIn/WaveOut 处理前同时生效。
             if (!pcm_gain::supported_gain(command.first) || !pcm_gain::supported_gain(command.second)) {
@@ -2890,6 +2907,31 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             return process_relay_fm_start();
         case CommandKind::relay_fm_stop:
             return process_relay_fm_stop();
+        case CommandKind::set_muted_groups: {
+            auto requested = std::move(command.groups);
+            for (const auto& group : requested) {
+                if (group.destination_id == 0U || group.destination_id > 16777215U) {
+                    return CommandResult{CommandStatus::invalid, muted_groups_revision, "invalid_muted_group"};
+                }
+            }
+            const auto key = [](const wirex::talkgroup_routing::GroupRoute& group) {
+                return std::pair{group.destination_id, static_cast<unsigned>(group.slot)};
+            };
+            std::sort(requested.begin(), requested.end(),
+                      [&](const auto& left, const auto& right) { return key(left) < key(right); });
+            requested.erase(std::unique(requested.begin(), requested.end(),
+                                        [&](const auto& left, const auto& right) { return key(left) == key(right); }),
+                            requested.end());
+            const bool same = requested.size() == muted_groups.size() &&
+                std::equal(requested.begin(), requested.end(), muted_groups.begin(),
+                           [&](const auto& left, const auto& right) { return key(left) == key(right); });
+            if (same) return CommandResult{CommandStatus::idempotent, muted_groups_revision, ""};
+            muted_groups = std::move(requested);
+            ++muted_groups_revision;
+            return CommandResult{CommandStatus::accepted, muted_groups_revision, ""};
+        }
+        case CommandKind::disconnect_dynamic_groups:
+            return process_quick_call(command.group, true);
         }
         return CommandResult{CommandStatus::invalid, 0U, "unknown_command"};
     };
@@ -3401,6 +3443,9 @@ CommandResult run_loop(Shared& shared, StartConfig config)
                     }
                     const auto gain = wirex::pcm_gain::apply(
                         frame.pcm.data(), frame.sample_count, radio_playback_gain_milli);
+                    // R131：静音组只把输出 PCM 清零，仍照常提交以保持播放时序、ack 与排空逻辑。
+                    const bool muted_output = published_rx_call_muted();
+                    if (muted_output) SecureZeroMemory(frame.pcm.data(), sizeof(frame.pcm));
                     const bool queued = gain.valid &&
                         radio_output->submit(frame.pcm.data(), frame.sample_count, frame.generation);
                     if (queued) {
@@ -3412,7 +3457,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
                         }
                         wirex::pcm_gain::accumulate(counters.rx_pcm_input_stats, gain.before);
                         wirex::pcm_gain::accumulate(counters.rx_pcm_gained_stats, gain.after);
-                        rx_peak_window.push(peak_unit(gain.after.peak), Clock::now());
+                        rx_peak_window.push(muted_output ? 0.0F : peak_unit(gain.after.peak), Clock::now());
                         if (gain.clipped_samples >
                             std::numeric_limits<std::uint64_t>::max() - counters.rx_pcm_clipped_samples) {
                             counters.rx_pcm_clipped_samples = std::numeric_limits<std::uint64_t>::max();

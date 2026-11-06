@@ -195,6 +195,9 @@ struct Snapshot {
     // R130 增补（只增不改）：FM 中继上行（CAT 静噪触发，经 WaveIn → AMBE → BM）。
     bool relay_fm_active{};
     std::uint64_t relay_fm_started_ms{};   // 相对 clock_origin_ms；relay_fm_active=false 时为 0
+
+    // R131 增补（只增不改）：按组静音输出。set_muted_groups 集合变化时 +1。
+    std::uint64_t muted_groups_revision{};
 };
 
 // FM 中继单段上行的最长时长；超时后引擎自动结束本段（end_reason "timeout"）。
@@ -308,6 +311,18 @@ public:
     std::future<CommandResult> relay_fm_start();
     // 结束当前 FM 中继段（end_reason "squelch_closed"）。未在中继时 idempotent。
     std::future<CommandResult> relay_fm_stop();
+
+    // ---------- R131 增补（只增不改）：按组静音输出 ----------
+    // 整体替换静音集合（重复项合并）。只影响组呼：当前来话 kind==group 且 destination_id、slot 匹配时，
+    // 播放 PCM 清零（本机 WaveOut 与 HRI 下行同经 radio_output，均不出声）；来话照常接收与发布
+    // （active_rx_call、rx_call_started/ended 事件不变），不改 RX/TX 策略。
+    //   accepted（集合变化，revision = Snapshot::muted_groups_revision）；idempotent（集合相同）；
+    //   invalid "invalid_muted_group"（destination_id==0 或 >16777215）。
+    std::future<CommandResult> set_muted_groups(std::vector<talkgroup_routing::GroupRoute> groups);
+    // 向 BM 发送 TG4000 组呼 header+terminator，断开该时隙全部动态组。就绪/忙碌门控与返回码与
+    // quick_call_join 完全一致（accepted；busy "media_busy"；not_ready "quick_call_not_ready"；
+    // failed "quick_call_send_failed" / "quick_call_partial_send"）；结果同样推送 quick_call_result 事件。
+    std::future<CommandResult> disconnect_dynamic_groups(dmr_call::Slot slot);
 
 private:
     struct Impl;

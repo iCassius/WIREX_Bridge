@@ -60,6 +60,8 @@ enum class CommandKind : std::uint8_t {
     manual_ptt_toggle,
     relay_fm_start,   // R130
     relay_fm_stop,    // R130
+    set_muted_groups, // R131
+    disconnect_dynamic_groups, // R131
 };
 
 struct Command {
@@ -76,6 +78,7 @@ struct Command {
     talkgroup_routing::GroupRoute group{};
     std::optional<std::string> callsign{};
     std::promise<CommandResult> promise{};
+    std::vector<talkgroup_routing::GroupRoute> groups{};  // R131 set_muted_groups
 };
 
 struct StopRequest {

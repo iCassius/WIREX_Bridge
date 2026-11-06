@@ -90,6 +90,56 @@ struct PlanResult {
     return result;
 }
 
+// R131 增补：TG4000 断开计划（停用该时隙全部动态组）。帧结构与 make_group_plan 相同，目标固定为 4000，
+// 不做 disconnect_group_forbidden 检查。make_group_plan 对 4000 仍然禁止。
+inline constexpr std::uint32_t disconnect_group_id = 4000U;
+
+[[nodiscard]] inline PlanResult make_disconnect_plan(std::uint32_t source_id,
+                                                     std::uint32_t gateway_id,
+                                                     dmr_call::Slot slot,
+                                                     std::uint8_t color_code,
+                                                     const std::array<std::uint8_t, 4U>& stream_id) noexcept
+{
+    PlanResult result{};
+    if (source_id == 0U || source_id > dmrd::max_id24) {
+        result.error = PlanError::invalid_source_id;
+        return result;
+    }
+    if (slot != dmr_call::Slot::ts1 && slot != dmr_call::Slot::ts2) {
+        result.error = PlanError::invalid_slot;
+        return result;
+    }
+    if (color_code > 15U) {
+        result.error = PlanError::invalid_color_code;
+        return result;
+    }
+
+    dmr_call::CallConfig call{};
+    call.source_id = source_id;
+    call.destination_id = disconnect_group_id;
+    call.gateway_id = gateway_id;
+    call.stream_id = stream_id;
+    call.slot = slot;
+    call.kind = dmr_call::CallKind::group;
+    call.color_code = color_code;
+
+    dmr_call::Transmitter transmitter;
+    const auto header = transmitter.start(call);
+    if (!header) {
+        result.error = PlanError::transmitter_failure;
+        return result;
+    }
+    const auto terminator = transmitter.finish();
+    if (!terminator) {
+        result.error = PlanError::transmitter_failure;
+        return result;
+    }
+    result.plan.group = talkgroup_routing::GroupRoute{disconnect_group_id, slot};
+    result.plan.frames[0U] = header.packet;
+    result.plan.frames[1U] = terminator.packet;
+    return result;
+}
+
 enum class GateStatus : std::uint8_t {
     ready,
     not_ready,
