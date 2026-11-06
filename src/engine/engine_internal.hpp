@@ -62,6 +62,7 @@ enum class CommandKind : std::uint8_t {
     relay_fm_stop,    // R130
     set_muted_groups, // R131
     disconnect_dynamic_groups, // R131
+    relay_fm_mute,    // R131：flag = muted
 };
 
 struct Command {

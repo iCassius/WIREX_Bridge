@@ -43,7 +43,10 @@ public:
     std::future<CommandResult> connect_radio(wirex::engine::RadioStartConfig config) override {
         return engine_.connect_radio(std::move(config));
     }
-    std::future<CommandResult> disconnect_radio() override { return engine_.disconnect_radio(); }
+    std::future<CommandResult> disconnect_radio() override {
+        ++disconnect_calls;
+        return engine_.disconnect_radio();
+    }
     std::future<CommandResult> replace_rx_policy(std::uint64_t revision,
                                                   wirex::talkgroup_routing::RxPolicy policy) override {
         return engine_.replace_rx_policy(revision, std::move(policy));
@@ -73,6 +76,7 @@ public:
     void set_wakeup(std::function<void()> wakeup) override { engine_.set_wakeup(std::move(wakeup)); }
 
     std::string configured_password{}; // test-only observation; never printed
+    int disconnect_calls{};
 
 private:
     wirex::gui::FakeEngine& engine_;
@@ -210,10 +214,46 @@ void test_empty_bm_profile_does_not_block_radio_and_startup_stop_cancels_only_ra
 
 } // namespace
 
+// R131：HRI 掉线后引擎自动重连；界面提示 hri_lost/hri_restored，重连期间“断开”会发 disconnect_radio 停止重连。
+void test_hri_auto_reconnect_wiring()
+{
+    wirex::gui::FakeEngine fake;
+    RecordingEngine engine(fake);
+    auto services = wirex::gui::make_fake_services(fake);
+    install_config(services, usable_config());
+    wirex::gui::ViewModel vm(engine, std::move(services), false);
+    check(pump_until(vm, [&]() {
+        return vm.snapshot().phase == wirex::engine::Phase::running && vm.snapshot().hri_ready &&
+            vm.snapshot().bm_link == wirex::engine::BmLink::connected;
+    }), "fake radio and BM connect before the HRI loss");
+
+    fake.simulate_hri_lost("hri_y_ack_timeout");
+    check(pump_until(vm, [&]() { return vm.snapshot().hri_reconnecting && !vm.snapshot().serial_open; }),
+          "snapshot reports hri_reconnecting after hri_lost");
+    check(!vm.transient_failed() && vm.transient_text().find("hri_y_ack_timeout") != std::string::npos,
+          "hri_lost shows a non-error reconnect notice with the reason");
+    fake.simulate_hri_restored();
+    check(pump_until(vm, [&]() { return vm.snapshot().hri_ready && !vm.snapshot().hri_reconnecting; }),
+          "hri_restored brings hri_ready back");
+    check(vm.transient_text() == wirex::gui::tr(wirex::gui::Str::hri_restored), "hri_restored notice is shown");
+
+    fake.simulate_hri_lost("serial_transport_error");
+    check(pump_until(vm, [&]() { return vm.snapshot().hri_reconnecting; }), "second loss reconnects again");
+    const int before = engine.disconnect_calls;
+    vm.stop();
+    check(engine.disconnect_calls == before + 1,
+          "stop() during reconnect sends disconnect_radio even though serial_open is false");
+    check(pump_until(vm, [&]() {
+        return !vm.pending(wirex::gui::Str::op_stop) && !vm.snapshot().hri_reconnecting;
+    }), "user disconnect ends the reconnect");
+    check(vm.snapshot().bm_link == wirex::engine::BmLink::connected, "BM stays connected through the reconnect");
+}
+
 int main()
 {
     test_production_mode_autostarts_independent_services_and_radio_stop_keeps_bm();
     test_empty_bm_profile_does_not_block_radio_and_startup_stop_cancels_only_radio();
+    test_hri_auto_reconnect_wiring();
     std::cout << "PASS: " << assertions << " VM radio/BM lifecycle assertions\n";
     return EXIT_SUCCESS;
 }

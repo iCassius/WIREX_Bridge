@@ -50,6 +50,10 @@ public:
     virtual std::future<engine::CommandResult> relay_fm_stop() {
         return ready_result(engine::CommandStatus::idempotent, "relay_fm_unsupported");
     }
+    // R131：静噪 hang 期间静音上行。默认实现 idempotent。
+    virtual std::future<engine::CommandResult> relay_fm_mute(bool) {
+        return ready_result(engine::CommandStatus::idempotent, "relay_fm_unsupported");
+    }
 
     // R131 按组静音输出 / TG4000 断开动态组。默认实现返回 forbidden，测试中的旧桩无需改动。
     virtual std::future<engine::CommandResult> set_muted_groups(std::vector<talkgroup_routing::GroupRoute>) {
@@ -124,6 +128,7 @@ public:
     std::future<engine::CommandResult> disconnect_dynamic_groups(dmr_call::Slot slot) override {
         return engine_.disconnect_dynamic_groups(slot);
     }
+    std::future<engine::CommandResult> relay_fm_mute(bool muted) override { return engine_.relay_fm_mute(muted); }
     [[nodiscard]] std::shared_ptr<const engine::Snapshot> snapshot() const override { return engine_.snapshot(); }
     [[nodiscard]] std::vector<engine::Event> drain_events(std::size_t max) override {
         return engine_.drain_events(max);

@@ -407,6 +407,27 @@ CommandResult run_loop(Shared& shared, StartConfig config)
     };
 
     if (radio_error.size() > 256U) radio_error.resize(256U);
+    // ---------- R131 HRI 自动重连 ----------
+    // 保存最近一次 connect_radio（或启动时）的电台配置。该配置到达过 hri_ready 后，HRI 掉线（串口读写错误、
+    // Y/0 超时、会话异常停止）即进入自动重连；用户 disconnect_radio / 新的 connect_radio / 停机时停止。
+    std::optional<RadioStartConfig> hri_reconnect_config;
+    bool hri_reconnect_armed = false;      // hri_reconnect_config 曾到达 hri_ready
+    bool hri_reconnecting = false;
+    bool hri_probe_kept_output = false;    // 探测沿用本机播放的 WaveOut（同一端点），Y/0 后直接交接
+    bool radio_connect_serial_open_failed = false;  // 最近一次 connect_radio_runtime 失败在打开串口
+    std::uint64_t hri_reconnect_attempts = 0U;
+    std::uint64_t hri_reconnect_next_ms = 0U;
+    std::uint64_t hri_reconnect_attempt_started_ms = 0U;
+    std::uint64_t hri_reconnect_backoff_ms = 0U;
+    std::string hri_lost_reason;
+    const std::uint64_t hri_reconnect_base_ms = config.hri_reconnect_interval_ms != 0U
+        ? config.hri_reconnect_interval_ms : wirex::engine::hri_reconnect_interval_ms;
+    const std::uint64_t hri_reconnect_cap_ms = std::max(hri_reconnect_base_ms,
+        config.hri_reconnect_max_interval_ms != 0U ? config.hri_reconnect_max_interval_ms
+                                                   : wirex::engine::hri_reconnect_max_interval_ms);
+    if (radio_requested && port != nullptr && continuous_run) {
+        hri_reconnect_config = RadioStartConfig{config.hri_port, config.hri_body_file, config.audio, false};
+    }
 
     // ---------- 快照与事件发布 ----------
     std::optional<CallInfo> published_rx_call;
@@ -427,6 +448,13 @@ CommandResult run_loop(Shared& shared, StartConfig config)
     std::uint64_t relay_fm_rejected_busy = 0U;
     const std::uint64_t relay_fm_max_ms = config.relay_fm_max_duration_ms != 0U
         ? config.relay_fm_max_duration_ms : wirex::engine::relay_fm_max_duration_ms;
+    // R131 FM 中继尾音：WaveIn 与管线之间的前瞻延迟（kRelayLookaheadMs）与静音。只在中继段内启用。
+    constexpr std::size_t relay_lookahead_samples =
+        static_cast<std::size_t>(wirex::engine::kRelayLookaheadMs) * 48U;  // 48 kHz 单声道
+    bool relay_fm_muted = false;
+    bool relay_lookahead_active = false;
+    std::vector<std::int16_t> relay_lookahead;
+    relay_lookahead.reserve(relay_lookahead_samples + wirex::bm_voice::max_tx_audio_samples_per_push);
     bool published_tx_active = false;
     BmLink published_bm_link = BmLink::disabled;
     std::uint64_t last_published_ms = 0U;
@@ -451,10 +479,15 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         next.clock_origin_ms = static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::milliseconds>(run_started.time_since_epoch()).count());
         next.phase = shutdown_requested ? Phase::stopping : Phase::running;
-        next.serial_open = port != nullptr;
-        next.hri_port = port != nullptr ? config.hri_port : std::wstring{};
+        // 重连探测期间的临时串口不对外显示：serial_open 保持 false，radio_error 保持掉线原因，避免界面每 3 s 闪烁。
+        const bool reconnecting_now = hri_reconnecting && !shutdown_requested;
+        const bool hide_probe = reconnecting_now && !hri_ready;
+        next.serial_open = port != nullptr && !hide_probe;
+        next.hri_port = port != nullptr && !hide_probe ? config.hri_port : std::wstring{};
         next.hri_ready = hri_ready;
-        next.radio_error = radio_error;
+        next.radio_error = reconnecting_now ? hri_lost_reason : radio_error;
+        next.hri_reconnecting = reconnecting_now;
+        next.hri_reconnect_attempts = hri_reconnect_attempts;
         next.wave_in_open = radio_input_open;
         next.wave_out_open = radio_output_open;
         next.wave_in_endpoint_id = config.audio.expected_wave_in_endpoint_id;
@@ -495,6 +528,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         next.relay_fm_active = relay_fm_active;
         next.relay_fm_started_ms = relay_fm_active ? relay_fm_started_ms : 0U;
         next.muted_groups_revision = muted_groups_revision;
+        next.relay_fm_muted = relay_fm_active && relay_fm_muted;
         next.last_filtered = last_filtered;
         {
             const auto bm_now = bm_session.snapshot();
@@ -857,12 +891,59 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         console(u8"上行已开始，请继续讲话。\n");
         return true;
     };
+    // 实际送入 AMBE 管线的 PCM（手咪直送；FM 中继经前瞻延迟/静音）。
+    auto push_pipeline_pcm = [&](const std::int16_t* samples, std::size_t count) {
+        if (count == 0U) return true;
+        if (!pipeline->push_tx_audio(samples, count, Clock::now())) return false;
+        counters.tx_pipeline_samples += count;
+        wirex::pcm_gain::accumulate(counters.tx_pipeline_stats, wirex::pcm_gain::measure(samples, count));
+        return true;
+    };
+    // 从前瞻缓冲头部送出 count 个样本（静音时送零，帧节奏不变），每次不超过 20 ms。
+    auto relay_lookahead_emit = [&](std::size_t count) {
+        std::array<std::int16_t, wirex::bm_voice::pcm48_samples_per_frame> chunk{};
+        std::size_t offset = 0U;
+        bool ok = true;
+        while (ok && offset < count) {
+            const auto n = std::min(chunk.size(), count - offset);
+            if (relay_fm_muted) {
+                std::fill(chunk.begin(), chunk.begin() + static_cast<std::ptrdiff_t>(n), std::int16_t{0});
+            } else {
+                std::copy(relay_lookahead.begin() + static_cast<std::ptrdiff_t>(offset),
+                          relay_lookahead.begin() + static_cast<std::ptrdiff_t>(offset + n), chunk.begin());
+            }
+            ok = push_pipeline_pcm(chunk.data(), n);
+            offset += n;
+        }
+        relay_lookahead.erase(relay_lookahead.begin(), relay_lookahead.begin() + static_cast<std::ptrdiff_t>(offset));
+        chunk.fill(0);
+        return ok;
+    };
+    auto relay_lookahead_push = [&](const std::int16_t* samples, std::size_t count) {
+        try {
+            relay_lookahead.insert(relay_lookahead.end(), samples, samples + count);
+        } catch (...) {
+            return false;
+        }
+        if (relay_lookahead.size() <= relay_lookahead_samples) return true;
+        return relay_lookahead_emit(relay_lookahead.size() - relay_lookahead_samples);
+    };
+    // 中继段收尾：静音中的尾部直接丢弃（EOT 不再被静音帧推迟）；未静音（超时等）时把剩余语音送出。
+    auto relay_lookahead_flush = [&]() {
+        if (!relay_lookahead_active) return true;
+        bool ok = true;
+        if (!relay_fm_muted && !relay_lookahead.empty()) ok = relay_lookahead_emit(relay_lookahead.size());
+        std::fill(relay_lookahead.begin(), relay_lookahead.end(), std::int16_t{0});
+        relay_lookahead.clear();
+        return ok;
+    };
     // 原 consume_tx_wave_buffer 的 PCM 部分；缓冲长度、重新排队与擦除由 AudioInput 实现负责。
     const AudioInput::Sink consume_tx_pcm = [&](std::int16_t* samples, std::size_t count) {
         if (count == 0U) return true;
         const auto gain = wirex::pcm_gain::apply(samples, count, mic_transmit_gain_milli);
         if (!gain.valid) return false;
-        const auto pushed = pipeline->push_tx_audio(samples, count, Clock::now());
+        const bool pushed = relay_lookahead_active ? relay_lookahead_push(samples, count)
+                                                   : push_pipeline_pcm(samples, count);
         if (!pushed) return false;
         counters.tx_audio_samples += count;
         wirex::pcm_gain::accumulate(counters.tx_pcm_input_stats, gain.before);
@@ -886,6 +967,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         if (succeeded) {
             succeeded = radio_input->take_captured(consume_tx_pcm, false, 100U) == CaptureStatus::ok;
         }
+        if (!relay_lookahead_flush()) succeeded = false;
         const bool closed = radio_input->close();
         radio_input_open = radio_input->is_open();
         record_routed_tx_input_cleanup(closed);
@@ -1011,6 +1093,10 @@ CommandResult run_loop(Shared& shared, StartConfig config)
                                      now_ms >= relay_fm_started_ms ? now_ms - relay_fm_started_ms : 0U};
         relay_fm_active = false;
         relay_fm_started_ms = 0U;
+        relay_fm_muted = false;  // 段结束自动恢复
+        relay_lookahead_active = false;
+        std::fill(relay_lookahead.begin(), relay_lookahead.end(), std::int16_t{0});
+        relay_lookahead.clear();
         (void)pipeline->observe_routed_ptt_release();
         shared.push_event(std::move(event));
         status(std::string("relay_fm_tx_ended_") + std::string(reason));
@@ -1092,6 +1178,9 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             : wirex::talkgroup_routing::TxTarget{call_template.destination_id, call_template.kind, call_template.slot};
         relay_fm_active = true;
         relay_fm_started_ms = elapsed_ms();
+        relay_fm_muted = false;
+        relay_lookahead.clear();
+        relay_lookahead_active = true;  // WaveIn 采集在本次命令之后才开始交付，首块即经过前瞻缓冲
         Event event{};
         event.kind = EventKind::relay_fm_started;
         event.at_ms = relay_fm_started_ms;
@@ -1108,6 +1197,18 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             return CommandResult{CommandStatus::failed, 0U, "relay_fm_end_failed"};
         }
         finish_relay_fm("squelch_closed");
+        return CommandResult{CommandStatus::accepted, 0U, ""};
+    };
+    // R131：静噪疑似关门（hang 期间）静音上行；重新开门恢复。静音时把前瞻缓冲中尚未送出的部分一并清零。
+    auto process_relay_fm_mute = [&](bool muted) -> CommandResult {
+        reconcile_relay_fm();
+        if (!relay_fm_active) return CommandResult{CommandStatus::idempotent, 0U, "relay_fm_not_active"};
+        if (relay_fm_muted == muted) {
+            return CommandResult{CommandStatus::idempotent, 0U, muted ? "relay_fm_already_muted" : "relay_fm_not_muted"};
+        }
+        relay_fm_muted = muted;
+        if (muted) std::fill(relay_lookahead.begin(), relay_lookahead.end(), std::int16_t{0});
+        status(muted ? "relay_fm_muted" : "relay_fm_unmuted");
         return CommandResult{CommandStatus::accepted, 0U, ""};
     };
     process_ptt_observation = [&](const wirex::hri_session::PttObservation& observation) {
@@ -1307,7 +1408,21 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             radio_fault_reason = hri_stop_reason_name(update.state.stop_reason);
             status(radio_fault_reason);
         }
-        if (hri_state.y_zero_acknowledged && !hri_ready && hri_state.phase != HriPhase::stopped) {
+        if (hri_state.y_zero_acknowledged && !hri_ready && hri_state.phase != HriPhase::stopped &&
+            hri_probe_kept_output && radio_output_open) {
+            // 重连探测：WaveOut 一直用于本机播放。本机通话结束、输出排空后再交给电台（Y/0 周期照常保持会话）。
+            if (!local_playback.snapshot().call_active &&
+                pipeline->snapshot().rx_state == wirex::bm_voice::RxState::idle && radio_output->all_drained()) {
+                hri_probe_kept_output = false;
+                radio_output_playback_blocked = false;
+                hri_ready = true;
+                local_playback.output_available();
+                local_audio_error.clear();
+                local_playback.set_environment(true, true);
+                status("hri_y0_observed_radio_speaker_ready");
+                maybe_show_operator_ready_instructions();
+            }
+        } else if (hri_state.y_zero_acknowledged && !hri_ready && hri_state.phase != HriPhase::stopped) {
             const bool opened = radio_output->open();
             radio_output_open = radio_output->is_open();
             if (!opened) {
@@ -1324,6 +1439,15 @@ CommandResult run_loop(Shared& shared, StartConfig config)
                 local_playback.set_environment(true, true);
                 status("hri_y0_observed_radio_speaker_ready");
                 maybe_show_operator_ready_instructions();
+            }
+        }
+        if (hri_ready && hri_reconnect_config) {
+            hri_reconnect_armed = true;
+            if (hri_reconnecting) {
+                hri_reconnecting = false;
+                radio_error.clear();
+                push_event(EventKind::hri_restored, {}, std::nullopt, hri_lost_reason);
+                status("hri_reconnect_restored");
             }
         }
         synchronize_ptt_gate();
@@ -1375,7 +1499,8 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         return closed;
     };
 
-    auto detach_radio = [&](std::string reason) {
+    // keep_output=true：重连探测沿用的本机 WaveOut 保持打开（不关闭也不重开），BM-only 播放不中断。
+    auto detach_radio = [&](std::string reason, bool keep_output = false) {
         (void)ptt_gate.set_ready(false);
         ptt_gate.disarm_until_release();
         if (pipeline->snapshot().tx_state != wirex::bm_voice::TxState::idle) {
@@ -1416,7 +1541,11 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         } else {
             radio_input_open = false;
         }
-        if (radio_output) {
+        keep_output = keep_output && radio_output && radio_output_open && !hri_ready;
+        hri_probe_kept_output = false;
+        if (keep_output) {
+            // 保持本机播放输出。
+        } else if (radio_output) {
             const bool closed = radio_output->close();
             radio_output_open = radio_output->is_open();
             if (!closed) {
@@ -1446,7 +1575,9 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         config.hri_body_file.clear();
         config.start_radio = false;
         hri_state = wirex::hri_session::Snapshot{};
-        if (!output_close_failed && !radio_output_open && radio_output &&
+        if (keep_output) {
+            radio_output_playback_blocked = false;
+        } else if (!output_close_failed && !radio_output_open && radio_output &&
             !config.audio.expected_wave_out_endpoint_id.empty()) {
             if (radio_output->open()) {
                 radio_output_open = radio_output->is_open();
@@ -1487,7 +1618,9 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         return !input_close_failed && !output_close_failed && !serial_close_failed;
     };
 
-    auto connect_radio_runtime = [&](const RadioStartConfig& requested) -> CommandResult {
+    // probe=true：自动重连的一次尝试。与用户连接相同，但本机播放的 WaveOut（同一端点）保持打开直到 Y/0 交接。
+    auto connect_radio_runtime = [&](const RadioStartConfig& requested, bool probe = false) -> CommandResult {
+        radio_connect_serial_open_failed = false;
         if (shutdown_requested) return CommandResult{CommandStatus::not_ready, 0U, "engine_stopping"};
         if (requested.hri_port.empty() || requested.audio.expected_wave_in_endpoint_id.empty() ||
             requested.audio.expected_wave_out_endpoint_id.empty()) {
@@ -1551,11 +1684,14 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         try { next_port = devices.open_serial(requested.hri_port, open_failure); } catch (...) { next_port.reset(); }
         if (!next_port) {
             radio_error = open_failure.empty() ? "serial_open_or_configure_failed" : std::move(open_failure);
+            radio_connect_serial_open_failed = true;
             publish_dirty = true;
             return CommandResult{CommandStatus::failed, 0U, radio_error};
         }
 
-        if (local_output_only) {
+        const bool keep_local_output = probe && local_output_only &&
+            config.audio.expected_wave_out_endpoint_id == requested.audio.expected_wave_out_endpoint_id;
+        if (local_output_only && !keep_local_output) {
             const bool closed = radio_output->close();
             radio_output_open = radio_output->is_open();
             if (radio_output_open) {
@@ -1571,7 +1707,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         }
 
         radio_input = std::move(next_input);
-        radio_output = std::move(next_output);
+        if (!keep_local_output) radio_output = std::move(next_output);
         port = std::move(next_port);
         hri_session = std::move(next_hri);
         config.hri_port = requested.hri_port;
@@ -1583,18 +1719,82 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         hri_active = true;
         serial_failed = false;
         radio_input_open = false;
-        radio_output_open = false;
+        if (!keep_local_output) radio_output_open = false;
+        hri_probe_kept_output = keep_local_output;
         radio_error.clear();
         apply_hri_update(hri_session->start(elapsed_ms()));
         if (radio_fault_pending) {
             const auto reason = radio_fault_reason.empty() ? std::string("hri_start_failed") : radio_fault_reason;
-            detach_radio(reason);
+            detach_radio(reason, hri_probe_kept_output);
             return CommandResult{CommandStatus::failed, 0U, reason};
+        }
+        if (!probe) {
+            hri_reconnect_config = requested;
+            hri_reconnect_armed = false;
         }
         // dev 日志据此记录本次握手使用的 Y 模板（DIRECT offset 0x05='2' / AP '1'）。
         status(requested.ap_mode ? "hri_y_template_ap" : "hri_y_template_direct");
         status("radio_connected_hri_start_requested");
         return CommandResult{CommandStatus::accepted, 0U, ""};
+    };
+
+    auto stop_hri_reconnect = [&]() {
+        hri_reconnecting = false;
+        hri_reconnect_armed = false;
+        hri_reconnect_config.reset();
+        publish_dirty = true;
+    };
+    // HRI 掉线后（已执行 detach_radio）决定是否进入/继续自动重连。握手类失败按“上次尝试开始 + 间隔”重试，
+    // 使 V/Y 超时本身（2.5/3 s）计入 3 s 周期。
+    auto schedule_hri_reconnect = [&](const std::string& reason) {
+        if (!continuous_run || shutdown_requested || !hri_reconnect_config || !hri_reconnect_armed) return;
+        const auto now = elapsed_ms();
+        hri_reconnect_backoff_ms = hri_reconnect_base_ms;
+        if (!hri_reconnecting) {
+            hri_reconnecting = true;
+            hri_reconnect_attempts = 0U;
+            hri_lost_reason = reason.empty() ? std::string("radio_transport_failed") : reason;
+            hri_reconnect_next_ms = now + hri_reconnect_base_ms;
+            push_event(EventKind::hri_lost, hri_lost_reason, std::nullopt, hri_lost_reason);
+            status("hri_lost_reconnect_scheduled");
+        } else {
+            hri_reconnect_next_ms = std::max(now, hri_reconnect_attempt_started_ms + hri_reconnect_base_ms);
+            status("hri_reconnect_attempt_failed");
+        }
+        publish_dirty = true;
+    };
+    // 每轮在命令处理之后、取 now_ms 之前调用：探测会以当时的 elapsed_ms() 启动 HRI 会话，随后的 tick 使用
+    // std::max(now_ms, elapsed_ms())，不会回退（a50b234 的 clock_regressed 回归）。
+    auto service_hri_reconnect = [&]() {
+        if (!hri_reconnecting || shutdown_requested || port != nullptr || !hri_reconnect_config) return;
+        const auto now = elapsed_ms();
+        if (now < hri_reconnect_next_ms) return;
+        ++hri_reconnect_attempts;
+        hri_reconnect_attempt_started_ms = now;
+        publish_dirty = true;
+        const auto result = connect_radio_runtime(*hri_reconnect_config, true);
+        if (result.status == CommandStatus::accepted) {
+            status("hri_reconnect_attempt_started");
+            return;  // 握手进行中；成功由 apply_hri_update 报 hri_restored，失败经 radio_fault 路径重新排期
+        }
+        if (result.detail == "radio_serial_close_unconfirmed") {
+            // 旧句柄关闭未确认：不能再打开新句柄，停止重连并保留错误。
+            stop_hri_reconnect();
+            radio_error = result.detail;
+            status("hri_reconnect_stopped_serial_close_unconfirmed");
+            return;
+        }
+        const auto after = elapsed_ms();
+        if (radio_connect_serial_open_failed) {
+            // 设备拔出等：3 s、6 s、10 s……逐次加倍到上限。
+            hri_reconnect_next_ms = after + hri_reconnect_backoff_ms;
+            hri_reconnect_backoff_ms = std::min(hri_reconnect_cap_ms, hri_reconnect_backoff_ms * 2U);
+            status("hri_reconnect_serial_open_failed");
+        } else {
+            hri_reconnect_backoff_ms = hri_reconnect_base_ms;
+            hri_reconnect_next_ms = after + hri_reconnect_base_ms;
+            status("hri_reconnect_attempt_deferred");
+        }
     };
 
     auto cleanup_routed_rx_without_hri_start = [&](std::string_view event) {
@@ -2112,7 +2312,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         pending_receive_ended = false;
         pending_playback_drain = false;
         const auto active_local_audio = local_playback.snapshot();
-        const bool bm_only_local_route = port == nullptr && !hri_ready &&
+        const bool bm_only_local_route = (port == nullptr || hri_probe_kept_output) && !hri_ready &&
             active_local_audio.route != wirex::bm_local_playback::Route::radio;
         if (radio_output_open && !bm_only_local_route) {
             const bool closed = radio_output->close();
@@ -2800,15 +3000,35 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             if (!command.radio_config) {
                 return CommandResult{CommandStatus::invalid, 0U, "radio_config_missing"};
             }
+            if (hri_reconnecting && port == nullptr) {
+                // 用户重新连接：放弃旧配置的自动重连，按新配置连接。
+                stop_hri_reconnect();
+                radio_error.clear();
+                status("hri_reconnect_replaced_by_connect_radio");
+            }
             return connect_radio_runtime(*command.radio_config);
-        case CommandKind::disconnect_radio:
+        case CommandKind::disconnect_radio: {
+            if (hri_reconnecting && port == nullptr) {
+                // 两次尝试之间：只停止重连，本机播放输出保持不变。
+                stop_hri_reconnect();
+                radio_error.clear();
+                status("hri_reconnect_cancelled_by_user");
+                return CommandResult{CommandStatus::accepted, 0U, "hri_reconnect_cancelled"};
+            }
             if (!port && !radio_audio_resource_retained()) {
+                stop_hri_reconnect();
                 return CommandResult{CommandStatus::idempotent, 0U, "radio_not_connected"};
             }
-            if (!radio_media_quiescent()) return CommandResult{CommandStatus::busy, 0U, "radio_media_busy"};
-            return detach_radio({})
+            // 尚未就绪的重连探测不承载媒体（来话走本机播放），与掉线路径一样可随时拆除。
+            const bool probe_pending = hri_reconnecting && !hri_ready;
+            if (!probe_pending && !radio_media_quiescent()) {
+                return CommandResult{CommandStatus::busy, 0U, "radio_media_busy"};
+            }
+            stop_hri_reconnect();
+            return detach_radio({}, hri_probe_kept_output)
                 ? CommandResult{CommandStatus::accepted, 0U, ""}
                 : CommandResult{CommandStatus::failed, 0U, radio_error};
+        }
         case CommandKind::configure_bm: {
             if (!command.bm_target) return CommandResult{CommandStatus::invalid, 0U, "bm_config_missing"};
             const auto manager_state = bm_connection->snapshot();
@@ -2932,6 +3152,8 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         }
         case CommandKind::disconnect_dynamic_groups:
             return process_quick_call(command.group, true);
+        case CommandKind::relay_fm_mute:
+            return process_relay_fm_mute(command.flag);
         }
         return CommandResult{CommandStatus::invalid, 0U, "unknown_command"};
     };
@@ -3167,7 +3389,8 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             }
             process_commands();
             begin_bm_disconnect_cleanup();
-            // 命令可能打开串口/创建会话并以更新的 elapsed_ms() 启动 HRI/流会话；之后的 tick 必须用
+            service_hri_reconnect();
+            // 命令或重连探测可能打开串口/创建会话并以更新的 elapsed_ms() 启动 HRI/流会话；之后的 tick 必须用
             // 不早于该时刻的时间，否则 hri_session 判定 clock_regressed 并立即停止（R129 实机回归）。
             now_ms = std::max(now_ms, elapsed_ms());
 
@@ -3210,7 +3433,8 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             if (radio_fault_pending) {
                 const auto reason = radio_fault_reason.empty()
                     ? std::string("radio_transport_failed") : radio_fault_reason;
-                detach_radio(reason);
+                detach_radio(reason, hri_probe_kept_output);
+                schedule_hri_reconnect(reason);
             }
 
             bm_connection->tick(now_ms);
@@ -3377,7 +3601,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             if (radio_output_open) {
                 if (!radio_output_playback_blocked && radio_output->completion_overflowed()) {
                     const auto local = local_playback.snapshot();
-                    const bool bm_local_output_mode = port == nullptr && !hri_ready &&
+                    const bool bm_local_output_mode = (port == nullptr || hri_probe_kept_output) && !hri_ready &&
                         !config.audio.expected_wave_out_endpoint_id.empty();
                     if (bm_local_output_mode) {
                         (void)local_playback.output_failed(wirex::bm_local_playback::OutputError::device_lost);

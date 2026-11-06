@@ -445,7 +445,10 @@ private:
             callback = squelch_callback_;
         }
         if (auto log = dev_log()) {
-            std::string line = event->edge == services::SquelchEdge::opened ? "squelch opened" : "squelch closed";
+            const char* edge = event->edge == services::SquelchEdge::opened ? "squelch opened"
+                             : event->edge == services::SquelchEdge::muted ? "squelch muted"
+                             : event->edge == services::SquelchEdge::unmuted ? "squelch unmuted" : "squelch closed";
+            std::string line = edge;
             if (event->s_meter) line += " s=" + std::to_string(*event->s_meter);
             if (event->s_meter_peak) line += " s_peak=" + std::to_string(*event->s_meter_peak);
             if (!event->reason.empty()) line += " reason=" + event->reason;
@@ -488,6 +491,13 @@ private:
                 e.at = now;
                 e.s_meter = sample.s_meter;
                 squelch_peak_ = sample.s_meter;
+                event = e;
+            } else if (edge == app::radio_info::GateEvent::muted || edge == app::radio_info::GateEvent::unmuted) {
+                services::SquelchEvent e;
+                e.edge = edge == app::radio_info::GateEvent::muted ? services::SquelchEdge::muted
+                                                                   : services::SquelchEdge::unmuted;
+                e.at = now;
+                e.s_meter = sample.s_meter;
                 event = e;
             } else if (edge == app::radio_info::GateEvent::closed && was_open) {
                 services::SquelchEvent e;

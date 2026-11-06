@@ -410,6 +410,7 @@ struct FakeEngine::Impl {
                                          ended >= state.relay_fm_started_ms ? ended - state.relay_fm_started_ms : 0U};
         push_event(std::move(e));
         state.relay_fm_active = false;
+        state.relay_fm_muted = false;
         state.relay_fm_started_ms = 0U;
         state.tx_active = false;
         state.media_owner = MediaOwner::idle;
@@ -706,6 +707,8 @@ std::future<CommandResult> FakeEngine::disconnect_radio() {
         }
         s->state.serial_open = false;
         s->state.hri_ready = false;
+        s->state.hri_reconnecting = false;
+        s->state.radio_error.clear();
         s->state.wave_in_open = false;
         s->state.wave_out_open = false;
         s->state.hri_port.clear();
@@ -955,6 +958,55 @@ std::future<CommandResult> FakeEngine::relay_fm_stop() {
     });
 }
 
+std::future<CommandResult> FakeEngine::relay_fm_mute(bool muted) {
+    auto* s = impl_.get();
+    return s->command(20ms, [s, muted]() {
+        if (!s->state.relay_fm_active) return result(CommandStatus::idempotent, 0U, "relay_fm_not_active");
+        if (s->state.relay_fm_muted == muted) return result(CommandStatus::idempotent);
+        s->state.relay_fm_muted = muted;
+        return result(CommandStatus::accepted);
+    });
+}
+
+void FakeEngine::simulate_hri_lost(std::string reason) {
+    auto* s = impl_.get();
+    s->post_after(0ms, [s, reason = std::move(reason)]() {
+        if (s->state.phase != Phase::running || !s->state.hri_ready) return;
+        s->state.serial_open = false;
+        s->state.hri_ready = false;
+        s->state.hri_port.clear();
+        s->state.wave_in_open = false;
+        s->state.hri_reconnecting = true;
+        s->state.hri_reconnect_attempts = 0U;
+        s->state.radio_error = reason;
+        Event e;
+        e.kind = EventKind::hri_lost;
+        e.at_ms = now_ms();
+        e.text = reason;
+        e.end_reason = reason;
+        s->push_event(std::move(e));
+        s->publish();
+    });
+}
+
+void FakeEngine::simulate_hri_restored() {
+    auto* s = impl_.get();
+    s->post_after(0ms, [s]() {
+        if (!s->state.hri_reconnecting) return;
+        ++s->state.hri_reconnect_attempts;
+        s->state.hri_reconnecting = false;
+        s->state.serial_open = true;
+        s->state.hri_ready = true;
+        s->state.wave_in_open = true;
+        s->state.radio_error.clear();
+        Event e;
+        e.kind = EventKind::hri_restored;
+        e.at_ms = now_ms();
+        s->push_event(std::move(e));
+        s->publish();
+    });
+}
+
 void FakeEngine::seed_relay_fm_demo() {
     auto* s = impl_.get();
     s->post_after(0ms, [s]() {
@@ -1173,6 +1225,17 @@ services::Services make_fake_services(FakeEngine& engine) {
                 open.at = std::chrono::steady_clock::now();
                 open.s_meter = 176U;
                 emit(st, open);
+                engine.post_after(2400ms, [st, epoch]() {
+                    {
+                        std::lock_guard<std::mutex> lock(st->mutex);
+                        if (epoch != st->squelch_epoch) return;
+                    }
+                    services::SquelchEvent muted;
+                    muted.edge = services::SquelchEdge::muted;
+                    muted.at = std::chrono::steady_clock::now();
+                    muted.s_meter = 84U;
+                    emit(st, muted);
+                });
                 engine.post_after(3000ms, [st, &engine, epoch]() {
                     {
                         std::lock_guard<std::mutex> lock(st->mutex);

@@ -101,6 +101,8 @@ struct DeviceLog {
     std::deque<char> pending_x_levels{};
     // R131 静音组测试：FakeOutput::submit 收到含非零样本的帧时 +1。
     std::atomic<int> output_nonzero_frames{0};
+    // R131 HRI 自动重连测试：为 true 时 FakeSerial 不再回 Y/0（模拟电台退出 HRI 模式，串口仍在）。
+    std::atomic<bool> y_ack_suppressed{false};
 };
 
 enum class FakeHriBehavior {
@@ -131,7 +133,9 @@ public:
                     if (respond_) queue_version_record();
                 } else if (type == 'Y') {
                     ++log_->y_records;
-                    if (respond_ && behavior_ != FakeHriBehavior::missing_y_ack) queue_record('Y', {});
+                    if (respond_ && behavior_ != FakeHriBehavior::missing_y_ack && !log_->y_ack_suppressed.load()) {
+                        queue_record('Y', {});
+                    }
                 } else if (type == 'T') {
                     ++log_->t_records;
                     if (respond_ && acknowledge_t_records_) queue_record('T', {});
@@ -3045,6 +3049,375 @@ void test_relay_fm_transmit_revoked_ends_segment()
           "runtime stops after relay revoke test");
 }
 
+// ---------- R131 FM 中继尾音：静音 + 前瞻延迟 ----------
+
+// 引擎线程 status 钩子记录的上行计数（tx_pipeline_* 为实际送入 AMBE 管线的样本）。
+struct TxProbePoint {
+    std::string event;
+    std::uint64_t audio_samples{};
+    std::uint64_t pipeline_samples{};
+    std::uint64_t pipeline_sum_squares{};
+};
+
+struct TxProbe {
+    std::mutex mutex{};
+    std::vector<TxProbePoint> points{};
+
+    std::optional<TxProbePoint> last(std::string_view event)
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        for (auto it = points.rbegin(); it != points.rend(); ++it) {
+            if (it->event == event) return *it;
+        }
+        return std::nullopt;
+    }
+};
+
+void attach_tx_probe(wirex::engine::StartConfig& config, const std::shared_ptr<TxProbe>& probe)
+{
+    config.diagnostics.status = [probe](const wirex::engine::StatusRecord& record) {
+        std::lock_guard<std::mutex> lock(probe->mutex);
+        probe->points.push_back({std::string(record.event), record.counters.tx_audio_samples,
+                                 record.counters.tx_pipeline_samples,
+                                 record.counters.tx_pipeline_stats.sum_squares});
+        return true;
+    };
+}
+
+void test_relay_fm_mute_zeroes_tail_and_keeps_frame_cadence()
+{
+    LoopbackMaster master(100U);
+    master.reject_auth(false);
+    auto log = std::make_shared<DeviceLog>();
+    log->input_feeds_pcm = true;  // 假采集：±400 方波（增益后 ±6400），代表“语音”，静音后应全部变为 0
+    auto probe = std::make_shared<TxProbe>();
+    wirex::engine::Engine engine(std::make_shared<FakeDevices>(log, FakeOptions{}));
+    auto config = relay_config(master, "offline-relay-mute");
+    attach_tx_probe(config, probe);
+    check(get_within(engine.start(std::move(config)), 5s, "start relay mute").status == CommandStatus::accepted,
+          "runtime starts for relay mute test");
+    check(wait_hri_and_bm_ready(engine), "HRI and BM ready before relay mute");
+    (void)engine.drain_events();
+
+    const auto idle_mute = get_within(engine.relay_fm_mute(true), 2s, "relay_fm_mute without segment");
+    check(idle_mute.status == CommandStatus::idempotent && idle_mute.detail == "relay_fm_not_active",
+          "relay_fm_mute outside a segment is idempotent: " + idle_mute.detail);
+
+    check(get_within(engine.relay_fm_start(), 2s, "relay_fm_start for mute").status == CommandStatus::accepted,
+          "relay starts for mute test");
+    std::this_thread::sleep_for(500ms);  // 语音段
+    check(get_within(engine.relay_fm_mute(true), 2s, "mute #1").status == CommandStatus::accepted,
+          "relay_fm_mute(true) is accepted during the segment");
+    check(engine.snapshot()->relay_fm_muted && engine.snapshot()->relay_fm_active,
+          "snapshot reports relay_fm_muted during the segment");
+    check(get_within(engine.relay_fm_mute(true), 2s, "mute #1 again").status == CommandStatus::idempotent,
+          "repeated mute is idempotent");
+    const auto dmrd_at_mute = master.dmrd_count();
+    std::this_thread::sleep_for(400ms);  // 尾噪段（假采集仍在送非零样本）
+    const auto dmrd_after_mute = master.dmrd_count();
+    check(get_within(engine.relay_fm_mute(false), 2s, "unmute").status == CommandStatus::accepted,
+          "relay_fm_mute(false) restores the uplink");
+    check(!engine.snapshot()->relay_fm_muted, "snapshot clears relay_fm_muted after unmute");
+    std::this_thread::sleep_for(400ms);  // 重新开门后的语音
+    check(get_within(engine.relay_fm_mute(true), 2s, "mute #2").status == CommandStatus::accepted,
+          "second mute (squelch closing again) is accepted");
+    std::this_thread::sleep_for(300ms);
+    check(get_within(engine.relay_fm_stop(), 2s, "relay_fm_stop after mute").status == CommandStatus::accepted,
+          "relay_fm_stop after mute is accepted");
+    const auto ended = wait_relay_event(engine, wirex::engine::EventKind::relay_fm_ended, 2s);
+    check(ended && ended->end_reason == "squelch_closed", "muted segment still ends with squelch_closed");
+    check(wait_for_snapshot(engine, 3s, [](const wirex::engine::Snapshot& s) {
+              return !s.relay_fm_active && !s.relay_fm_muted && !s.tx_active && !s.wave_in_open &&
+                  s.media_owner == wirex::talkgroup_routing::MediaOwner::idle;
+          }), "segment end clears the mute and drains TX (EOT sent)");
+
+    const auto start = probe->last("relay_fm_tx_started");
+    const auto unmuted = probe->last("relay_fm_unmuted");
+    std::optional<TxProbePoint> muted1;
+    std::optional<TxProbePoint> muted2;
+    {
+        std::lock_guard<std::mutex> lock(probe->mutex);
+        for (const auto& point : probe->points) {
+            if (point.event != "relay_fm_muted") continue;
+            if (!muted1) muted1 = point;
+            else muted2 = point;
+        }
+    }
+    const auto stopped = probe->last("tx_audio_draining_after_radio_ptt_release");
+    check(start && muted1 && unmuted && muted2 && stopped, "status probe captured every relay step");
+    if (start && muted1 && unmuted && muted2 && stopped) {
+        // 语音段：前瞻延迟 120 ms 后开始送出非零样本。
+        check(muted1->pipeline_sum_squares > start->pipeline_sum_squares,
+              "voice before the mute reaches the pipeline");
+        check(muted1->audio_samples >= muted1->pipeline_samples &&
+                  muted1->audio_samples - muted1->pipeline_samples <= 120U * 48U + 960U,
+              "lookahead holds back at most ~120 ms of captured audio (held " +
+                  std::to_string(muted1->audio_samples - muted1->pipeline_samples) + ")");
+        // 静音段：样本照常送入（帧节奏不变）但全为 0。
+        check(unmuted->pipeline_sum_squares == muted1->pipeline_sum_squares,
+              "every sample delivered while muted is zero");
+        const auto muted_samples = unmuted->pipeline_samples - muted1->pipeline_samples;
+        check(muted_samples >= 300U * 48U,
+              "muted uplink keeps feeding the pipeline (" + std::to_string(muted_samples) + " samples in ~400 ms)");
+        check(dmrd_after_mute >= dmrd_at_mute + 4U,
+              "DMRD voice bursts keep flowing while muted (" + std::to_string(dmrd_after_mute - dmrd_at_mute) + ")");
+        // 恢复段：重新出现非零样本。
+        check(muted2->pipeline_sum_squares > unmuted->pipeline_sum_squares, "unmute restores the voice");
+        // 第二次静音到结束：缓冲内尾部被丢弃，只送零；捕获计数与送出计数之差不超过一个缓冲。
+        check(stopped->pipeline_sum_squares == muted2->pipeline_sum_squares,
+              "the muted tail (including the lookahead buffer) never reaches the pipeline");
+        check(stopped->pipeline_samples > muted2->pipeline_samples, "frames continue after the second mute");
+        check(stopped->audio_samples - stopped->pipeline_samples <= 120U * 48U + 960U,
+              "end of segment discards at most the lookahead buffer");
+    }
+    check(get_within(engine.relay_fm_start(), 2s, "relay_fm_start after muted segment").status == CommandStatus::accepted,
+          "a new segment after a muted one starts unmuted");
+    check(!engine.snapshot()->relay_fm_muted, "new segment starts unmuted");
+    check(get_within(engine.relay_fm_stop(), 2s, "relay_fm_stop second segment").status == CommandStatus::accepted,
+          "second segment stops");
+    check(get_within(engine.stop(), 5s, "stop after relay mute").status == CommandStatus::accepted,
+          "runtime stops after relay mute test");
+}
+
+void test_mic_ptt_bypasses_relay_lookahead()
+{
+    LoopbackMaster master(100U);
+    master.reject_auth(false);
+    auto log = std::make_shared<DeviceLog>();
+    log->input_feeds_pcm = true;
+    auto probe = std::make_shared<TxProbe>();
+    wirex::engine::Engine engine(std::make_shared<FakeDevices>(log, FakeOptions{}));
+    auto config = relay_config(master, "offline-ptt-no-lookahead");
+    attach_tx_probe(config, probe);
+    check(get_within(engine.start(std::move(config)), 5s, "start mic PTT lookahead").status == CommandStatus::accepted,
+          "runtime starts for mic PTT lookahead test");
+    check(wait_hri_and_bm_ready(engine), "HRI and BM ready before mic PTT");
+    push_x_level(*log, '0');
+    std::this_thread::sleep_for(100ms);
+    push_x_level(*log, '2');
+    check(wait_for_snapshot(engine, 2s, [](const wirex::engine::Snapshot& s) { return s.tx_active && s.wave_in_open; }),
+          "mic PTT starts an uplink");
+    std::this_thread::sleep_for(300ms);
+    push_x_level(*log, '0');
+    check(wait_for_snapshot(engine, 3s, [](const wirex::engine::Snapshot& s) { return !s.tx_active && !s.wave_in_open; }),
+          "mic PTT release drains the uplink");
+    const auto stopped = probe->last("tx_audio_draining_after_radio_ptt_release");
+    check(stopped && stopped->audio_samples > 0U && stopped->audio_samples == stopped->pipeline_samples,
+          "mic PTT sends every captured sample straight to the pipeline (no lookahead delay)");
+    check(get_within(engine.relay_fm_mute(true), 2s, "mute without relay").status == CommandStatus::idempotent,
+          "relay_fm_mute does not affect a mic PTT runtime");
+    check(get_within(engine.stop(), 5s, "stop after mic PTT lookahead").status == CommandStatus::accepted,
+          "runtime stops after mic PTT lookahead test");
+}
+
+// ---------- R131 HRI 自动重连 ----------
+
+std::optional<wirex::engine::Event> wait_event_kind(wirex::engine::Engine& engine, wirex::engine::EventKind kind,
+                                                    std::chrono::milliseconds timeout)
+{
+    return wait_relay_event(engine, kind, timeout);
+}
+
+wirex::engine::StartConfig reconnect_config(const LoopbackMaster& master, const char* password)
+{
+    auto config = relay_config(master, password);
+    config.hri_reconnect_interval_ms = 150U;
+    config.hri_reconnect_max_interval_ms = 600U;
+    return config;
+}
+
+void test_hri_reconnects_after_serial_transport_error()
+{
+    LoopbackMaster master(100U);
+    master.reject_auth(false);
+    auto log = std::make_shared<DeviceLog>();
+    wirex::engine::Engine engine(std::make_shared<FakeDevices>(log, FakeOptions{}));
+    check(get_within(engine.start(reconnect_config(master, "offline-hri-reconnect")), 5s,
+                     "start HRI reconnect").status == CommandStatus::accepted,
+          "runtime starts for HRI reconnect test");
+    check(wait_hri_and_bm_ready(engine), "HRI and BM ready before the serial fault");
+    (void)engine.drain_events();
+    const auto opened_before = log->serial_opened.load();
+
+    // 串口读返回 transport_error，同时打开失败（设备拔出）：进入重连并按退避重试打开。
+    log->serial_blocked = true;
+    const auto lost = wait_event_kind(engine, wirex::engine::EventKind::hri_lost, 2s);
+    check(lost && lost->end_reason == "serial_transport_error",
+          "transport error publishes hri_lost with the machine-readable reason");
+    check(wait_for_snapshot(engine, 2s, [](const wirex::engine::Snapshot& s) {
+              return s.hri_reconnecting && !s.hri_ready && !s.serial_open &&
+                  s.radio_error == "serial_transport_error" && s.bm_link == wirex::engine::BmLink::connected;
+          }), "engine reports hri_reconnecting while BM stays connected");
+    check(wait_for_snapshot(engine, 3s, [](const wirex::engine::Snapshot& s) {
+              return s.hri_reconnect_attempts >= 3U;
+          }), "reconnect keeps retrying while the port cannot be opened");
+    const auto attempts_early = engine.snapshot()->hri_reconnect_attempts;
+    std::this_thread::sleep_for(1200ms);
+    const auto attempts_late = engine.snapshot()->hri_reconnect_attempts;
+    // 150 ms 起步逐次加倍到 600 ms 上限：1.2 s 内不超过约 3 次（无退避时约 8 次）。
+    check(attempts_late > attempts_early && attempts_late - attempts_early <= 3U,
+          "serial open failures back off up to the maximum interval (" +
+              std::to_string(attempts_late - attempts_early) + " attempts in 1.2 s)");
+    check(log->serial_opened.load() == opened_before, "blocked port is never opened");
+
+    log->serial_blocked = false;
+    const auto restored = wait_event_kind(engine, wirex::engine::EventKind::hri_restored, 3s);
+    check(restored.has_value(), "unblocking the port publishes hri_restored");
+    check(wait_for_snapshot(engine, 2s, [](const wirex::engine::Snapshot& s) {
+              return s.hri_ready && s.serial_open && !s.hri_reconnecting && s.radio_error.empty() &&
+                  s.wave_out_open;
+          }), "hri_ready returns to true after the reconnect");
+    check(engine.snapshot()->failure_reason.find("clock_regressed") == std::string::npos &&
+              engine.snapshot()->phase == wirex::engine::Phase::running,
+          "reconnect does not trip hri_session clock_regressed");
+
+    // 恢复后再次掉线：新一轮重连（计数从 0 开始）。
+    log->y_ack_suppressed = true;
+    const auto y_lost = wait_event_kind(engine, wirex::engine::EventKind::hri_lost, 5s);
+    check(y_lost && y_lost->end_reason == "hri_y_ack_timeout",
+          "a missing Y/0 (radio left HRI mode) also triggers hri_lost");
+    check(wait_for_snapshot(engine, 1s, [](const wirex::engine::Snapshot& s) { return s.hri_reconnecting; }),
+          "Y/0 timeout enters reconnecting");
+    log->y_ack_suppressed = false;
+    check(wait_event_kind(engine, wirex::engine::EventKind::hri_restored, 6s).has_value() &&
+              wait_for_snapshot(engine, 1s, [](const wirex::engine::Snapshot& s) {
+                  return s.hri_ready && !s.hri_reconnecting;
+              }),
+          "radio back in HRI mode is reconnected automatically");
+    check(get_within(engine.stop(), 5s, "stop after HRI reconnect").status == CommandStatus::accepted,
+          "runtime stops cleanly after HRI reconnects");
+}
+
+void test_hri_reconnect_stops_after_user_disconnect()
+{
+    LoopbackMaster master(100U);
+    master.reject_auth(false);
+    auto log = std::make_shared<DeviceLog>();
+    wirex::engine::Engine engine(std::make_shared<FakeDevices>(log, FakeOptions{}));
+    check(get_within(engine.start(reconnect_config(master, "offline-hri-user-disconnect")), 5s,
+                     "start HRI user disconnect").status == CommandStatus::accepted,
+          "runtime starts for user disconnect test");
+    check(wait_hri_and_bm_ready(engine), "HRI ready before the user disconnect test");
+    log->serial_blocked = true;
+    check(wait_for_snapshot(engine, 2s, [](const wirex::engine::Snapshot& s) { return s.hri_reconnecting; }),
+          "serial fault enters reconnecting");
+    const auto stopped = get_within(engine.disconnect_radio(), 2s, "disconnect while reconnecting");
+    check(stopped.status == CommandStatus::accepted, "disconnect_radio during reconnect is accepted: " + stopped.detail);
+    const auto state = engine.snapshot();
+    check(!state->hri_reconnecting && !state->serial_open && state->radio_error.empty(),
+          "user disconnect stops the reconnect and clears the radio error");
+    const auto attempts = state->hri_reconnect_attempts;
+    log->serial_blocked = false;
+    const auto opened = log->serial_opened.load();
+    std::this_thread::sleep_for(1000ms);
+    check(log->serial_opened.load() == opened && engine.snapshot()->hri_reconnect_attempts == attempts &&
+              !engine.snapshot()->serial_open && !engine.snapshot()->hri_ready,
+          "no reconnect attempts after the user disconnected");
+
+    // 用户主动断开一个正常连接：不触发重连。
+    wirex::engine::RadioStartConfig radio{};
+    radio.hri_port = L"COM99";
+    radio.hri_body_file = "C:/fake/device-y.bin";
+    radio.audio.expected_wave_in_endpoint_id = L"fake-input-1";
+    radio.audio.expected_wave_out_endpoint_id = L"fake-output-1";
+    check(get_within(engine.connect_radio(radio), 2s, "reconnect manually").status == CommandStatus::accepted,
+          "manual connect_radio after the cancelled reconnect");
+    check(wait_for_snapshot(engine, 3s, [](const wirex::engine::Snapshot& s) { return s.hri_ready; }),
+          "manual connect reaches hri_ready");
+    (void)engine.drain_events();
+    check(get_within(engine.disconnect_radio(), 2s, "user disconnect healthy radio").status == CommandStatus::accepted,
+          "user disconnect of a healthy radio is accepted");
+    const auto opened_after = log->serial_opened.load();
+    std::this_thread::sleep_for(800ms);
+    bool lost_seen = false;
+    for (const auto& event : engine.drain_events()) lost_seen = lost_seen || event.kind == wirex::engine::EventKind::hri_lost;
+    check(!lost_seen && !engine.snapshot()->hri_reconnecting && log->serial_opened.load() == opened_after,
+          "a user disconnect never triggers hri_lost or reconnect");
+
+    // 手动连接得到的配置同样会自动重连（connect_radio 保存 RadioStartConfig）。
+    check(get_within(engine.connect_radio(radio), 2s, "connect again").status == CommandStatus::accepted &&
+              wait_for_snapshot(engine, 3s, [](const wirex::engine::Snapshot& s) { return s.hri_ready; }),
+          "connect_radio again");
+    log->serial_blocked = true;
+    check(wait_for_snapshot(engine, 2s, [](const wirex::engine::Snapshot& s) { return s.hri_reconnecting; }),
+          "connect_radio config reconnects after a fault");
+    log->serial_blocked = false;
+    check(wait_for_snapshot(engine, 3s, [](const wirex::engine::Snapshot& s) { return s.hri_ready && !s.hri_reconnecting; }),
+          "connect_radio config is restored");
+
+    // 探测进行中（串口已打开、等待 Y/0）时用户断开：立即拆除探测并停止重连。
+    log->y_ack_suppressed = true;
+    check(wait_for_snapshot(engine, 6s, [](const wirex::engine::Snapshot& s) { return s.hri_reconnecting; }),
+          "Y/0 loss enters reconnecting before the in-flight probe test");
+    const auto probe_opened = log->serial_opened.load();
+    const auto probe_deadline = std::chrono::steady_clock::now() + 3s;
+    while (std::chrono::steady_clock::now() < probe_deadline && log->serial_opened.load() == probe_opened) {
+        std::this_thread::sleep_for(5ms);
+    }
+    check(log->serial_opened.load() > probe_opened && !engine.snapshot()->serial_open,
+          "a probe opened the port but the snapshot does not report it as connected");
+    const auto closed_before = log->serial_closed.load();
+    const auto cancel = get_within(engine.disconnect_radio(), 2s, "disconnect during in-flight probe");
+    check(cancel.status == CommandStatus::accepted && log->serial_closed.load() == closed_before + 1 &&
+              !engine.snapshot()->hri_reconnecting,
+          "disconnect during an in-flight probe closes its port and stops the reconnect: " + cancel.detail);
+    log->y_ack_suppressed = false;
+    const auto opened_final = log->serial_opened.load();
+    std::this_thread::sleep_for(600ms);
+    check(log->serial_opened.load() == opened_final, "no probe after disconnecting an in-flight attempt");
+    check(get_within(engine.stop(), 5s, "stop after user disconnect test").status == CommandStatus::accepted,
+          "runtime stops after the user disconnect test");
+}
+
+void test_bm_playback_continues_during_hri_reconnect()
+{
+    LoopbackMaster master(100U);
+    master.reject_auth(false);
+    auto log = std::make_shared<DeviceLog>();
+    wirex::engine::Engine engine(std::make_shared<FakeDevices>(log, FakeOptions{}));
+    check(get_within(engine.start(reconnect_config(master, "offline-hri-reconnect-playback")), 5s,
+                     "start reconnect playback").status == CommandStatus::accepted,
+          "runtime starts for reconnect playback test");
+    check(wait_hri_and_bm_ready(engine), "HRI and BM ready before reconnect playback");
+    log->y_ack_suppressed = true;  // 串口仍可打开：每次探测都会打开串口并等待 Y/0
+    check(wait_for_snapshot(engine, 6s, [](const wirex::engine::Snapshot& s) {
+              return s.hri_reconnecting && s.wave_out_open &&
+                  s.local_audio.audio_state == wirex::bm_local_playback::AudioState::ready;
+          }), "HRI loss restores BM-only local playback while reconnecting");
+    check(wait_for_snapshot(engine, 2s, [](const wirex::engine::Snapshot& s) { return s.hri_reconnect_attempts >= 1U; }),
+          "a reconnect probe has started");
+    check(engine.snapshot()->hri_reconnecting && !engine.snapshot()->serial_open && engine.snapshot()->wave_out_open,
+          "a probe waiting for Y/0 keeps the local WaveOut and is not shown as connected");
+
+    const auto submitted_before = log->output_submitted.load();
+    const auto ended_before = engine.snapshot()->counters.calls_ended;
+    const auto t_before = log->t_records.load();
+    wirex::dmr_call::Transmitter transmitter;
+    const auto voice = make_test_downlink_voice();
+    check(send_test_downlink_header(master, transmitter, 51U), "BM downlink header during reconnect");
+    std::this_thread::sleep_for(60ms);
+    bool saw_started = false;
+    for (std::size_t index = 0U; index < 6U; ++index) {
+        check(send_test_downlink_voice(master, transmitter, voice), "BM downlink voice during reconnect");
+        if (index == 1U) saw_started = wait_for_local_rx_active(engine, 1s);
+        std::this_thread::sleep_for(60ms);
+    }
+    check(saw_started && log->output_submitted.load() > submitted_before,
+          "BM call plays on the local WaveOut during the reconnect");
+    check(engine.snapshot()->hri_reconnecting && engine.snapshot()->bm_link == wirex::engine::BmLink::connected,
+          "reconnect continues in the background while the call plays");
+    check(send_test_downlink_terminator(master, transmitter), "BM downlink terminator during reconnect");
+    check(wait_for_local_rx_idle(engine, ended_before, 4s), "local call ends normally during the reconnect");
+    check(log->t_records.load() == t_before, "the reconnect probe never sends HRI T3/T0 for a local call");
+
+    log->y_ack_suppressed = false;
+    check(wait_for_snapshot(engine, 8s, [](const wirex::engine::Snapshot& s) {
+              return s.hri_ready && !s.hri_reconnecting && s.wave_out_open;
+          }), "HRI is restored after the local call and takes over the WaveOut");
+    check(get_within(engine.stop(), 5s, "stop after reconnect playback").status == CommandStatus::accepted,
+          "runtime stops after the reconnect playback test");
+}
+
 void test_destructor_stops_running_engine()
 {
     auto log = std::make_shared<DeviceLog>();
@@ -3146,6 +3519,11 @@ int main()
         test_relay_fm_rejected_when_bm_not_ready();
         test_relay_fm_transmit_revoked_ends_segment();
         test_muted_group_call_is_visible_but_silent();
+        test_relay_fm_mute_zeroes_tail_and_keeps_frame_cadence();
+        test_mic_ptt_bypasses_relay_lookahead();
+        test_hri_reconnects_after_serial_transport_error();
+        test_hri_reconnect_stops_after_user_disconnect();
+        test_bm_playback_continues_during_hri_reconnect();
     } catch (const std::exception& error) {
         std::cerr << "FAILED: unexpected exception: " << error.what() << '\n';
         return 1;

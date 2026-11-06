@@ -57,6 +57,10 @@ public:
     void seed_relay_fm_demo();
     // 仅截图验收（--screenshot-bm-cooldown）：模拟“刚断开 BM”（bm_link disabled），触发界面冷却倒计时。
     void seed_bm_disconnected_demo();
+    std::future<engine::CommandResult> relay_fm_mute(bool muted) override;
+    // R131 离线测试：模拟 HRI 掉线进入自动重连（hri_lost）与重连成功（hri_restored）。disconnect_radio 停止重连。
+    void simulate_hri_lost(std::string reason);
+    void simulate_hri_restored();
 
     [[nodiscard]] std::shared_ptr<const engine::Snapshot> snapshot() const override;
     [[nodiscard]] std::vector<engine::Event> drain_events(std::size_t max) override;

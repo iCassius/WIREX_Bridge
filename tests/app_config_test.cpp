@@ -523,6 +523,7 @@ void test_relay_fields()
     using E = ConfigErrorCode;
     const AppConfig defaults = wirex::app::default_config();
     check(!defaults.relay.enabled && !defaults.relay.fm_enabled, "relay defaults are off");
+    check(!defaults.relay.y_template_ap, "relay y_template defaults to direct");
     check(defaults.document.find("relay") == nullptr, "default document has no relay section (PS layout unchanged)");
 
     const auto relay = [](std::function<void(json::Value&)> fill) {
@@ -558,7 +559,73 @@ void test_relay_fields()
         {"enabled string", relay([](json::Value& r) { r.set("enabled", str("true")); }), E::invalid_value},
         {"enabled number", relay([](json::Value& r) { r.set("enabled", num("1")); }), E::invalid_value},
         {"fm_enabled null", relay([](json::Value& r) { r.set("fm_enabled", json::Value::null()); }), E::invalid_value},
+        // R131 relay.y_template
+        {"y_template absent defaults direct", relay([](json::Value& r) { r.set("enabled", json::Value::boolean(true)); }),
+            std::nullopt, [](const AppConfig& c) { return c.relay.enabled && !c.relay.y_template_ap; }},
+        {"y_template direct", relay([](json::Value& r) { r.set("y_template", str("direct")); }), std::nullopt,
+            [](const AppConfig& c) { return !c.relay.y_template_ap; }},
+        {"y_template ap", relay([](json::Value& r) {
+                r.set("enabled", json::Value::boolean(true));
+                r.set("y_template", str("ap"));
+            }), std::nullopt,
+            [](const AppConfig& c) { return c.relay.enabled && c.relay.y_template_ap; }},
+        {"y_template uppercase", relay([](json::Value& r) { r.set("y_template", str("AP")); }), E::invalid_value},
+        {"y_template unknown", relay([](json::Value& r) { r.set("y_template", str("c4fm")); }), E::invalid_value},
+        {"y_template empty", relay([](json::Value& r) { r.set("y_template", str("")); }), E::invalid_value},
+        {"y_template boolean", relay([](json::Value& r) { r.set("y_template", json::Value::boolean(true)); }),
+            E::invalid_value},
+        {"y_template null", relay([](json::Value& r) { r.set("y_template", json::Value::null()); }), E::invalid_value},
     });
+}
+
+void test_relay_y_template_round_trip(const fs::path& root)
+{
+    const fs::path dir = root / "relay-y-template";
+    fs::create_directories(dir);
+    const fs::path path = dir / "config.json";
+    check(wirex::app::create_default(path).ok(), "y_template: default file created");
+    auto c = wirex::app::load(path).value();
+
+    // 中继开启但模板为 direct：不写 y_template 成员（保持 R130 的文件形状）。
+    c.relay.enabled = true;
+    check(wirex::app::save(path, c).ok(), "y_template: save relay on with direct");
+    json::Value raw;
+    check(json::parse(read_bytes(path), raw).ok() && raw.find("relay") != nullptr &&
+              raw.find("relay")->find("y_template") == nullptr,
+          "y_template: direct default is not written");
+
+    // ap 写入并读回。
+    c.relay.y_template_ap = true;
+    check(wirex::app::save(path, c).ok(), "y_template: save ap");
+    auto reread = wirex::app::load(path);
+    check(reread.ok() && reread.value().relay.y_template_ap, "y_template: ap persists");
+    check(json::parse(read_bytes(path), raw).ok() && raw.find("relay")->find("y_template") != nullptr &&
+              raw.find("relay")->find("y_template")->text == "ap",
+          "y_template: stored as the string \"ap\"");
+
+    // 成员已存在：改回 direct 时写 "direct"。
+    c = reread.value();
+    c.relay.y_template_ap = false;
+    check(wirex::app::save(path, c).ok(), "y_template: save direct after ap");
+    reread = wirex::app::load(path);
+    check(reread.ok() && !reread.value().relay.y_template_ap &&
+              json::parse(read_bytes(path), raw).ok() && raw.find("relay")->find("y_template") != nullptr &&
+              raw.find("relay")->find("y_template")->text == "direct",
+          "y_template: existing member is rewritten as \"direct\"");
+
+    // 无效值的文件被拒绝且保持原样。
+    write_bytes(path, [&]() {
+        json::Value doc;
+        (void)json::parse(read_bytes(path), doc);
+        doc.find("relay")->set("y_template", str("auto"));
+        return wirex::app::serialize_config(doc);
+    }());
+    const auto before = read_bytes(path);
+    const auto rejected = wirex::app::load(path);
+    check(!rejected.ok() && rejected.error().code == ConfigErrorCode::invalid_value &&
+              rejected.error().field == "relay.y_template",
+          "y_template: invalid stored value is rejected with its field name");
+    check(read_bytes(path) == before, "y_template: rejected file is left untouched");
 }
 
 void test_relay_round_trip(const fs::path& root)
@@ -992,6 +1059,7 @@ int main()
         test_release_structure(root);
         test_relay_round_trip(root);
         test_channel_flags_round_trip(root);
+        test_relay_y_template_round_trip(root);
         fs::remove_all(root);
     } catch (const std::exception& error) {
         std::cerr << "FAIL: unexpected exception: " << error.what() << '\n';

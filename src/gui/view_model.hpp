@@ -340,6 +340,7 @@ private:
     void update_squelch_polling();
     void on_squelch(const services::SquelchEvent& event);
     void request_relay_fm_stop();
+    void request_relay_fm_mute(bool muted);
     void finish_relay_record(const engine::Event& event);
     void write_relay_record(const CallRecord& record);
 

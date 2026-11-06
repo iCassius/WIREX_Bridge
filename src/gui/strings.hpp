@@ -419,11 +419,18 @@ namespace wirex::gui {
                             "Transmitting; the setting was not sent. Your draft is kept and will be applied after TX ends.") /* new */ \
     X(cat_deferred_hri,     "HRI 正在向电台播放来话，改频率/模式会打断 RF；草稿已保留，来话结束后自动应用。", \
                             "HRI is playing a call through the radio; changing frequency/mode would interrupt RF. Your draft is kept and will be applied after the call.") /* new */
+
+// R131 引擎侧修复新增文案（独立块，减少与界面改动的合并冲突）。枚举与文案表在主表之后展开本块。
+#define WIREX_GUI_STRINGS_R131(X) \
+    X(hri_lost_fmt,         "HRI 连接中断（%s），正在自动重连…", \
+                            "HRI link lost (%s); reconnecting automatically…") /* new */ \
+    X(hri_restored,         "HRI 已自动重连。",                    "HRI reconnected automatically.") /* new */
 // clang-format on
 
 enum class Str : std::uint16_t {
 #define WIREX_GUI_STR_ENUM(key, zh, en) key,
     WIREX_GUI_STRINGS(WIREX_GUI_STR_ENUM)
+    WIREX_GUI_STRINGS_R131(WIREX_GUI_STR_ENUM)
 #undef WIREX_GUI_STR_ENUM
         count_
 };
@@ -440,6 +447,7 @@ struct StrEntry {
 inline constexpr StrEntry kStrings[] = {
 #define WIREX_GUI_STR_ROW(key, zh, en) {zh, en},
     WIREX_GUI_STRINGS(WIREX_GUI_STR_ROW)
+    WIREX_GUI_STRINGS_R131(WIREX_GUI_STR_ROW)
 #undef WIREX_GUI_STR_ROW
 };
 static_assert(sizeof(kStrings) / sizeof(kStrings[0]) == static_cast<std::size_t>(Str::count_));

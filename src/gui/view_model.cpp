@@ -449,6 +449,17 @@ void ViewModel::handle_event(const engine::Event& event) {
     case engine::EventKind::relay_fm_ended:
         finish_relay_record(event);
         break;
+    case engine::EventKind::hri_lost: {
+        // 引擎保留 connect_radio 的配置并每 3 s 重试；BM 照常运行。用户点“断开”即停止重连。
+        const auto& reason = event.end_reason.empty() ? event.text : event.end_reason;
+        if (auto log = dev_log()) log->line("radio", "hri lost reason=" + reason + "; auto reconnect");
+        flash(fmt(tr(Str::hri_lost_fmt), reason.c_str()), false);
+        break;
+    }
+    case engine::EventKind::hri_restored:
+        if (auto log = dev_log()) log->line("radio", "hri restored after auto reconnect");
+        flash(tr(Str::hri_restored), false);
+        break;
     case engine::EventKind::rx_call_ended:
     case engine::EventKind::tx_started:
     case engine::EventKind::tx_ended:
@@ -489,7 +500,24 @@ void ViewModel::request_relay_fm_stop() {
     });
 }
 
+void ViewModel::request_relay_fm_mute(bool muted) {
+    // 静噪 hang 期间静音上行（去掉关门前的尾噪）；未在中继时引擎返回 idempotent。
+    track(Str::op_relay_fm, engine_.relay_fm_mute(muted), [muted](const CommandResult& result) {
+        if (auto log = dev_log()) {
+            log->line("relay", std::string("relay_fm_mute muted=") + (muted ? "1" : "0") + " status=" +
+                                   std::to_string(static_cast<int>(result.status)) + " detail=" + result.detail);
+        }
+    });
+}
+
 void ViewModel::on_squelch(const services::SquelchEvent& event) {
+    if (event.edge == services::SquelchEdge::muted || event.edge == services::SquelchEdge::unmuted) {
+        // 门仍开启（squelch_open_ 不变）；只在中继段内有意义，空闲时不发命令。
+        if (snapshot_->relay_fm_active || pending(Str::op_relay_fm)) {
+            request_relay_fm_mute(event.edge == services::SquelchEdge::muted);
+        }
+        return;
+    }
     if (event.edge == services::SquelchEdge::opened) {
         squelch_open_ = true;
         if (!(config_.relay_enabled && config_.relay_fm_enabled)) return;
@@ -989,8 +1017,8 @@ void ViewModel::stop() {
         });
     }
     if (snapshot_->phase == Phase::running &&
-        (snapshot_->serial_open || pending(Str::op_start))) {
-        // 即使 attach 命令仍在队列中，也排入 detach；BM runtime 始终保留。
+        (snapshot_->serial_open || snapshot_->hri_reconnecting || pending(Str::op_start))) {
+        // 即使 attach 命令仍在队列中，也排入 detach；BM runtime 始终保留。HRI 自动重连中同样发 detach 以停止重连。
         track(Str::op_stop, engine_.disconnect_radio());
     } else {
         CommandResult result;
@@ -1065,8 +1093,12 @@ std::optional<engine::RadioStartConfig> ViewModel::make_radio_start_config(std::
     result.hri_port = std::move(parsed->hri_port);
     result.hri_body_file = std::move(parsed->hri_body_file);
     result.audio = std::move(parsed->audio);
-    result.ap_mode = config_.relay_enabled; // 中继开启：AP PC 模式 Y 模板
-    if (auto log = dev_log()) log->line("gui", result.ap_mode ? "radio connect y_template=ap" : "radio connect y_template=direct");
+    // R131：中继开启默认仍用 DIRECT 模板（实机确认 AP 模板对中继无区别）；relay.y_template="ap" 时才用 AP 变体。
+    result.ap_mode = config_.relay_enabled && config_.relay_y_template_ap;
+    if (auto log = dev_log()) {
+        log->line("gui", std::string(result.ap_mode ? "radio connect y_template=ap" : "radio connect y_template=direct") +
+                             " relay=" + (config_.relay_enabled ? "on" : "off"));
+    }
     return result;
 }
 

@@ -1,5 +1,5 @@
 // R130 FM 中继：ViewModel 开关持久化、静噪轮询开关、静噪事件 → 引擎 relay_fm_start/stop、
-// relay_fm_ended → 来话历史 FM 记录与 relay-log 行、ap_mode 透传。全部离线（FakeEngine + 内存 services）。
+// relay_fm_ended → 来话历史 FM 记录与 relay-log 行、ap_mode（relay.y_template）透传。全部离线（FakeEngine + 内存 services）。
 
 #include "../src/gui/fake_engine.hpp"
 #include "../src/gui/view_model.hpp"
@@ -80,12 +80,18 @@ public:
         ++relay_stops;
         return engine_.relay_fm_stop();
     }
+    std::future<CommandResult> relay_fm_mute(bool muted) override {
+        (muted ? relay_mutes : relay_unmutes)++;
+        return engine_.relay_fm_mute(muted);
+    }
     std::shared_ptr<const wirex::engine::Snapshot> snapshot() const override { return engine_.snapshot(); }
     std::vector<wirex::engine::Event> drain_events(std::size_t max) override { return engine_.drain_events(max); }
     void set_wakeup(std::function<void()> wakeup) override { engine_.set_wakeup(std::move(wakeup)); }
 
     std::atomic<int> relay_starts{0};
     std::atomic<int> relay_stops{0};
+    std::atomic<int> relay_mutes{0};
+    std::atomic<int> relay_unmutes{0};
     std::atomic<int> connect_calls{0};
     std::atomic<bool> last_ap_mode{false};
 
@@ -220,7 +226,8 @@ void test_relay_fm_flow()
         return vm.snapshot().phase == wirex::engine::Phase::running && vm.snapshot().serial_open &&
             vm.snapshot().bm_link == wirex::engine::BmLink::connected && vm.cat().connected;
     }), "fake runtime, radio, BM and CAT connect");
-    check(engine.connect_calls.load() >= 1 && engine.last_ap_mode.load(), "relay on passes ap_mode=true to connect_radio");
+    check(engine.connect_calls.load() >= 1 && !engine.last_ap_mode.load(),
+          "relay on keeps the DIRECT Y template by default (ap_mode=false)");
     check(pump_until(vm, [&]() { return last_polling(probe, true); }), "CAT connected + relay + FM enables squelch polling");
 
     // 等 fake 随机来话结束、媒体空闲后开门。
@@ -236,6 +243,24 @@ void test_relay_fm_flow()
           "squelch opened → relay_fm_start and engine reports relay_fm_active");
     check(vm.relay_status() == wirex::gui::RelayStatus::active, "relay status reports FM relay active");
 
+    // 静噪 hang：muted → 引擎静音；重新开门 unmuted → 恢复；再次 muted 后 closed 结束本段。
+    services::SquelchEvent muted;
+    muted.edge = services::SquelchEdge::muted;
+    fire(probe, muted);
+    check(pump_until(vm, [&]() { return engine.relay_mutes.load() == 1 && vm.snapshot().relay_fm_muted; }),
+          "squelch muted → relay_fm_mute(true) and the engine reports relay_fm_muted");
+    check(vm.snapshot().relay_fm_active && vm.relay_status() == wirex::gui::RelayStatus::active,
+          "muted keeps the relay segment active");
+    services::SquelchEvent unmuted;
+    unmuted.edge = services::SquelchEdge::unmuted;
+    fire(probe, unmuted);
+    check(pump_until(vm, [&]() { return engine.relay_unmutes.load() == 1 && !vm.snapshot().relay_fm_muted; }),
+          "squelch unmuted → relay_fm_mute(false)");
+    fire(probe, muted);
+    check(pump_until(vm, [&]() { return engine.relay_mutes.load() == 2 && vm.snapshot().relay_fm_muted; }),
+          "second muted before closing");
+    check(engine.relay_stops.load() == 0, "muted/unmuted never stop the segment");
+
     services::SquelchEvent closed;
     closed.edge = services::SquelchEdge::closed;
     closed.s_meter_peak = 212U;
@@ -245,6 +270,7 @@ void test_relay_fm_flow()
                                         vm.history().front().relay_fm; }),
           "squelch closed → relay_fm_stop and an FM relay history record");
     check(engine.relay_stops.load() >= 1, "relay_fm_stop was requested");
+    check(!vm.snapshot().relay_fm_muted, "segment end clears relay_fm_muted");
     const auto& rec = vm.history().front();
     check(rec.relay_s_peak == 212U && rec.call.source_id == 0U && rec.call.destination_id != 0U &&
               rec.relay_end_reason == "squelch_closed",
@@ -275,6 +301,15 @@ void test_relay_fm_flow()
     check(pump_until(vm, [&]() { return !vm.snapshot().relay_fm_active; }), "CAT loss closes the gate and stops the relay");
     check(!vm.history().front().relay_s_peak, "segment without an S peak keeps it empty");
 
+    // 不在中继段时的 muted/unmuted 不发命令。
+    const int mutes_idle = engine.relay_mutes.load();
+    const int unmutes_idle = engine.relay_unmutes.load();
+    fire(probe, muted);
+    fire(probe, unmuted);
+    (void)pump_until(vm, [&]() { return false; }, 200ms);
+    check(engine.relay_mutes.load() == mutes_idle && engine.relay_unmutes.load() == unmutes_idle,
+          "muted/unmuted outside a relay segment send no engine command");
+
     // 关闭 FM：轮询关闭。
     vm.toggle_relay_fm();
     check(last_polling(probe, false), "turning FM off disables squelch polling");
@@ -283,6 +318,45 @@ void test_relay_fm_flow()
     vm.toggle_relay();
     check(last_polling(probe, false) && vm.relay_fm_enabled(),
           "turning relay off disables polling while keeping the stored FM choice");
+}
+
+// relay.y_template="ap" 且中继开启时才传 ap_mode=true；中继关闭时始终 DIRECT。
+void test_y_template_selection()
+{
+    struct Case {
+        const char* name;
+        bool relay;
+        bool ap;
+        bool expected;
+    };
+    const Case cases[] = {
+        {"relay off, direct", false, false, false},
+        {"relay off, ap configured", false, true, false},
+        {"relay on, direct default", true, false, false},
+        {"relay on, ap configured", true, true, true},
+    };
+    for (const auto& c : cases) {
+        wirex::gui::FakeEngine fake;
+        RecordingEngine engine(fake);
+        auto probe = std::make_shared<Probe>();
+        auto sv = probe_services(fake, probe);
+        auto load = sv.config.load;
+        sv.config.load = [load, c](std::string& error) -> std::optional<services::GuiConfig> {
+            auto config = load(error);
+            if (config) {
+                config->relay_enabled = c.relay;
+                config->relay_y_template_ap = c.ap;
+            }
+            return config;
+        };
+        wirex::gui::ViewModel vm(engine, std::move(sv), true);
+        vm.start();
+        check(pump_until(vm, [&]() { return engine.connect_calls.load() >= 1; }),
+              std::string(c.name) + ": connect_radio is called");
+        check(engine.last_ap_mode.load() == c.expected, std::string(c.name) + ": ap_mode matches relay.y_template");
+        vm.stop();
+        (void)pump_until(vm, [&]() { return !vm.pending(wirex::gui::Str::op_stop); });
+    }
 }
 
 void test_opened_while_busy_does_not_flash_failure()
@@ -307,6 +381,7 @@ void test_opened_while_busy_does_not_flash_failure()
 int main()
 {
     test_relay_fm_flow();
+    test_y_template_selection();
     test_opened_while_busy_does_not_flash_failure();
     std::cout << "PASS: " << assertions << " relay FM ViewModel assertions\n";
     return EXIT_SUCCESS;

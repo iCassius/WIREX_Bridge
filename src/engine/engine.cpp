@@ -499,6 +499,14 @@ std::future<CommandResult> Engine::disconnect_dynamic_groups(dmr_call::Slot slot
     return impl_->enqueue(std::move(command));
 }
 
+std::future<CommandResult> Engine::relay_fm_mute(bool muted)
+{
+    Command command{};
+    command.kind = CommandKind::relay_fm_mute;
+    command.flag = muted;
+    return impl_->enqueue(std::move(command));
+}
+
 std::shared_ptr<const Snapshot> Engine::snapshot() const
 {
     std::lock_guard<std::mutex> lock(impl_->shared->mutex);

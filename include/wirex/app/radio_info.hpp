@@ -31,7 +31,9 @@ inline constexpr std::string_view query_command = "RI0;";
 
 // FM 中继静噪门控：轮询采样 → 开门/关门事件。
 //   开门：连续 open_samples 次 SQL 开（抗单次误码/噪声尖峰）；
-//   关门：SQL 关持续 hang 时长（避免语句间短暂停顿被切断）；
+//   关门：SQL 关持续 hang 时长（避免语句间短暂停顿被切断）；hang 期间为“疑似关门”：
+//     第一个关门采样返回 muted（上行可先静音，去掉 hang + CAT 延迟期间的静噪尾噪），
+//     hang 内重新开门返回 unmuted，hang 到期仍返回 closed；
 //   发射中（tx != rx）或采样失败超过 stale 时长：立即关门（不能把自己的发射当作来话）。
 struct GateConfig {
     unsigned open_samples{2U};
@@ -39,7 +41,8 @@ struct GateConfig {
     std::chrono::milliseconds stale{std::chrono::milliseconds{1000}};
 };
 
-enum class GateEvent : unsigned char { none, opened, closed };
+// muted/unmuted 只在门已开启时出现，且总在同一段 opened 与 closed 之间；muted 之后不一定有 unmuted。
+enum class GateEvent : unsigned char { none, opened, closed, muted, unmuted };
 
 class SquelchGate final {
 public:
@@ -52,6 +55,8 @@ public:
     GateEvent tick(Clock::time_point now) noexcept;
 
     [[nodiscard]] bool open() const noexcept { return open_; }
+    // 门开启且处于 hang（疑似关门）期间为 true。
+    [[nodiscard]] bool muted() const noexcept { return open_ && closed_since_.has_value(); }
     void reset() noexcept;
 
 private:
