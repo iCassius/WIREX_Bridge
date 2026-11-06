@@ -16,6 +16,7 @@
 #include <limits>
 #include <optional>
 #include <set>
+#include <utility>
 #include <system_error>
 #include <unordered_set>
 
@@ -499,6 +500,11 @@ void write_typed(Value& doc, const AppConfig& config, const Value* gain_source)
         item.set("kind", Value::string(channel_kind_name(channel.kind)));
         item.set("slot", Value::number(channel.slot));
         item.set("name", Value::string(channel.name));
+        // R131：可选开关只在为 true 或文件中已有该字段时写入，默认配置保持与 PS 生成的字节一致。
+        for (const auto& [key, flag] : {std::pair<const char*, bool>{"muted", channel.muted},
+                                        std::pair<const char*, bool>{"disabled", channel.disabled}}) {
+            if (flag || item.find(key) != nullptr) item.set(key, Value::boolean(flag));
+        }
         channels.items.push_back(std::move(item));
     }
     doc.set("channels", std::move(channels));
@@ -654,6 +660,16 @@ ConfigResult<AppConfig> validate(const Value& input)
         typed.kind = kind.text == "group" ? ChannelKind::group : ChannelKind::private_call;
         typed.slot = static_cast<std::uint8_t>(slot.value());
         typed.name = name.text;
+        for (const auto& [key, out] : {std::pair<const char*, bool*>{"muted", &typed.muted},
+                                       std::pair<const char*, bool*>{"disabled", &typed.disabled}}) {
+            const Value* flag = channel.find(key);
+            if (flag == nullptr) continue;
+            if (!flag->is_bool()) {
+                return make_error(ConfigErrorCode::invalid_value, std::string("channels.") + key,
+                                  std::string("channels.") + key + " 必须是 true 或 false。");
+            }
+            *out = flag->boolean_value;
+        }
         if (!seen_channels.insert(typed.key()).second) {
             return make_error(ConfigErrorCode::duplicate_entry, "channels", "频道列表存在重复的类型、ID 和时隙。");
         }

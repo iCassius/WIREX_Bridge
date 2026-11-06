@@ -412,6 +412,65 @@ void test_channel_fields()
         {"tx number", [](json::Value& d) { d.set("tx_channel_id", num("1")); }, E::invalid_format},
         {"id as string", channels({channel("1", "group", "1", "x")}, ""), std::nullopt},
     });
+
+    // R131：channels[].muted / disabled（可选布尔，缺省 false）。
+    const auto flagged = [](const char* key, json::Value value) {
+        return [key, value](json::Value& d) { d.find("channels")->items[0].set(key, value); };
+    };
+    run_cases("channel flags", {
+        {"flags absent default false", [](json::Value&) {}, std::nullopt,
+            [](const AppConfig& c) { return !c.channels[0].muted && !c.channels[0].disabled; }},
+        {"muted true", flagged("muted", json::Value::boolean(true)), std::nullopt,
+            [](const AppConfig& c) { return c.channels[0].muted && !c.channels[0].disabled; }},
+        {"disabled true", flagged("disabled", json::Value::boolean(true)), std::nullopt,
+            [](const AppConfig& c) { return !c.channels[0].muted && c.channels[0].disabled; }},
+        {"muted false explicit", flagged("muted", json::Value::boolean(false)), std::nullopt,
+            [](const AppConfig& c) { return !c.channels[0].muted; }},
+        {"muted string", flagged("muted", str("true")), E::invalid_value},
+        {"disabled number", flagged("disabled", num("1")), E::invalid_value},
+        {"disabled null", flagged("disabled", json::Value::null()), E::invalid_value},
+        {"unknown channel member kept", flagged("future_flag", str("x")), std::nullopt,
+            [](const AppConfig& c) {
+                const auto* list = c.document.find("channels");
+                return list != nullptr && list->items[0].find("future_flag") != nullptr;
+            }},
+    });
+}
+
+void test_channel_flags_round_trip(const fs::path& root)
+{
+    const fs::path dir = root / "channel-flags";
+    fs::create_directories(dir);
+    const fs::path path = dir / "config.json";
+    check(wirex::app::create_default(path).ok(), "channel flags: default file created");
+    auto c = wirex::app::load(path).value();
+    check(wirex::app::save(path, c).ok() && read_bytes(path) == default_text(),
+          "channel flags: save with flags off keeps the default bytes");
+
+    // 加入未知字段后开启 muted/disabled：保存回读一致，未知字段保留。
+    write_bytes(path, [&]() {
+        json::Value doc;
+        (void)json::parse(read_bytes(path), doc);
+        doc.find("channels")->items[0].set("future_flag", str("keep"));
+        return wirex::app::serialize_config(doc);
+    }());
+    c = wirex::app::load(path).value();
+    c.channels[0].muted = true;
+    c.channels[0].disabled = true;
+    check(wirex::app::save(path, c).ok(), "channel flags: save muted+disabled");
+    auto reread = wirex::app::load(path);
+    check(reread.ok() && reread.value().channels[0].muted && reread.value().channels[0].disabled &&
+              reread.value().document.find("channels")->items[0].find("future_flag") != nullptr,
+          "channel flags: muted/disabled persist and unknown member survives");
+    c = reread.value();
+    c.channels[0].muted = false;
+    c.channels[0].disabled = false;
+    check(wirex::app::save(path, c).ok(), "channel flags: save both off");
+    reread = wirex::app::load(path);
+    const auto* item = reread.ok() ? &reread.value().document.find("channels")->items[0] : nullptr;
+    check(item != nullptr && !reread.value().channels[0].muted && item->find("muted") != nullptr &&
+              item->find("muted")->is_bool() && !item->find("muted")->boolean_value,
+          "channel flags: existing field is kept as false once written");
 }
 
 void test_routing_ui_window()
@@ -932,6 +991,7 @@ int main()
         test_file_round_trips(root);
         test_release_structure(root);
         test_relay_round_trip(root);
+        test_channel_flags_round_trip(root);
         fs::remove_all(root);
     } catch (const std::exception& error) {
         std::cerr << "FAIL: unexpected exception: " << error.what() << '\n';

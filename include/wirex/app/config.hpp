@@ -82,6 +82,9 @@ struct ChannelConfig {
     ChannelKind kind{ChannelKind::private_call};
     std::uint8_t slot{};
     std::string name{};
+    // R131 optional per-channel flags ("muted"/"disabled"); absent means false.
+    bool muted{};
+    bool disabled{};
 
     // Tuple key "kind:id:slot", e.g. "private:460997:2".
     [[nodiscard]] std::string key() const;
