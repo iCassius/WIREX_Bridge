@@ -47,8 +47,9 @@
   - [x] `RI0;` 应答解析与静噪门控（`src/app/radio_info.*`，`857e5ff`）：P8 为 SQL、P4 为 TX；连续 2 次开门、600 ms 挂起关门、电台发射或 CAT 失联 1 s 立即关门。
   - [x] CAT 周期查询：中继与 FM 都开启且 CAT 已连接时，每 100 ms 只读短会话 `RI0;`+`SM0;`（`real_services.cpp` `CatRunner`）；门控事件 → 引擎 `relay_fm_start()`/`relay_fm_stop()` → WaveIn 采集 + AMBE 编码 + BM 上行（复用手咪 PTT 上行管线，单段最长 180 s）。
   - [x] 实机确认 FM 开门时 P8 变为 1（2026-11-06，145.200 MHz：按键后下一次 100 ms 轮询内 P8 0→1，松开后回 0）。
-  - [ ] 实机验证 AP 模板与 DIRECT 模板在 AP PC 电台上的握手。
-  - [ ] 实机验证 FM 中继端到端（RF → BM）与转发音量。
+  - [x] 实机验证 AP 模板与 DIRECT 模板在 AP PC 电台上的握手（2026-11-06：两者都能握手，中继效果无区别；中继默认改回 DIRECT，`relay.y_template` 可选 `ap`）。
+  - [x] 实机验证 FM 中继端到端（2026-11-06：RF → BM 有效）。
+  - [ ] 实机确认尾音修复：120 ms 前瞻 + hang 期间上行静音（R131 `relay_fm_mute`）是否消除松手后 0.5–1 s 的尾噪；语句间短停顿是否被截字；多出的 120 ms 延迟是否可接受。
   - [ ] 100 ms CAT 轮询负载：确认对 CAT 口、1 s 周期查询与 CAT 设置操作的影响。
 - [ ] **记录传入用户**：
   - [x] FM：无呼号，来话历史黄色“FM 中继 → TG …”，并追加 `<exe>/private/runtime/relay-log.jsonl`（开始时间、时长、目标、时隙、S 表峰值、结束原因）。

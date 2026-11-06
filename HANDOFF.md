@@ -1,12 +1,12 @@
 ﻿# WIREX Bridge 交接入口
 
-更新：2026-11-06（R128–R130）。本文只记录当前状态；更早的交接（R103–R127）可用 `git log -- HANDOFF.md` 查看。系统组成见 [ARCHITECTURE](docs/ARCHITECTURE.md)，待办以 [TODO](TODO.md) 为准。
+更新：2026-11-06（R128–R131）。本文只记录当前状态；更早的交接（R103–R127）可用 `git log -- HANDOFF.md` 查看。系统组成见 [ARCHITECTURE](docs/ARCHITECTURE.md)，待办以 [TODO](TODO.md) 为准。
 
 ## 当前版本
 
 | 项 | 状态 |
 | --- | --- |
-| `feat/r128-native-gui` | 单进程原生 C++ GUI（Dear ImGui + DX11）+ 进程内引擎 + C++ 服务 + FM 中继（R130，`914b346..27e4da4`）；头部为 `27e4da4` 之后的 FM 中继文档同步提交。**未推送** |
+| `feat/r128-native-gui` | 单进程原生 C++ GUI（Dear ImGui + DX11）+ 进程内引擎 + C++ 服务 + FM 中继（R130）+ R131 实机反馈修复；头部 `2c99130` 及其后文档提交。**未推送** |
 | 旧 WPF UI | `ui/windows/`、launcher、`tools/start-*.ps1`、`--ui-pipe` 适配层仍在仓库中，实机验收通过后退役 |
 | stable `v0.1.0` | tag 指向 `c12b50a`，GitHub Release 已发布；发布审计见 [R124_RELEASE](docs/R124_RELEASE.md) |
 | 本机单 EXE | R128 单 EXE 仅在本机交付，未打包；单 EXE 的 ZIP profile 尚未建立 |
@@ -17,11 +17,20 @@
 
 ## FM 中继（R130）
 
-- 右上角“启用中继”写 `relay.enabled`，下次连接电台使用 AP Y 模板（offset 0x05 为 `'1'`）；中继开启后 FM 按钮写 `relay.fm_enabled`。电台已连接时切换只提示需重连。
+- 右上角“启用中继”写 `relay.enabled`；中继开启后 FM 按钮写 `relay.fm_enabled`。连接电台默认用 DIRECT Y 模板（实测 AP PC 电台下与 AP 变体无区别），`relay.y_template: "ap"` 可切到 AP 变体。电台已连接时切换只提示需重连。
+- 尾音（R131）：静噪第一个关门采样即 `relay_fm_mute(true)`，hang 内重新开门恢复；FM 上行经 120 ms 前瞻缓冲，静音时缓冲内未送出部分一并清零。
 - 中继与 FM 都开启且 CAT 已连接时，每 100 ms 只读 `RI0;`+`SM0;`，静噪开门/关门驱动引擎 `relay_fm_start()`/`relay_fm_stop()`；单段最长 180 s。
 - 记录：来话历史黄色“FM 中继 → TG …”与 `<exe>/private/runtime/relay-log.jsonl`。
 - 2026-11-06 实测：145.200 MHz FM 下按键后 P8 在下一次轮询内 0→1；原始数据在父目录 `research/hil/2026-11-06_fm_squelch_capture2.jsonl`。
 - 规则与结束原因见 [R128_NATIVE_GUI](docs/R128_NATIVE_GUI.md)“FM 中继”。
+
+## R131 实机反馈修复（2026-11-06）
+
+- **HRI 自动重连**：电台曾 hri_ready 后掉线（串口错误、Y/0 超时、会话异常停止）自动重试：能开串口每 3 s，打不开时 3→6→10 s 退避；用户断开即停。期间 BM 与本机播放照常。事件 `hri_lost`/`hri_restored`，快照 `hri_reconnecting`/`hri_reconnect_attempts`。
+- **频道状态机**：静态组主按钮“静音/取消静音”（照常接收显示，只是 `set_muted_groups` 清零播放 PCM）；动态组“停用/启用”（停用移出 RX 策略并发 TG4000 `disconnect_dynamic_groups`，会断开同时隙全部动态组；启用重新加入并 Quick Call）。徽标：静态组/静音/动态·已激活/动态·未激活/已停用。`channels[].muted/disabled` 持久化。
+- **音量**：两条滑块直接设所选 WaveOut/WaveIn 端点的 Windows 音量（`IAudioEndpointVolume`，外部改动同步）；软件数字增益默认 1× 收进“高级”。电平表改 dBFS，虚线 −18 dBFS 为平均电平参考（实测舒适峰值约 −9 dBFS）。
+- **CAT 门控**：频率/模式只在发射中或 HRI 正在向电台播放时禁止；功率只在发射中禁止。被拦时保留草稿、门控解除后自动重试一次；电台拒绝时如实显示。
+- **BM 重连**：断开后“连接BM”冷却 5 s；60 s 内同一 profile 的 `master_rejected` 视为旧会话未释放，界面每 5 s 自动重试（最多 4 次）。
 
 ## dev 日志
 
@@ -32,15 +41,12 @@
 ## 已知差异与待办
 
 与旧版的行为差异（实机确认）：
-- CAT 设置模式/频率要求核心已停止（旧版为核心空闲）；功率门控用 `media_owner==idle` 近似“接收队列为空”。
 - 窗口可调整大小（最小 1180×780），设备与 BM 配置都在主界面，没有设置弹窗。
 - BM 静态组与收听频道双向同步；主界面显示 BM RTT 与会话丢包率。
 
 待办（详见 TODO）：
 - [ ] 实机（不带 `--fake`）验证 HRI/CAT、BM 连接、BM-only 本机播放、TG46001 收听、启动组呼、CAT 门控、关窗有界收尾。
-- [ ] 音频断续/破音专项（另有 agent 处理，见 TODO 第零节）。
-- [ ] 实机验证 AP 模板与 DIRECT 模板在 AP PC 电台上的握手。
-- [ ] 实机验证 FM 中继端到端（RF → BM）与转发音量。
+- [ ] 实机确认 R131：FM 尾音、HRI 退出/重入自动恢复、静音/停用行为、Windows 音量联动、CAT 改频（HRI 模式下电台是否接受）、BM 冷却。
 - [ ] 评估 100 ms CAT 轮询负载。
 - [ ] C4FM 中继（阻塞于 `R` 记录格式，见 TODO 1.3）。
 - [ ] 125% DPI 下验收字体与布局；人工验证 IME 中文输入。
