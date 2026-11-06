@@ -894,7 +894,11 @@ void test_running_engine()
     std::ostringstream status_lines;
     std::uint64_t seq = 0U;
     std::atomic<bool> cleanup_hook_called{false};
+    std::atomic<bool> initial_power_logged{false};
     auto config = base_config();
+    config.diagnostics.console = [&](std::string_view text, bool) {
+        if (text.find("y_tx_power=250") != std::string_view::npos) initial_power_logged = true;
+    };
     config.diagnostics.status = [&](const wirex::engine::StatusRecord& record) {
         std::lock_guard<std::mutex> lock(status_mutex);
         statuses.emplace_back(record.event);
@@ -919,6 +923,7 @@ void test_running_engine()
           "snapshot reports stable audio endpoint IDs selected at startup");
     check(engine.snapshot()->hri_port == L"COM99", "snapshot reports the actual selected HRI COM port");
     check(log->version_queries >= 1 && log->y_records >= 1, "engine writes V and Y records to the serial port");
+    check(initial_power_logged.load(), "startup emits the default Y power to diagnostics");
     {
         std::lock_guard<std::mutex> lock(log->y_mutex);
         const auto& approved = wirex::approved_resources::hri_y_template;

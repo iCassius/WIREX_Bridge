@@ -3518,6 +3518,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
                 const auto initial = hri_session->start(0U);
                 hri_state = initial.state;
                 hri_active = hri_state.phase != HriPhase::stopped;
+                if (hri_active) console("y_tx_power=" + std::to_string(hri_y_tx_power) + "\n");
                 apply_hri_update(initial);
             }
         }
