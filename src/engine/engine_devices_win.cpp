@@ -137,6 +137,10 @@ public:
     }
     bool all_drained() noexcept override { return output_.all_drained(); }
     bool close() noexcept override { return output_.close(); }
+    std::string last_open_error() const override
+    {
+        return output_.last_error() + " device_id=" + std::to_string(device_id_);
+    }
 
 private:
     unsigned device_id_;

@@ -87,6 +87,7 @@ struct DeviceLog {
     std::atomic<bool> output_close_fails_while_open{false};
     std::wstring output_close_failure_endpoint{};
     std::atomic<bool> output_reopen_fails{false};
+    std::atomic<int> output_open_failures{0};
     std::atomic<bool> output_open_fails_but_remains_open{false};
     std::atomic<bool> output_drained{true};
     std::atomic<int> input_opened{0};
@@ -289,8 +290,10 @@ public:
             return false;
         }
         open_ = can_open_ && !(open_attempts_ > 1U && log_->output_reopen_fails.load());
+        if (!open_) ++log_->output_open_failures;
         return open_;
     }
+    std::string last_open_error() const override { return open_ ? std::string{} : "fake MMRESULT=4"; }
     bool is_open() const noexcept override { return open_; }
     bool completion_overflowed() noexcept override { return log_->output_completion_overflow.exchange(false); }
     bool take_completed(std::uint64_t& generation, std::size_t& count) noexcept override
@@ -1604,6 +1607,9 @@ void test_radio_detach_close_failure_and_recovery()
     check(stuck_snapshot->phase == wirex::engine::Phase::failed && stuck_snapshot->wave_out_open &&
           stuck_log->output_closed == 0,
           "final failed-stop snapshot still reports WaveOut open when the fake driver retained its handle");
+    check(!stuck_snapshot->hri_ready && !stuck_snapshot->serial_open && !stuck_snapshot->hri_reconnecting &&
+              stuck_snapshot->bm_link == wirex::engine::BmLink::disabled && !stuck_snapshot->failure_reason.empty(),
+          "final failed-stop snapshot clears HRI/serial/BM lights and carries the failure reason");
 }
 
 void test_wavein_detach_close_failure_and_recovery()
@@ -2543,6 +2549,157 @@ void test_hri_healthy_waveout_downlink_end_to_end()
     check(get_within(engine.stop(), 5s,
                      "stop after healthy HRI/WaveOut downlink").status == CommandStatus::accepted,
           "the healthy downlink runtime stops cleanly after cleanup");
+}
+
+// R131 实机回归：来话收尾关闭 WaveOut 后重开失败，曾 set_failure("radio_waveout_reopen_failed") 停止整个引擎。
+// 现在：只拒绝本通、引擎与 HRI 串口保持；退避重试成功后下一通正常播放；控制台带出打开失败的错误码。
+void test_waveout_reopen_failure_is_not_fatal()
+{
+    LoopbackMaster master(100U);
+    master.reject_auth(false);
+    auto log = std::make_shared<DeviceLog>();
+    FakeOptions options{};
+    options.acknowledge_t_records = true;
+    wirex::engine::Engine engine(std::make_shared<FakeDevices>(log, options));
+    auto config = base_config();
+    config.bm.master_host = "127.0.0.1";
+    config.bm.master_port = master.endpoint().port;
+    config.bm.profile.password = "offline-waveout-reopen-failure";
+    config.resolved_master = master.endpoint();
+    config.bm_start_disconnected = false;
+    auto console_mutex = std::make_shared<std::mutex>();
+    auto console_text = std::make_shared<std::string>();
+    config.diagnostics.console = [console_mutex, console_text](std::string_view text, bool) {
+        std::lock_guard<std::mutex> lock(*console_mutex);
+        console_text->append(text);
+    };
+    check(get_within(engine.start(std::move(config)), 5s, "start for WaveOut reopen failure").status ==
+              CommandStatus::accepted,
+          "runtime starts before the WaveOut reopen failure test");
+    check(wait_for_snapshot(engine, 4s, [](const wirex::engine::Snapshot& state) {
+              return state.hri_ready && state.bm_link == wirex::engine::BmLink::connected &&
+                  state.bm_state == wirex::bm::State::ready && state.wave_out_open;
+          }), "HRI, BM and WaveOut are ready before the first call");
+
+    const auto voice = make_test_downlink_voice();
+    auto run_call = [&](std::uint8_t tail, std::size_t bursts) {
+        wirex::dmr_call::Transmitter transmitter;
+        check(send_test_downlink_header(master, transmitter, tail), "fake Master sends a call header");
+        std::this_thread::sleep_for(60ms);
+        for (std::size_t index = 0U; index < bursts; ++index) {
+            check(send_test_downlink_voice(master, transmitter, voice), "fake Master sends call voice");
+            std::this_thread::sleep_for(60ms);
+        }
+        check(send_test_downlink_terminator(master, transmitter), "fake Master ends the call");
+    };
+
+    // 第一通：正常播放，收尾关闭 WaveOut。之后所有重开都失败。
+    log->output_reopen_fails = true;
+    const auto first_ended_before = engine.snapshot()->counters.calls_ended;
+    run_call(91U, 5U);
+    check(wait_for_local_rx_idle(engine, first_ended_before, 4s), "first call drains and releases the Router lease");
+    check(wait_for_snapshot(engine, 2s, [](const wirex::engine::Snapshot& state) {
+              return !state.wave_out_open && state.local_audio_error == "radio_waveout_unavailable";
+          }), "idle pre-reopen fails and publishes the output-unavailable state");
+    const int serial_closed_before = log->serial_closed.load();
+
+    // 第二通：WaveOut 打不开 → 只拒绝本通。
+    const auto rejected_before = engine.snapshot()->counters.rejected_calls;
+    const auto started_before = engine.snapshot()->counters.calls_started;
+    const int failures_before = log->output_open_failures.load();
+    run_call(92U, 4U);
+    bool rejected = false;
+    for (const auto deadline = std::chrono::steady_clock::now() + 2s;
+         !rejected && std::chrono::steady_clock::now() < deadline; std::this_thread::sleep_for(5ms)) {
+        const auto current = engine.snapshot();
+        rejected = current->counters.rejected_calls > rejected_before &&
+            current->media_owner == wirex::talkgroup_routing::MediaOwner::idle;
+    }
+    check(rejected, "a call that arrives while WaveOut cannot reopen is rejected and its Router lease is released");
+    auto state = engine.snapshot();
+    check(state->phase == wirex::engine::Phase::running && state->failure_reason.empty() && state->hri_ready &&
+              state->serial_open && state->bm_link == wirex::engine::BmLink::connected &&
+              state->counters.calls_started == started_before && log->serial_closed.load() == serial_closed_before,
+          "WaveOut reopen failure keeps the engine running and HRI attached (serial port not closed)");
+    check(log->output_open_failures.load() > failures_before,
+          "call arrival triggers an immediate WaveOut reopen attempt");
+    const int failures_after_arrival = log->output_open_failures.load();
+    const auto retry_deadline = std::chrono::steady_clock::now() + 6s;  // 退避上限 5 s
+    while (std::chrono::steady_clock::now() < retry_deadline &&
+           log->output_open_failures.load() == failures_after_arrival) std::this_thread::sleep_for(10ms);
+    check(log->output_open_failures.load() > failures_after_arrival,
+          "idle tick keeps retrying WaveOut with backoff after the rejected call");
+    check(engine.snapshot()->phase == wirex::engine::Phase::running && engine.snapshot()->hri_ready,
+          "repeated WaveOut retries never stop the engine or drop HRI");
+    {
+        std::lock_guard<std::mutex> lock(*console_mutex);
+        check(console_text->find("MMRESULT=4") != std::string::npos,
+              "console diagnostics carry the WaveOut open error code");
+    }
+
+    // 驱动恢复：退避重试成功，下一通正常播放。
+    log->output_reopen_fails = false;
+    check(wait_for_snapshot(engine, 3s, [](const wirex::engine::Snapshot& state) {
+              return state.wave_out_open && state.local_audio_error.empty();
+          }), "backoff retry reopens WaveOut once the device recovers");
+    const auto submitted_before = log->output_submitted.load();
+    const auto third_ended_before = engine.snapshot()->counters.calls_ended;
+    run_call(93U, 7U);
+    check(wait_for_local_rx_idle(engine, third_ended_before, 4s), "the following call drains normally");
+    state = engine.snapshot();
+    check(log->output_submitted.load() > submitted_before && state->phase == wirex::engine::Phase::running &&
+              state->hri_ready && state->hri_t3_record_observed && state->hri_t0_record_observed,
+          "the following call plays through the reopened WaveOut with HRI T3/T0");
+    check(get_within(engine.stop(), 5s, "stop after WaveOut recovery").status == CommandStatus::accepted,
+          "runtime stops cleanly after the WaveOut recovered");
+}
+
+// 来话收尾关闭 WaveOut 失败（句柄仍在）也不致命：本通照常收尾，句柄隔离；驱动恢复后换新对象重开。
+void test_waveout_call_close_failure_is_not_fatal()
+{
+    LoopbackMaster master(100U);
+    master.reject_auth(false);
+    auto log = std::make_shared<DeviceLog>();
+    FakeOptions options{};
+    options.acknowledge_t_records = true;
+    wirex::engine::Engine engine(std::make_shared<FakeDevices>(log, options));
+    auto config = base_config();
+    config.bm.master_host = "127.0.0.1";
+    config.bm.master_port = master.endpoint().port;
+    config.bm.profile.password = "offline-waveout-close-failure";
+    config.resolved_master = master.endpoint();
+    config.bm_start_disconnected = false;
+    check(get_within(engine.start(std::move(config)), 5s, "start for WaveOut close failure").status ==
+              CommandStatus::accepted,
+          "runtime starts before the WaveOut close failure test");
+    check(wait_for_snapshot(engine, 4s, [](const wirex::engine::Snapshot& state) {
+              return state.hri_ready && state.bm_link == wirex::engine::BmLink::connected && state.wave_out_open;
+          }), "HRI, BM and WaveOut are ready");
+    log->output_close_fails_while_open = true;
+    wirex::dmr_call::Transmitter transmitter;
+    const auto voice = make_test_downlink_voice();
+    const auto ended_before = engine.snapshot()->counters.calls_ended;
+    check(send_test_downlink_header(master, transmitter, 91U), "fake Master sends the call header");
+    std::this_thread::sleep_for(60ms);
+    for (std::size_t index = 0U; index < 5U; ++index) {
+        check(send_test_downlink_voice(master, transmitter, voice), "fake Master sends call voice");
+        std::this_thread::sleep_for(60ms);
+    }
+    check(send_test_downlink_terminator(master, transmitter), "fake Master ends the call");
+    check(wait_for_local_rx_idle(engine, ended_before, 4s),
+          "a WaveOut close failure at call end still releases the Router lease");
+    auto state = engine.snapshot();
+    check(state->phase == wirex::engine::Phase::running && state->failure_reason.empty() && state->hri_ready &&
+              state->serial_open && state->local_audio_error == "radio_waveout_unavailable",
+          "WaveOut close failure keeps the runtime and HRI and reports the output as unavailable");
+    log->output_close_fails_while_open = false;
+    const int opened_before = log->output_opened.load();
+    check(wait_for_snapshot(engine, 4s, [](const wirex::engine::Snapshot& state) {
+              return state.wave_out_open && state.local_audio_error.empty();
+          }), "after the driver releases the handle a fresh WaveOut object is opened");
+    check(log->output_opened.load() > opened_before, "recovery opens a replacement WaveOut");
+    check(get_within(engine.stop(), 5s, "stop after WaveOut close recovery").status == CommandStatus::accepted,
+          "runtime stops cleanly after WaveOut close recovery");
 }
 
 void test_output_only_selection_recovers_and_switches_with_hri()
@@ -3507,6 +3664,8 @@ int main()
         test_audio_warning_commit_matches_ptt_input();
         test_hri_quarantined_output_call_releases_lease_and_recovers();
         test_hri_healthy_waveout_downlink_end_to_end();
+        test_waveout_reopen_failure_is_not_fatal();
+        test_waveout_call_close_failure_is_not_fatal();
         test_output_only_selection_recovers_and_switches_with_hri();
         test_local_output_close_warning_keeps_audio_ready();
         test_hri_failure_preserves_pending_bm_local_receive();

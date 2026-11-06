@@ -219,6 +219,12 @@ inline constexpr std::uint64_t kRelayLookaheadMs = 120U;
 inline constexpr std::uint64_t hri_reconnect_interval_ms = 3000U;
 inline constexpr std::uint64_t hri_reconnect_max_interval_ms = 10000U;
 
+// R131：电台 WaveOut 重开失败后的退避（200 ms、500 ms、1 s、2 s、4 s、5 s…）。
+// 同一 USB 声卡的 WaveIn 关闭后，空闲预重开至少等待 radio_output_after_input_close_settle_ms。
+inline constexpr std::uint64_t radio_output_retry_initial_ms = 200U;
+inline constexpr std::uint64_t radio_output_retry_max_ms = 5000U;
+inline constexpr std::uint64_t radio_output_after_input_close_settle_ms = 300U;
+
 // relay_fm_started / relay_fm_ended 事件附带的信息。
 struct RelayFmInfo {
     talkgroup_routing::TxTarget target{};  // 本段使用的 tx_policy 目标

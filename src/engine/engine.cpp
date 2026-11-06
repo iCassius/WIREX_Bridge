@@ -181,6 +181,14 @@ void engine_thread_main(std::shared_ptr<Shared> shared, StartConfig config) noex
         last.tx_active = false;
         last.active_rx_call.reset();
         last.bm_link = BmLink::disabled;
+        last.bm_requested_enabled = false;
+        // 线程已结束：串口已关闭、HRI 不再工作。WaveIn/WaveOut 保留 run_loop 最终快照里的实际句柄状态
+        // （关闭失败仍被持有的句柄要如实显示）。避免界面在核心停止后仍显示 HRI/串口已连接。
+        last.serial_open = false;
+        last.hri_port.clear();
+        last.hri_ready = false;
+        last.hri_reconnecting = false;
+        last.relay_fm_active = false;
         shared->publish(std::move(last));
         if (result.status != CommandStatus::accepted) {
             Event fatal{};

@@ -68,6 +68,8 @@ public:
                                       std::uint64_t generation) noexcept = 0;
     [[nodiscard]] virtual bool all_drained() noexcept = 0;
     [[nodiscard]] virtual bool close() noexcept = 0;
+    // 最近一次 open() 失败的诊断（例如 "waveOutOpen MMRESULT=4"）；无可用信息时为空。
+    [[nodiscard]] virtual std::string last_open_error() const { return {}; }
 };
 
 class Devices {

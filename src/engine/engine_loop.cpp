@@ -255,6 +255,17 @@ CommandResult run_loop(Shared& shared, StartConfig config)
     bool pending_receive_ended = false;
     bool pending_playback_drain = false;
     bool downlink_blocked = false;
+    // R131 实机：来话收尾（T0 后）关闭电台 WaveOut 以复位 HRI 下行；随后空闲时预先重开。重开失败不致命，
+    // 进入“输出暂不可用”：按 200 ms、500 ms、1 s… 退避（上限 5 s）在空闲 tick 中重试，下一通来话到达时也立即重试一次。
+    bool radio_output_unavailable = false;
+    std::uint64_t radio_output_retry_next_ms = 0U;
+    std::uint64_t radio_output_retry_backoff_ms = 0U;
+    std::uint64_t radio_output_retry_attempts = 0U;
+    // 同一 USB 声卡：WaveIn 刚关闭时不立即重开 WaveOut（空闲预重开留出 settle 时间）。
+    std::optional<std::uint64_t> radio_input_closed_ms;
+    std::optional<std::uint64_t> radio_output_closed_ms;
+    // 关闭失败后 WaveOutput 对象锁定不可重开；句柄确认释放后换新对象再打开。
+    bool radio_output_close_failed = false;
     bool bm_disconnect_cleanup_started = false;
     bool bm_ptt_release_required = false;
     bool bm_disconnect_timeout_reported = false;
@@ -629,6 +640,105 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         set_failure(reason);
     };
 
+    // ---------- R131 电台 WaveOut “暂不可用”与退避重开 ----------
+    // 单次 WaveOut 打开/提交错误只影响当前来话；BM 与 HRI 运行时保持。
+    auto next_radio_output_backoff = [](std::uint64_t current) -> std::uint64_t {
+        if (current == 0U) return wirex::engine::radio_output_retry_initial_ms;
+        if (current < 500U) return 500U;
+        return std::min<std::uint64_t>(current * 2U, wirex::engine::radio_output_retry_max_ms);
+    };
+    auto mark_radio_output_unavailable = [&](std::string_view trigger, const std::string& detail) {
+        const bool first = !radio_output_unavailable;
+        radio_output_unavailable = true;
+        radio_output_retry_backoff_ms = next_radio_output_backoff(radio_output_retry_backoff_ms);
+        radio_output_retry_next_ms = elapsed_ms() + radio_output_retry_backoff_ms;
+        (void)local_playback.output_failed(wirex::bm_local_playback::OutputError::open_failed);
+        local_audio_error = "radio_waveout_unavailable";
+        console("电台 WaveOut 暂不可用（" + std::string(trigger) + "）：" +
+                    (detail.empty() ? std::string("no_detail") : detail) + "；" +
+                    std::to_string(radio_output_retry_backoff_ms) + " ms 后重试，第 " +
+                    std::to_string(radio_output_retry_attempts) + " 次。\n",
+                true);
+        status(first ? "radio_waveout_unavailable_retry_scheduled" : "radio_waveout_reopen_retry_failed");
+    };
+    // 电台路由（HRI 已就绪）下重开 WaveOut。返回 true 表示输出已打开可用。
+    auto reopen_radio_output = [&](std::string_view trigger) -> bool {
+        if (!radio_output) return false;
+        if (radio_output_close_failed) {
+            // 上次关闭失败：先再试一次释放旧句柄；释放后换一个新的输出对象（旧对象按设计拒绝重开）。
+            if (radio_output->is_open()) (void)radio_output->close();
+            radio_output_open = radio_output->is_open();
+            if (radio_output_open) {
+                ++radio_output_retry_attempts;
+                mark_radio_output_unavailable(trigger, "previous_close_unconfirmed_handle_open");
+                return false;
+            }
+            std::unique_ptr<AudioOutput> replacement;
+            try { replacement = devices.make_audio_output(config.audio); } catch (...) { replacement.reset(); }
+            if (!replacement) {
+                ++radio_output_retry_attempts;
+                mark_radio_output_unavailable(trigger, "audio_device_allocation_failed");
+                return false;
+            }
+            radio_output = std::move(replacement);
+            radio_output_close_failed = false;
+            radio_output_playback_blocked = false;
+        }
+        if (radio_output_open) return !radio_output_playback_blocked;
+        ++radio_output_retry_attempts;
+        std::string detail;
+        bool opened = false;
+        if (!hri_state.y_zero_acknowledged) {
+            detail = "hri_y_zero_not_acknowledged";
+        } else {
+            opened = radio_output->open();
+            if (!opened) {
+                try { detail = radio_output->last_open_error(); } catch (...) { detail.clear(); }
+            }
+        }
+        radio_output_open = radio_output->is_open();
+        if (opened && radio_output_open) {
+            const bool recovered = radio_output_unavailable;
+            radio_output_unavailable = false;
+            radio_output_retry_backoff_ms = 0U;
+            radio_output_retry_next_ms = 0U;
+            radio_output_retry_attempts = 0U;
+            radio_output_playback_blocked = false;
+            local_playback.output_available();
+            local_audio_error.clear();
+            local_playback.set_environment(hri_ready && port != nullptr, true);
+            if (recovered) console("电台 WaveOut 已恢复（" + std::string(trigger) + "）。\n");
+            status(recovered ? "radio_waveout_reopen_recovered" : "radio_waveout_reopened_idle");
+            return true;
+        }
+        // open 返回失败但句柄仍在：隔离该句柄，不再提交 PCM（与端点切换的处理一致）。
+        if (radio_output_open) radio_output_playback_blocked = true;
+        mark_radio_output_unavailable(trigger, detail);
+        return false;
+    };
+    auto reset_radio_output_retry = [&]() {
+        radio_output_unavailable = false;
+        radio_output_retry_backoff_ms = 0U;
+        radio_output_retry_next_ms = 0U;
+        radio_output_retry_attempts = 0U;
+    };
+    // 每通来话收尾关闭电台 WaveOut（复位 HRI 下行）。关闭失败不再致命：句柄若仍在则隔离（不再提交 PCM），
+    // 记录告警并进入“输出暂不可用”，由空闲 tick 重试释放与重开。返回值供 Router 收尾：句柄已关闭或已隔离即可释放 lease。
+    auto close_radio_output_for_call = [&](std::string_view failure_event) -> bool {
+        const bool closed = radio_output->close();
+        radio_output_open = radio_output->is_open();
+        radio_output_closed_ms = elapsed_ms();
+        if (closed) return true;
+        radio_output_close_failed = true;
+        radio_output_playback_blocked = radio_output_open;
+        console("电台 WaveOut 关闭失败（" + std::string(failure_event) + "）；" +
+                    (radio_output_open ? "句柄已隔离，" : "") + "不再停止整个运行时。\n",
+                true);
+        status(failure_event);
+        mark_radio_output_unavailable(failure_event, radio_output_open ? "close_failed_handle_open" : "close_failed");
+        return true;
+    };
+
     auto clear_lcd_source_identity = [&]() {
         counters.lcd_source_identity_prepared = false;
         counters.lcd_source_identity_source_id = 0U;
@@ -798,8 +908,10 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         }
     };
     auto stop_tx_input = [&]() -> bool {
+        const bool was_open = radio_input_open;
         const bool closed = radio_input->close();
         radio_input_open = radio_input->is_open();
+        if (was_open && !radio_input_open) radio_input_closed_ms = elapsed_ms();
         record_routed_tx_input_cleanup(closed);
         return closed;
     };
@@ -1321,12 +1433,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
                 pipeline->cancel_rx();
                 pending_receive_start = false;
                 pending_playback_drain = false;
-                {
-                    const bool closed = radio_output->close();
-                    radio_output_open = radio_output->is_open();
-                    record_routed_rx_waveout_cleanup(closed);
-                    if (!closed) set_failure("waveout_cancel_cleanup_failed");
-                }
+                record_routed_rx_waveout_cleanup(close_radio_output_for_call("waveout_cancel_cleanup_failed"));
                 status("playback_cancelled_and_queue_cleared");
                 break;
             case StreamActionKind::call_finished: {
@@ -1345,13 +1452,11 @@ CommandResult run_loop(Shared& shared, StartConfig config)
                     waveout_cleanup_ok = true;
                     status("rx_quarantined_waveout_retained_after_t0_and_drain");
                 } else {
-                    waveout_cleanup_ok = radio_output->close();
-                    radio_output_open = radio_output->is_open();
+                    waveout_cleanup_ok = close_radio_output_for_call("waveout_rx_call_cleanup_failed");
                 }
                 record_routed_rx_waveout_cleanup(waveout_cleanup_ok);
                 const bool aggregate_waveout_cleanup_ok = routed_rx_waveout_cleanup_attempted &&
                     routed_rx_waveout_cleanup_succeeded;
-                if (!waveout_cleanup_ok) set_failure("waveout_rx_call_cleanup_failed");
                 const bool routed_rx_cleanup_incomplete =
                     wirex::hri_stream_session::routed_rx_cleanup_incomplete(
                         state, routed_rx_hri_start_attempted, aggregate_waveout_cleanup_ok);
@@ -1480,6 +1585,22 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             !active_quick_call_plan;
     };
 
+    // 空闲预重开：来话收尾关闭 WaveOut 是为了复位 HRI 下行（waveOutReset 丢弃残留 PCM，T0 后句柄干净），
+    // 不应等到下一通来话到达才临时打开。HRI 就绪且媒体空闲时在 tick 中预先重开；WaveIn（同一 USB 声卡）
+    // 或 WaveOut 刚关闭 300 ms 内不立即重开；失败按退避重试。
+    auto service_radio_output_reopen = [&]() {
+        if (shutdown_requested || !hri_ready || port == nullptr || hri_probe_kept_output || !radio_output) return;
+        if (radio_output_open && !radio_output_close_failed) return;
+        if (!radio_media_idle()) return;
+        if (active_routed_rx_pipeline_generation && !routed_rx_cleanup_reported) return;
+        const auto now = elapsed_ms();
+        const auto settle = wirex::engine::radio_output_after_input_close_settle_ms;
+        if (radio_input_closed_ms && now < *radio_input_closed_ms + settle) return;
+        if (radio_output_closed_ms && now < *radio_output_closed_ms + settle) return;
+        if (radio_output_unavailable && now < radio_output_retry_next_ms) return;
+        (void)reopen_radio_output("idle_pre_reopen");
+    };
+
     auto radio_audio_resource_retained = [&]() {
         return radio_input_open || radio_output_open ||
             (radio_input && radio_input->is_open()) || (radio_output && radio_output->is_open());
@@ -1523,6 +1644,8 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             pending_receive_ended = false;
             pending_playback_drain = false;
         }
+        // 电台路由的“输出暂不可用”退避只在 HRI 运行期间有效；detach 后由本机播放路径接管输出状态。
+        reset_radio_output_retry();
         bool input_close_failed = false;
         bool output_close_failed = false;
         bool serial_close_failed = radio_serial_close_unconfirmed;
@@ -1707,7 +1830,13 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         }
 
         radio_input = std::move(next_input);
-        if (!keep_local_output) radio_output = std::move(next_output);
+        if (!keep_local_output) {
+            radio_output = std::move(next_output);
+            radio_output_close_failed = false;
+        }
+        reset_radio_output_retry();
+        radio_input_closed_ms.reset();
+        radio_output_closed_ms.reset();
         port = std::move(next_port);
         hri_session = std::move(next_hri);
         config.hri_port = requested.hri_port;
@@ -1811,10 +1940,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             status(event);
             return;
         }
-        const bool closed = radio_output->close();
-        radio_output_open = radio_output->is_open();
-        record_routed_rx_waveout_cleanup(closed);
-        if (!closed) set_failure("waveout_pre_t3_cleanup_failed");
+        record_routed_rx_waveout_cleanup(close_radio_output_for_call("waveout_pre_t3_cleanup_failed"));
         report_routed_rx_cleanup(false);
         status(event);
     };
@@ -1902,10 +2028,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             if (stream_phase != StreamPhase::idle && stream_phase != StreamPhase::faulted) {
                 service_stream_update(stream_session->cancel(StreamReason::cancelled, elapsed_ms()));
             } else if (routed_rx_hri_start_attempted) {
-                const bool closed = radio_output->close();
-                radio_output_open = radio_output->is_open();
-                record_routed_rx_waveout_cleanup(closed);
-                if (!closed) set_failure("waveout_stopping_rx_cleanup_failed");
+                record_routed_rx_waveout_cleanup(close_radio_output_for_call("waveout_stopping_rx_cleanup_failed"));
                 report_routed_rx_cleanup(false);
             } else {
                 cleanup_routed_rx_without_hri_start("rx_media_idle_or_stopping_before_hri_start");
@@ -1933,24 +2056,18 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             return;
         }
         if (!radio_output_open) {
-            if (!hri_state.y_zero_acknowledged ||
-                !radio_output->open()) {
+            // 来话到达时 WaveOut 未打开（空闲预重开尚未成功）：立即再试一次。失败只拒绝本通来话，
+            // 不置 downlink_blocked、不 set_failure；后续 tick 按退避继续重试（R131 实机：曾在此停止整个引擎）。
+            if (!reopen_radio_output("rx_call_arrival") && !radio_output_open) {
                 ++counters.rejected_calls;
                 pending_receive_start = false;
                 pending_receive_ended = false;
                 clear_lcd_source_identity();
                 pipeline->cancel_rx();
-                downlink_blocked = true;
-                set_failure("radio_waveout_reopen_failed");
                 cleanup_routed_rx_without_hri_start("rx_rejected_waveout_reopen_failed");
-                status("downlink_rejected_without_ready_radio_waveout");
+                status("downlink_rejected_radio_waveout_unavailable");
                 return;
             }
-            radio_output_open = true;
-            local_playback.output_available();
-            local_audio_error.clear();
-            local_playback.set_environment(true, true);
-            status("radio_waveout_reopened_after_network_reconnect");
         }
         const auto now_ms = elapsed_ms();
         if (!continuous_run && now_ms >= bm_bridge_window_ms) {
@@ -2184,10 +2301,8 @@ CommandResult run_loop(Shared& shared, StartConfig config)
                         service_stream_update(stream_session->cancel(StreamReason::cancelled, elapsed_ms()));
                     } else if (phase == StreamPhase::idle || phase == StreamPhase::faulted) {
                         if (routed_rx_hri_start_attempted) {
-                            const bool closed = radio_output->close();
-                            radio_output_open = radio_output->is_open();
-                            record_routed_rx_waveout_cleanup(closed);
-                            if (!closed) set_failure("waveout_cancelled_rx_cleanup_failed");
+                            record_routed_rx_waveout_cleanup(
+                                close_radio_output_for_call("waveout_cancelled_rx_cleanup_failed"));
                             report_routed_rx_cleanup(false);
                         } else {
                             cleanup_routed_rx_without_hri_start("rx_cancelled_before_hri_start");
@@ -2315,10 +2430,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         const bool bm_only_local_route = (port == nullptr || hri_probe_kept_output) && !hri_ready &&
             active_local_audio.route != wirex::bm_local_playback::Route::radio;
         if (radio_output_open && !bm_only_local_route) {
-            const bool closed = radio_output->close();
-            radio_output_open = radio_output->is_open();
-            record_routed_rx_waveout_cleanup(closed);
-            if (!closed) set_failure("radio_waveout_network_cleanup_failed");
+            record_routed_rx_waveout_cleanup(close_radio_output_for_call("radio_waveout_network_cleanup_failed"));
         }
         const auto phase = stream_session->snapshot().phase;
         if (shutdown_tx_terminator_pending) {
@@ -3436,6 +3548,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
                 detach_radio(reason, hri_probe_kept_output);
                 schedule_hri_reconnect(reason);
             }
+            service_radio_output_reopen();
 
             bm_connection->tick(now_ms);
             auto network_before = bm_session.snapshot().state;
@@ -3627,8 +3740,21 @@ CommandResult run_loop(Shared& shared, StartConfig config)
                         status(local.call_active ? "bm_local_playback_device_lost"
                                                  : "bm_local_playback_idle_device_lost");
                     } else {
-                        set_failure("waveout_completion_queue_overflow");
-                        begin_shutdown("waveout_completion_queue_overflow");
+                        // 电台路由：完成令牌溢出，本通 PCM ack 不可信。取消本通（照常发 T0）并复位 WaveOut，
+                        // 运行时保持；输出由空闲 tick 重开。
+                        console("电台 WaveOut 完成队列溢出；取消本通来话并复位输出。\n", true);
+                        const auto overflow_phase = stream_session->snapshot().phase;
+                        if (overflow_phase != StreamPhase::idle && overflow_phase != StreamPhase::faulted) {
+                            service_stream_update(stream_session->cancel(StreamReason::transport_failed, elapsed_ms()));
+                        } else {
+                            pipeline->cancel_rx();
+                            record_routed_rx_waveout_cleanup(
+                                close_radio_output_for_call("waveout_completion_queue_overflow_cleanup_failed"));
+                        }
+                        if (!radio_output_unavailable) {
+                            mark_radio_output_unavailable("waveout_completion_queue_overflow", "completion_overflow");
+                        }
+                        status("waveout_completion_queue_overflow_call_cancelled");
                     }
                 }
                 std::uint64_t completed_generation = 0U;
@@ -3724,12 +3850,14 @@ CommandResult run_loop(Shared& shared, StartConfig config)
                         status("bm_local_playback_failed_calls_remain_visible");
                         break;
                     }
+                    // 电台路由提交失败：取消本通（receive_cancelled 经流会话写 T0 收尾），复位并稍后重开 WaveOut。
+                    // 单次音频设备错误不再停止 BM + HRI 运行时。
                     pipeline->cancel_rx();
-                    const bool closed = radio_output->close();
-                    radio_output_open = radio_output->is_open();
-                    record_routed_rx_waveout_cleanup(closed);
-                    if (!closed) set_failure("waveout_submit_cleanup_failed");
-                    set_failure(gain.valid ? "waveout_playback_submit_failed" : "waveout_playback_gain_invalid");
+                    record_routed_rx_waveout_cleanup(close_radio_output_for_call("waveout_submit_cleanup_failed"));
+                    const std::string submit_error = gain.valid ? "waveout_playback_submit_failed"
+                                                                : "waveout_playback_gain_invalid";
+                    if (!radio_output_unavailable) mark_radio_output_unavailable(submit_error, submit_error);
+                    status("radio_waveout_submit_failed_call_cancelled");
                     break;
                 }
                 drain_pipeline_events();
@@ -3905,6 +4033,13 @@ CommandResult run_loop(Shared& shared, StartConfig config)
     }
     (void)cleanup_forced;
     (void)shutdown_reason;
+    // 最终快照如实反映收尾后的设备：串口已关闭，HRI 不再就绪/重连；WaveIn/WaveOut 取实际句柄状态
+    // （关闭失败仍被持有的句柄继续显示为打开）。R131 实机：曾沿用运行中的 hri_ready，界面 HRI 灯常亮。
+    hri_ready = false;
+    hri_reconnecting = false;
+    relay_fm_active = false;
+    radio_input_open = radio_input && radio_input->is_open();
+    radio_output_open = radio_output && radio_output->is_open();
     shared.publish(build_snapshot());
     return failed ? CommandResult{CommandStatus::failed, 0U, failure_reason}
                   : CommandResult{CommandStatus::accepted, 0U, ""};

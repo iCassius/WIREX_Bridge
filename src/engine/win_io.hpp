@@ -391,27 +391,40 @@ public:
 
     bool open(UINT device_id, const std::wstring* expected_endpoint_id = nullptr)
     {
-        if (device_ != nullptr || !device_cleanup_state_.reopen_allowed()) return false;
+        last_error_.clear();
+        if (device_ != nullptr) {
+            last_error_ = "already_open";
+            return false;
+        }
+        if (!device_cleanup_state_.reopen_allowed()) {
+            last_error_ = "reopen_blocked_after_close_failure";
+            return false;
+        }
         if (expected_endpoint_id != nullptr &&
             !wave_endpoint_matches(false, device_id, *expected_endpoint_id)) {
             std::wcerr << L"WaveOut endpoint ID 与启动前核对值不同；拒绝打开其他音频设备。\n";
+            last_error_ = "endpoint_mismatch device_id=" + std::to_string(device_id);
             return false;
         }
         auto format = pcm_format();
         const auto query = waveOutOpen(nullptr, device_id, &format, 0, 0, WAVE_FORMAT_QUERY);
         if (query != MMSYSERR_NOERROR) {
             std::wcerr << L"Output device does not accept PCM 48000 Hz, mono, signed 16-bit: " << mm_error(query) << L"\n";
+            last_error_ = "format_query MMRESULT=" + std::to_string(query);
             return false;
         }
         event_.reset(CreateEventW(nullptr, FALSE, FALSE, nullptr));
         if (!event_.valid()) {
-            std::wcerr << L"CreateEvent failed: " << win_error(GetLastError()) << L"\n";
+            const auto error = GetLastError();
+            std::wcerr << L"CreateEvent failed: " << win_error(error) << L"\n";
+            last_error_ = "create_event GetLastError=" + std::to_string(error);
             return false;
         }
         const auto opened = waveOutOpen(&device_, device_id, &format, reinterpret_cast<DWORD_PTR>(event_.get()), 0, CALLBACK_EVENT);
         if (opened != MMSYSERR_NOERROR) {
             device_ = nullptr;
             std::wcerr << L"waveOutOpen failed: " << mm_error(opened) << L"\n";
+            last_error_ = "waveOutOpen MMRESULT=" + std::to_string(opened);
             return false;
         }
         return wirex::wave_output_open::prepare_all_or_close(buffers_.size(), [&](std::size_t index) {
@@ -422,6 +435,7 @@ public:
             const auto prepared = waveOutPrepareHeader(device_, &buffer.header, sizeof(buffer.header));
             if (prepared != MMSYSERR_NOERROR) {
                 std::wcerr << L"waveOutPrepareHeader failed: " << mm_error(prepared) << L"\n";
+                last_error_ = "waveOutPrepareHeader MMRESULT=" + std::to_string(prepared);
                 return false;
             }
             buffer.prepared = true;
@@ -432,6 +446,8 @@ public:
     [[nodiscard]] HANDLE event() const noexcept { return event_.get(); }
     [[nodiscard]] bool is_open() const noexcept { return device_ != nullptr; }
     [[nodiscard]] bool close_failed() const noexcept { return device_cleanup_state_.close_failed(); }
+    // 最近一次 open() 失败的机器可读原因（含 MMRESULT 数值）；成功时为空。
+    [[nodiscard]] const std::string& last_error() const noexcept { return last_error_; }
 
     [[nodiscard]] bool has_capacity() noexcept
     {
@@ -627,6 +643,7 @@ private:
     std::size_t completion_count_{};
     bool completion_overflow_{};
     wirex::wave_output_open::State device_cleanup_state_{};
+    std::string last_error_{};
 };
 
 // 读取并校验 HRI Y 模板。ap_mode=false：只接受 DIRECT（offset 0x05 为 '2'，哈希 82e0085c…）。
