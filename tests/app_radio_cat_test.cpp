@@ -171,26 +171,23 @@ void test_gates()
         CatCoreState core;
         CatGateDecision expected;
     };
-    const auto idle_at = [&](std::chrono::milliseconds age) { return std::optional(now - age); };
+    // R131：常驻引擎下只按“发射中 / HRI 下行播放中”门控；{transmitting, hri_downlink_active}
+    const CatCoreState idle{false, false};
+    const CatCoreState tx{true, false};
+    const CatCoreState hri_rx{false, true};
+    const CatCoreState tx_and_rx{true, true};
     const GateCase cases[] = {
-        {"query never gated", CatOperation::query, {false, std::nullopt, true, true, false}, CatGateDecision::allowed},
-        {"frequency: core stopped", CatOperation::set_frequency, {true, std::nullopt, false, false, true}, CatGateDecision::allowed},
-        {"frequency: idle core still blocks", CatOperation::set_frequency, {false, idle_at(0ms), false, false, true},
-         CatGateDecision::core_not_stopped},
-        {"mode: running core blocks", CatOperation::set_mode, {false, idle_at(100ms), false, false, true},
-         CatGateDecision::core_not_stopped},
-        {"mode: core stopped", CatOperation::set_mode, {true, std::nullopt, false, false, true}, CatGateDecision::allowed},
-        {"power: core stopped", CatOperation::set_power, {true, std::nullopt, false, false, true}, CatGateDecision::allowed},
-        {"power: fresh idle", CatOperation::set_power, {false, idle_at(2999ms), false, false, true}, CatGateDecision::allowed},
-        {"power: exactly 3 s", CatOperation::set_power, {false, idle_at(3000ms), false, false, true}, CatGateDecision::allowed},
-        {"power: stale idle", CatOperation::set_power, {false, idle_at(3001ms), false, false, true}, CatGateDecision::core_not_idle},
-        {"power: never idle", CatOperation::set_power, {false, std::nullopt, false, false, true}, CatGateDecision::core_not_idle},
-        {"power: active call", CatOperation::set_power, {false, idle_at(10ms), true, false, true}, CatGateDecision::core_not_idle},
-        {"power: tx active", CatOperation::set_power, {false, idle_at(10ms), false, true, true}, CatGateDecision::core_not_idle},
-        {"power: receive media busy", CatOperation::set_power, {false, idle_at(10ms), false, false, false},
-         CatGateDecision::core_not_idle},
-        {"power: idle timestamp in future", CatOperation::set_power, {false, std::optional(now + 1s), false, false, true},
-         CatGateDecision::core_not_idle},
+        {"query never gated", CatOperation::query, tx_and_rx, CatGateDecision::allowed},
+        {"frequency: idle resident engine (BM down / HRI idle)", CatOperation::set_frequency, idle, CatGateDecision::allowed},
+        {"frequency: transmitting", CatOperation::set_frequency, tx, CatGateDecision::transmitting},
+        {"frequency: HRI downlink playing", CatOperation::set_frequency, hri_rx, CatGateDecision::hri_downlink_active},
+        {"frequency: tx wins over rx", CatOperation::set_frequency, tx_and_rx, CatGateDecision::transmitting},
+        {"mode: idle", CatOperation::set_mode, idle, CatGateDecision::allowed},
+        {"mode: transmitting", CatOperation::set_mode, tx, CatGateDecision::transmitting},
+        {"mode: HRI downlink playing", CatOperation::set_mode, hri_rx, CatGateDecision::hri_downlink_active},
+        {"power: idle", CatOperation::set_power, idle, CatGateDecision::allowed},
+        {"power: incoming call via HRI still allowed", CatOperation::set_power, hri_rx, CatGateDecision::allowed},
+        {"power: transmitting", CatOperation::set_power, tx, CatGateDecision::transmitting},
     };
     for (const auto& c : cases) {
         check(cat_gate_for(c.operation, c.core, now) == c.expected, std::string("gate: ") + c.name);
@@ -205,8 +202,8 @@ void test_gates()
         {CatError::frequency_out_of_range, CatResultStatus::rejected},
         {CatError::power_mode_not_supported, CatResultStatus::rejected},
         {CatError::radio_rejected_command, CatResultStatus::rejected},
-        {CatError::core_not_stopped, CatResultStatus::rejected},
-        {CatError::core_not_idle, CatResultStatus::rejected},
+        {CatError::gate_transmitting, CatResultStatus::busy},
+        {CatError::gate_hri_downlink, CatResultStatus::busy},
         {CatError::readback_mismatch, CatResultStatus::mismatch},
         {CatError::timeout, CatResultStatus::unknown},
         {CatError::invalid_frame, CatResultStatus::unknown},
@@ -516,55 +513,46 @@ void test_client_against_fake()
 
 void test_client_gates()
 {
-    const auto running_idle = []() {
-        CatCoreState core;
-        core.core_stopped = false;
-        core.idle_status_at = std::chrono::steady_clock::now();
-        return core;
-    };
-    const auto running_stale = []() {
-        CatCoreState core;
-        core.core_stopped = false;
-        core.idle_status_at = std::chrono::steady_clock::now() - 5s;
-        return core;
-    };
+    const CatCoreStateProvider resident_idle = []() { return CatCoreState{false, false}; };
+    const CatCoreStateProvider transmitting = []() { return CatCoreState{true, false}; };
+    const CatCoreStateProvider hri_downlink = []() { return CatCoreState{false, true}; };
     {
         auto s = std::make_shared<FakeState>();
-        const auto r = fake_client(s).set_main_frequency(connection(), 145500000U, running_idle);
-        check(r.status == CatResultStatus::rejected && r.error == CatError::core_not_stopped && !s->opened,
-              "frequency requires the core to be stopped (port never opened)");
-    }
-    {
-        auto s = std::make_shared<FakeState>();
-        const auto r = fake_client(s).set_mode(connection(), CatSide::main, CatMode::c4fm_dn, running_idle);
-        check(r.error == CatError::core_not_stopped && !s->opened, "mode requires the core to be stopped");
-    }
-    {
-        auto s = std::make_shared<FakeState>();
-        const auto r = fake_client(s).set_power(connection(), 30, running_idle);
+        const auto r = fake_client(s).set_main_frequency(connection(), 145500000U, resident_idle);
         check(r.status == CatResultStatus::confirmed,
-              "power allowed while core is freshly idle (" + std::string(to_string(r.error)) + ")");
+              "frequency allowed while the resident engine is idle (" + std::string(to_string(r.error)) + ")");
     }
     {
         auto s = std::make_shared<FakeState>();
-        const auto r = fake_client(s).set_power(connection(), 30, running_stale);
-        check(r.error == CatError::core_not_idle && !s->opened, "stale idle status blocks power before open");
+        const auto r = fake_client(s).set_mode(connection(), CatSide::main, CatMode::c4fm_dn, resident_idle);
+        check(r.status == CatResultStatus::confirmed, "mode allowed while the resident engine is idle");
     }
     {
-        // 会话中途核心变忙：写帧前的第二次门控阻止写入。
+        auto s = std::make_shared<FakeState>();
+        const auto r = fake_client(s).set_main_frequency(connection(), 145500000U, hri_downlink);
+        check(r.status == CatResultStatus::busy && r.error == CatError::gate_hri_downlink && !s->opened,
+              "HRI downlink blocks frequency before the port is opened");
+    }
+    {
+        auto s = std::make_shared<FakeState>();
+        const auto r = fake_client(s).set_power(connection(), 30, hri_downlink);
+        check(r.status == CatResultStatus::confirmed, "power is allowed during an HRI downlink call");
+    }
+    {
+        auto s = std::make_shared<FakeState>();
+        const auto r = fake_client(s).set_power(connection(), 30, transmitting);
+        check(r.error == CatError::gate_transmitting && r.status == CatResultStatus::busy && !s->opened,
+              "engine transmit blocks power before open");
+    }
+    {
+        // 会话中途开始发射：写帧前的第二次门控阻止写入。
         auto s = std::make_shared<FakeState>();
         auto busy = std::make_shared<bool>(false);
         s->on_write = [busy](const std::string& frame) { if (frame == "PC;") *busy = true; };
-        const CatCoreStateProvider core = [busy]() {
-            CatCoreState state;
-            state.core_stopped = false;
-            state.idle_status_at = std::chrono::steady_clock::now();
-            state.active_call = *busy;
-            return state;
-        };
+        const CatCoreStateProvider core = [busy]() { return CatCoreState{*busy, false}; };
         const auto r = fake_client(s).set_power(connection(), 30, core);
-        check(r.error == CatError::core_not_idle && !any_write_with_prefix(*s, "PC", 7U) && s->closed,
-              "core becoming busy mid-session blocks the power write");
+        check(r.error == CatError::gate_transmitting && !any_write_with_prefix(*s, "PC", 7U) && s->closed,
+              "transmit starting mid-session blocks the power write");
     }
     {
         auto s = std::make_shared<FakeState>();

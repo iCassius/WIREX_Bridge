@@ -68,8 +68,8 @@ enum class CatError : std::uint8_t {
     power_mode_not_supported,
     readback_mismatch,
     // 门控（原 PS 在 UI 层抛出；原生版本以错误码返回，均在打开串口/写入前生效）
-    core_not_stopped,
-    core_not_idle,
+    gate_transmitting,       // 发射中（引擎上行或电台 TX 非 0）；发射结束后可重试
+    gate_hri_downlink,       // HRI 下行播放中改频率/模式；来话结束后可重试
     write_not_authorized,
     // 传输
     timeout,
@@ -161,23 +161,24 @@ private:
 
 // ---------- 核心门控（纯函数） ----------
 
-/// 门控输入由调用方从引擎 Snapshot 填写。
+/// 门控输入由调用方从引擎 Snapshot 填写（R131 重设计）。
+/// 引擎常驻、从不停止，因此不再以“核心已停止/空闲”为条件；只保留真正有安全意义的约束：
+/// - 电台/引擎正在发射（手咪 PTT 上行、FM 中继上行）时禁止任何设置；
+/// - HRI 已连接且正在向电台下行播放（media_owner 为 rx_*）时禁止改频率/模式，避免打断正在发出的 RF。
+/// BM 断开、引擎空闲、HRI 已连接但空闲、仅 BM 本机播放等情况一律允许。
+/// 电台自身的 `TX;` 状态由 CatClient 在会话内另行检查（非 0 → CatError::busy）。
 struct CatCoreState {
-    /// 桥接核心完全停止（引擎 Phase::stopped，且没有 start/stop 正在进行）。
-    bool core_stopped{true};
-    /// 最近一次确认“空闲”的核心状态时间点（PTT 已释放、无当前通话、接收媒体 idle/filtered、队列为空）。
-    /// 未观测到空闲状态时为空。
-    std::optional<std::chrono::steady_clock::time_point> idle_status_at{};
-    bool active_call{};
-    bool tx_active{};
-    bool receive_media_idle{true};
+    /// 引擎 tx_active、relay_fm_active 或 media_owner 为 tx_active/tx_draining。
+    bool transmitting{};
+    /// HRI 已就绪且 media_owner 为 rx_active/rx_draining/rx_stopping（来话正经电台发出）。
+    bool hri_downlink_active{};
 };
 
-enum class CatGateDecision : std::uint8_t { allowed, core_not_stopped, core_not_idle };
+enum class CatGateDecision : std::uint8_t { allowed, transmitting, hri_downlink_active };
 
-/// 设置 MAIN 频率或模式：核心必须已停止。
+/// 设置 MAIN 频率或模式：发射中或 HRI 下行播放中禁止。
 [[nodiscard]] CatGateDecision cat_gate_mode_or_frequency(const CatCoreState& core) noexcept;
-/// 设置功率：核心停止即可；核心存活时要求 now - idle_status_at <= 3 s 且无通话/发射、接收媒体空闲。
+/// 设置功率：只在发射中禁止。now 参数保留以兼容调用方（不再使用空闲时间戳）。
 [[nodiscard]] CatGateDecision cat_gate_power(const CatCoreState& core,
                                              std::chrono::steady_clock::time_point now) noexcept;
 [[nodiscard]] CatGateDecision cat_gate_for(CatOperation operation, const CatCoreState& core,

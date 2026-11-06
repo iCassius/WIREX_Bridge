@@ -123,8 +123,8 @@ std::string_view to_string(CatError error) noexcept
     case CatError::invalid_request: return "invalid_request";
     case CatError::power_mode_not_supported: return "power_mode_not_supported";
     case CatError::readback_mismatch: return "readback_mismatch";
-    case CatError::core_not_stopped: return "core_not_stopped";
-    case CatError::core_not_idle: return "core_not_idle";
+    case CatError::gate_transmitting: return "gate_transmitting";
+    case CatError::gate_hri_downlink: return "gate_hri_downlink";
     case CatError::write_not_authorized: return "write_not_authorized";
     case CatError::timeout: return "timeout";
     case CatError::cancelled: return "cancelled";
@@ -186,7 +186,9 @@ CatResultStatus cat_status_for_error(CatError error) noexcept
 {
     switch (error) {
     case CatError::none: return CatResultStatus::confirmed;
-    case CatError::busy: return CatResultStatus::busy;
+    case CatError::busy:
+    case CatError::gate_transmitting:
+    case CatError::gate_hri_downlink: return CatResultStatus::busy;
     case CatError::identity_mismatch: return CatResultStatus::identity_mismatch;
     case CatError::hri_port_conflict:
     case CatError::power_out_of_range:
@@ -194,8 +196,6 @@ CatResultStatus cat_status_for_error(CatError error) noexcept
     case CatError::power_mode_not_supported:
     case CatError::invalid_request:
     case CatError::radio_rejected_command:
-    case CatError::core_not_stopped:
-    case CatError::core_not_idle:
     case CatError::write_not_authorized:
         return CatResultStatus::rejected;
     case CatError::readback_mismatch: return CatResultStatus::mismatch;
@@ -406,17 +406,14 @@ std::wstring cat_connection_key(const CatConnection& connection)
 
 CatGateDecision cat_gate_mode_or_frequency(const CatCoreState& core) noexcept
 {
-    return core.core_stopped ? CatGateDecision::allowed : CatGateDecision::core_not_stopped;
+    if (core.transmitting) return CatGateDecision::transmitting;
+    if (core.hri_downlink_active) return CatGateDecision::hri_downlink_active;
+    return CatGateDecision::allowed;
 }
 
-CatGateDecision cat_gate_power(const CatCoreState& core, steady::time_point now) noexcept
+CatGateDecision cat_gate_power(const CatCoreState& core, steady::time_point) noexcept
 {
-    if (core.core_stopped) return CatGateDecision::allowed;
-    if (!core.idle_status_at || *core.idle_status_at > now || now - *core.idle_status_at > cat_idle_status_max_age) {
-        return CatGateDecision::core_not_idle;
-    }
-    if (core.active_call || core.tx_active || !core.receive_media_idle) return CatGateDecision::core_not_idle;
-    return CatGateDecision::allowed;
+    return core.transmitting ? CatGateDecision::transmitting : CatGateDecision::allowed;
 }
 
 CatGateDecision cat_gate_for(CatOperation operation, const CatCoreState& core, steady::time_point now) noexcept
@@ -427,7 +424,7 @@ CatGateDecision cat_gate_for(CatOperation operation, const CatCoreState& core, s
     case CatOperation::set_frequency: return cat_gate_mode_or_frequency(core);
     case CatOperation::set_power: return cat_gate_power(core, now);
     }
-    return CatGateDecision::core_not_stopped;
+    return CatGateDecision::transmitting;
 }
 
 void cat_merge_observed(CatObserved& existing, const CatObserved& fresh)
@@ -703,15 +700,13 @@ void enforce_gate(CatOperation operation, const CatCoreStateProvider* core)
 {
     if (operation == CatOperation::query) return;
     if (!core || !*core) throw CatFailure(CatError::invalid_request, "设置操作需要核心状态输入。");
-    // 先取核心状态再取 now：参数求值顺序不定，否则 idle_status_at 可能晚于 now 而被误判。
     const CatCoreState state = (*core)();
-    const auto now = steady::now();
-    const auto decision = cat_gate_for(operation, state, now);
-    if (decision == CatGateDecision::core_not_stopped) {
-        throw CatFailure(CatError::core_not_stopped, "设置 MAIN 频率或模式前必须先停止桥接核心；没有发送设置。");
+    const auto decision = cat_gate_for(operation, state, steady::now());
+    if (decision == CatGateDecision::transmitting) {
+        throw CatFailure(CatError::gate_transmitting, "正在发射；没有发送设置。");
     }
-    if (decision == CatGateDecision::core_not_idle) {
-        throw CatFailure(CatError::core_not_idle, "核心状态未确认电台空闲；设置操作已取消。");
+    if (decision == CatGateDecision::hri_downlink_active) {
+        throw CatFailure(CatError::gate_hri_downlink, "HRI 正在向电台下行播放来话，改频率/模式会打断 RF；没有发送设置。");
     }
 }
 
@@ -856,8 +851,8 @@ CatResult CatClient::run(const Request& request) const
         result.observed.tx_state = session.observe(tx.tx_state);
         result.capabilities = make_capabilities(std::nullopt, false, false, true, tx.tx_state == 0);
         if (request.operation != CatOperation::query && tx.tx_state != 0) {
-            throw CatFailure(CatError::busy, "Radio is not idle (TX state " + std::to_string(tx.tx_state) +
-                                                 "); the requested CAT setting was not written.");
+            throw CatFailure(CatError::busy, "电台正在发射（TX 状态 " + std::to_string(tx.tx_state) +
+                                                 "）；没有发送设置。");
         }
 
         // 写帧前：重新读 TX 并重新评估核心门控。
@@ -868,8 +863,8 @@ CatResult CatClient::run(const Request& request) const
             result.capabilities = make_capabilities(power_path, power_path.has_value(), power_path.has_value(), true,
                                                     again.tx_state == 0);
             if (again.tx_state != 0) {
-                throw CatFailure(CatError::busy, "Radio became active before the " + std::string(what) + " write (TX state " +
-                                                     std::to_string(again.tx_state) + "); the setting was not written.");
+                throw CatFailure(CatError::busy, "电台在写入 " + std::string(what) + " 前开始发射（TX 状态 " +
+                                                     std::to_string(again.tx_state) + "）；没有发送设置。");
             }
             enforce_gate(request.operation, request.core);
             session.write(frame, std::string(what) + " write");
