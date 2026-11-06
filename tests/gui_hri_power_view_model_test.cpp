@@ -172,6 +172,45 @@ void test_connect_uses_saved_power()
           "connect_radio receives saved power in deciwatts");
 }
 
+void test_connect_waits_for_cat_power_path()
+{
+    RecordingEngine engine(false);
+    Harness h;
+    auto services = h.services();
+    h.cat.connected = false;
+    h.cat.power_maximum_watts.reset();
+    gui::services::Done connected;
+    services.cat.connect = [&](std::wstring, std::uint32_t, gui::services::Done done) {
+        connected = std::move(done);
+    };
+    services.config.load = [](std::string&) -> std::optional<gui::services::GuiConfig> {
+        gui::services::GuiConfig config;
+        config.desired_power_watts = 25U;
+        return config;
+    };
+    services.config.make_start_config = [](const gui::services::GuiConfig&, std::string&)
+        -> std::optional<engine::StartConfig> {
+        engine::StartConfig config;
+        config.start_radio = true;
+        config.hri_port = L"COM5";
+        config.audio.expected_wave_in_endpoint_id = L"input";
+        config.audio.expected_wave_out_endpoint_id = L"output";
+        return config;
+    };
+    gui::ViewModel vm(engine, std::move(services), true);
+    (void)vm.pump();
+    vm.start();
+    check(static_cast<bool>(connected) && !engine.last_radio,
+          "HRI attach waits for the in-progress CAT capability query");
+    h.cat.connected = true;
+    h.cat.power_maximum_watts = 10U;
+    ++h.cat.revision;
+    connected({engine::CommandStatus::accepted, 0U, {}});
+    (void)vm.pump();
+    check(engine.last_radio && engine.last_radio->initial_tx_power_deciwatts == 100U,
+          "first Y honors the newly observed head power limit");
+}
+
 void test_head_power_limit()
 {
     RecordingEngine engine(true);
@@ -256,6 +295,7 @@ void test_with_hri(bool mismatch, bool reject_frequency)
 int main()
 {
     test_connect_uses_saved_power();
+    test_connect_waits_for_cat_power_path();
     test_head_power_limit();
     test_deferred_hri_power();
     test_without_hri();

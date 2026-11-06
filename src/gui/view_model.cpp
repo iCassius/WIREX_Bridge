@@ -346,6 +346,11 @@ bool ViewModel::pump() {
             changed = true;
         }
     }
+    if (pending_radio_attach_ && pending_radio_cat_wait_busy_ && !cat_.busy) {
+        pending_radio_cat_wait_busy_ = false;
+        pending_radio_cat_ready_ = true;
+        attach_radio_when_ready(radio_connection_generation_);
+    }
     update_squelch_polling();
     if (rx_policy_dirty_ && snapshot_->phase == Phase::running && !pending(Str::op_rx_policy)) {
         rx_policy_dirty_ = false;
@@ -382,7 +387,7 @@ bool ViewModel::pump() {
 
 std::optional<std::uint32_t> ViewModel::idle_timeout_ms() const {
     // 命令等待中：轮询 future（引擎完成时也会唤醒，这里只作兜底）。
-    if (!pending_.empty() || static_.busy || hri_power_request_) return 100U;
+    if (!pending_.empty() || static_.busy || hri_power_request_ || pending_radio_attach_) return 100U;
     if (startup_group_activation_.active() &&
         snapshot_->bm_link == BmLink::connected && !startup_group_activation_.command_pending()) {
         if (const auto retry_at = startup_group_activation_.retry_at()) {
@@ -790,7 +795,7 @@ bool ViewModel::radio_link_active() const noexcept {
     if (pending(Str::op_start) || snapshot_->phase == Phase::starting) return true;
     if (engine_stopped()) return false;
     return snapshot_->serial_open || snapshot_->hri_ready || snapshot_->hri_reconnecting ||
-           cat_.connected || cat_.busy;
+           pending_radio_attach_.has_value() || cat_.connected || cat_.busy;
 }
 
 std::string ViewModel::engine_failure_banner() const {
@@ -949,7 +954,12 @@ void ViewModel::start() {
     }
 
     const auto generation = ++radio_connection_generation_;
-    if (services_.cat.connect && !current_cat.connected && !current_cat.busy) {
+    pending_radio_attach_ = std::move(radio_config);
+    pending_radio_runtime_ready_ = runtime_active;
+    const bool starting_cat = services_.cat.connect && !current_cat.connected && !current_cat.busy;
+    pending_radio_cat_wait_busy_ = current_cat.busy;
+    pending_radio_cat_ready_ = !starting_cat && !pending_radio_cat_wait_busy_;
+    if (starting_cat) {
         services_.cat.connect(config_.cat_port, config_.cat_baud_rate,
             [this, generation](CommandResult result) {
                 post_to_ui([this, generation, result = std::move(result)]() mutable {
@@ -960,14 +970,16 @@ void ViewModel::start() {
                         }
                         return;
                     }
+                    pending_radio_cat_ready_ = true;
+                    attach_radio_when_ready(generation);
                     report(Str::op_cat, result);
                 });
             });
     }
 
     if (runtime_active) {
-        // Runtime/BM 已經运行；手动点 Start 只重新连电台，不重启 Engine，也不自动重试 BM。
-        track(Str::op_start, engine_.connect_radio(std::move(*radio_config)));
+        // 先完成 CAT 能力读取，再发起 HRI，使首条 Y 遵守已知供电路径上限。
+        attach_radio_when_ready(generation);
         return;
     }
 
@@ -979,6 +991,7 @@ void ViewModel::start() {
         runtime_error = "常驻引擎配置服务不可用。";
     }
     if (!runtime) {
+        pending_radio_attach_.reset();
         flash(fmt(tr(Str::result_fmt), tr(Str::op_start), runtime_error.c_str()), true);
         return;
     }
@@ -1005,14 +1018,18 @@ void ViewModel::start() {
 
     if (!radio_error.empty()) flash(radio_error, true);
     track(Str::op_start, engine_.start(std::move(*runtime)),
-        [this, generation, radio_config = std::move(radio_config)](const CommandResult& result) mutable {
+        [this, generation](const CommandResult& result) {
             suppress_cancelled_start_report_ = generation != radio_connection_generation_ &&
                 result.status == CommandStatus::not_ready && result.detail == "start_cancelled";
-            if (result.status != CommandStatus::accepted) return;
+            if (result.status != CommandStatus::accepted) {
+                if (generation == radio_connection_generation_) pending_radio_attach_.reset();
+                return;
+            }
 
-            // 两条子系统命令独立排队；其中一条失败不会撤销另一条或退出常驻 runtime。
-            if (radio_config && generation == radio_connection_generation_) {
-                track(Str::op_start, engine_.connect_radio(std::move(*radio_config)));
+            // BM 独立启动；HRI 等待 CAT 能力读取和 runtime 启动均完成。
+            if (generation == radio_connection_generation_) {
+                pending_radio_runtime_ready_ = true;
+                attach_radio_when_ready(generation);
             }
             const auto base_revision = snapshot_->bm_connection_revision;
             if (base_revision == std::numeric_limits<std::uint64_t>::max()) {
@@ -1025,6 +1042,7 @@ void ViewModel::start() {
 
 void ViewModel::stop() {
     if (pending(Str::op_stop)) return;
+    pending_radio_attach_.reset();
     hri_power_request_.reset();
     cat_mode_after_power_.reset();
     const auto generation = ++radio_connection_generation_;
@@ -1095,6 +1113,19 @@ void ViewModel::toggle_bm() {
         });
 }
 
+void ViewModel::attach_radio_when_ready(std::uint64_t generation) {
+    if (generation != radio_connection_generation_ || !pending_radio_attach_ ||
+        !pending_radio_runtime_ready_ || !pending_radio_cat_ready_) return;
+    auto radio = std::move(*pending_radio_attach_);
+    pending_radio_attach_.reset();
+    const auto current = services_.cat.state ? services_.cat.state() : cat_;
+    if (current.connected && current.power_maximum_watts && radio.initial_tx_power_deciwatts) {
+        const auto maximum = static_cast<std::uint16_t>(*current.power_maximum_watts * 10U);
+        radio.initial_tx_power_deciwatts = std::min(*radio.initial_tx_power_deciwatts, maximum);
+    }
+    track(Str::op_start, engine_.connect_radio(std::move(radio)));
+}
+
 std::optional<engine::RadioStartConfig> ViewModel::make_radio_start_config(std::string& error) const {
     if (!services_.config.make_start_config) {
         error = "电台设备解析服务不可用。";
@@ -1121,9 +1152,7 @@ std::optional<engine::RadioStartConfig> ViewModel::make_radio_start_config(std::
         error = "期望功率必须为 5–50 W。";
         return std::nullopt;
     }
-    const auto max_power = cat_.power_maximum_watts.value_or(50U);
-    result.initial_tx_power_deciwatts = static_cast<std::uint16_t>(
-        std::min(config_.desired_power_watts, max_power) * 10U);
+    result.initial_tx_power_deciwatts = static_cast<std::uint16_t>(config_.desired_power_watts * 10U);
     if (auto log = dev_log()) {
         log->line("gui", std::string(result.ap_mode ? "radio connect y_template=ap" : "radio connect y_template=direct") +
                              " relay=" + (config_.relay_enabled ? "on" : "off"));

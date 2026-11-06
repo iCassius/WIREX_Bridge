@@ -347,6 +347,7 @@ private:
     void update_startup_group_activation_status();
     void sync_cat_form_from_observed(const services::CatState& state);
     [[nodiscard]] std::optional<engine::RadioStartConfig> make_radio_start_config(std::string& error) const;
+    void attach_radio_when_ready(std::uint64_t generation);
     [[nodiscard]] std::optional<engine::BmTarget> make_bm_target(std::string& error) const;
     // R130 FM 中继
     void update_squelch_polling();
@@ -412,6 +413,10 @@ private:
     std::set<std::uint32_t> identity_requested_{};
     std::uint64_t identity_revision_{};                    // 每次引擎进入 running 从 0 开始
     std::uint64_t radio_connection_generation_{};            // 取消过期的并行 CAT 连接回调
+    std::optional<engine::RadioStartConfig> pending_radio_attach_{};
+    bool pending_radio_runtime_ready_{};
+    bool pending_radio_cat_ready_{};
+    bool pending_radio_cat_wait_busy_{};
     std::uint64_t bm_profile_generation_{};                  // 保存 BM 会话字段后递增，使旧 configure 回调失效
     bool bm_configure_pending_{};                           // 允许保存新配置，但旧配置完成后不得发起连接
     std::vector<std::future<engine::CommandResult>> identity_ops_{};
