@@ -314,11 +314,26 @@ app::CatCoreState core_state_from(const std::shared_ptr<const engine::Snapshot>&
     return c;
 }
 
+// R131 诊断：CatWorker 的每个会话（连接查询、1 s 周期查询、Apply 写入与读回）逐帧写入 dev 日志，
+// 例如 "TX COM7 PC2005;" / "RX COM7 PC2025;"。CAT 帧不含凭据。100 ms 静噪采样（RI0;/SM0;）不记录，避免刷屏。
+app::CatClient make_traced_cat_client() {
+    return app::CatClient(app::make_traced_cat_transport_factory(
+        app::make_win32_cat_transport, [](bool tx, std::string_view frame, std::string_view port) {
+            if (auto log = dev_log()) {
+                std::string line(tx ? "TX " : "RX ");
+                line.append(port);
+                line.push_back(' ');
+                line.append(frame);
+                log->line("cat-frame", line);
+            }
+        }));
+}
+
 class CatRunner final {
 public:
     CatRunner(EngineApi& engine, std::shared_ptr<ConfigState> config)
         : config_(std::move(config)),
-          worker_(app::CatClient(), [e = &engine]() { return core_state_from(e->snapshot()); }),
+          worker_(make_traced_cat_client(), [e = &engine]() { return core_state_from(e->snapshot()); }),
           thread_([this]() { loop(); }) {}
 
     ~CatRunner() { stop(); }
@@ -639,7 +654,20 @@ private:
             if (stopping_ || generation != task_generation_) return canceled(job);
             future = worker_.submit(job);
         }
-        return future.get();
+        auto result = future.get();
+        if (auto log = dev_log()) {
+            const char* op = job.operation == app::CatOperation::query ? "query"
+                           : job.operation == app::CatOperation::set_power ? "set_power"
+                           : job.operation == app::CatOperation::set_frequency ? "set_frequency" : "set_mode";
+            std::string line = std::string("op=") + op;
+            if (job.operation == app::CatOperation::set_power) line += " watts=" + std::to_string(job.power_watts);
+            if (job.operation == app::CatOperation::set_frequency) line += " hz=" + std::to_string(job.frequency_hz);
+            line += " status=" + std::string(app::to_string(result.status)) +
+                    " error=" + std::string(app::to_string(result.error));
+            if (result.observed.power) line += " observed_power_w=" + std::to_string(result.observed.power->value.watts);
+            log->line("cat-op", line);
+        }
+        return result;
     }
 
     void do_connect(const std::wstring& port, std::uint32_t baud, const services::Done& done,

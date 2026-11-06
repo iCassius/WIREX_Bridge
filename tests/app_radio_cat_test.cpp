@@ -1,5 +1,6 @@
 #include "wirex/app/radio_cat.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <deque>
 #include <iostream>
@@ -346,6 +347,29 @@ bool any_write_with_prefix(const FakeState& s, const char* prefix, std::size_t s
         if (w.size() == size && starts_with(w, prefix)) return true;
     }
     return false;
+}
+
+// R131 诊断：包装工厂逐帧记录 TX/RX，含设置功率的写帧与读回；不改变传输行为。
+void test_traced_transport_records_frames()
+{
+    auto s = std::make_shared<FakeState>();
+    std::vector<std::string> trace;
+    const CatClient client(make_traced_cat_transport_factory(
+        [s](const CatConnection&) { return std::make_unique<FakeTransport>(s); },
+        [&trace](bool tx, std::string_view frame, std::string_view port) {
+            trace.push_back(std::string(tx ? "TX " : "RX ") + std::string(port) + " " + std::string(frame));
+        }));
+    const auto r = client.set_power(connection(), 5, stopped_core());
+    check(r.status == CatResultStatus::confirmed && s->power_watts == 5, "traced client still sets power");
+    const auto has = [&](const std::string& line) { return std::find(trace.begin(), trace.end(), line) != trace.end(); };
+    check(has("TX COM11 ID;") && has("RX COM11 ID0840;"), "trace records the identity request and answer");
+    check(has("TX COM11 PC;") && has("RX COM11 PC2025;"), "trace records the power read before the write");
+    check(has("TX COM11 PC2005;") && has("RX COM11 PC2005;"), "trace records the power write and its readback");
+    check(trace.size() == s->writes.size() * 2U - 1U, "every written frame is traced and every answer is traced");
+    trace.clear();
+    s->no_response_for = "FA;";
+    (void)client.query_all(connection());
+    check(!trace.empty() && trace.back() == "RX COM11 [read timeout]", "a read timeout is traced without a frame");
 }
 
 void test_client_against_fake()
@@ -725,6 +749,7 @@ int main()
     test_command_builders();
     test_gates();
     test_client_against_fake();
+    test_traced_transport_records_frames();
     test_client_gates();
     test_worker();
     test_worker_disconnect_drops_queue();

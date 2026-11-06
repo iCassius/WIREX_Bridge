@@ -571,6 +571,82 @@ std::unique_ptr<CatTransport> make_win32_cat_transport(const CatConnection& conn
     return std::make_unique<Win32CatTransport>(connection);
 }
 
+namespace {
+
+const char* cat_io_name(CatIo io) noexcept
+{
+    switch (io) {
+    case CatIo::ok: return "ok";
+    case CatIo::timeout: return "timeout";
+    case CatIo::cancelled: return "cancelled";
+    case CatIo::io_error: return "io_error";
+    case CatIo::invalid_data: return "invalid_data";
+    case CatIo::denied: return "denied";
+    }
+    return "unknown";
+}
+
+class TracedCatTransport final : public CatTransport {
+public:
+    TracedCatTransport(std::unique_ptr<CatTransport> inner, CatFrameTrace trace, std::string port)
+        : inner_(std::move(inner)), trace_(std::move(trace)), port_(std::move(port)) {}
+
+    CatIo open() override { return inner_->open(); }
+    CatIo clear_input() override { return inner_->clear_input(); }
+    CatIo write_frame(std::string_view frame, milliseconds timeout) override
+    {
+        const auto io = inner_->write_frame(frame, timeout);
+        emit(true, io == CatIo::ok ? std::string(frame)
+                                   : std::string(frame) + " [write " + cat_io_name(io) + "]");
+        return io;
+    }
+    CatIo read_frame(std::string& frame, milliseconds timeout, const std::atomic<bool>* cancel) override
+    {
+        const auto io = inner_->read_frame(frame, timeout, cancel);
+        if (io == CatIo::ok) {
+            emit(false, frame);
+        } else if (io != CatIo::cancelled) {
+            emit(false, std::string("[read ") + cat_io_name(io) + "]");
+        }
+        return io;
+    }
+    CatIo close() override { return inner_->close(); }
+    std::string source_label() const override { return inner_->source_label(); }
+
+private:
+    void emit(bool tx, const std::string& text) const noexcept
+    {
+        if (!trace_) return;
+        try { trace_(tx, text, port_); } catch (...) {}
+    }
+
+    std::unique_ptr<CatTransport> inner_;
+    CatFrameTrace trace_;
+    std::string port_;
+};
+
+std::string narrow_port(const std::wstring& port)
+{
+    std::string out;
+    out.reserve(port.size());
+    for (const wchar_t c : port) out.push_back(c >= 0x20 && c < 0x7f ? static_cast<char>(c) : '?');
+    return out;
+}
+
+} // namespace
+
+CatTransportFactory make_traced_cat_transport_factory(CatTransportFactory inner, CatFrameTrace trace)
+{
+    if (!inner) return inner;
+    return [inner = std::move(inner), trace = std::move(trace)](const CatConnection& connection)
+               -> std::unique_ptr<CatTransport> {
+        auto transport = inner(connection);
+        if (!transport || !trace) return transport;
+        return std::make_unique<TracedCatTransport>(std::move(transport), trace,
+                                                    narrow_port(cat_normalize_port_name(connection.port_name)));
+    };
+}
+
 // ---------- 同步客户端 ----------
 
 struct CatClient::Request {

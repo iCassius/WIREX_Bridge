@@ -271,6 +271,12 @@ using CatTransportFactory = std::function<std::unique_ptr<CatTransport>(const Ca
 /// Win32 串口：CreateFileW + SetCommState(8 数据位、无校验、指定停止位、关闭 DTR/RTS 与流控) + SetCommTimeouts。
 [[nodiscard]] std::unique_ptr<CatTransport> make_win32_cat_transport(const CatConnection& connection);
 
+/// 诊断：逐帧回调（tx=true 为发送帧，false 为收到的完整帧）。CAT 帧不含凭据，可原文记录。
+/// 回调在 CAT worker 线程上同步调用，必须快速且不抛异常（抛出的异常被吞掉）。
+using CatFrameTrace = std::function<void(bool tx, std::string_view frame, std::string_view port)>;
+/// 包装任意传输工厂：每次 write_frame 记录发送帧；read_frame 成功时记录收到的帧；读写失败记录 IO 结果。
+[[nodiscard]] CatTransportFactory make_traced_cat_transport_factory(CatTransportFactory inner, CatFrameTrace trace);
+
 // ---------- R130：FM 中继静噪快速采样（只读） ----------
 
 /// `SM0nnn;` → 0..255；其它（含 `?;`）返回 nullopt。
