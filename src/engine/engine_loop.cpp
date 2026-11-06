@@ -10,6 +10,7 @@
 
 #include "engine_internal.hpp"
 
+#include "wirex/approved_hri_y_template.hpp"
 #include "wirex/bm_connection_control.hpp"
 #include "wirex/bm_network_metadata.hpp"
 #include "wirex/bm_session.hpp"
@@ -240,6 +241,10 @@ CommandResult run_loop(Shared& shared, StartConfig config)
     bool cleanup_forced = false;
     bool hri_active = false;
     bool hri_ready = false;
+    bool hri_ap_mode = false;
+    std::uint16_t hri_y_tx_power = wirex::hri_y::default_tx_power_deciwatts;
+    std::uint16_t hri_y_tx_power_sent = wirex::hri_y::default_tx_power_deciwatts;
+    std::optional<std::uint16_t> pending_hri_y_tx_power;
     bool radio_input_open = false;
     bool radio_output_open = false;
     bool radio_output_playback_blocked = false;
@@ -292,6 +297,16 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         if (!template_loaded) {
             radio_requested = false;
             radio_error = "y_template_invalid";
+        } else if (config.initial_tx_power_deciwatts) {
+            const auto built = wirex::hri_y::build(wirex::approved_resources::hri_y_template,
+                wirex::hri_y::DynamicFields{*config.initial_tx_power_deciwatts}, false);
+            if (!built.ok) {
+                radio_requested = false;
+                radio_error = "invalid_hri_y_tx_power";
+            } else {
+                y_body.assign(built.body.begin(), built.body.end());
+                hri_y_tx_power = *config.initial_tx_power_deciwatts;
+            }
         }
     } else if (radio_error.empty() && config.start_radio) {
         radio_error = "hri_port_missing";
@@ -437,7 +452,8 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         config.hri_reconnect_max_interval_ms != 0U ? config.hri_reconnect_max_interval_ms
                                                    : wirex::engine::hri_reconnect_max_interval_ms);
     if (radio_requested && port != nullptr && continuous_run) {
-        hri_reconnect_config = RadioStartConfig{config.hri_port, config.hri_body_file, config.audio, false};
+        hri_reconnect_config = RadioStartConfig{config.hri_port, config.hri_body_file, config.audio, false,
+                                                  config.initial_tx_power_deciwatts};
     }
 
     // ---------- 快照与事件发布 ----------
@@ -499,6 +515,8 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         next.radio_error = reconnecting_now ? hri_lost_reason : radio_error;
         next.hri_reconnecting = reconnecting_now;
         next.hri_reconnect_attempts = hri_reconnect_attempts;
+        next.hri_y_tx_power_deciwatts = hri_y_tx_power_sent;
+        next.hri_y_tx_power_pending = pending_hri_y_tx_power.has_value();
         next.wave_in_open = radio_input_open;
         next.wave_out_open = radio_output_open;
         next.wave_in_endpoint_id = config.audio.expected_wave_in_endpoint_id;
@@ -1497,6 +1515,10 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         for (const auto& command : update.commands) {
             const bool full = serial_write(command.frame.data(), command.frame.size());
             if (!hri_session) break;
+            if (full && command.kind == wirex::hri_session::CommandKind::y_record) {
+                hri_y_tx_power_sent = hri_y_tx_power;
+                publish_dirty = true;
+            }
             hri_state = hri_session->write_completed(command.id, full, elapsed_ms()).state;
             if (!full) {
                 serial_failed = true;
@@ -1784,6 +1806,14 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             status(requested.ap_mode ? "radio_connect_y_template_ap_invalid" : "radio_connect_y_template_direct_invalid");
             return CommandResult{CommandStatus::invalid, 0U, radio_error};
         }
+        const auto requested_power = requested.initial_tx_power_deciwatts.value_or(
+            wirex::hri_y::default_tx_power_deciwatts);
+        const auto built = wirex::hri_y::build(wirex::approved_resources::hri_y_template,
+            wirex::hri_y::DynamicFields{requested_power}, requested.ap_mode);
+        if (!built.ok) {
+            return CommandResult{CommandStatus::invalid, 0U, "invalid_hri_y_tx_power"};
+        }
+        body.assign(built.body.begin(), built.body.end());
         std::unique_ptr<AudioInput> next_input;
         std::unique_ptr<AudioOutput> next_output;
         std::unique_ptr<SerialPort> next_port;
@@ -1839,6 +1869,9 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         radio_output_closed_ms.reset();
         port = std::move(next_port);
         hri_session = std::move(next_hri);
+        hri_ap_mode = requested.ap_mode;
+        hri_y_tx_power = requested_power;
+        pending_hri_y_tx_power.reset();
         config.hri_port = requested.hri_port;
         config.hri_body_file = requested.hri_body_file;
         config.audio = requested.audio;
@@ -1863,6 +1896,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         }
         // dev 日志据此记录本次握手使用的 Y 模板（DIRECT offset 0x05='2' / AP '1'）。
         status(requested.ap_mode ? "hri_y_template_ap" : "hri_y_template_direct");
+        console("y_tx_power=" + std::to_string(hri_y_tx_power) + "\n");
         status("radio_connected_hri_start_requested");
         return CommandResult{CommandStatus::accepted, 0U, ""};
     };
@@ -1871,6 +1905,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         hri_reconnecting = false;
         hri_reconnect_armed = false;
         hri_reconnect_config.reset();
+        pending_hri_y_tx_power.reset();
         publish_dirty = true;
     };
     // HRI 掉线后（已执行 detach_radio）决定是否进入/继续自动重连。握手类失败按“上次尝试开始 + 间隔”重试，
@@ -2802,6 +2837,25 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         return routed_tx_complete && !shutdown_tx_terminator_pending;
     };
 
+    auto hri_power_locked = [&]() {
+        using wirex::talkgroup_routing::MediaOwner;
+        const auto owner = pipeline->routing_snapshot().router.media_owner;
+        return hri_ready && (owner == MediaOwner::rx_active || owner == MediaOwner::rx_draining ||
+                             owner == MediaOwner::rx_stopping);
+    };
+    auto apply_hri_power = [&](std::uint16_t power) -> bool {
+        if (!hri_session || !hri_active) return false;
+        const auto built = wirex::hri_y::build(wirex::approved_resources::hri_y_template,
+            wirex::hri_y::DynamicFields{power}, hri_ap_mode);
+        if (!built.ok || !hri_session->set_y_body(built.body)) return false;
+        hri_y_tx_power = power;
+        pending_hri_y_tx_power.reset();
+        if (hri_reconnect_config) hri_reconnect_config->initial_tx_power_deciwatts = power;
+        console("y_tx_power=" + std::to_string(power) + "\n");
+        status("hri_y_tx_power_updated");
+        return true;
+    };
+
     // ---------- 命令（原 control-v2 RoutingCallbacks，逐项等价） ----------
     auto apply_command = [&](Command& command) -> CommandResult {
         switch (command.kind) {
@@ -3119,6 +3173,25 @@ CommandResult run_loop(Shared& shared, StartConfig config)
                 status("hri_reconnect_replaced_by_connect_radio");
             }
             return connect_radio_runtime(*command.radio_config);
+        case CommandKind::set_hri_tx_power: {
+            const auto power = command.hri_tx_power_deciwatts;
+            if (!wirex::hri_y::valid_tx_power_deciwatts(power)) {
+                return CommandResult{CommandStatus::invalid, 0U, "invalid_hri_y_tx_power"};
+            }
+            if (shutdown_requested || !hri_session || !hri_active) {
+                return CommandResult{CommandStatus::not_ready, 0U, "hri_not_connected"};
+            }
+            if (hri_power_locked()) {
+                pending_hri_y_tx_power = power;
+                if (hri_reconnect_config) hri_reconnect_config->initial_tx_power_deciwatts = power;
+                status("hri_y_tx_power_deferred_hri_downlink");
+                return CommandResult{CommandStatus::accepted, 0U, "deferred_hri_downlink"};
+            }
+            if (!apply_hri_power(power)) {
+                return CommandResult{CommandStatus::failed, 0U, "hri_y_tx_power_update_failed"};
+            }
+            return CommandResult{CommandStatus::accepted, 0U, ""};
+        }
         case CommandKind::disconnect_radio: {
             if (hri_reconnecting && port == nullptr) {
                 // 两次尝试之间：只停止重连，本机播放输出保持不变。
@@ -3502,6 +3575,12 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             process_commands();
             begin_bm_disconnect_cleanup();
             service_hri_reconnect();
+            if (pending_hri_y_tx_power && hri_session && hri_active && !hri_power_locked() && !shutdown_requested) {
+                if (!apply_hri_power(*pending_hri_y_tx_power)) {
+                    pending_hri_y_tx_power.reset();
+                    status("hri_y_tx_power_update_failed");
+                }
+            }
             // 命令或重连探测可能打开串口/创建会话并以更新的 elapsed_ms() 启动 HRI/流会话；之后的 tick 必须用
             // 不早于该时刻的时间，否则 hri_session 判定 clock_regressed 并立即停止（R129 实机回归）。
             now_ms = std::max(now_ms, elapsed_ms());

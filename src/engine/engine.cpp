@@ -404,6 +404,14 @@ std::future<CommandResult> Engine::connect_radio(RadioStartConfig config)
     return impl_->enqueue(std::move(command));
 }
 
+std::future<CommandResult> Engine::set_hri_tx_power(std::uint16_t deciwatts)
+{
+    Command command{};
+    command.kind = CommandKind::set_hri_tx_power;
+    command.hri_tx_power_deciwatts = deciwatts;
+    return impl_->enqueue(std::move(command));
+}
+
 std::future<CommandResult> Engine::disconnect_radio()
 {
     Command command{};

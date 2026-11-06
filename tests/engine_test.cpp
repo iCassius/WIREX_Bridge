@@ -1,6 +1,7 @@
 // Engine 离线测试：注入假 Devices（不打开串口、WinMM 或 UDP），覆盖命令队列与 future 结果、
 // 快照发布、事件队列溢出、有界 stop、启动失败与诊断钩子。
 
+#include "wirex/approved_hri_y_template.hpp"
 #include "wirex/engine.hpp"
 #include "wirex/engine_devices.hpp"
 #include "wirex/engine_diagnostics.hpp"
@@ -46,9 +47,11 @@ using wirex::engine::CommandResult;
 using wirex::engine::CommandStatus;
 
 int failures{};
+int assertions{};
 
 void check(bool condition, std::string_view label)
 {
+    ++assertions;
     if (condition) return;
     std::cerr << "FAILED: " << label << '\n';
     ++failures;
@@ -95,6 +98,8 @@ struct DeviceLog {
     std::atomic<bool> input_close_fails_while_open{false};
     std::atomic<int> version_queries{0};
     std::atomic<int> y_records{0};
+    std::mutex y_mutex{};
+    std::vector<std::vector<std::uint8_t>> y_bodies{};
     std::atomic<int> t_records{0};
     // R130 FM 中继测试：FakeInput 打开时每次 take_captured 投喂 20 ms PCM；HRI X 记录注入（PTT 电平字节 [12]）。
     std::atomic<bool> input_feeds_pcm{false};
@@ -133,6 +138,10 @@ public:
                     ++log_->version_queries;
                     if (respond_) queue_version_record();
                 } else if (type == 'Y') {
+                    {
+                        std::lock_guard<std::mutex> y_lock(log_->y_mutex);
+                        log_->y_bodies.push_back(event.record.payload);
+                    }
                     ++log_->y_records;
                     if (respond_ && behavior_ != FakeHriBehavior::missing_y_ack && !log_->y_ack_suppressed.load()) {
                         queue_record('Y', {});
@@ -357,8 +366,8 @@ public:
     bool load_hri_template(const std::filesystem::path&, std::vector<std::uint8_t>& body) override
     {
         if (!options_.template_ok) return false;
-        body.assign(wirex::hri_session::y_body_size, '0');
-        body[5] = '2';
+        const auto& approved = wirex::approved_resources::hri_y_template;
+        body.assign(approved.begin(), approved.end());
         return true;
     }
 
@@ -910,6 +919,13 @@ void test_running_engine()
           "snapshot reports stable audio endpoint IDs selected at startup");
     check(engine.snapshot()->hri_port == L"COM99", "snapshot reports the actual selected HRI COM port");
     check(log->version_queries >= 1 && log->y_records >= 1, "engine writes V and Y records to the serial port");
+    {
+        std::lock_guard<std::mutex> lock(log->y_mutex);
+        const auto& approved = wirex::approved_resources::hri_y_template;
+        check(!log->y_bodies.empty() && log->y_bodies.front() ==
+                  std::vector<std::uint8_t>(approved.begin(), approved.end()),
+              "default DIRECT Y is byte-for-byte identical to the approved template");
+    }
 
     // 快照发布：至少每 100 ms 一次（心跳），seq 单调递增。
     const auto first_seq = engine.snapshot()->seq;
@@ -3065,6 +3081,10 @@ void test_relay_fm_rejected_during_bm_downlink()
         (void)send_test_downlink_voice(master, transmitter, voice);
     }
     check(wait_for_local_rx_active(engine, 2s), "BM downlink becomes active");
+    const auto power = get_within(engine.set_hri_tx_power(100U), 2s, "power during downlink");
+    check(power.status == CommandStatus::accepted && power.detail == "deferred_hri_downlink" &&
+          engine.snapshot()->hri_y_tx_power_pending && engine.snapshot()->hri_y_tx_power_deciwatts == 250U,
+          "HRI power remains unchanged and is queued during downlink");
     const auto rejected = get_within(engine.relay_fm_start(), 2s, "relay_fm_start during downlink");
     check(rejected.status == CommandStatus::busy && rejected.detail == "relay_fm_busy_downlink",
           "relay_fm_start is busy during BM downlink: " + rejected.detail);
@@ -3073,6 +3093,9 @@ void test_relay_fm_rejected_during_bm_downlink()
     const auto ended_before = engine.snapshot()->counters.calls_ended;
     (void)send_test_downlink_terminator(master, transmitter);
     (void)wait_for_local_rx_idle(engine, ended_before, 4s);
+    check(wait_for_snapshot(engine, 3s, [](const wirex::engine::Snapshot& s) {
+              return !s.hri_y_tx_power_pending && s.hri_y_tx_power_deciwatts == 100U;
+          }), "queued HRI power is sent after downlink ends");
     check(get_within(engine.stop(), 5s, "stop after downlink rejection").status == CommandStatus::accepted,
           "runtime stops after downlink rejection test");
 }
@@ -3393,6 +3416,11 @@ void test_hri_reconnects_after_serial_transport_error()
                      "start HRI reconnect").status == CommandStatus::accepted,
           "runtime starts for HRI reconnect test");
     check(wait_hri_and_bm_ready(engine), "HRI and BM ready before the serial fault");
+    check(get_within(engine.set_hri_tx_power(100U), 2s, "set power before reconnect").status == CommandStatus::accepted,
+          "power update is accepted before reconnect");
+    check(wait_for_snapshot(engine, 3s, [](const wirex::engine::Snapshot& s) {
+              return s.hri_y_tx_power_deciwatts == 100U;
+          }), "updated power is sent before reconnect");
     (void)engine.drain_events();
     const auto opened_before = log->serial_opened.load();
 
@@ -3424,6 +3452,12 @@ void test_hri_reconnects_after_serial_transport_error()
               return s.hri_ready && s.serial_open && !s.hri_reconnecting && s.radio_error.empty() &&
                   s.wave_out_open;
           }), "hri_ready returns to true after the reconnect");
+    {
+        std::lock_guard<std::mutex> lock(log->y_mutex);
+        check(!log->y_bodies.empty() &&
+              std::string(log->y_bodies.back().begin() + 0x2F, log->y_bodies.back().begin() + 0x33) == "0100",
+              "first Y after reconnect retains the last selected power");
+    }
     check(engine.snapshot()->failure_reason.find("clock_regressed") == std::string::npos &&
               engine.snapshot()->phase == wirex::engine::Phase::running,
           "reconnect does not trip hri_session clock_regressed");
@@ -3588,6 +3622,41 @@ void test_destructor_stops_running_engine()
     check(log->serial_closed == 1, "destructor closes the serial port");
 }
 
+void test_hri_dynamic_power()
+{
+    auto log = std::make_shared<DeviceLog>();
+    wirex::engine::Engine engine(std::make_shared<FakeDevices>(log, FakeOptions{}));
+    auto config = base_config();
+    config.start_radio = false;
+    check(get_within(engine.start(config), 5s, "start power test").status == CommandStatus::accepted,
+          "runtime starts without HRI for dynamic power test");
+    wirex::engine::RadioStartConfig radio{};
+    radio.hri_port = config.hri_port;
+    radio.hri_body_file = config.hri_body_file;
+    radio.audio = config.audio;
+    radio.initial_tx_power_deciwatts = std::uint16_t{50U};
+    check(get_within(engine.connect_radio(radio), 2s, "connect with power").status == CommandStatus::accepted,
+          "radio accepts initial 50 deciwatts");
+    check(wait_for_snapshot(engine, 4s, [](const wirex::engine::Snapshot& s) { return s.hri_ready; }),
+          "radio reaches HRI ready with initial power");
+    {
+        std::lock_guard<std::mutex> lock(log->y_mutex);
+        check(!log->y_bodies.empty() && log->y_bodies.front().size() == 100U &&
+              std::string(log->y_bodies.front().begin() + 0x2F, log->y_bodies.front().begin() + 0x33) == "0050",
+              "first Y carries 50 deciwatts");
+    }
+    check(get_within(engine.set_hri_tx_power(100U), 2s, "set power").status == CommandStatus::accepted,
+          "runtime power change is accepted");
+    check(wait_for_snapshot(engine, 3s, [](const wirex::engine::Snapshot& s) {
+              return s.hri_y_tx_power_deciwatts == 100U;
+          }), "next Y sends 100 deciwatts");
+    const auto invalid = get_within(engine.set_hri_tx_power(55U), 2s, "invalid power");
+    check(invalid.status == CommandStatus::invalid && engine.snapshot()->hri_y_tx_power_deciwatts == 100U,
+          "non-integral watt power is rejected without changing Y");
+    check(get_within(engine.stop(), 5s, "stop power test").status == CommandStatus::accepted,
+          "runtime stops after power test");
+}
+
 void test_embedded_hri_template()
 {
     std::vector<std::uint8_t> body;
@@ -3641,6 +3710,7 @@ int main()
         test_event_queue_overflow();
         test_quarantined_rx_output_cleanup_gate_requires_t0_and_full_drain();
         test_embedded_hri_template();
+        test_hri_dynamic_power();
         test_commands_before_start();
         test_start_failures();
         test_hri_handshake_failures_report_exact_stop_reason();
@@ -3694,6 +3764,6 @@ int main()
         std::cerr << failures << " engine test check(s) failed\n";
         return 1;
     }
-    std::cout << "engine_test passed\n";
+    std::cout << "engine_test passed (" << assertions << " checks)\n";
     return 0;
 }

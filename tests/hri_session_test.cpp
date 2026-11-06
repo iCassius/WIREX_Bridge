@@ -1,4 +1,5 @@
 #include "wirex/hri_session.hpp"
+#include "wirex/approved_hri_y_template.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -18,9 +19,11 @@ using wirex::hri_session::Session;
 using wirex::hri_session::StopReason;
 
 int failures = 0;
+int assertions = 0;
 
 void check(bool condition, const std::string& message)
 {
+    ++assertions;
     if (!condition) {
         ++failures;
         std::cerr << "FAIL: " << message << '\n';
@@ -29,10 +32,8 @@ void check(bool condition, const std::string& message)
 
 std::vector<std::uint8_t> synthetic_y_body()
 {
-    std::vector<std::uint8_t> body(wirex::hri_session::y_body_size, '0');
-    body[5] = '2';
-    body[12] = '0';
-    return body;
+    const auto& approved = wirex::approved_resources::hri_y_template;
+    return std::vector<std::uint8_t>(approved.begin(), approved.end());
 }
 
 std::vector<std::uint8_t> version_payload()
@@ -187,12 +188,19 @@ void test_y_ack_x_ack_and_conditional_next_y_byte()
     check(session.snapshot().counters.x0_write_completed == 1,
         "X acknowledgement completion should be counted separately from request");
 
+    const auto updated = wirex::hri_y::build(wirex::approved_resources::hri_y_template,
+        wirex::hri_y::DynamicFields{100U}, false);
+    check(updated.ok && session.set_y_body(updated.body), "valid power update should be accepted");
+    auto invalid = updated.body;
+    invalid[0x10U] = '9';
+    check(!session.set_y_body(invalid), "unapproved fixed byte should be rejected");
     const auto next_y = session.tick(2110);
     check(next_y.commands.size() == 1, "next Y should be schedulable after the X acknowledgement");
     if (next_y.commands.empty()) return;
     const auto decoded = wirex::direct_frame::decode(next_y.commands[0].frame.data(), next_y.commands[0].frame.size());
-    check(decoded && decoded.record.payload.size() == 100 && decoded.record.payload[12] == '7',
-        "X body byte 12 should copy to the next Y body byte 12 when X byte 11 is not ASCII 1");
+    check(decoded && decoded.record.payload.size() == 100 && decoded.record.payload[12] == '7' &&
+        std::string(decoded.record.payload.begin() + 0x2F, decoded.record.payload.begin() + 0x33) == "0100",
+        "power update preserves the unfiltered X byte 12 mirror and rejects a later invalid update");
 
     Session other_branch(synthetic_y_body());
     begin_with_valid_version(other_branch, 0, 100);
@@ -612,6 +620,6 @@ int main()
         std::cerr << failures << " HRI session check(s) failed.\n";
         return 1;
     }
-    std::cout << "All pure HRI session checks passed.\n";
+    std::cout << "PASS: " << assertions << " HRI session assertions\n";
     return 0;
 }

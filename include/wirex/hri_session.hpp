@@ -1,7 +1,9 @@
 #pragma once
 
 #include "wirex/direct_stream.hpp"
+#include "wirex/hri_y_body.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -142,6 +144,8 @@ public:
     [[nodiscard]] Update cancel();
     [[nodiscard]] Update abort(StopReason reason);
     [[nodiscard]] Update finish(std::uint64_t now_ms);
+    // 替换下一次周期 Y 的正文；当前 X->Y 的 PTT 镜像字节必须保留。
+    [[nodiscard]] bool set_y_body(const std::array<std::uint8_t, y_body_size>& new_body);
     [[nodiscard]] Snapshot snapshot() const noexcept;
     [[nodiscard]] std::size_t buffered_receive_bytes() const noexcept;
 
@@ -152,6 +156,7 @@ private:
     };
 
     std::vector<std::uint8_t> y_body_;
+    std::array<std::uint8_t, y_body_size> approved_template_{};
     Config config_{};
     direct_stream::Parser parser_;
     Phase phase_{Phase::not_started};

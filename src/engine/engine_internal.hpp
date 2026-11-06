@@ -50,6 +50,7 @@ enum class CommandKind : std::uint8_t {
     set_bm_connection,
     configure_bm,
     connect_radio,
+    set_hri_tx_power,
     disconnect_radio,
     replace_rx_policy,
     replace_tx_policy,
@@ -71,6 +72,7 @@ struct Command {
     std::uint64_t revision{};
     std::uint32_t first{};                         // source_id / radio gain
     std::uint32_t second{};                        // mic gain
+    std::uint16_t hri_tx_power_deciwatts{250U};
     AudioEndpoints audio_endpoints{};
     std::optional<RadioStartConfig> radio_config{};
     std::optional<BmTarget> bm_target{};

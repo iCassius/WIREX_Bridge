@@ -30,6 +30,9 @@ public:
     virtual std::future<engine::CommandResult> set_bm_connection(bool enabled, std::uint64_t requested_revision) = 0;
     virtual std::future<engine::CommandResult> configure_bm(engine::BmTarget config) = 0;
     virtual std::future<engine::CommandResult> connect_radio(engine::RadioStartConfig config) = 0;
+    virtual std::future<engine::CommandResult> set_hri_tx_power(std::uint16_t) {
+        return ready_result(engine::CommandStatus::forbidden, "hri_tx_power_unsupported");
+    }
     virtual std::future<engine::CommandResult> disconnect_radio() = 0;
     virtual std::future<engine::CommandResult> replace_rx_policy(std::uint64_t expected_revision,
                                                                  talkgroup_routing::RxPolicy policy) = 0;
@@ -93,6 +96,9 @@ public:
     }
     std::future<engine::CommandResult> connect_radio(engine::RadioStartConfig config) override {
         return engine_.connect_radio(std::move(config));
+    }
+    std::future<engine::CommandResult> set_hri_tx_power(std::uint16_t deciwatts) override {
+        return engine_.set_hri_tx_power(deciwatts);
     }
     std::future<engine::CommandResult> disconnect_radio() override {
         return engine_.disconnect_radio();

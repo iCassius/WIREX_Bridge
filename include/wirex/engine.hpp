@@ -43,6 +43,8 @@ struct RadioStartConfig {
     // R130 增补（只增不改）：AP PC 模式（中继开启时）。hri_body_file 为空时使用 offset 0x05 为 '1' 的内嵌 AP 变体，
     // 非空时文件须为 DIRECT 或 AP 两个已批准哈希之一；HRI 会话按此接受 '2' 或 '1'。
     bool ap_mode{false};
+    // 首条周期 Y 使用的 A 通道发射功率，单位 0.1 W；省略时使用批准模板默认值 250。
+    std::optional<std::uint16_t> initial_tx_power_deciwatts{};
 };
 
 struct BmTarget {
@@ -86,6 +88,8 @@ struct StartConfig {
     // R131 增补：HRI 自动重连间隔（0 = 默认 hri_reconnect_interval_ms / hri_reconnect_max_interval_ms；离线测试可调小）。
     std::uint64_t hri_reconnect_interval_ms{0U};
     std::uint64_t hri_reconnect_max_interval_ms{0U};
+    // 启动时首条 HRI Y 使用的 A 通道功率，单位 0.1 W；省略时使用 250。
+    std::optional<std::uint16_t> initial_tx_power_deciwatts{};
 };
 
 // ---------- 状态快照（只读、不可变） ----------
@@ -206,6 +210,9 @@ struct Snapshot {
     // HRI 掉线（串口错误、Y/0 超时、会话异常停止）后按 connect_radio 时的配置自动重连；用户断开即停止。
     bool hri_reconnecting{};
     std::uint64_t hri_reconnect_attempts{};  // 本轮自动重连已尝试次数（下一轮掉线时清零）
+    // 当前已装入会话、尚未被下行锁定延后的 Y 功率。
+    std::uint16_t hri_y_tx_power_deciwatts{250U};
+    bool hri_y_tx_power_pending{};
 };
 
 // FM 中继单段上行的最长时长；超时后引擎自动结束本段（end_reason "timeout"）。
@@ -297,6 +304,8 @@ public:
     std::future<CommandResult> set_bm_connection(bool enabled, std::uint64_t requested_revision);
     std::future<CommandResult> configure_bm(BmTarget config);
     std::future<CommandResult> connect_radio(RadioStartConfig config);
+    // 更新下一条 HRI Y 的 A 通道发射功率，单位 0.1 W。
+    std::future<CommandResult> set_hri_tx_power(std::uint16_t deciwatts);
     std::future<CommandResult> disconnect_radio();
     std::future<CommandResult> replace_rx_policy(std::uint64_t expected_revision,
                                                  talkgroup_routing::RxPolicy policy);

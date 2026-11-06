@@ -1,5 +1,7 @@
 #include "wirex/hri_session.hpp"
 
+#include "wirex/approved_hri_y_template.hpp"
+
 #include <algorithm>
 #include <limits>
 #include <utility>
@@ -20,15 +22,21 @@ bool add_time(std::uint64_t base, std::uint64_t duration, std::uint64_t& result)
     return true;
 }
 
+std::array<std::uint8_t, y_body_size> approved_template_for(bool ap_mode)
+{
+    return ap_mode ? approved_resources::hri_y_template_ap : approved_resources::hri_y_template;
+}
+
 } // 匿名命名空间
 
 Session::Session(std::vector<std::uint8_t> external_y_body, Config config)
     : y_body_(std::move(external_y_body)),
+      approved_template_(approved_template_for(config.ap_mode)),
       config_(config),
       parser_(max_frame_bytes - direct_frame::fixed_overhead),
       config_valid_(config_.continuous || (config_.window_ms > 0 && config_.window_ms <= max_window_ms)),
       y_template_valid_(y_body_.size() == y_body_size &&
-          (y_body_[5] == '2' || (config_.ap_mode && y_body_[5] == '1')))
+          hri_y::validate(approved_template_, y_body_.data(), y_body_.size(), config_.ap_mode))
 {
 }
 
@@ -297,6 +305,18 @@ Update Session::finish(std::uint64_t now_ms)
 Snapshot Session::snapshot() const noexcept
 {
     return make_snapshot();
+}
+
+bool Session::set_y_body(const std::array<std::uint8_t, y_body_size>& new_body)
+{
+    if (y_body_.size() != y_body_size ||
+        !hri_y::validate(approved_template_, new_body.data(), new_body.size(), config_.ap_mode)) return false;
+    auto candidate = new_body;
+    // X[0x0C] is a live PTT mirror and is not part of a power update.
+    candidate[hri_y::ptt_mirror_offset] = y_body_[hri_y::ptt_mirror_offset];
+    y_body_.assign(candidate.begin(), candidate.end());
+    y_template_valid_ = true;
+    return true;
 }
 
 std::size_t Session::buffered_receive_bytes() const noexcept
