@@ -534,6 +534,7 @@ void test_round_trip_preserves_unknown() {
     gui.dmr_id = 4609100U;
     gui.device_number = "07";
     gui.bm_api_key = "  key-with-space  ";
+    gui.desired_power_watts = 15U;
     gui.hri_port = L"com5";
     gui.channels.push_back({46001U, CallKind::group, Slot::ts2, ""});
     gui.tx_target = wirex::talkgroup_routing::TxTarget{46001U, CallKind::group, Slot::ts2};
@@ -556,6 +557,13 @@ void test_round_trip_preserves_unknown() {
     check(text.find("future_connection_field") != std::string::npos, "unknown connection field preserved");
     auto reread = wirex::app::load(path);
     check(reread.ok() && cb::to_gui(reread.value()).device_number == "07", "reread device number");
+    check(reread.ok() && cb::to_gui(reread.value()).desired_power_watts == 15U,
+          "desired power round-trips through config.json");
+    auto invalid_power = gui;
+    invalid_power.desired_power_watts = 51U;
+    check(!cb::apply_gui(reread.value(), invalid_power, error), "reject GUI desired power above 50 W");
+    invalid_power.desired_power_watts = 4U;
+    check(!cb::apply_gui(reread.value(), invalid_power, error), "reject GUI desired power below 5 W");
 
     // 设备编号规则（Get-UiGatewayIdentityForSave）
     auto g2 = cb::to_gui(reread.value());

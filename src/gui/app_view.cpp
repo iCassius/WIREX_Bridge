@@ -1958,6 +1958,7 @@ void AppView::draw_radio_panel(float width, float height) {
         const bool power_changed = simple_combo("##power", vm_.cat_form.power_index, power_labels, 5, cell_w,
                                                 tr(Str::unknown));
         vm_.set_cat_form_editing(CatFormField::power, ImGui::IsItemActive());
+        if (vm_.snapshot().hri_ready) ImGui::SetItemTooltip("%s", tr(Str::hri_power_tooltip));
         if (power_changed) vm_.mark_cat_form_edited(CatFormField::power);
         cell_w = row.cell(5, nullptr);
         const bool cat_form_valid = vm_.cat_form.mode_index >= 0 && vm_.cat_form.mode_index < 4 &&

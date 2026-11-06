@@ -431,12 +431,20 @@ namespace wirex::gui {
     X(hri_lost_fmt,         "HRI 连接中断（%s），正在自动重连…", \
                             "HRI link lost (%s); reconnecting automatically…") /* new */ \
     X(hri_restored,         "HRI 已自动重连。",                    "HRI reconnected automatically.") /* new */
+
+#define WIREX_GUI_STRINGS_HRI_POWER(X) \
+    X(hri_power_tooltip, "HRI 模式下功率由本软件通过 Y 记录下发（每秒一次）", \
+                         "In HRI mode, this application sends power via a Y record once per second.") \
+    X(hri_power_not_retained, "电台未保持设定功率", "The radio did not retain the requested power.") \
+    X(hri_power_link_lost, "HRI 已断开，功率设置未确认。", "HRI disconnected before the power setting was confirmed.") \
+    X(hri_power_query_unavailable, "无法确认电台功率：CAT 查询不可用。", "Cannot confirm radio power: CAT query is unavailable.")
 // clang-format on
 
 enum class Str : std::uint16_t {
 #define WIREX_GUI_STR_ENUM(key, zh, en) key,
     WIREX_GUI_STRINGS(WIREX_GUI_STR_ENUM)
     WIREX_GUI_STRINGS_R131(WIREX_GUI_STR_ENUM)
+    WIREX_GUI_STRINGS_HRI_POWER(WIREX_GUI_STR_ENUM)
 #undef WIREX_GUI_STR_ENUM
         count_
 };
@@ -454,6 +462,7 @@ inline constexpr StrEntry kStrings[] = {
 #define WIREX_GUI_STR_ROW(key, zh, en) {zh, en},
     WIREX_GUI_STRINGS(WIREX_GUI_STR_ROW)
     WIREX_GUI_STRINGS_R131(WIREX_GUI_STR_ROW)
+    WIREX_GUI_STRINGS_HRI_POWER(WIREX_GUI_STR_ROW)
 #undef WIREX_GUI_STR_ROW
 };
 static_assert(sizeof(kStrings) / sizeof(kStrings[0]) == static_cast<std::size_t>(Str::count_));

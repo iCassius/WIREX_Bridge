@@ -324,6 +324,11 @@ private:
     void sync_volume_target(VolumeTarget& target, const std::wstring& endpoint_id, bool playback);
     void sync_volume_targets();
     void retry_deferred_cat();
+    void submit_cat_mode_frequency(services::CatSettings settings,
+                                   std::array<std::uint64_t, 3> revisions);
+    void submit_cat_power(std::uint32_t watts, bool hri, std::uint64_t revision);
+    void service_hri_power_confirmation();
+    void persist_power(std::uint32_t watts, std::uint64_t revision);
     void add_channel_entry(services::ChannelEntry entry);
     [[nodiscard]] std::chrono::system_clock::time_point to_wall(std::uint64_t engine_ms) const;
     // BM 静态组 / 身份查询
@@ -382,6 +387,18 @@ private:
     std::string cat_deferred_text_{};
     bool cat_deferred_retried_{};
     bool cat_retry_now_{};
+    struct HriPowerRequest {
+        std::uint32_t watts{};
+        std::uint64_t revision{};
+        bool hri{};
+        bool waiting_for_engine{};
+        bool cat_submitted{};
+        bool confirmation_requested{};
+        std::optional<std::chrono::steady_clock::time_point> confirm_after{};
+    };
+    std::optional<HriPowerRequest> hri_power_request_{};
+    std::optional<services::CatSettings> cat_mode_after_power_{};
+    std::array<std::uint64_t, 3> cat_mode_after_power_revisions_{};
     std::optional<ChannelKey> quick_call_pending_{};
     StartupGroupActivation startup_group_activation_{};
     std::optional<ChannelKey> startup_group_activation_last_target_{};

@@ -141,6 +141,7 @@ services::GuiConfig to_gui(const app::AppConfig& config) {
     g.cat_baud_rate = config.devices.cat_baud_rate;
     g.wave_in_endpoint_id = from_selector(config.devices.wave_in_endpoint_id);
     g.wave_out_endpoint_id = from_selector(config.devices.wave_out_endpoint_id);
+    g.desired_power_watts = config.devices.desired_power_watts;
     g.playback_gain_step = gain_step(config.audio.radio_playback_gain_milli);
     g.transmit_gain_step = gain_step(config.audio.mic_transmit_gain_milli);
     for (const auto& ch : config.channels) {
@@ -209,6 +210,11 @@ std::optional<app::AppConfig> apply_gui(const app::AppConfig& base, const servic
     d.cat_stop_bits = "Two";
     d.wave_in_endpoint_id = to_selector(gui.wave_in_endpoint_id);
     d.wave_out_endpoint_id = to_selector(gui.wave_out_endpoint_id);
+    if (gui.desired_power_watts < 5U || gui.desired_power_watts > 50U) {
+        error = "期望功率必须为 5–50 W。";
+        return std::nullopt;
+    }
+    d.desired_power_watts = gui.desired_power_watts;
 
     // 增益：只有档位变化时才改写，避免把 1.5× 之类的 PS 值舍入成整数档。
     if (gain_step(base.audio.radio_playback_gain_milli) != gui.playback_gain_step) {

@@ -412,6 +412,28 @@ public:
         }, done);
     }
 
+    void query(services::Done done) {
+        post([this, done](std::uint64_t generation) {
+            std::optional<app::CatConnection> conn;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                conn = connection_;
+            }
+            if (!conn) {
+                finish(generation, done, make_result(CommandStatus::not_ready, "CAT 未连接。"), [](services::CatState&) {});
+                return;
+            }
+            app::CatJob job;
+            job.connection = *conn;
+            job.operation = app::CatOperation::query;
+            const auto r = run(job, generation);
+            absorb_observed(r);
+            finish(generation, done, to_command_result(r), [&](services::CatState& s) {
+                s.error = r.status == app::CatResultStatus::confirmed ? std::string{} : r.error_message;
+            });
+        }, done);
+    }
+
     // R130：中继与 FM 都开启且 CAT 已连接时每 100 ms 只读采样 RI0;/SM0;。关闭时门控 reset 并在开门状态下发 closed。
     void set_squelch_polling(bool enabled) {
         std::optional<services::SquelchEvent> closed;
@@ -738,7 +760,7 @@ private:
         };
         bool ok = true;
         const auto mode = to_app_mode(settings.main_mode);
-        if (!observed.main_mode || observed.main_mode->value.mode != mode) {
+        if (settings.apply_mode && (!observed.main_mode || observed.main_mode->value.mode != mode)) {
             app::CatJob j;
             j.operation = app::CatOperation::set_mode;
             j.side = app::CatSide::main;
@@ -1216,6 +1238,7 @@ services::Services make_real_services(EngineApi& engine, RealServiceOptions opti
     };
     sv.cat.disconnect = [cat](services::Done done) { cat->disconnect(std::move(done)); };
     sv.cat.apply = [cat](services::CatSettings settings, services::Done done) { cat->apply(settings, std::move(done)); };
+    sv.cat.query = [cat](services::Done done) { cat->query(std::move(done)); };
     sv.cat.set_squelch_polling = [cat](bool enabled) { cat->set_squelch_polling(enabled); };
     sv.cat.set_squelch_callback = [cat](services::SquelchCallback callback) {
         cat->set_squelch_callback(std::move(callback));

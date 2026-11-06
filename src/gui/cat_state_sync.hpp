@@ -37,6 +37,7 @@ inline bool invalidate_observation(services::CatState& state) noexcept {
     state.observed_mode.reset();
     state.observed_frequency_hz.reset();
     state.observed_power_w.reset();
+    state.power_maximum_watts.reset();
     if (had_observation) ++state.observed_revision;
     return had_observation;
 }
@@ -60,6 +61,7 @@ inline Update apply(services::CatState& state, const app::CatResult& result,
     }
     if (cumulative_observed.power) {
         state.observed_power_w = static_cast<std::uint32_t>(cumulative_observed.power->value.watts);
+        state.power_maximum_watts = cumulative_observed.power->value.path == app::CatPowerPath::field_head ? 10U : 50U;
     }
     ++state.observed_revision;
     return Update::updated;

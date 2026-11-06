@@ -43,7 +43,8 @@ $tests = @(
     @{ Name = 'gui_channel_state_view_model_test'; Sources = @('tests\gui_channel_state_view_model_test.cpp', 'src\gui\view_model.cpp', 'src\gui\dev_log.cpp', 'src\gui\config_bridge.cpp', 'src\app\config.cpp', 'src\app\json.cpp', 'src\app\devices.cpp', 'src\app\bm_servers.cpp', 'src\bm_connection_config.cpp', 'src\talkgroup_routing.cpp') },
     @{ Name = 'app_bm_api_test'; Sources = @('tests\app_bm_api_test.cpp', 'src\app\bm_api.cpp', 'src\app\bm_servers.cpp', 'src\app\http_client.cpp', 'src\app\json.cpp') },
     @{ Name = 'app_radio_identity_test'; Sources = @('tests\app_radio_identity_test.cpp', 'src\app\radio_identity.cpp', 'src\app\http_client.cpp', 'src\app\json.cpp', 'src\radio_identity_cache.cpp') },
-    @{ Name = 'gui_config_bridge_test'; Sources = @('tests\gui_config_bridge_test.cpp', 'src\gui\config_bridge.cpp', 'src\app\config.cpp', 'src\app\json.cpp', 'src\app\devices.cpp', 'src\app\bm_servers.cpp', 'src\bm_connection_config.cpp', 'src\talkgroup_routing.cpp') }
+    @{ Name = 'gui_config_bridge_test'; Sources = @('tests\gui_config_bridge_test.cpp', 'src\gui\config_bridge.cpp', 'src\app\config.cpp', 'src\app\json.cpp', 'src\app\devices.cpp', 'src\app\bm_servers.cpp', 'src\bm_connection_config.cpp', 'src\talkgroup_routing.cpp') },
+    @{ Name = 'gui_hri_power_view_model_test'; Sources = @('tests\gui_hri_power_view_model_test.cpp', 'src\gui\view_model.cpp', 'src\gui\dev_log.cpp', 'src\gui\config_bridge.cpp', 'src\app\config.cpp', 'src\app\json.cpp', 'src\app\devices.cpp', 'src\app\bm_servers.cpp', 'src\bm_connection_config.cpp', 'src\talkgroup_routing.cpp') }
 )
 
 $env:PATH = (Split-Path -Parent $vswhere) + ';' + $env:PATH  # vcvars64.bat looks up vswhere.exe on PATH

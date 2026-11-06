@@ -372,6 +372,7 @@ bool ViewModel::pump() {
     }
     sync_volume_targets();
     retry_deferred_cat();
+    service_hri_power_confirmation();
     if (!transient_text_.empty() && !transient_visible()) {
         transient_text_.clear();
         changed = true;
@@ -381,7 +382,7 @@ bool ViewModel::pump() {
 
 std::optional<std::uint32_t> ViewModel::idle_timeout_ms() const {
     // 命令等待中：轮询 future（引擎完成时也会唤醒，这里只作兜底）。
-    if (!pending_.empty() || static_.busy) return 100U;
+    if (!pending_.empty() || static_.busy || hri_power_request_) return 100U;
     if (startup_group_activation_.active() &&
         snapshot_->bm_link == BmLink::connected && !startup_group_activation_.command_pending()) {
         if (const auto retry_at = startup_group_activation_.retry_at()) {
@@ -1024,6 +1025,8 @@ void ViewModel::start() {
 
 void ViewModel::stop() {
     if (pending(Str::op_stop)) return;
+    hri_power_request_.reset();
+    cat_mode_after_power_.reset();
     const auto generation = ++radio_connection_generation_;
     if (services_.cat.disconnect) {
         services_.cat.disconnect([this, generation](CommandResult result) {
@@ -1114,6 +1117,13 @@ std::optional<engine::RadioStartConfig> ViewModel::make_radio_start_config(std::
     result.audio = std::move(parsed->audio);
     // R131：中继开启默认仍用 DIRECT 模板（实机确认 AP 模板对中继无区别）；relay.y_template="ap" 时才用 AP 变体。
     result.ap_mode = config_.relay_enabled && config_.relay_y_template_ap;
+    if (config_.desired_power_watts < 5U || config_.desired_power_watts > 50U) {
+        error = "期望功率必须为 5–50 W。";
+        return std::nullopt;
+    }
+    const auto max_power = cat_.power_maximum_watts.value_or(50U);
+    result.initial_tx_power_deciwatts = static_cast<std::uint16_t>(
+        std::min(config_.desired_power_watts, max_power) * 10U);
     if (auto log = dev_log()) {
         log->line("gui", std::string(result.ap_mode ? "radio connect y_template=ap" : "radio connect y_template=direct") +
                              " relay=" + (config_.relay_enabled ? "on" : "off"));
@@ -1591,41 +1601,88 @@ void ViewModel::cat_toggle_connection() {
 void ViewModel::cat_apply() {
     const bool auto_retry = std::exchange(cat_retry_now_, false);
     if (!auto_retry) {
-        // 用户手动 Apply：放弃之前的延后请求，重新计一次自动重试机会。
         cat_deferred_.reset();
         cat_deferred_text_.clear();
         cat_deferred_retried_ = false;
     }
-    if (!services_.cat.apply) return;
+    if (!services_.cat.apply || hri_power_request_) return;
     if (cat_form.mode_index < 0 || cat_form.mode_index >= 4 ||
         cat_form.power_index < 0 || cat_form.power_index >= 5) {
         flash(fmt(tr(Str::result_fmt), tr(Str::op_cat), tr(Str::st_invalid)), true);
         return;
     }
-    services::CatSettings s;
-    s.main_mode = static_cast<services::CatMode>(cat_form.mode_index);
+    services::CatSettings settings;
+    settings.main_mode = static_cast<services::CatMode>(cat_form.mode_index);
     double mhz = 0.0;
     if (!cat_form.frequency_mhz.empty()) {
         const auto [ptr, ec] = std::from_chars(cat_form.frequency_mhz.data(),
-                                               cat_form.frequency_mhz.data() + cat_form.frequency_mhz.size(), mhz);
+            cat_form.frequency_mhz.data() + cat_form.frequency_mhz.size(), mhz);
         if (ec != std::errc{} || ptr != cat_form.frequency_mhz.data() + cat_form.frequency_mhz.size() ||
             mhz <= 0.0 || mhz > 1000.0) {
             flash(fmt(tr(Str::result_fmt), tr(Str::op_cat), tr(Str::st_invalid)), true);
             return;
         }
     }
-    s.main_frequency_hz = static_cast<std::uint64_t>(std::llround(mhz * 1'000'000.0));
-    s.power_w = kPowerWatts[cat_form.power_index];
+    settings.main_frequency_hz = static_cast<std::uint64_t>(std::llround(mhz * 1'000'000.0));
+    const auto watts = kPowerWatts[cat_form.power_index];
+    const auto current = services_.cat.state ? services_.cat.state() : cat_;
+    if (current.power_maximum_watts && watts > *current.power_maximum_watts) {
+        flash(fmt(tr(Str::result_fmt), tr(Str::op_cat), tr(Str::st_invalid)), true);
+        return;
+    }
+    const bool power_changed = !current.observed_power_w || *current.observed_power_w != watts ||
+        config_.desired_power_watts != watts ||
+        (snapshot_->hri_ready && snapshot_->hri_y_tx_power_deciwatts != watts * 10U);
+    if (!power_changed) {
+        submit_cat_mode_frequency(settings, cat_form_edit_revision_);
+        return;
+    }
+    cat_mode_after_power_ = settings;
+    cat_mode_after_power_revisions_ = cat_form_edit_revision_;
+    const bool hri = snapshot_->hri_ready && snapshot_->phase == Phase::running;
+    hri_power_request_ = HriPowerRequest{watts, cat_form_edit_revision_[2], hri, hri, false, false, {}};
+    if (!hri) {
+        submit_cat_power(watts, false, cat_form_edit_revision_[2]);
+        return;
+    }
+    track(Str::op_cat, engine_.set_hri_tx_power(static_cast<std::uint16_t>(watts * 10U)),
+        [this](const CommandResult& result) {
+            if (!hri_power_request_) return;
+            if (result.status != CommandStatus::accepted && result.status != CommandStatus::idempotent) {
+                hri_power_request_.reset();
+                if (cat_mode_after_power_) {
+                    auto settings = *cat_mode_after_power_;
+                    cat_mode_after_power_.reset();
+                    submit_cat_mode_frequency(settings, cat_mode_after_power_revisions_);
+                }
+                return;
+            }
+            hri_power_request_->waiting_for_engine = result.detail == "deferred_hri_downlink";
+            if (!hri_power_request_->waiting_for_engine) {
+                submit_cat_power(hri_power_request_->watts, true, hri_power_request_->revision);
+            }
+        });
+}
 
-    const std::array<bool, 3> submitted{true, !cat_form.frequency_mhz.empty(), true};
-    const auto submitted_revision = cat_form_edit_revision_;
-    services_.cat.apply(s, [this, s, submitted, submitted_revision](CommandResult r) {
-        post_to_ui([this, s, r = std::move(r), submitted, submitted_revision]() {
+void ViewModel::submit_cat_mode_frequency(services::CatSettings settings,
+                                         std::array<std::uint64_t, 3> revisions) {
+    settings.power_w = 0U;
+    const auto current = services_.cat.state ? services_.cat.state() : cat_;
+    const bool mode_changed = !current.observed_mode || *current.observed_mode != settings.main_mode;
+    const bool frequency_changed = settings.main_frequency_hz != 0U &&
+        (!current.observed_frequency_hz || *current.observed_frequency_hz != settings.main_frequency_hz);
+    if (!mode_changed && !frequency_changed) {
+        cat_deferred_.reset();
+        cat_deferred_text_.clear();
+        return;
+    }
+    const std::array<bool, 3> submitted{true, settings.main_frequency_hz != 0U, false};
+    services_.cat.apply(settings, [this, settings, submitted, revisions](CommandResult r) {
+        post_to_ui([this, settings, submitted, revisions, r = std::move(r)]() {
             const bool ok = r.status == CommandStatus::accepted || r.status == CommandStatus::idempotent;
             const bool gated = r.status == CommandStatus::busy && r.detail.rfind("cat_gate_", 0) == 0;
             if (gated && !cat_deferred_retried_) {
-                // 软件门控（发射中 / HRI 下行播放中）：保留表单草稿，门控解除后自动重试一次。
-                cat_deferred_ = s;
+                cat_deferred_ = settings;
                 cat_deferred_text_ = tr(r.detail == "cat_gate_hri_downlink" ? Str::cat_deferred_hri : Str::cat_deferred_tx);
                 flash(cat_deferred_text_, false, Str::op_cat);
                 return;
@@ -1633,16 +1690,105 @@ void ViewModel::cat_apply() {
             cat_deferred_.reset();
             cat_deferred_text_.clear();
             if (ok) {
-                cat_form_sync::clear_applied_dirty(cat_form_dirty_, submitted_revision,
-                                                   cat_form_edit_revision_, submitted);
+                cat_form_sync::clear_applied_dirty(cat_form_dirty_, revisions, cat_form_edit_revision_, submitted);
                 if (services_.cat.state) {
-                    auto state = services_.cat.state();
-                    cat_ = std::move(state);
+                    cat_ = services_.cat.state();
                     last_cat_observed_revision_ = cat_.observed_revision;
                     sync_cat_form_from_observed(cat_);
                 }
             }
             report(Str::op_cat, r);
+        });
+    });
+}
+
+void ViewModel::persist_power(std::uint32_t watts, std::uint64_t revision) {
+    auto next = config_;
+    next.desired_power_watts = watts;
+    std::string error;
+    if (!save_config(next, error)) {
+        flash(fmt(tr(Str::settings_save_failed), error.c_str()), true, Str::op_cat);
+        return;
+    }
+    if (cat_form_edit_revision_[2] == revision) cat_form_dirty_[2] = false;
+}
+
+void ViewModel::submit_cat_power(std::uint32_t watts, bool hri, std::uint64_t revision) {
+    if (!hri_power_request_ || hri_power_request_->cat_submitted) return;
+    hri_power_request_->cat_submitted = true;
+    services::CatSettings settings;
+    settings.apply_mode = false;
+    settings.power_w = watts;
+    services_.cat.apply(settings, [this, watts, hri, revision](CommandResult r) {
+        post_to_ui([this, watts, hri, revision, r = std::move(r)]() {
+            if (!hri_power_request_ || hri_power_request_->watts != watts) return;
+            const bool ok = r.status == CommandStatus::accepted || r.status == CommandStatus::idempotent;
+            if (!ok && r.status == CommandStatus::busy && r.detail.rfind("cat_gate_", 0) == 0 &&
+                !cat_deferred_retried_) {
+                hri_power_request_.reset();
+                cat_deferred_ = cat_mode_after_power_;
+                cat_mode_after_power_.reset();
+                cat_deferred_text_ = tr(r.detail == "cat_gate_hri_downlink" ? Str::cat_deferred_hri : Str::cat_deferred_tx);
+                flash(cat_deferred_text_, false, Str::op_cat);
+                return;
+            }
+            if (ok && hri) {
+                hri_power_request_->confirm_after = std::chrono::steady_clock::now() + std::chrono::milliseconds{1200};
+            } else {
+                hri_power_request_.reset();
+                if (ok) persist_power(watts, revision);
+                else report(Str::op_cat, r);
+            }
+            if (cat_mode_after_power_) {
+                auto mode_settings = *cat_mode_after_power_;
+                cat_mode_after_power_.reset();
+                submit_cat_mode_frequency(mode_settings, cat_mode_after_power_revisions_);
+            }
+        });
+    });
+}
+
+void ViewModel::service_hri_power_confirmation() {
+    if (!hri_power_request_) return;
+    auto& request = *hri_power_request_;
+    if (request.hri && !snapshot_->hri_ready && !snapshot_->hri_reconnecting) {
+        hri_power_request_.reset();
+        cat_mode_after_power_.reset();
+        flash(tr(Str::hri_power_link_lost), true, Str::op_cat);
+        return;
+    }
+    if (request.hri && !snapshot_->hri_ready) return;
+    if (request.waiting_for_engine) {
+        if (!snapshot_->hri_ready || snapshot_->hri_y_tx_power_pending ||
+            snapshot_->hri_y_tx_power_deciwatts != request.watts * 10U || cat_.busy) return;
+        request.waiting_for_engine = false;
+        submit_cat_power(request.watts, true, request.revision);
+        return;
+    }
+    if (!request.confirm_after || request.confirmation_requested || cat_.busy ||
+        std::chrono::steady_clock::now() < *request.confirm_after) return;
+    if (!services_.cat.query) {
+        hri_power_request_.reset();
+        flash(tr(Str::hri_power_query_unavailable), true, Str::op_cat);
+        return;
+    }
+    request.confirmation_requested = true;
+    const auto watts = request.watts;
+    const auto revision = request.revision;
+    services_.cat.query([this, watts, revision](CommandResult r) {
+        post_to_ui([this, watts, revision, r = std::move(r)]() {
+            if (!hri_power_request_ || hri_power_request_->watts != watts) return;
+            hri_power_request_.reset();
+            if (r.status != CommandStatus::accepted && r.status != CommandStatus::idempotent) {
+                report(Str::op_cat, r);
+                return;
+            }
+            const auto state = services_.cat.state ? services_.cat.state() : services::CatState{};
+            if (!state.observed_power_w || *state.observed_power_w != watts) {
+                flash(tr(Str::hri_power_not_retained), true, Str::op_cat);
+                return;
+            }
+            persist_power(watts, revision);
         });
     });
 }

@@ -28,7 +28,7 @@ namespace wirex::gui::config_bridge {
 [[nodiscard]] services::GuiConfig to_gui(const app::AppConfig& config);
 
 // 把 GUI 字段写回 base（保留 base.document 中的未知字段与 GUI 不管理的字段：color_code、cat_stop_bits、
-// desired_power_watts、window、legacy_rx_policy 等）。失败时返回 nullopt 并写中文原因（不含密码/Key）。
+// window、legacy_rx_policy 等）。失败时返回 nullopt 并写中文原因（不含密码/Key）。
 [[nodiscard]] std::optional<app::AppConfig> apply_gui(const app::AppConfig& base, const services::GuiConfig& gui,
                                                       std::string& error);
 

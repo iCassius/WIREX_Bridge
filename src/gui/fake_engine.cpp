@@ -69,6 +69,7 @@ struct FakeEngine::Impl {
 
     // ---- 只在模拟线程访问 ----
     engine::Snapshot state{};
+    std::optional<std::uint16_t> pending_hri_power{};
     talkgroup_routing::RxPolicy rx_policy{};
     std::vector<talkgroup_routing::GroupRoute> muted_groups{};
     bool transmit_enabled{};
@@ -313,6 +314,11 @@ struct FakeEngine::Impl {
         push_event(std::move(e));
         state.active_rx_call.reset();
         state.media_owner = MediaOwner::idle;
+        if (pending_hri_power) {
+            state.hri_y_tx_power_deciwatts = *pending_hri_power;
+            state.hri_y_tx_power_pending = false;
+            pending_hri_power.reset();
+        }
         state.levels.rx_peak = 0.0F;
         ++state.counters.calls_ended;
         publish();
@@ -567,9 +573,17 @@ std::future<CommandResult> FakeEngine::start(engine::StartConfig config) {
         s->state = engine::Snapshot{s->state.seq};
         s->state.phase = Phase::starting;
         s->state.serial_open = config.start_radio && !config.hri_port.empty();
+        const auto power = config.initial_tx_power_deciwatts.value_or(250U);
+        const bool invalid_power = power < 50U || power > 500U || power % 10U != 0U;
+        if (s->state.serial_open && invalid_power) {
+            s->state.serial_open = false;
+            s->state.radio_error = "invalid_hri_y_tx_power";
+        } else {
+            s->state.radio_error = s->state.serial_open ? config.radio_start_error
+                : (config.radio_start_error.empty() ? "radio_not_started" : config.radio_start_error);
+            if (s->state.serial_open) s->state.hri_y_tx_power_deciwatts = power;
+        }
         s->state.hri_port = s->state.serial_open ? config.hri_port : std::wstring{};
-        s->state.radio_error = s->state.serial_open ? config.radio_start_error
-            : (config.radio_start_error.empty() ? "radio_not_started" : config.radio_start_error);
         s->publish();
         s->post_after(600ms, [s, promise, generation, config = std::move(config)]() mutable {
             if (generation != s->radio_generation.load()) {
@@ -677,6 +691,14 @@ std::future<CommandResult> FakeEngine::connect_radio(engine::RadioStartConfig co
             promise->set_value(result(CommandStatus::invalid, 0U, s->state.radio_error));
             return;
         }
+        const auto power = config.initial_tx_power_deciwatts.value_or(250U);
+        if (power < 50U || power > 500U || power % 10U != 0U) {
+            promise->set_value(result(CommandStatus::invalid, 0U, "invalid_hri_y_tx_power"));
+            return;
+        }
+        s->pending_hri_power.reset();
+        s->state.hri_y_tx_power_deciwatts = power;
+        s->state.hri_y_tx_power_pending = false;
         s->state.hri_port = config.hri_port;
         s->state.serial_open = true;
         s->state.hri_ready = true;
@@ -689,6 +711,29 @@ std::future<CommandResult> FakeEngine::connect_radio(engine::RadioStartConfig co
         s->publish();
     });
     return future;
+}
+
+std::future<CommandResult> FakeEngine::set_hri_tx_power(std::uint16_t deciwatts) {
+    auto* s = impl_.get();
+    return s->command(0ms, [s, deciwatts]() {
+        if (deciwatts < 50U || deciwatts > 500U || deciwatts % 10U != 0U) {
+            return result(CommandStatus::invalid, 0U, "invalid_hri_y_tx_power");
+        }
+        if (s->state.phase != Phase::running || !s->state.serial_open) {
+            return result(CommandStatus::not_ready, 0U, "hri_not_connected");
+        }
+        const auto owner = s->state.media_owner;
+        if (s->state.hri_ready && (owner == MediaOwner::rx_active || owner == MediaOwner::rx_draining ||
+                                   owner == MediaOwner::rx_stopping)) {
+            s->pending_hri_power = deciwatts;
+            s->state.hri_y_tx_power_pending = true;
+            return result(CommandStatus::accepted, 0U, "deferred_hri_downlink");
+        }
+        s->pending_hri_power.reset();
+        s->state.hri_y_tx_power_deciwatts = deciwatts;
+        s->state.hri_y_tx_power_pending = false;
+        return result(CommandStatus::accepted);
+    });
 }
 
 std::future<CommandResult> FakeEngine::disconnect_radio() {
@@ -708,6 +753,8 @@ std::future<CommandResult> FakeEngine::disconnect_radio() {
         s->state.serial_open = false;
         s->state.hri_ready = false;
         s->state.hri_reconnecting = false;
+        s->pending_hri_power.reset();
+        s->state.hri_y_tx_power_pending = false;
         s->state.radio_error.clear();
         s->state.wave_in_open = false;
         s->state.wave_out_open = false;
@@ -1164,6 +1211,7 @@ services::Services make_fake_services(FakeEngine& engine) {
                     st->cat.observed_mode = services::CatMode::fm;
                     st->cat.observed_frequency_hz = 145'000'000U;
                     st->cat.observed_power_w = 25U;
+                    st->cat.power_maximum_watts = 50U;
                     ++st->cat.observed_revision;
                     st->cat.error.clear();
                     ++st->cat.revision;
@@ -1219,9 +1267,24 @@ services::Services make_fake_services(FakeEngine& engine) {
                 if (!st->cat.connected) {
                     r = result(CommandStatus::not_ready, 0U, "cat_not_connected");
                 } else {
-                    st->cat.observed_mode = settings.main_mode;
+                    if (settings.apply_mode) st->cat.observed_mode = settings.main_mode;
                     if (settings.main_frequency_hz != 0U) st->cat.observed_frequency_hz = settings.main_frequency_hz;
-                    st->cat.observed_power_w = settings.power_w;
+                    if (settings.power_w != 0U) st->cat.observed_power_w = settings.power_w;
+                    ++st->cat.observed_revision;
+                    ++st->cat.revision;
+                }
+            }
+            if (done) done(r);
+        });
+    };
+
+    sv.cat.query = [st, &engine](services::Done done) {
+        engine.post_after(10ms, [st, done = std::move(done)]() {
+            CommandResult r = result(CommandStatus::accepted);
+            {
+                std::lock_guard<std::mutex> lock(st->mutex);
+                if (!st->cat.connected) r = result(CommandStatus::not_ready, 0U, "cat_not_connected");
+                else {
                     ++st->cat.observed_revision;
                     ++st->cat.revision;
                 }

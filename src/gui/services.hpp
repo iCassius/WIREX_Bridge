@@ -86,6 +86,7 @@ struct CatSettings {
     CatMode main_mode{CatMode::fm};
     std::uint64_t main_frequency_hz{};
     std::uint32_t power_w{};
+    bool apply_mode{true};
 };
 
 struct CatState {
@@ -96,6 +97,7 @@ struct CatState {
     std::optional<CatMode> observed_mode{};     // 最近一次读取值
     std::optional<std::uint64_t> observed_frequency_hz{};
     std::optional<std::uint32_t> observed_power_w{};
+    std::optional<std::uint32_t> power_maximum_watts{};
     std::uint64_t observed_revision{};          // 可信新读回递增；与连接/busy/error 的 revision 分开
     std::string error{};                        // 中文源文案；空表示无错误
     std::uint64_t revision{};                   // 每次变化 +1
@@ -122,6 +124,8 @@ struct CatService {
     std::function<void(std::wstring port, std::uint32_t baud_rate, Done done)> connect{};
     std::function<void(Done done)> disconnect{};
     std::function<void(CatSettings settings, Done done)> apply{};
+    // 显式只读查询，用于跨过 Y 周期后确认功率。
+    std::function<void(Done done)> query{};
     // R130：开启/关闭 100 ms 静噪轮询（中继与 FM 均开启时为 true）。未接线时 ViewModel 视为不支持。
     std::function<void(bool enabled)> set_squelch_polling{};
     // R130：注册静噪事件回调（ViewModel 创建时设置一次）。
@@ -158,6 +162,7 @@ struct GuiConfig {
     std::uint32_t cat_baud_rate{38400U};
     std::wstring wave_in_endpoint_id{};         // 空 = "auto"
     std::wstring wave_out_endpoint_id{};
+    std::uint32_t desired_power_watts{25U};
     std::uint32_t playback_gain_step{1U};       // 1..16，对应 1000..16000 milli
     std::uint32_t transmit_gain_step{16U};
     std::vector<ChannelEntry> channels{};
