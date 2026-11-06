@@ -11,9 +11,10 @@
 | stable `v0.1.0` | tag 指向 `c12b50a`，GitHub Release 已发布；发布审计见 [R124_RELEASE](docs/R124_RELEASE.md) |
 | 本机单 EXE | R128 单 EXE 仅在本机交付，未打包；单 EXE 的 ZIP profile 尚未建立 |
 
-## HRI 实机连接
+## HRI 实机连接与 Y 记录动态生成（R132）
 
 已修复 `clock_regressed`（`connect_radio` 后主循环用旧时钟驱动 HRI 会话），见提交 `a50b234`。HRI 固定 115200 8N1，CAT 按配置波特率 8N2；握手时序见 ARCHITECTURE 第 6 节。
+- **功率弹回 25 W 修复（R132）**：逆向研究已闭环（报告见 [`research/planning/R132_Y动态字段与官方生成时机.md`](../research/planning/R132_Y动态字段与官方生成时机.md)）。已编写专项交接文档 [`HANDOFF_Y记录动态生成.md`](../HANDOFF_Y记录动态生成.md)，实现 Agent 请按该文档执行 P0 阶段代码编写。
 
 ## FM 中继（R130）
 
