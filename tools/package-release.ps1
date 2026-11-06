@@ -27,9 +27,9 @@ $script:releaseTestNames = @(
     'pcm_resampler_test', 'bm_voice_pipeline_test', 'bm_test_profile_test', 'bm_connection_config_test', 'hri_stream_session_test',
     'bm_bridge_loopback_test', 'ui_control_protocol_v2_test', 'talkgroup_routing_test', 'bm_routing_lifecycle_test', 'routing_state_test'
 )
-# v0.1.0 已发布，必须保持上面的 40 项。R128 起的 builder 在其后追加 engine_test；尚未打包的
+# v0.1.0 已发布，必须保持上面的 40 项。当前 builder 追加 engine_test 与 hri_y_body_test；
 # ZIP-only profile 由当前源码构建，因此使用追加后的序列。
-$script:zipOnlyReleaseTestNames = @($script:releaseTestNames) + @('engine_test')
+$script:zipOnlyReleaseTestNames = @($script:releaseTestNames) + @('engine_test', 'hri_y_body_test')
 $script:activeReleaseVersion = 'v0.1.0'
 
 function Get-ReleaseProfile {

@@ -30,8 +30,8 @@ $script:v010TestNames = @(
     'pcm_resampler_test', 'bm_voice_pipeline_test', 'bm_test_profile_test', 'bm_connection_config_test', 'hri_stream_session_test',
     'bm_bridge_loopback_test', 'ui_control_protocol_v2_test', 'talkgroup_routing_test', 'bm_routing_lifecycle_test', 'routing_state_test'
 )
-# v0.1.0 已发布的 40 项保持不变；ZIP-only profile 由 R128 起的 builder 构建，追加 engine_test。
-$script:zipOnlyTestNames = @($script:v010TestNames) + @('engine_test')
+# v0.1.0 已发布的 40 项保持不变；ZIP-only profile 追加 engine_test 与 hri_y_body_test。
+$script:zipOnlyTestNames = @($script:v010TestNames) + @('engine_test', 'hri_y_body_test')
 $script:publishIsPrerelease = $true
 
 function Set-PublishProfile {

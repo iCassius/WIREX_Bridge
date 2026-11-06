@@ -46,7 +46,7 @@ $serviceFiles = @('app\config.cpp', 'app\json.cpp', 'app\devices.cpp', 'app\radi
 # 进程内桥接引擎及其 native 模块：与 tools/build-bm-bridge.ps1 的 $coreSources 相同（不含管道适配层与 CLI 入口）。
 $engineFiles = @('dmrd.cpp', 'dmr_call.cpp', 'talkgroup_routing.cpp', 'dmr_vocoder.cpp', 'pcm_resampler.cpp',
     'bm_voice_pipeline.cpp', 'bm_test_profile.cpp', 'bm_connection_config.cpp', 'bm_connection_control.cpp',
-    'bm_session.cpp', 'bm_udp.cpp', 'direct_frame.cpp', 'direct_stream.cpp', 'hri_session.cpp', 'hri_ptt_gate.cpp',
+    'bm_session.cpp', 'bm_udp.cpp', 'direct_frame.cpp', 'direct_stream.cpp', 'hri_y_body.cpp', 'hri_session.cpp', 'hri_ptt_gate.cpp',
     'hri_downlink_session.cpp', 'hri_radio_protocol.cpp', 'hri_t_payload.cpp', 'hri_call_header.cpp', 'hri_t_record.cpp',
     'hri_lcd_identity_candidate.cpp', 'radio_identity_cache.cpp', 'hri_stream_session.cpp', 'wave_file.cpp',
     'pcm_gain.cpp', 'console_lifecycle.cpp', 'session_report.cpp', 'ui_control_protocol.cpp', 'strict_json.cpp',

@@ -165,6 +165,7 @@ try {
         'src\bm_udp.cpp',
         'src\direct_frame.cpp',
         'src\direct_stream.cpp',
+        'src\hri_y_body.cpp',
         'src\hri_session.cpp',
         'src\hri_ptt_gate.cpp',
         'src\hri_downlink_session.cpp',
@@ -202,7 +203,7 @@ try {
     Invoke-LinkExecutable -Name 'wirex_bridge' -Objects (@($bridgeMain) + @($coreObjects) + @($upstreamObjects))
 
     $oldProbeSources = @(
-        'src\probe_main.cpp', 'src\direct_frame.cpp', 'src\direct_stream.cpp',
+        'src\probe_main.cpp', 'src\direct_frame.cpp', 'src\direct_stream.cpp', 'src\hri_y_body.cpp',
         'src\hri_session.cpp', 'src\hri_downlink_session.cpp', 'src\hri_radio_protocol.cpp',
         'src\hri_t_payload.cpp', 'src\hri_call_header.cpp', 'src\hri_t_record.cpp', 'src\hri_lcd_identity_candidate.cpp', 'src\radio_identity_cache.cpp', 'src\wave_file.cpp', 'src\pcm_gain.cpp',
         'src\console_lifecycle.cpp', 'src\session_report.cpp'
@@ -253,7 +254,8 @@ try {
         @{ Name='talkgroup_routing_test'; Source='tests\talkgroup_routing_test.cpp' },
         @{ Name='bm_routing_lifecycle_test'; Source='tests\bm_routing_lifecycle_test.cpp' },
         @{ Name='routing_state_test'; Source='tests\routing_state_test.cpp' },
-        @{ Name='engine_test'; Source='tests\engine_test.cpp' }
+        @{ Name='engine_test'; Source='tests\engine_test.cpp' },
+        @{ Name='hri_y_body_test'; Source='tests\hri_y_body_test.cpp' }
     )
     $testObjects = @()
     foreach ($test in $testSpecs) {
