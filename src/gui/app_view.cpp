@@ -1946,12 +1946,14 @@ void AppView::draw_radio_panel(float width, float height) {
         const bool mode_changed = simple_combo("##mode", vm_.cat_form.mode_index, kCatModes, 4, cell_w,
                                                tr(Str::unknown));
         vm_.set_cat_form_editing(CatFormField::mode, ImGui::IsItemActive());
+        if (vm_.snapshot().hri_ready) ImGui::SetItemTooltip("%s", tr(Str::hri_channel_tooltip));
         if (mode_changed) vm_.mark_cat_form_edited(CatFormField::mode);
         cell_w = row.cell(1, tr(Str::frequency_mhz), 2);
         ImGui::SetNextItemWidth(cell_w);
         const bool frequency_changed = input_text("##freq", vm_.cat_form.frequency_mhz,
                                                    ImGuiInputTextFlags_CharsDecimal);
         vm_.set_cat_form_editing(CatFormField::frequency, ImGui::IsItemActive());
+        if (vm_.snapshot().hri_ready) ImGui::SetItemTooltip("%s", tr(Str::hri_channel_tooltip));
         if (frequency_changed) vm_.mark_cat_form_edited(CatFormField::frequency);
         cell_w = row.cell(3, tr(Str::power_w), 2);
         static const char* const power_labels[] = {"5 W", "10 W", "15 W", "25 W", "50 W"};
@@ -2314,9 +2316,9 @@ void AppView::draw_daily_panel(float width, float height) {
                              startup_status.find("忙") != std::string::npos ||
                              startup_status.find("暂停") != std::string::npos;
         ImGui::PushFont(nullptr, layout::kFontCaption);
-        ImGui::PushStyleColor(ImGuiCol_Text, vec(warning ? color::warn : color::muted));
-        ImGui::TextWrapped("%s", startup_status.c_str());
-        ImGui::PopStyleColor();
+        text_ellipsis(startup_status.c_str(), ImGui::GetContentRegionAvail().x,
+                      rgb(warning ? color::warn : color::muted));
+        ImGui::SetItemTooltip("%s", startup_status.c_str());
         ImGui::PopFont();
     }
 
