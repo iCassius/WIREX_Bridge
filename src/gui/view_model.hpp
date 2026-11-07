@@ -113,6 +113,15 @@ struct StaticGroupsView {
 
 enum class FontStatus : std::uint8_t { segoe_deng, segoe_simhei, fallback_default };
 
+// R135 更新提示状态（标题栏版本标签只读）。
+struct UpdateStatus {
+    enum class State : std::uint8_t { unknown, checking, up_to_date, available, failed };
+    State state{State::unknown};
+    std::string current{};      // "v0.2.2"
+    std::string latest{};       // "v0.2.3"（available 时）
+    std::string url{};          // 点击打开的地址
+};
+
 // 最近被收听策略过滤的 BM 流量（Snapshot::last_filtered），只在 window 内显示提示。
 struct FilteredHint {
     static constexpr std::chrono::seconds window{30};
@@ -227,6 +236,9 @@ public:
     // R131 CAT：被门控拒绝、等待自动重试的提示（空表示无）。
     [[nodiscard]] const std::string& cat_deferred_text() const noexcept { return cat_deferred_text_; }
     void set_font_status(FontStatus status) noexcept { font_status_ = status; }
+    // R135 更新提示
+    [[nodiscard]] const UpdateStatus& update_status() const noexcept { return update_status_; }
+    void open_update_page();
 
     // 视图可直接编辑的表单状态
     CatForm cat_form{};
@@ -362,6 +374,9 @@ private:
     void request_relay_fm_mute(bool muted);
     void finish_relay_record(const engine::Event& event);
     void write_relay_record(const CallRecord& record);
+    // R135 更新检查
+    [[nodiscard]] bool service_update_check();
+    void apply_update_result(std::uint64_t generation, const std::optional<app::update::LatestRelease>& release);
 
     EngineApi& engine_;
     services::Services services_;
@@ -456,6 +471,11 @@ private:
     std::optional<unsigned> last_squelch_peak_{};
     std::optional<std::chrono::steady_clock::time_point> last_squelch_close_{};
     std::optional<CallRecord> relay_awaiting_peak_{}; // 超时等先于关门结束的段：等关门事件补 S 峰值后再写日志
+    // R135 更新检查：下一次检查时间；空表示未启用（fake / 无服务 / 配置关闭）。
+    UpdateStatus update_status_{};
+    std::optional<std::chrono::steady_clock::time_point> update_next_check_{};
+    bool update_check_in_flight_{};
+    std::uint64_t update_generation_{};
 
     std::shared_ptr<Mailbox> mailbox_{std::make_shared<Mailbox>()};
 };

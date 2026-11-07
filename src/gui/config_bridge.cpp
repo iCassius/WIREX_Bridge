@@ -161,6 +161,7 @@ services::GuiConfig to_gui(const app::AppConfig& config) {
     g.relay_enabled = config.relay.enabled;
     g.relay_fm_enabled = config.relay.fm_enabled;
     g.relay_y_template_ap = config.relay.y_template_ap;
+    g.update_check = config.ui.update_check;
     return g;
 }
 
@@ -200,6 +201,7 @@ std::optional<app::AppConfig> apply_gui(const app::AppConfig& base, const servic
     c.master = server->master;
     c.master_port = server->master_port;
     out.ui.bm_server_selection_id = server->selection_id;
+    out.ui.update_check = gui.update_check;
     c.password = gui.bm_password;
     c.api_key = trim(gui.bm_api_key);
 

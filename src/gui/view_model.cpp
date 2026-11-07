@@ -4,6 +4,9 @@
 #include "dev_log.hpp"
 #include "cat_form_sync.hpp"
 
+#include "wirex/app/update_check.hpp"
+#include "wirex/version.hpp"
+
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -33,6 +36,8 @@ using talkgroup_routing::MediaOwner;
 using namespace std::chrono_literals;
 
 constexpr auto kTransientDuration = 6s;
+constexpr auto kUpdateFirstCheckDelay = 5s;
+constexpr auto kUpdatePeriod = 6h;
 
 bool hri_downlink_active(const engine::Snapshot& snapshot) {
     return snapshot.hri_ready && (snapshot.media_owner == MediaOwner::rx_active ||
@@ -261,6 +266,12 @@ ViewModel::ViewModel(EngineApi& engine, services::Services services, bool fake)
     update_startup_group_activation_status();
     sync_volume_targets();
     if (snapshot_->phase == Phase::running && !muted_groups().empty()) push_muted_groups();
+    // R135：启动后 5 s 检查一次更新，之后每 6 h 一次；--fake / 无服务 / ui.update_check=false 时不联网。
+    update_status_.current = std::string("v") + app_version;
+    update_status_.url = app_releases_url;
+    if (!fake_ && static_cast<bool>(services_.update.check_latest) && config_.update_check) {
+        update_next_check_ = std::chrono::steady_clock::now() + kUpdateFirstCheckDelay;
+    }
     // 正常产品启动时自动独立连接 BM runtime、CAT 与电台；--fake 保持静止，供截图和演示控制。
     if (!fake_) start();
 }
@@ -415,6 +426,7 @@ bool ViewModel::pump() {
     retry_deferred_cat();
     service_hri_power_confirmation();
     service_hri_channel_confirmation();
+    if (service_update_check()) changed = true;
     if (!transient_text_.empty() && !transient_visible()) {
         transient_text_.clear();
         changed = true;
@@ -437,11 +449,19 @@ std::optional<std::uint32_t> ViewModel::idle_timeout_ms() const {
     if (bm_cooldown_remaining_s() != 0U || bm_stale_retry_at_ || cat_deferred_) return 250U;
     // 有来话时显示通话时长、有过滤流量提示时显示“N 秒前”，都需要每秒刷新（提示过期后自然停止）。
     if (snapshot_->active_rx_call || filtered_hint()) return 1000U;
+    std::optional<std::uint32_t> timeout;
     if (!transient_text_.empty()) {
         const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(transient_until_ - std::chrono::steady_clock::now());
-        return static_cast<std::uint32_t>(std::max<long long>(left.count(), 0) + 10);
+        timeout = static_cast<std::uint32_t>(std::max<long long>(left.count(), 0) + 10);
     }
-    return std::nullopt;
+    // R135 更新检查倒计时：到点前允许 UI 空闲等待（最长约 6 h）。
+    if (update_next_check_) {
+        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+            *update_next_check_ - std::chrono::steady_clock::now()).count();
+        const auto update_timeout = static_cast<std::uint32_t>(std::max<long long>(left, 0) + 1);
+        timeout = timeout ? std::min(*timeout, update_timeout) : update_timeout;
+    }
+    return timeout;
 }
 
 // ---------------------------------------------------------------- 事件
@@ -2610,6 +2630,68 @@ void ViewModel::retry_deferred_cat() {
     cat_deferred_retried_ = true;
     cat_retry_now_ = true;
     cat_apply(); // 用当前表单（含用户草稿）重新提交一次
+}
+
+// ---------------------------------------------------------------- R135 更新检查
+
+bool ViewModel::service_update_check() {
+    if (!update_next_check_ || update_check_in_flight_) return false;
+    const auto now = std::chrono::steady_clock::now();
+    if (now < *update_next_check_) return false;
+    // 无论本次结果如何，下一次检查都按周期排定；失败静默，不重试、不打扰用户。
+    update_next_check_ = now + kUpdatePeriod;
+    update_check_in_flight_ = true;
+    update_status_.state = UpdateStatus::State::checking;
+    update_status_.latest.clear();
+    update_status_.url = app_releases_url;
+    const auto generation = ++update_generation_;
+    services_.update.check_latest([this, mailbox = mailbox_, generation](
+                                      std::optional<app::update::LatestRelease> release) {
+        // 服务在任意线程回调：经信箱切回 UI 线程；ViewModel 析构后投递被丢弃。
+        mailbox->post([this, generation, release = std::move(release)]() {
+            apply_update_result(generation, release);
+        });
+    });
+    return true;
+}
+
+void ViewModel::apply_update_result(std::uint64_t generation,
+                                    const std::optional<app::update::LatestRelease>& release) {
+    if (generation != update_generation_) return;
+    update_check_in_flight_ = false;
+    update_status_.latest.clear();
+    if (!release) {
+        update_status_.state = UpdateStatus::State::failed;
+        update_status_.url = app_releases_url;
+        return;
+    }
+    if (release->draft || release->prerelease) {
+        update_status_.state = UpdateStatus::State::up_to_date;
+        update_status_.url = app_releases_url;
+        return;
+    }
+    const auto latest = app::update::parse_version(release->tag);
+    const auto current = app::update::parse_version(update_status_.current);
+    if (!latest || !current || !latest->prerelease.empty()) {
+        update_status_.state = latest && current ? UpdateStatus::State::up_to_date : UpdateStatus::State::failed;
+        update_status_.url = app_releases_url;
+        return;
+    }
+    if (app::update::compare(*latest, *current) > 0) {
+        update_status_.state = UpdateStatus::State::available;
+        update_status_.latest = "v" + std::to_string(latest->major) + "." + std::to_string(latest->minor) + "." +
+                                std::to_string(latest->patch);
+        update_status_.url = release->html_url;
+    } else {
+        update_status_.state = UpdateStatus::State::up_to_date;
+        update_status_.url = app_releases_url;
+    }
+}
+
+void ViewModel::open_update_page() {
+    if (!services_.update.open_url) return;
+    const std::string url = update_status_.url.empty() ? std::string(app_releases_url) : update_status_.url;
+    services_.update.open_url(url);
 }
 
 } // namespace wirex::gui

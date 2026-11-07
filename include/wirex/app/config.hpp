@@ -100,6 +100,10 @@ struct UiConfig {
     std::string bm_server_selection_id{"bm-china-4602"};
     json::Value legacy_rx_policy{};  // null or object, kept opaque
     std::string language{"zh-CN"};   // "zh-CN" or "en-US"
+    // R135 optional "ui.update_check" (bool, default true): startup update check.
+    // save() writes it only when the file already has it or the value is false,
+    // so default files stay byte-identical to PS.
+    bool update_check{true};
 };
 
 // Optional root section "relay" (R130, native only; PortableConfig.psm1 keeps it

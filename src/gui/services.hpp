@@ -6,6 +6,7 @@
 // - 异步函数通过 Done/回调返回结果，回调可在任意线程调用，ViewModel 负责切回 UI 线程；
 // - 未接线的 std::function 为空，ViewModel 把对应功能显示为“未就绪”，不会调用空函数。
 
+#include "wirex/app/update_check.hpp"
 #include "wirex/engine.hpp"
 
 #include <chrono>
@@ -174,6 +175,7 @@ struct GuiConfig {
     bool relay_enabled{false};                  // relay.enabled（R130）
     bool relay_fm_enabled{false};               // relay.fm_enabled（R130，官方未支持）
     bool relay_y_template_ap{false};            // relay.y_template == "ap"（R131；默认 DIRECT）
+    bool update_check{true};                    // ui.update_check（R135；默认开启，缺省不写入）
 };
 
 // 引擎本地源 ID：DMR ID 未配置时使用 1（与 config_bridge::make_runtime_config 一致）。
@@ -245,6 +247,16 @@ struct IdentityService {
     std::function<void(std::uint32_t source_id, IdentityDone done)> lookup{};
 };
 
+// ---------- 更新检查（R135） ----------
+
+struct UpdateService {
+    // 在 worker 线程执行；完成后回调（任意线程）。空表示不检查更新。
+    // done 收到空表示检查失败（含 404 无发布），ViewModel 静默显示“未能检查更新”。
+    std::function<void(std::function<void(std::optional<app::update::LatestRelease>)> done)> check_latest{};
+    // 打开发布页；实现只允许 https://github.com/iCassius/WIREX_Bridge/ 下的地址。
+    std::function<void(const std::string& url)> open_url{};
+};
+
 // ---------- Windows 端点音量（R131） ----------
 // 播放/发送滑块直接对应所选 WaveOut / WaveIn 端点的 Windows 主音量（IAudioEndpointVolume，0..1）。
 struct AudioVolumeService {
@@ -262,6 +274,7 @@ struct Services {
     ConfigService config{};
     BmApiService bm_api{};
     IdentityService identity{};
+    UpdateService update{};
     // 后台状态（例如 CAT 轮询读数）变化时调用的唤醒函数；ViewModel::set_wakeup 转发。
     std::function<void(std::function<void()> wakeup)> set_wakeup{};
     // 停止后台线程并等待结束；之后不会再调用任何回调。ViewModel 析构时调用。

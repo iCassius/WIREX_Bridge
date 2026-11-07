@@ -525,6 +525,10 @@ void write_typed(Value& doc, const AppConfig& config, const Value* gain_source)
     ui.set("bm_server_selection_id", Value::string(config.ui.bm_server_selection_id));
     ui.set("legacy_rx_policy", config.ui.legacy_rx_policy);
     ui.set("language", Value::string(config.ui.language));
+    // R135：文件已有该字段或值为 false 时才写入；默认配置保持与 PS 生成的字节一致。
+    if (ui.find("update_check") != nullptr || !config.ui.update_check) {
+        ui.set("update_check", Value::boolean(config.ui.update_check));
+    }
     doc.set("window", config.window);
 
     // relay（R130，原生扩展）：文件已有该节或任一开关为 true 时才写入；默认配置保持与 PS 生成的字节一致。
@@ -748,6 +752,12 @@ ConfigResult<AppConfig> validate(const Value& input)
         return make_error(ConfigErrorCode::invalid_format, "ui.language", "ui.language 只接受 zh-CN 或 en-US。");
     }
     config.ui.language = language->text;
+    if (const Value* update_check = ui.find("update_check")) {
+        if (!update_check->is_bool()) {
+            return make_error(ConfigErrorCode::invalid_value, "ui.update_check", "ui.update_check 必须是 true 或 false。");
+        }
+        config.ui.update_check = update_check->boolean_value;
+    }
     config.window = *merged.find("window");
 
     // relay（可选根节，R130）：缺省或缺字段为 false；存在时必须是对象且已知字段为布尔值，其它成员原样保留。

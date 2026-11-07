@@ -10,6 +10,7 @@
 #include "wirex/app/radio_cat.hpp"
 #include "wirex/app/radio_identity.hpp"
 #include "wirex/app/radio_info.hpp"
+#include "wirex/app/update_check.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -18,6 +19,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <shellapi.h>
 
 #include <algorithm>
 #include <atomic>
@@ -1191,6 +1193,29 @@ private:
     std::thread thread_; // 最后声明
 };
 
+// ---------------------------------------------------------------- 更新检查（R135）
+
+// 单线程顺序执行：一次检查完成后再接受下一次；stop() 取消在途请求（WinHTTP 尽快返回）并等待线程结束。
+class UpdateRunner final {
+public:
+    void check(std::function<void(std::optional<app::update::LatestRelease>)> done) {
+        if (!done) return;
+        const bool queued = thread_.post([this, done = std::move(done)]() {
+            done(app::update::fetch_latest_release(app::winhttp_send, &cancel_));
+        });
+        if (!queued) done(std::nullopt);
+    }
+
+    void stop() {
+        cancel_.store(true);
+        thread_.stop();
+    }
+
+private:
+    std::atomic<bool> cancel_{false};
+    TaskThread thread_; // 最后声明
+};
+
 } // namespace
 
 // ---------------------------------------------------------------- 组装
@@ -1281,12 +1306,27 @@ services::Services make_real_services(EngineApi& engine, RealServiceOptions opti
     sv.identity.preload = [identity]() { return identity->preload(); };
     sv.identity.lookup = [identity](std::uint32_t id, services::IdentityDone done) { identity->lookup(id, std::move(done)); };
 
+    // R135：GitHub releases/latest 在 worker 线程检查；失败（含 404）返回空，由 ViewModel 静默处理。
+    auto update = std::make_shared<UpdateRunner>();
+    sv.update.check_latest = [update](std::function<void(std::optional<app::update::LatestRelease>)> done) {
+        update->check(std::move(done));
+    };
+    sv.update.open_url = [](const std::string& url) {
+        // 只允许打开本项目的发布页，避免把任意 URL 交给 ShellExecute。
+        constexpr std::string_view prefix = app::update::release_page_prefix;
+        if (std::string_view(url).compare(0U, prefix.size(), prefix) != 0) return;
+        const std::wstring wide = widen(url);
+        if (wide.empty()) return;
+        (void)ShellExecuteW(nullptr, L"open", wide.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    };
+
     sv.set_wakeup = [cat](std::function<void()> wakeup) { cat->set_wakeup(std::move(wakeup)); };
-    sv.shutdown = [cat, bm, identity]() {
+    sv.shutdown = [cat, bm, identity, update]() {
         cat->set_wakeup({});
         cat->stop();
         bm->stop();
         identity->stop();
+        update->stop();
     };
     return sv;
 }
