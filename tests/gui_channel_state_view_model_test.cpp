@@ -90,7 +90,7 @@ public:
     std::future<engine::CommandResult> quick_call_join(talkgroup_routing::GroupRoute route) override
     {
         quick_calls.push_back(route);
-        return ready();
+        return ready(quick_status, quick_detail);
     }
     std::future<engine::CommandResult> set_audio_gains(std::uint32_t, std::uint32_t) override { return ready(); }
     std::future<engine::CommandResult> set_audio_endpoints(engine::AudioEndpoints) override { return ready(); }
@@ -107,7 +107,7 @@ public:
     std::future<engine::CommandResult> disconnect_dynamic_groups(Slot slot) override
     {
         disconnects.push_back(slot);
-        return ready();
+        return ready(disconnect_status, disconnect_detail);
     }
 
     std::shared_ptr<const engine::Snapshot> snapshot() const override { return published; }
@@ -129,6 +129,10 @@ public:
     std::vector<std::vector<talkgroup_routing::GroupRoute>> muted_sets{};
     std::vector<Slot> disconnects{};
     std::vector<bool> bm_requests{};
+    engine::CommandStatus quick_status{engine::CommandStatus::accepted};
+    std::string quick_detail{};
+    engine::CommandStatus disconnect_status{engine::CommandStatus::accepted};
+    std::string disconnect_detail{};
     int configures{};
 };
 
@@ -298,6 +302,51 @@ void test_dynamic_disable_and_enable()
           "enable re-activates the disabled dynamic group with a Quick Call");
     check(view_of(vm, 3100U)->state == ChannelState::dynamic_active && !saved_entry(*h.saved, 3100U)->disabled,
           "enabled group is active again and persisted as enabled");
+}
+
+void test_dynamic_disconnect_failure_and_deferred_feedback()
+{
+    for (const auto status : {engine::CommandStatus::busy, engine::CommandStatus::not_ready,
+                              engine::CommandStatus::failed}) {
+        RecordingEngine engine;
+        Harness h;
+        gui::ViewModel vm(engine, h.make(demo_channels()), true);
+        h.finish_list();
+        for (int i = 0; i < 6; ++i) (void)vm.pump();
+        engine.disconnect_status = status;
+        engine.disconnect_detail = "test_disconnect_error";
+        const auto policies_before = engine.rx_policies.size();
+        vm.disable_channel(kDynamic);
+        check(!view_of(vm, 3100U)->is_disabled && engine.rx_policies.size() == policies_before,
+              "disconnect does not remove the group before the result");
+        (void)vm.pump();
+        check(!view_of(vm, 3100U)->is_disabled && engine.rx_policies.size() == policies_before &&
+              view_of(vm, 3100U)->state == ChannelState::dynamic_active,
+              "disconnect failure preserves listening and the active marker");
+        check(vm.transient_failed() && vm.transient_text().find("test_disconnect_error") != std::string::npos,
+              "disconnect failure is visible");
+    }
+
+    RecordingEngine engine;
+    Harness h;
+    gui::ViewModel vm(engine, h.make(demo_channels()), true);
+    h.finish_list();
+    for (int i = 0; i < 6; ++i) (void)vm.pump();
+    engine.disconnect_detail = "deferred_media_busy";
+    vm.disable_channel(kDynamic);
+    (void)vm.pump();
+    check(view_of(vm, 3100U)->is_disabled && !allows(engine.rx_policies.back(), 3100U),
+          "deferred disconnect is accepted and removes the group from the local policy");
+    check(!vm.transient_failed() && vm.transient_text() == gui::tr(gui::Str::quick_call_deferred),
+          "deferred disconnect shows the localized waiting message instead of claiming it was sent");
+    (void)vm.pump();
+    engine.quick_detail = "deferred_media_busy";
+    vm.enable_channel(kDynamic);
+    (void)vm.pump();
+    (void)vm.pump();
+    check(view_of(vm, 3100U)->state == ChannelState::dynamic_active &&
+          !vm.transient_failed() && vm.transient_text() == gui::tr(gui::Str::quick_call_deferred),
+          "deferred activation is accepted and shows the localized waiting message");
 }
 
 void test_disabled_flags_restore_from_config()
@@ -471,6 +520,7 @@ int main()
 {
     test_static_mute_keeps_policy_and_call_visible();
     test_dynamic_disable_and_enable();
+    test_dynamic_disconnect_failure_and_deferred_feedback();
     test_disabled_flags_restore_from_config();
     test_bm_cooldown_and_stale_session_retry();
     test_endpoint_volume_slider();

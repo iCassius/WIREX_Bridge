@@ -445,6 +445,10 @@ namespace wirex::gui {
     X(hri_y_deferred, "HRI 正在播放来话，设定已延后，将在来话结束后生效。", "The setting is deferred until HRI playback ends.") \
     X(hri_c4fm_voice_warning, "C4FM 数字模式：手咪上行与 FM 中继暂不支持，仅用于试验", "C4FM digital: mic uplink and FM relay are not supported yet (experimental)") \
     X(hri_c4fm_voice_short, "! PC 语音不支持", "! No PC voice")
+
+// quick-call deferral: kept separate to ease concurrent string-table merges.
+#define WIREX_GUI_STRINGS_QUICK_CALL_DEFERRAL(X) \
+    X(quick_call_deferred, "来话结束后执行。", "Will run after the current call.")
 // clang-format on
 
 enum class Str : std::uint16_t {
@@ -453,6 +457,7 @@ enum class Str : std::uint16_t {
     WIREX_GUI_STRINGS_R131(WIREX_GUI_STR_ENUM)
     WIREX_GUI_STRINGS_HRI_POWER(WIREX_GUI_STR_ENUM)
     WIREX_GUI_STRINGS_R133(WIREX_GUI_STR_ENUM)
+    WIREX_GUI_STRINGS_QUICK_CALL_DEFERRAL(WIREX_GUI_STR_ENUM)
 #undef WIREX_GUI_STR_ENUM
         count_
 };
@@ -472,6 +477,7 @@ inline constexpr StrEntry kStrings[] = {
     WIREX_GUI_STRINGS_R131(WIREX_GUI_STR_ROW)
     WIREX_GUI_STRINGS_HRI_POWER(WIREX_GUI_STR_ROW)
     WIREX_GUI_STRINGS_R133(WIREX_GUI_STR_ROW)
+    WIREX_GUI_STRINGS_QUICK_CALL_DEFERRAL(WIREX_GUI_STR_ROW)
 #undef WIREX_GUI_STR_ROW
 };
 static_assert(sizeof(kStrings) / sizeof(kStrings[0]) == static_cast<std::size_t>(Str::count_));

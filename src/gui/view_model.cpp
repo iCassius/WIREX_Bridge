@@ -779,6 +779,11 @@ void ViewModel::report(Str op, const CommandResult& r) {
         return; // Busy/断线由持久队列状态显示；避免 500ms 重试时刷屏或把暂缓误报为失败。
     }
     if (op == Str::op_relay_fm) return; // FM 中继启停结果由 on_squelch 的回调按状态提示，避免 busy 刷屏
+    if ((op == Str::op_quick_call || op == Str::op_auto_quick_call || op == Str::op_disconnect_dynamic) &&
+        r.status == CommandStatus::accepted && r.detail == "deferred_media_busy") {
+        flash(tr(Str::quick_call_deferred), false);
+        return;
+    }
     if (op == Str::op_cat && r.status == CommandStatus::busy && r.detail.rfind("cat_gate_", 0) == 0 && cat_deferred_) {
         return; // 门控延后：cat_deferred_text() 已说明原因并会自动重试
     }
@@ -1369,34 +1374,46 @@ void ViewModel::toggle_mute(const ChannelKey& key) {
     push_muted_groups();
 }
 
-// 停用：从 RX 策略移除；动态组另向 BM 发送 TG4000（断开该时隙全部动态组，BM 只提供这一种断开方式），
-// 同时隙其它“已激活”标记一并清除。静态组的停用用“移除”（BM 静态组需经 API 删除），这里不发 TG4000。
+// 在线动态组先请求 TG4000，只有请求获接受后才从 RX 策略移除，失败时继续收听。
+// 离线时仅停用本地收听，并明确提示没有发送 TG4000。
 void ViewModel::disable_channel(const ChannelKey& key) {
     if (!can_mutate_channels()) return;
     auto* entry = find_channel(key);
     if (!entry || entry->disabled) return;
     const bool dynamic = entry->kind == dmr_call::CallKind::group && entry->id != 4000U && !is_static_channel(*entry);
+    const bool bm_ready = snapshot_->phase == Phase::running && snapshot_->bm_link == BmLink::connected;
+    if (dynamic && bm_ready) {
+        if (pending(Str::op_disconnect_dynamic)) return;
+        track(Str::op_disconnect_dynamic, engine_.disconnect_dynamic_groups(key.slot),
+            [this, key](const CommandResult& r) {
+                if (r.status != CommandStatus::accepted && r.status != CommandStatus::idempotent) return;
+                auto* current = find_channel(key);
+                if (current && !current->disabled) {
+                    current->disabled = true;
+                    if (enable_after_policy_ && *enable_after_policy_ == key) enable_after_policy_.reset();
+                    persist();
+                    push_rx_policy();
+                    if (current->muted) push_muted_groups();
+                }
+                for (auto it = quick_call_sent_.begin(); it != quick_call_sent_.end();) {
+                    it = it->slot == key.slot ? quick_call_sent_.erase(it) : std::next(it);
+                }
+                if (r.detail != "deferred_media_busy") {
+                    flash(fmt(tr(Str::ch_disabled_tg4000_fmt), key.id, static_cast<int>(key.slot)), false);
+                }
+            });
+        return;
+    }
     entry->disabled = true;
     const bool was_muted = entry->muted;
     if (enable_after_policy_ && *enable_after_policy_ == key) enable_after_policy_.reset();
     persist();
     push_rx_policy();
     if (was_muted) push_muted_groups();
-    if (!dynamic) return;
-    const bool bm_ready = snapshot_->phase == Phase::running && snapshot_->bm_link == BmLink::connected;
-    if (!bm_ready) {
+    if (dynamic) {
         quick_call_sent_.erase(key);
         flash(fmt(tr(Str::ch_disabled_offline_fmt), key.id), false);
-        return;
     }
-    track(Str::op_disconnect_dynamic, engine_.disconnect_dynamic_groups(key.slot),
-        [this, key](const CommandResult& r) {
-            if (r.status != CommandStatus::accepted) return; // 失败由 report() 提示；卡片仍为已停用（不收听）
-            for (auto it = quick_call_sent_.begin(); it != quick_call_sent_.end();) {
-                it = it->slot == key.slot ? quick_call_sent_.erase(it) : std::next(it);
-            }
-            flash(fmt(tr(Str::ch_disabled_tg4000_fmt), key.id, static_cast<int>(key.slot)), false);
-        });
 }
 
 // 启用：加回 RX 策略；动态组在策略下发后 Quick Call 激活（未停用但未激活的动态组，“启用”就是激活）。
@@ -2326,7 +2343,7 @@ bool ViewModel::pump_startup_group_activation() {
     }
 
     if (!startup_group_activation_.started()) return changed;
-    if (startup_group_activation_.command_pending()) return changed;
+    if (startup_group_activation_.command_pending() || snapshot_->quick_call_pending) return changed;
 
     const auto decision = startup_group_activation_.next(bm_connected, now);
     if (decision.kind == StartupGroupActivation::DecisionKind::finished) {
@@ -2361,7 +2378,9 @@ bool ViewModel::pump_startup_group_activation() {
         quick_call_pending_.reset();
         if (r.status == CommandStatus::accepted) {
             quick_call_sent_.insert(key);
-            flash(fmt(tr(Str::startup_group_sent_fmt), key.id, static_cast<int>(key.slot)), false);
+            if (r.detail != "deferred_media_busy") {
+                flash(fmt(tr(Str::startup_group_sent_fmt), key.id, static_cast<int>(key.slot)), false);
+            }
         }
         startup_group_activation_.complete(
             r.status, snapshot_->bm_link == BmLink::connected, std::chrono::steady_clock::now());
