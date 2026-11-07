@@ -763,6 +763,83 @@ func TestWritePackageZip(t *testing.T) {
 	}
 }
 
+func TestReadAppVersion(t *testing.T) {
+	tests := []struct {
+		name    string
+		header  string
+		missing bool
+		want    string
+		wantErr bool
+	}{
+		{"plain macro", "#define WIREX_VERSION_STR \"0.2.2\"\n", false, "0.2.2", false},
+		{"indented with neighbours",
+			"#ifndef WIREX_VERSION_RC_H\n#define WIREX_VERSION_MAJOR 0\n  #define WIREX_VERSION_STR \"1.10.3-rc.2\"\n#endif\n",
+			false, "1.10.3-rc.2", false},
+		{"missing macro", "#define WIREX_AUTHOR \"BI7KGD\"\n", false, "", true},
+		{"bad version format", "#define WIREX_VERSION_STR \"0.2\"\n", false, "", true},
+		{"missing file", "", true, "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			if !tt.missing {
+				writeTestFile(t, filepath.Join(root, "include", "wirex", "version_rc.h"), tt.header)
+			}
+			got, err := readAppVersion(root)
+			if (err != nil) != tt.wantErr || got != tt.want {
+				t.Fatalf("got %q err=%v, want %q wantErr=%v", got, err, tt.want, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestCheckReleaseVersion(t *testing.T) {
+	tests := []struct {
+		name    string
+		flag    string
+		want    string
+		wantErr bool
+	}{
+		{"matching", "v0.2.2", "0.2.2", false},
+		{"mismatch", "v0.2.3", "0.2.2", true},
+		{"prerelease mismatch", "v0.2.2-rc.1", "0.2.2", true},
+		{"leading v stripped only once", "0.2.2", "0.2.2", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeTestFile(t, filepath.Join(root, "include", "wirex", "version_rc.h"), "#define WIREX_VERSION_STR \"0.2.2\"\n")
+			got, err := checkReleaseVersion(root, tt.flag)
+			if (err != nil) != tt.wantErr || got != tt.want {
+				t.Fatalf("got %q err=%v, want %q wantErr=%v", got, err, tt.want, tt.wantErr)
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), "不一致") {
+				t.Fatalf("error %q should mention 不一致", err)
+			}
+		})
+	}
+}
+
+// TestAppVersionMatchesRepository guards the single source: the real header
+// parses, and version.hpp derives its constant from the same macro.
+func TestAppVersionMatchesRepository(t *testing.T) {
+	root := filepath.Join("..", "..")
+	v, err := readAppVersion(root)
+	if err != nil {
+		t.Fatalf("readAppVersion: %v", err)
+	}
+	if !plainVersionPattern.MatchString(v) {
+		t.Fatalf("version %q is not X.Y.Z", v)
+	}
+	hpp, err := os.ReadFile(filepath.Join(root, "include", "wirex", "version.hpp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(hpp), "app_version = WIREX_VERSION_STR") {
+		t.Fatalf("version.hpp should derive app_version from WIREX_VERSION_STR")
+	}
+}
+
 func TestManifestFiles(t *testing.T) {
 	stage := t.TempDir()
 	writeTestFile(t, filepath.Join(stage, "WirexBridge.exe"), "fake-exe")

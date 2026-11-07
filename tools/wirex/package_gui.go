@@ -375,6 +375,7 @@ type guiManifestBuild struct {
 type guiManifest struct {
 	SchemaVersion int               `json:"schema_version"`
 	Version       string            `json:"version"`
+	AppVersion    string            `json:"app_version"`
 	GitCommit     string            `json:"git_commit"`
 	Dirty         bool              `json:"dirty"`
 	CreatedUTC    string            `json:"created_utc"`
@@ -433,6 +434,46 @@ func parsePackageGUIArgs(args []string) (packageGUIOptions, error) {
 	return o, nil
 }
 
+// appVersionHeader is the single-source version header shared by C++ and rc.exe.
+const appVersionHeader = "include/wirex/version_rc.h"
+
+var (
+	appVersionMacro     = regexp.MustCompile(`(?m)^\s*#define\s+WIREX_VERSION_STR\s+"([^"]+)"`)
+	plainVersionPattern = regexp.MustCompile(`^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$`)
+)
+
+// readAppVersion returns the bare version (without a "v" prefix) from the
+// single-source header include/wirex/version_rc.h.
+func readAppVersion(root string) (string, error) {
+	b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(appVersionHeader)))
+	if err != nil {
+		return "", fmt.Errorf("读取版本头文件 %s 失败：%w", appVersionHeader, err)
+	}
+	m := appVersionMacro.FindSubmatch(b)
+	if m == nil {
+		return "", fmt.Errorf("版本头文件 %s 中缺少 WIREX_VERSION_STR 宏", appVersionHeader)
+	}
+	v := string(m[1])
+	if !plainVersionPattern.MatchString(v) {
+		return "", fmt.Errorf("版本头文件 %s 中的 WIREX_VERSION_STR 格式无效：%q（应形如 0.2.2）", appVersionHeader, v)
+	}
+	return v, nil
+}
+
+// checkReleaseVersion verifies that --version (minus its leading "v") matches
+// the single-source header, returning the bare header version.
+func checkReleaseVersion(root, flagVersion string) (string, error) {
+	v, err := readAppVersion(root)
+	if err != nil {
+		return "", err
+	}
+	if got := strings.TrimPrefix(flagVersion, "v"); got != v {
+		return v, fmt.Errorf("--version %s 与 %s 中的版本 %s 不一致；请先更新版本头文件，或使用 --version v%s",
+			flagVersion, appVersionHeader, v, v)
+	}
+	return v, nil
+}
+
 func resolveFrom(root, p string) string {
 	if filepath.IsAbs(p) {
 		return filepath.Clean(p)
@@ -446,6 +487,10 @@ func cmdPackageGUI(args []string) error {
 		return err
 	}
 	root, err := repoRoot()
+	if err != nil {
+		return err
+	}
+	appVersion, err := checkReleaseVersion(root, opts.Version)
 	if err != nil {
 		return err
 	}
@@ -521,6 +566,7 @@ func cmdPackageGUI(args []string) error {
 	manifest := guiManifest{
 		SchemaVersion: 1,
 		Version:       opts.Version,
+		AppVersion:    appVersion,
 		GitCommit:     head,
 		Dirty:         !prov.Source.TreeClean,
 		CreatedUTC:    time.Now().UTC().Format(time.RFC3339),
