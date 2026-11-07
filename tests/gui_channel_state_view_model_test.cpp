@@ -275,6 +275,7 @@ void test_dynamic_disable_and_enable()
     // 停用：RX 策略移除 + TG4000；同时隙另一个动态组回到“未激活”。
     vm.channel_primary_action(kDynamic);
     (void)vm.pump();
+    (void)vm.pump(); // TG4000 结果回调里才下发 RX 策略，再 pump 一次回收该策略请求。
     check(!engine.rx_policies.empty() && !allows(engine.rx_policies.back(), 3100U) &&
               allows(engine.rx_policies.back(), 46001U) && allows(engine.rx_policies.back(), 3200U),
           "disable removes only the dynamic group from the RX policy");
