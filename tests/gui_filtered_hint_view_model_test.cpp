@@ -99,13 +99,15 @@ private:
     std::uint64_t seq_bump_{};
 };
 
-FilteredTraffic traffic(CallKind kind, std::uint32_t src, std::uint32_t dst, std::uint64_t age_ms) {
+FilteredTraffic traffic(CallKind kind, std::uint32_t src, std::uint32_t dst, std::uint64_t age_ms,
+                        wirex::engine::FilteredReason reason = wirex::engine::FilteredReason::unknown) {
     FilteredTraffic t;
     t.kind = kind;
     t.source_id = src;
     t.destination_id = dst;
     t.slot = Slot::ts2;
     t.last_ms = steady_ms() - FilteredEngine::kOrigin - age_ms;
+    t.reason = reason;
     return t;
 }
 
@@ -137,12 +139,24 @@ void run() {
         {"recent group traffic shows the hint", traffic(CallKind::group, 2233333U, 3100U, 3'000U), true},
         {"traffic older than 30 s hides the hint", traffic(CallKind::group, 2233333U, 3100U, 31'000U), false},
         {"traffic on a listened TG hides the hint", traffic(CallKind::group, 2233333U, 46001U, 1'000U), false},
+        {"policy-denied group traffic shows the hint",
+         traffic(CallKind::group, 2233333U, 3100U, 1'000U, wirex::engine::FilteredReason::policy_denied), true},
+        {"retired-stream traffic is not an unlistened call",
+         traffic(CallKind::group, 2233333U, 3100U, 1'000U, wirex::engine::FilteredReason::retired_stream), false},
+        {"not-call-start traffic is not an unlistened call",
+         traffic(CallKind::group, 2233333U, 3100U, 1'000U, wirex::engine::FilteredReason::not_call_start), false},
+        {"invalid-stream traffic is not an unlistened call",
+         traffic(CallKind::group, 2233333U, 3100U, 1'000U, wirex::engine::FilteredReason::invalid_stream), false},
+        {"blocked-source traffic still shows but is not joinable",
+         traffic(CallKind::group, 2233333U, 3100U, 1'000U, wirex::engine::FilteredReason::blocked_source), true},
     };
     for (const auto& c : cases) {
         engine.set_filtered(c.traffic);
         (void)vm.pump();
         check(vm.filtered_hint().has_value() == c.visible, c.name);
     }
+    const auto blocked = vm.filtered_hint();
+    check(blocked && !blocked->joinable, "blocked-source hint is info-only");
 
     // 年龄换算沿用 to_wall/clock_origin：3 秒前 → age_s 3（允许 1 秒抖动）。
     engine.set_filtered(traffic(CallKind::group, 2233333U, 3100U, 3'000U));
@@ -150,6 +164,7 @@ void run() {
     const auto hint = vm.filtered_hint();
     check(hint && hint->age_s >= 3U && hint->age_s <= 4U, "age is measured relative to clock_origin_ms");
     check(hint && hint->key.id == 3100U && hint->key.kind == CallKind::group, "group hint targets the TG");
+    check(hint && hint->joinable && !hint->addressed_to_local, "group hint is joinable and not addressed to local");
 
     const int saves_before = saves;
     vm.listen_filtered();
@@ -164,15 +179,31 @@ void run() {
     }
     check(vm.can_mutate_channels(), "rx policy update completes");
 
-    // 私呼：频道 ID 为对端（来源）ID。
+    // 私呼：频道 ID 为对端（来源）ID；目标必须是本机 DMR ID 才提供“加入收听”。
     engine.set_filtered(traffic(CallKind::private_call, 3109999U, 4609100U, 2'000U));
     (void)vm.pump();
     const auto priv = vm.filtered_hint();
     check(priv && priv->key.id == 3109999U && priv->key.kind == CallKind::private_call,
           "private hint targets the remote peer");
+    check(priv && priv->addressed_to_local && priv->joinable,
+          "private call addressed to this radio is joinable");
     vm.listen_filtered();
     check(has_channel(vm, 3109999U, CallKind::private_call), "listen adds the private peer as a private channel");
     check(!vm.filtered_hint().has_value(), "private hint disappears once the peer is listened to");
+
+    // 私呼目标不是本机 ID：只提示，不提供加入（加入对端也收不到这通呼叫）。
+    engine.set_filtered(traffic(CallKind::private_call, 3112222U, 4609999U, 1'000U,
+                                wirex::engine::FilteredReason::private_not_for_local));
+    (void)vm.pump();
+    const auto foreign = vm.filtered_hint();
+    check(foreign && foreign->key.id == 3112222U && !foreign->addressed_to_local && !foreign->joinable,
+          "private call to another DMR ID is info-only");
+    const int saves_before_foreign = saves;
+    vm.listen_filtered();
+    check(!has_channel(vm, 3112222U, CallKind::private_call),
+          "info-only private hint does not add a channel");
+    check(saves == saves_before_foreign, "info-only private hint does not persist channels");
+    check(vm.filtered_hint().has_value(), "info-only private hint stays visible");
 }
 
 } // namespace
