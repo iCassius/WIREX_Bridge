@@ -348,6 +348,31 @@ bool ViewModel::pump() {
                                            return !f.valid() || f.wait_for(0s) == std::future_status::ready;
                                        }),
                         identity_ops_.end());
+    if (device_enumeration_running_ && device_enumeration_.valid() &&
+        device_enumeration_.wait_for(0s) == std::future_status::ready) {
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - device_enumeration_started_).count();
+        try {
+            devices_ = device_enumeration_.get();
+            if (auto log = dev_log()) {
+                log->line("audio", "[audio] refresh step=enumerate ms=" + std::to_string(elapsed_ms) +
+                    " wave_in=" + std::to_string(devices_.wave_in.size()) +
+                    " wave_out=" + std::to_string(devices_.wave_out.size()));
+            }
+        } catch (const std::exception& e) {
+            if (auto log = dev_log()) {
+                log->line("gui-error", std::string("[audio] refresh step=enumerate failed ms=") +
+                    std::to_string(elapsed_ms) + " detail=" + e.what());
+            }
+        } catch (...) {
+            if (auto log = dev_log()) {
+                log->line("gui-error", std::string("[audio] refresh step=enumerate failed ms=") +
+                    std::to_string(elapsed_ms) + " detail=unknown");
+            }
+        }
+        device_enumeration_running_ = false;
+        changed = true;
+    }
     for (const auto& event : engine_.drain_events(256U)) {
         handle_event(event);
         changed = true;
@@ -1703,9 +1728,26 @@ void ViewModel::set_audio_devices(std::wstring wave_in_endpoint_id, std::wstring
     audio.expected_wave_out_endpoint_id = wave_out_endpoint_id;
 
     if (snapshot_->phase == Phase::running || snapshot_->phase == Phase::starting) {
+        audio_switch_requested_at_ = std::chrono::steady_clock::now();
+        if (auto log = dev_log()) {
+            log->line("audio", "[audio] switch origin=gui step=request in=" +
+                to_utf8(audio.expected_wave_in_endpoint_id) + " out=" +
+                to_utf8(audio.expected_wave_out_endpoint_id));
+        }
         track(Str::op_audio_devices, engine_.set_audio_endpoints(audio),
             [this, wave_in_endpoint_id = std::move(wave_in_endpoint_id),
                   wave_out_endpoint_id = std::move(wave_out_endpoint_id)](const CommandResult& result) {
+                if (auto log = dev_log()) {
+                    const auto now = std::chrono::steady_clock::now();
+                    const auto round_trip_ms = audio_switch_requested_at_
+                        ? std::chrono::duration_cast<std::chrono::milliseconds>(
+                              now - *audio_switch_requested_at_).count()
+                        : -1;
+                    audio_switch_requested_at_.reset();
+                    log->line("audio", "[audio] switch origin=gui step=round_trip ms=" +
+                        std::to_string(round_trip_ms) + " status=" +
+                        std::to_string(static_cast<int>(result.status)) + " detail=" + result.detail);
+                }
                 if (result.status != CommandStatus::accepted && result.status != CommandStatus::idempotent) return;
                 config_.wave_in_endpoint_id = wave_in_endpoint_id;
                 config_.wave_out_endpoint_id = wave_out_endpoint_id;
@@ -1744,8 +1786,24 @@ void ViewModel::set_audio_output(std::wstring wave_out_endpoint_id) {
         engine::AudioEndpoints audio{};
         audio.wave_out_id = output->wave_out_id;
         audio.expected_wave_out_endpoint_id = output->expected_wave_out_endpoint_id;
+        audio_switch_requested_at_ = std::chrono::steady_clock::now();
+        if (auto log = dev_log()) {
+            log->line("audio", "[audio] switch origin=gui step=request out=" +
+                to_utf8(audio.expected_wave_out_endpoint_id));
+        }
         track(Str::op_audio_devices, engine_.set_audio_endpoints(audio),
             [this, selector](const CommandResult& result) {
+                if (auto log = dev_log()) {
+                    const auto now = std::chrono::steady_clock::now();
+                    const auto round_trip_ms = audio_switch_requested_at_
+                        ? std::chrono::duration_cast<std::chrono::milliseconds>(
+                              now - *audio_switch_requested_at_).count()
+                        : -1;
+                    audio_switch_requested_at_.reset();
+                    log->line("audio", "[audio] switch origin=gui step=round_trip ms=" +
+                        std::to_string(round_trip_ms) + " status=" +
+                        std::to_string(static_cast<int>(result.status)) + " detail=" + result.detail);
+                }
                 if (result.status != CommandStatus::accepted && result.status != CommandStatus::idempotent) return;
                 config_.wave_out_endpoint_id = selector;
                 persist();
@@ -2106,6 +2164,16 @@ void ViewModel::sync_cat_form_from_observed(const services::CatState& state) {
 
 void ViewModel::refresh_devices() {
     if (services_.devices.enumerate) devices_ = services_.devices.enumerate();
+}
+
+void ViewModel::refresh_devices_async() {
+    if (!services_.devices.enumerate || device_enumeration_running_) return;
+    device_enumeration_running_ = true;
+    device_enumeration_started_ = std::chrono::steady_clock::now();
+    auto enumerate = services_.devices.enumerate;
+    device_enumeration_ = std::async(std::launch::async, [enumerate = std::move(enumerate)]() {
+        return enumerate();
+    });
 }
 
 services::DeviceSelectionSnapshot ViewModel::device_selection() const {

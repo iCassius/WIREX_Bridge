@@ -2389,8 +2389,8 @@ void AppView::draw_audio_devices(const FieldGrid& grid, float caption_h) {
                        !radio_attached, true, cell_w);
         cell_w = row.cell(5, nullptr);
         if (button(tr(Str::refresh_devices), ImVec2(cell_w, ImGui::GetFrameHeight()), Tone::normal,
-                   !audio_selection_pending_)) {
-            vm_.refresh_devices();
+                   !audio_selection_pending_ && !vm_.devices_refreshing())) {
+            vm_.refresh_devices_async();
         }
         row.end();
 

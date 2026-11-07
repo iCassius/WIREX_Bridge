@@ -308,6 +308,10 @@ public:
     void set_cat_form_editing(CatFormField field, bool editing) noexcept;
     void mark_cat_form_edited(CatFormField field) noexcept;
     void refresh_devices();
+    // R136：设备枚举（WinMM 能力查询 + MMDevice 属性 + 串口）放到后台线程，
+    // 由 pump() 回收结果，避免“刷新设备”阻塞 UI 线程。
+    void refresh_devices_async();
+    [[nodiscard]] bool devices_refreshing() const noexcept { return device_enumeration_running_; }
     [[nodiscard]] bool save_config(const services::GuiConfig& next, std::string& error);
     void set_channel_page(std::size_t page);
     void set_history_page(std::size_t page);
@@ -412,6 +416,11 @@ private:
     std::shared_ptr<const engine::Snapshot> snapshot_;
     services::GuiConfig config_{};
     services::DeviceInventory devices_{};
+    std::future<services::DeviceInventory> device_enumeration_{};
+    bool device_enumeration_running_{};
+    std::chrono::steady_clock::time_point device_enumeration_started_{};
+    // R136：音频设备切换从请求到快照确认的耗时（dev 日志用）。
+    std::optional<std::chrono::steady_clock::time_point> audio_switch_requested_at_{};
     services::CatState cat_{};
     std::array<bool, 3> cat_form_dirty_{};
     std::array<bool, 3> cat_form_editing_{};
