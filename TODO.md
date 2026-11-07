@@ -1,6 +1,6 @@
 # WIREX Bridge 待办与架构演进清单
 
-更新时间：2026-11-06。权威版本为 `app/TODO.md`，父工作区根目录保留同步副本。当前状态摘要见 [HANDOFF](HANDOFF.md)，架构见 [ARCHITECTURE](docs/ARCHITECTURE.md)。
+更新时间：2026-11-07。权威版本为 `app/TODO.md`，父工作区根目录保留同步副本。当前状态摘要见 [HANDOFF](HANDOFF.md)，架构见 [ARCHITECTURE](docs/ARCHITECTURE.md)。
 
 ---
 
@@ -43,7 +43,7 @@
 - [x] UI 回归：自动组呼汇总改单行省略 + tooltip（R133），1360×900 两侧无滚动条。
 - [x] **R133 频率/调制（P1）**（`3165915..850e761`，约定见父目录 `R133_接口约定.md`）：白名单加 `0x0E`（'1' FM / '2' C4FM-DN）与 `0x10..0x19`（Hz，仅 144–148 / 430–440 MHz，1 kHz 整倍）；频偏不开放；功率/频率/模式同一份 Y 字段状态，下行中 pending、重连保持；GUI HRI 已连接时频率/模式只走 Y（不发 CAT `FA`/`MD`）+ 约 1.2 s 读回，功率走 Y + CAT `PC2` 回显；`devices.hri_frequency_hz`/`hri_mode` 持久化（默认不写入，PS 默认配置逐字节兼容）。Native 42/42、app 20 项、GUI 0 warning。
 - [x] 实机确认 R133（2026-11-07）：频率与模式调节生效。
-- [ ] **R134 手咪 PTT 电台不发射**（2026-11-07 `_bisect/13` 日志）：X[0x0C]='2' 被识别、软件开始上行，但 PTT 期间 CAT 一直 `TX0;`，采集到的是接收底噪（RMS −26 dBFS、峰值恒 3400；正常版本讲话为 −63~−48 dBFS）。此时已是 FM（非 C4FM 引起）。与旧正常版本的差异只剩 Y 中 LCH 频率/功率不再是模板值（145.2 MHz / 5 W）及曾切过一次 C4FM。`a7fa513` 已在 dev 日志加 Y/X 字节转储与 `ptt_pressed_but_radio_not_transmitting` 告警；待 `_bisect/14` 实机 A/B（默认 145.1/25 W → 只改频率 → 只改功率）定位字段。
+- [x] **R134 手咪 PTT 电台不发射**（2026-11-07 `_bisect/13` 日志）：X[0x0C]='2' 被识别、软件开始上行，但 PTT 期间 CAT 一直 `TX0;`，采集到的是接收底噪（RMS −26 dBFS、峰值恒 3400；正常版本讲话为 −63~−48 dBFS）。此时已是 FM（非 C4FM 引起）。与旧正常版本的差异只剩 Y 中 LCH 频率/功率不再是模板值（145.2 MHz / 5 W）及曾切过一次 C4FM。`a7fa513` 已在 dev 日志加 Y/X 字节转储与 `ptt_pressed_but_radio_not_transmitting` 告警。**已解决**：2026-11-07 重测 `_bisect/14`，PTT、频率、功率、模式均正常，问题未复现。
 - [x] R134 停用/激活动态组遇来话返回 `media_busy` 但 GUI 仍移出收听，BM 持续占用 TS2 导致鹦鹉回声延迟或丢失（FM 中继“只回一次”的真正原因）：引擎排队待来话结束执行（`73f2786`），GUI 仅在引擎接受后移出（`f2c9f0f`）。
 - [x] R134 Y 功率延后时不再立即发 CAT `PC` 回显（之前被拒 `write_not_authorized`）；频率/模式读回等 pending 清除（`c1db99a`）；选择 C4FM-DN 显示“PC 语音不支持”（`f73d536`、`7f51526`）。
 - [ ] engine_test 音频设备切换断言偶发失败一次（基线 1b9def2 即有，重跑通过），时序原因待查。
@@ -108,7 +108,8 @@
 
 ## 四、打包分发与端到端验证
 
-- [ ] 为单 EXE 建立 ZIP profile（`WirexBridge.exe` + 所需 `licenses/`，不再带 `private/device-y.bin`），由 `wirex package` 生成，剔除用户配置、日志与审计材料。
-- [ ] 在干净目录验证首次启动生成默认配置、`--check-config`，以及退出时线程全部结束、无残留进程。
-- [ ] 生成 manifest 与 `SHA256SUMS.txt`，验证下载完整性。
+- [x] v0.2.0 单 EXE ZIP profile：`wirex build --gui --release` + `wirex package-gui --version v0.2.0`（Go 原生，精确清单：exe + licenses + README；确定性 ZIP、`SHA256SUMS.txt`、`manifest.json`）。
+- [x] 干净目录冒烟（2026-11-07，release 构建）：首次启动生成无个人数据的默认配置；正式版无 dev 日志；关窗 10 s 内退出无残留；仅系统 DLL。
+- [ ] 冒烟遗留：损坏配置不备份且 `--check-config` 静默（仅退出码 3）；`--fake` 也会创建 `private/runtime/` 并访问 RadioID.net；`icuuc.dll` 需 Win10 1703+；`build-gui.ps1` 在 `NoDefaultCurrentDirectoryInExePath=1` 下 vswhere 失败（Invoke-MsvcStep 内临时清除）。
+- [ ] engine_test 音频设备切换断言偶发失败（基线即有），时序原因待查。
 - [ ] 端到端实机通话联测；输出重构前后文件数、包体积、内存占用与启动耗时对比。

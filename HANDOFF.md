@@ -1,20 +1,25 @@
 ﻿# WIREX Bridge 交接入口
 
-更新：2026-11-06（R128–R131）。本文只记录当前状态；更早的交接（R103–R127）可用 `git log -- HANDOFF.md` 查看。系统组成见 [ARCHITECTURE](docs/ARCHITECTURE.md)，待办以 [TODO](TODO.md) 为准。
+更新：2026-11-07（R128–R134）。本文只记录当前状态；更早的交接（R103–R127）可用 `git log -- HANDOFF.md` 查看。系统组成见 [ARCHITECTURE](docs/ARCHITECTURE.md)，待办以 [TODO](TODO.md) 为准。
 
 ## 当前版本
 
 | 项 | 状态 |
 | --- | --- |
-| `feat/r128-native-gui` | 单进程原生 C++ GUI（Dear ImGui + DX11）+ 进程内引擎 + C++ 服务 + FM 中继（R130）+ R131 实机反馈修复；头部 `2c99130` 及其后文档提交。**未推送** |
+| `feat/r128-native-gui` | 单进程原生 C++ GUI（Dear ImGui + DX11）+ 进程内引擎 + C++ 服务；R132–R134 动态 Y 记录与实机修复。已作为 `v0.2.0` 发布，发布源 `<release-commit>`。**未推送** |
 | 旧 WPF UI | `ui/windows/`、launcher、`tools/start-*.ps1`、`--ui-pipe` 适配层仍在仓库中，实机验收通过后退役 |
 | stable `v0.1.0` | tag 指向 `c12b50a`，GitHub Release 已发布；发布审计见 [R124_RELEASE](docs/R124_RELEASE.md) |
-| 本机单 EXE | R128 单 EXE 仅在本机交付，未打包；单 EXE 的 ZIP profile 尚未建立 |
+| `v0.2.0` 发布包 | 单 EXE ZIP profile：`wirex build --gui --release` 后用 `wirex package-gui --version v0.2.0` 生成（`package-gui` 由另一 Agent 实现中）；包内为 `WirexBridge.exe` + `licenses/` + `README.md`，不含 `private/device-y.bin` |
 
-## HRI 实机连接与 Y 记录动态生成（R132）
+## HRI 动态 Y 记录与实机修复（R132–R134）
 
 已修复 `clock_regressed`（`connect_radio` 后主循环用旧时钟驱动 HRI 会话），见提交 `a50b234`。HRI 固定 115200 8N1，CAT 按配置波特率 8N2；握手时序见 ARCHITECTURE 第 6 节。
-- **功率弹回 25 W 修复（R132）**：逆向研究已闭环（报告见 [`research/planning/R132_Y动态字段与官方生成时机.md`](../research/planning/R132_Y动态字段与官方生成时机.md)）。已编写专项交接文档 [`HANDOFF_Y记录动态生成.md`](../HANDOFF_Y记录动态生成.md)，实现 Agent 请按该文档执行 P0 阶段代码编写。
+
+- **功率弹回 25 W（R132）**：根因是内嵌 Y 模板 `2f..32`（`LCH_TXPWR`，0.1 W）为 `0250`，电台每收到一次 Y 就把功率重设为 25 W，CAT `PC` 写入只能维持到下一次 Y。逆向报告见 [`research/planning/R132_Y动态字段与官方生成时机.md`](../research/planning/R132_Y动态字段与官方生成时机.md)，专项交接见 [`HANDOFF_Y记录动态生成.md`](../HANDOFF_Y记录动态生成.md)。
+- **P0 实现（`71565d4..d275bbc`）**：Y 正文构造器白名单 `05`、`0C`、`2f..32`（功率 5–50 W 整瓦）；引擎 `set_hri_tx_power` 在下行中挂起、重连后保持，首条 Y 即目标功率；GUI/CAT 联动并持久化 `devices.desired_power_watts`。实机 5 W / 10 W 经 Y 下发后周期 `PC;` 读回不再弹回 25 W。
+- **R133 频率与模式（`3165915..850e761`）**：白名单加 `0x0E`（'1' FM / '2' C4FM-DN）与 `0x10..0x19`（Hz，仅 144–148 / 430–440 MHz，1 kHz 整倍）；功率、频率、模式共用同一份 Y 字段状态。HRI 已连接时频率/模式只走 Y（不发 CAT `FA`/`MD`）并约 1.2 s 读回，功率走 Y + CAT `PC2` 回显；`devices.hri_frequency_hz`/`hri_mode` 持久化（默认不写入，PS 默认配置保持逐字节兼容）。2026-11-07 实机确认频率与模式生效。
+- **R134 修复**：动态组停用/启用遇来话时引擎排队到来话结束再执行（`73f2786`），GUI 仅在引擎接受后移出收听（`f2c9f0f`）；Y 功率挂起期间不再立即发 CAT `PC` 回显（`c1db99a`）；选择 C4FM-DN 显示“PC 语音不支持”（`f73d536`、`7f51526`）；dev 日志增加 Y/X 字节转储与 `ptt_pressed_but_radio_not_transmitting` 告警（`a7fa513`）。
+- **PTT 问题（2026-11-07）**：`_bisect/13` 中手咪 PTT 期间 CAT 一直 `TX0;`，采集到接收底噪；`_bisect/14` 重测 PTT、频率、功率、模式均正常，问题未复现，按已解决记录。
 
 ## FM 中继（R130）
 
@@ -51,7 +56,7 @@
 - [ ] 评估 100 ms CAT 轮询负载。
 - [ ] C4FM 中继（阻塞于 `R` 记录格式，见 TODO 1.3）。
 - [ ] 125% DPI 下验收字体与布局；人工验证 IME 中文输入。
-- [ ] 为单 EXE 建立 ZIP profile 并核对首次启动配置生成。
+- [ ] 单 EXE ZIP profile（v0.2.0）：`wirex build --gui --release` + `wirex package-gui --version v0.2.0`（`package-gui` 实现中）；完成后在干净目录核对首次启动配置生成。
 - [ ] 实机通过后退役 WPF/PowerShell UI、launcher 与 control-v2 适配层。
 
 ## 环境注意事项

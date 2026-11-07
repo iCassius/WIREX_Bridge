@@ -142,7 +142,7 @@ WirexBridge.exe
 | Native 核心 + 测试 | `tools/build-bm-bridge.ps1 [-CompileOnly]`（`wirex build`）；Native 测试 41 项（`CMakeLists.txt` 中 41 个 `add_test`，含 `engine_test`） |
 | app / GUI 逻辑测试 | `tools/build-app-tests.ps1`：18 个目标（config、devices、RI0 解析与静噪门控、CAT、BM API、RadioID、config_bridge、fake CAT、CAT 表单、本机播放、启动组呼、各 ViewModel 场景含静态组同步与 FM 中继），输出 `build/app-tests/` |
 | 重复 ImGui ID 检查 | `tools/run-gui-duplicate-item-harness.ps1` |
-| 打包 | 单 EXE 的 ZIP profile 尚未建立；`tools/package-release.ps1`、`ZipOnlyRelease.psm1` 仍是旧 WPF 包的 profile |
+| 打包 | 单 EXE 的 ZIP profile 由 `wirex build --gui --release` + `wirex package-gui --version v0.2.0` 生成（`package-gui` 实现中）；`tools/package-release.ps1`、`ZipOnlyRelease.psm1` 仍是旧 WPF 包的 profile |
 
 测试使用 fake 串口、fake WaveOut 和 localhost 假 Master，不接触真实设备或网络。
 
