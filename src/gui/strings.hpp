@@ -443,7 +443,8 @@ namespace wirex::gui {
     X(hri_frequency_invalid, "频率需在 144–148 / 430–440 MHz，精度 1 kHz", "Frequency must be 144–148 or 430–440 MHz, in 1 kHz steps.") \
     X(hri_channel_not_retained, "电台未保持设定频率/模式", "The radio did not retain the requested frequency or mode.") \
     X(hri_y_deferred, "HRI 正在播放来话，设定已延后，将在来话结束后生效。", "The setting is deferred until HRI playback ends.") \
-    X(hri_c4fm_voice_warning, "C4FM 数字模式：手咪上行与 FM 中继暂不支持，仅用于试验", "C4FM digital: mic uplink and FM relay are not supported yet (experimental)")
+    X(hri_c4fm_voice_warning, "C4FM 数字模式：手咪上行与 FM 中继暂不支持，仅用于试验", "C4FM digital: mic uplink and FM relay are not supported yet (experimental)") \
+    X(hri_c4fm_voice_short, "! PC 语音不支持", "! No PC voice")
 // clang-format on
 
 enum class Str : std::uint16_t {

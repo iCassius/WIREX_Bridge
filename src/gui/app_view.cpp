@@ -1952,8 +1952,9 @@ void AppView::draw_radio_panel(float width, float height) {
             const ImVec2 control_pos = ImGui::GetCursorPos();
             ImGui::SetCursorPos(ImVec2(control_pos.x, control_pos.y - caption_h - row_gap));
             ImGui::PushFont(nullptr, layout::kFontCaption);
-            const std::string warning = std::string("! ") + tr(Str::hri_c4fm_voice_warning);
-            text_ellipsis(warning.c_str(), cell_w, rgb(color::warn));
+            ImGui::PushStyleColor(ImGuiCol_Text, vec(color::warn));
+            ImGui::TextUnformatted(tr(Str::hri_c4fm_voice_short));
+            ImGui::PopStyleColor();
             ImGui::SetItemTooltip("%s", tr(Str::hri_c4fm_voice_warning));
             ImGui::PopFont();
             ImGui::SetCursorPos(control_pos);
