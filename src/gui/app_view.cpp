@@ -572,6 +572,23 @@ public:
         ImGui::SetCursorPos(ImVec2(grid_.x[col], control_y_));
         return grid_.span(col, n);
     }
+    // 标题右侧追加小链接（与标题同一行，不改变行高和控件位置）。
+    float cell_link(int col, const char* text, const char* link_label, const char* link_url, const char* tooltip,
+                    int n = 1) {
+        const float width = cell(col, text, n);
+        if (link_label != nullptr && link_label[0] != '\0' && link_url != nullptr) {
+            ImGui::PushFont(nullptr, layout::kFontCaption);
+            const float caption_w = ImGui::CalcTextSize(text != nullptr ? text : "").x;
+            ImGui::SetCursorPos(ImVec2(grid_.x[col] + caption_w + ImGui::GetStyle().ItemInnerSpacing.x, top_));
+            ImGui::PushStyleColor(ImGuiCol_TextLink, vec(color::callsign)); // WPF 的绿色超链接
+            ImGui::TextLinkOpenURL(link_label, link_url);
+            ImGui::PopStyleColor();
+            if (tooltip != nullptr) ImGui::SetItemTooltip("%s", tooltip); // 覆盖 TextLinkOpenURL 默认的 URL 提示
+            ImGui::PopFont();
+            ImGui::SetCursorPos(ImVec2(grid_.x[col], control_y_));
+        }
+        return width;
+    }
     void end() const {
         ImGui::SetCursorPos(ImVec2(grid_.x[0], control_y_));
         ImGui::Dummy(ImVec2(0.0F, ImGui::GetFrameHeight()));
@@ -2199,10 +2216,15 @@ void AppView::draw_radio_panel(float width, float height) {
     {
         // 两个按钮各占一个按钮列，与左侧输入框同一控件行、等高（frame_h）。
         FieldRow row(grid, caption_h, row_gap);
-        float cell_w = row.cell(0, tr(Str::bm_password), 2);
+        // R136：恢复旧版 WPF UI 标题旁的绿色“设置”链接（BM 自助服务 / API Key 页面）。
+        float cell_w = row.cell_link(0, tr(Str::bm_password),
+                                     fmt("%s##bm-password-setup", tr(Str::bm_link_setup)).c_str(),
+                                     "https://brandmeister.network/#/selfcare", tr(Str::bm_link_setup_tip), 2);
         ImGui::SetNextItemWidth(cell_w);
         input_text("##bm-password", draft_.bm_password, ImGuiInputTextFlags_Password);
-        cell_w = row.cell(2, tr(Str::bm_api_key), 2);
+        cell_w = row.cell_link(2, tr(Str::bm_api_key),
+                               fmt("%s##bm-api-key-setup", tr(Str::bm_link_setup)).c_str(),
+                               "https://brandmeister.network/#/profile/api", tr(Str::bm_link_api_key_tip), 2);
         ImGui::SetNextItemWidth(cell_w);
         input_text("##bm-api-key", draft_.bm_api_key, ImGuiInputTextFlags_Password);
         cell_w = row.cell(4, nullptr);

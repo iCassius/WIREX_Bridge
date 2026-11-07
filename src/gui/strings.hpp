@@ -480,6 +480,13 @@ namespace wirex::gui {
 // R136 caller region
 #define WIREX_GUI_STRINGS_R136_CALLER_REGION(X) \
     X(caller_region_tip_fmt, "国家/地区：%s",                        "Country/region: %s")             /* new */
+// R136 title/links：BM 密码 / API Key 旁的“设置”链接。
+#define WIREX_GUI_STRINGS_R136(X) \
+    X(bm_link_setup,        "设置",                                "Set up")                         /* new */ \
+    X(bm_link_setup_tip,    "打开 BrandMeister 自助服务页，设置账号密码", \
+                            "Open the BrandMeister self-care page to set your account password") /* new */ \
+    X(bm_link_api_key_tip,  "打开 BrandMeister API Key 页面，创建或查看 API Key", \
+                            "Open the BrandMeister API Key page to create or view your API key") /* new */
 // clang-format on
 
 enum class Str : std::uint16_t {
