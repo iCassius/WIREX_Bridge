@@ -1097,6 +1097,10 @@ void AppView::draw_relay_fm_controls(float row_x, float row_top, float row_h, fl
     if (button(label.c_str(), ImVec2(w, btn_h), tone, supported)) vm_.toggle_relay_fm();
     std::string tip = tr(Str::relay_fm_tip);
     if (!fm_on) tip = std::string(tr(Str::relay_c4fm_unsupported)) + "\n" + tip;
+    if (fm_on && (vm_.config().hri_mode == hri_y::LchMode::c4fm_dn ||
+                  (vm_.snapshot().hri_ready && vm_.snapshot().hri_y_lch_mode == hri_y::LchMode::c4fm_dn))) {
+        tip += std::string("\n") + tr(Str::hri_c4fm_voice_warning);
+    }
     ImGui::SetItemTooltip("%s", tip.c_str());
     const float measured = std::round(ImGui::GetItemRectMax().x - x0);
     if (std::abs(measured - header_relay_w_) >= 1.0F) {
@@ -1942,11 +1946,26 @@ void AppView::draw_radio_panel(float width, float height) {
     ImGui::BeginDisabled(!cat.connected || cat.busy);
     {
         FieldRow row(grid, caption_h, row_gap);
-        float cell_w = row.cell(0, tr(Str::main_mode));
+        const bool digital_mode = vm_.cat_form.mode_index == 2;
+        float cell_w = row.cell(0, digital_mode ? nullptr : tr(Str::main_mode));
+        if (digital_mode) {
+            const ImVec2 control_pos = ImGui::GetCursorPos();
+            ImGui::SetCursorPos(ImVec2(control_pos.x, control_pos.y - caption_h - row_gap));
+            ImGui::PushFont(nullptr, layout::kFontCaption);
+            const std::string warning = std::string("! ") + tr(Str::hri_c4fm_voice_warning);
+            text_ellipsis(warning.c_str(), cell_w, rgb(color::warn));
+            ImGui::SetItemTooltip("%s", tr(Str::hri_c4fm_voice_warning));
+            ImGui::PopFont();
+            ImGui::SetCursorPos(control_pos);
+        }
         const bool mode_changed = simple_combo("##mode", vm_.cat_form.mode_index, kCatModes, 4, cell_w,
                                                tr(Str::unknown));
         vm_.set_cat_form_editing(CatFormField::mode, ImGui::IsItemActive());
-        if (vm_.snapshot().hri_ready) ImGui::SetItemTooltip("%s", tr(Str::hri_channel_tooltip));
+        if (vm_.cat_form.mode_index == 2) {
+            ImGui::SetItemTooltip("%s", tr(Str::hri_c4fm_voice_warning));
+        } else if (vm_.snapshot().hri_ready) {
+            ImGui::SetItemTooltip("%s", tr(Str::hri_channel_tooltip));
+        }
         if (mode_changed) vm_.mark_cat_form_edited(CatFormField::mode);
         cell_w = row.cell(1, tr(Str::frequency_mhz), 2);
         ImGui::SetNextItemWidth(cell_w);
