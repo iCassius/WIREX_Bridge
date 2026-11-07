@@ -277,6 +277,9 @@ public:
                                           TimePoint now) noexcept;
     [[nodiscard]] Error playback_ready(TimePoint now) noexcept;
     void cancel_rx() noexcept;
+    // R136：音频输出端点切换。丢弃旧设备上排队/在途的播放帧并重新进入起播预缓冲，
+    // 使新设备上的播放状态与全新起播一致；不改变当前接收代、通话或 Router 状态。
+    void reset_playback_state() noexcept;
     [[nodiscard]] bool take_playback_pcm(PlaybackFrame& frame) noexcept;
     [[nodiscard]] Error acknowledge_playback(std::uint64_t generation,
                                              std::size_t completed_frames,

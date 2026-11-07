@@ -912,6 +912,18 @@ void BmVoicePipeline::cancel_rx() noexcept
     (void)advance_rx_generation();
 }
 
+void BmVoicePipeline::reset_playback_state() noexcept
+{
+    // 旧 WaveOut 的完成令牌随设备一起丢弃，因此队列与在途计数必须同时清零；
+    // 否则管线会以为仍有帧在设备里，播放余量越来越小，表现为切换后断续。
+    clear_rx_media();
+    upsampler_.reset();
+    if (rx_state_ == RxState::playing || rx_state_ == RxState::draining) {
+        // 与全新起播一致：新设备先积累 rx_start_prebuffer_bursts 个 burst 再出声。
+        rx_state_ = RxState::buffering;
+    }
+}
+
 bool BmVoicePipeline::take_playback_pcm(PlaybackFrame& frame) noexcept
 {
     if (routed_rx_cleanup_pending_ || !rx_playback_ready_ || playback_count_ == 0U ||

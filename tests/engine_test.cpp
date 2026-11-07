@@ -974,25 +974,27 @@ void test_running_engine()
           snapshot->audio_endpoints_revision == 1U,
           "failed switch preserves both previously active endpoints and the revision");
 
-    auto deferred_audio = new_audio;
-    deferred_audio.wave_in_id = 4U;
-    deferred_audio.wave_out_id = 4U;
-    deferred_audio.expected_wave_in_endpoint_id = L"fake-input-4";
-    deferred_audio.expected_wave_out_endpoint_id = L"fake-output-4";
+    auto live_audio = new_audio;
+    live_audio.wave_in_id = 4U;
+    live_audio.wave_out_id = 4U;
+    live_audio.expected_wave_in_endpoint_id = L"fake-input-4";
+    live_audio.expected_wave_out_endpoint_id = L"fake-output-4";
     log->output_drained = false;
-    auto deferred_switch = engine.set_audio_endpoints(deferred_audio);
-    std::this_thread::sleep_for(180ms);
-    check(deferred_switch.wait_for(0ms) == std::future_status::timeout,
-          "audio endpoint request remains pending while playback is busy");
-    log->output_drained = true;
-    const auto deferred_result = get_within(std::move(deferred_switch), 2s, "deferred audio endpoint switch");
+    const auto switch_started = std::chrono::steady_clock::now();
+    const auto live_result = get_within(engine.set_audio_endpoints(live_audio), 2s,
+                                        "switch audio endpoints while the old output is undrained");
+    const auto switch_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - switch_started).count();
     snapshot = engine.snapshot();
-    check(deferred_result.status == CommandStatus::accepted && deferred_result.revision == 2U &&
+    check(live_result.status == CommandStatus::accepted && live_result.revision == 2U &&
           snapshot->wave_in_endpoint_id == L"fake-input-4" && snapshot->wave_out_endpoint_id == L"fake-output-4" &&
           snapshot->audio_endpoints_revision == 2U,
-          "queued endpoint switch applies after the current audio route drains");
+          "an explicit endpoint switch applies immediately instead of waiting for the old output to drain");
+    check(switch_ms < 500,
+          "an explicit endpoint switch completes under 500 ms even with an undrained old output");
+    log->output_drained = true;
 
-    auto old_close_error = deferred_audio;
+    auto old_close_error = live_audio;
     old_close_error.expected_wave_out_endpoint_id = L"old-close-false";
     const auto arm_close_failure = get_within(engine.set_audio_endpoints(old_close_error), 2s,
                                                "select output that later reports close failure");
@@ -2975,6 +2977,77 @@ void test_local_output_close_warning_keeps_audio_ready()
           "warning-only output switch still stops cleanly");
 }
 
+// R136：显式切换输出不再等待当前 BM 来话结束；通话保持可见，剩余语音改由新设备播放。
+void test_audio_endpoint_switch_during_active_call_is_prompt()
+{
+    LoopbackMaster master(100U);
+    master.reject_auth(false);
+    auto log = std::make_shared<DeviceLog>();
+    wirex::engine::Engine engine(std::make_shared<FakeDevices>(log, FakeOptions{}));
+    auto config = make_bm_only_config(master, L"fake-output-1");
+    config.bm_start_disconnected = false;
+    check(get_within(engine.start(std::move(config)), 5s,
+                     "start BM-only before switching during an active call").status == CommandStatus::accepted,
+          "BM-only runtime starts before the active-call switch");
+    check(wait_for_snapshot(engine, 4s, [](const wirex::engine::Snapshot& snapshot) {
+              return snapshot.bm_link == wirex::engine::BmLink::connected &&
+                  snapshot.bm_state == wirex::bm::State::ready && snapshot.wave_out_open;
+          }), "BM and the local output are ready before the active-call switch");
+
+    wirex::dmr_call::Transmitter transmitter;
+    const auto voice = make_test_downlink_voice();
+    check(send_test_downlink_header(master, transmitter, 92U),
+          "fake Master starts a local BM call before the switch");
+    std::this_thread::sleep_for(60ms);
+    for (std::size_t index = 0U; index < 5U; ++index) {
+        check(send_test_downlink_voice(master, transmitter, voice),
+              "fake Master sends voice before the switch");
+        std::this_thread::sleep_for(60ms);
+    }
+    check(wait_for_local_rx_active(engine, 2s) &&
+              engine.snapshot()->local_audio.route == wirex::bm_local_playback::Route::local_output &&
+              log->output_submitted.load() > 0,
+          "the local call is playing on the original output before the switch");
+    const auto submits_before_switch = log->output_submitted.load();
+    const auto opened_before_switch = log->output_opened.load();
+
+    wirex::engine::AudioEndpoints requested{};
+    requested.wave_out_id = 2U;
+    requested.expected_wave_out_endpoint_id = L"fake-output-2";
+    const auto switch_started = std::chrono::steady_clock::now();
+    const auto switched = get_within(engine.set_audio_endpoints(requested), 2s,
+                                     "switch output during an active local call");
+    const auto switch_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - switch_started).count();
+    auto snapshot = engine.snapshot();
+    check(switched.status == CommandStatus::accepted && switch_ms < 500 &&
+          snapshot->wave_out_open && snapshot->wave_out_endpoint_id == L"fake-output-2" &&
+          log->output_opened == opened_before_switch + 1,
+          "an active-call switch is accepted promptly and opens the new output");
+    check(snapshot->local_audio.call_active &&
+              snapshot->local_audio.route == wirex::bm_local_playback::Route::local_output,
+          "the active call stays visible and routed to local output after the switch");
+
+    for (std::size_t index = 0U; index < 5U; ++index) {
+        check(send_test_downlink_voice(master, transmitter, voice),
+              "fake Master keeps sending voice after the switch");
+        std::this_thread::sleep_for(60ms);
+    }
+    check(log->output_submitted.load() > submits_before_switch &&
+              engine.snapshot()->active_rx_call &&
+              engine.snapshot()->phase == wirex::engine::Phase::running,
+          "playback resumes on the new output and the call survives the switch");
+
+    const auto ended_before = engine.snapshot()->counters.calls_ended;
+    check(send_test_downlink_terminator(master, transmitter),
+          "fake Master ends the call after the switch");
+    check(wait_for_local_rx_idle(engine, ended_before, 4s),
+          "the switched call drains and releases its Router lease");
+    check(get_within(engine.stop(), 5s, "stop after active-call output switch").status ==
+              CommandStatus::accepted,
+          "runtime stops cleanly after an active-call switch");
+}
+
 void test_hri_failure_preserves_pending_bm_local_receive()
 {
     LoopbackMaster master(100U);
@@ -3997,6 +4070,7 @@ int main()
         test_waveout_call_close_failure_is_not_fatal();
         test_output_only_selection_recovers_and_switches_with_hri();
         test_local_output_close_warning_keeps_audio_ready();
+        test_audio_endpoint_switch_during_active_call_is_prompt();
         test_hri_failure_preserves_pending_bm_local_receive();
         test_failed_local_waveout_handoff_latches_serial_close_uncertainty();
         test_destructor_stops_running_engine();

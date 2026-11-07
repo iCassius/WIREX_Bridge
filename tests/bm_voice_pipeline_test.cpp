@@ -1753,6 +1753,93 @@ void print_stats(const Profile& profile, const Stats& stats)
                    "multi-second RX scheduler stop did not reject stale voice");
 }
 
+// R136：输出设备切换后必须丢弃旧设备的队列/在途帧，并按全新起播的 3-burst 预缓冲重启。
+[[nodiscard]] bool test_device_switch_resets_playback_state()
+{
+    BmVoicePipeline pipeline;
+    RxSource source;
+    wirex::dmr_call::TxPacket header{};
+    const auto start = TimePoint{} + 40s;
+    if (!require(source.start(make_call(3101U, 94U, 7U), header) &&
+                 pipeline.ingest_rx(header.datagram, start).error == Error::none &&
+                 pipeline.playback_ready(start) == Error::none,
+                 "device-switch test could not start HRI playback")) {
+        return false;
+    }
+    (void)pipeline.take_event();
+
+    wirex::dmr_call::TxPacket voice{};
+    (void)source.voice(voice);
+    if (!require(pipeline.ingest_rx(voice.datagram, start + 1ms).error == Error::none &&
+                 pipeline.tick(start + 60ms) == Error::none, "device-switch test first burst failed")) {
+        return false;
+    }
+    (void)source.voice(voice);
+    if (!require(pipeline.ingest_rx(voice.datagram, start + 61ms).error == Error::none &&
+                 pipeline.tick(start + 62ms) == Error::none, "device-switch test second burst failed")) {
+        return false;
+    }
+    (void)source.voice(voice);
+    if (!require(pipeline.ingest_rx(voice.datagram, start + 121ms).error == Error::none &&
+                 pipeline.tick(start + 122ms) == Error::none &&
+                 pipeline.snapshot().queued_playback_frames == 3U,
+                 "device-switch test could not reach steady playback")) {
+        return false;
+    }
+    PlaybackFrame frame{};
+    std::uint64_t generation{};
+    for (std::size_t index = 0U; index < 3U; ++index) {
+        if (!require(pipeline.take_playback_pcm(frame), "device-switch test could not take playback PCM")) {
+            return false;
+        }
+        generation = frame.generation;
+    }
+    if (!require(pipeline.snapshot().unconfirmed_playback_frames == 3U,
+                 "device-switch test did not leave frames in flight")) {
+        return false;
+    }
+
+    pipeline.reset_playback_state();
+    const auto reset = pipeline.snapshot();
+    if (!require(reset.queued_playback_frames == 0U && reset.unconfirmed_playback_frames == 0U &&
+                 reset.rx_state == wirex::bm_voice::RxState::buffering,
+                 "device switch did not clear the old queue and re-enter the start prebuffer")) {
+        return false;
+    }
+
+    // 新设备与全新起播一致：前两个 burst 不出声，第三个 burst 到齐后才产生 PCM。
+    (void)source.voice(voice);
+    (void)pipeline.ingest_rx(voice.datagram, start + 181ms);
+    (void)pipeline.tick(start + 182ms);
+    if (!require(pipeline.snapshot().queued_playback_frames == 0U,
+                 "device switch started playback before the first prebuffer burst")) {
+        return false;
+    }
+    (void)source.voice(voice);
+    (void)pipeline.ingest_rx(voice.datagram, start + 241ms);
+    (void)pipeline.tick(start + 242ms);
+    if (!require(pipeline.snapshot().queued_playback_frames == 0U,
+                 "device switch started playback before the second prebuffer burst")) {
+        return false;
+    }
+    (void)source.voice(voice);
+    (void)pipeline.ingest_rx(voice.datagram, start + 301ms);
+    (void)pipeline.tick(start + 302ms);
+    if (!require(pipeline.snapshot().queued_playback_frames == 3U &&
+                 pipeline.snapshot().rx_state == wirex::bm_voice::RxState::playing,
+                 "device switch did not restart playback after the full prebuffer")) {
+        return false;
+    }
+    for (std::size_t index = 0U; index < 3U; ++index) {
+        if (!require(pipeline.take_playback_pcm(frame) && frame.generation == generation,
+                     "device-switch playback frame did not carry the current generation")) {
+            return false;
+        }
+    }
+    return require(pipeline.acknowledge_playback(generation, 3U, start + 303ms) == Error::none,
+                   "device-switch playback frames were not acknowledged");
+}
+
 } // namespace
 
 int main()
@@ -1765,7 +1852,7 @@ int main()
         !test_absolute_tx_clock_with_waveinput_chunks_and_jitter() ||
         !test_dmrd_sequence_statistics() ||
         !test_downlink_playback_under_jitter() || !test_rx_concealment_fades() ||
-        !test_rx_catches_up_after_scheduler_stall()) {
+        !test_rx_catches_up_after_scheduler_stall() || !test_device_switch_resets_playback_state()) {
         return 1;
     }
     std::cout << "BM voice pipeline offline pacing, filters, lifecycle, bounds, reset, and RX acknowledgement checks passed.\n";

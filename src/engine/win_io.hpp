@@ -325,12 +325,15 @@ public:
         } else {
             for (auto& buffer : buffers_) secure_wipe(buffer.samples.data(), sizeof(buffer.samples));
         }
+        // waveInReset 已同步归还所有缓冲；这里的重试只针对异常驱动。用总预算而不是
+        // 每缓冲 20×5 ms 的固定重试，避免设备切换在 4 个缓冲上累计 400 ms。
+        const auto unprepare_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{100};
         for (auto& buffer : buffers_) {
             if (!buffer.prepared) continue;
             MMRESULT result = WAVERR_STILLPLAYING;
-            for (int retry = 0; retry < 20 && result == WAVERR_STILLPLAYING; ++retry) {
+            while (result == WAVERR_STILLPLAYING && std::chrono::steady_clock::now() < unprepare_deadline) {
                 result = waveInUnprepareHeader(device_, &buffer.header, sizeof(buffer.header));
-                if (result == WAVERR_STILLPLAYING) Sleep(5);
+                if (result == WAVERR_STILLPLAYING) Sleep(2);
             }
             if (result == MMSYSERR_NOERROR) {
                 buffer.prepared = false;
@@ -594,12 +597,15 @@ public:
         } else {
             for (auto& buffer : buffers_) secure_wipe(buffer.samples.data(), sizeof(buffer.samples));
         }
+        // waveOutReset 已同步标记所有缓冲完成；固定 20×5 ms×12 的重试最坏会阻塞
+        // 引擎线程 1.2 s。改为总预算 100 ms，设备切换的关闭耗时因此有上界。
+        const auto unprepare_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{100};
         for (auto& buffer : buffers_) {
             if (!buffer.prepared) continue;
             MMRESULT result = WAVERR_STILLPLAYING;
-            for (int retry = 0; retry < 20 && result == WAVERR_STILLPLAYING; ++retry) {
+            while (result == WAVERR_STILLPLAYING && std::chrono::steady_clock::now() < unprepare_deadline) {
                 result = waveOutUnprepareHeader(device_, &buffer.header, sizeof(buffer.header));
-                if (result == WAVERR_STILLPLAYING) Sleep(5);
+                if (result == WAVERR_STILLPLAYING) Sleep(2);
             }
             if (result == MMSYSERR_NOERROR) {
                 buffer.prepared = false;
