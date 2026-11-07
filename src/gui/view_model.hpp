@@ -229,7 +229,7 @@ public:
     int playback_step{1};
     int transmit_step{1};
     std::string add_channel_id{};
-    int add_channel_kind{0};      // 0 请选择 / 1 单呼 / 2 组呼
+    int add_channel_kind{2};      // 0 请选择 / 1 单呼 / 2 组呼（默认组呼：日常多为组呼）
 
     // ---------- 命令（对应 engine::Engine 方法） ----------
     void start();                 // engine.start（连接串口）
