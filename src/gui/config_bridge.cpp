@@ -142,6 +142,8 @@ services::GuiConfig to_gui(const app::AppConfig& config) {
     g.wave_in_endpoint_id = from_selector(config.devices.wave_in_endpoint_id);
     g.wave_out_endpoint_id = from_selector(config.devices.wave_out_endpoint_id);
     g.desired_power_watts = config.devices.desired_power_watts;
+    g.hri_frequency_hz = config.devices.hri_frequency_hz;
+    g.hri_mode = config.devices.hri_mode == "c4fm_dn" ? hri_y::LchMode::c4fm_dn : hri_y::LchMode::fm;
     g.playback_gain_step = gain_step(config.audio.radio_playback_gain_milli);
     g.transmit_gain_step = gain_step(config.audio.mic_transmit_gain_milli);
     for (const auto& ch : config.channels) {
@@ -215,6 +217,15 @@ std::optional<app::AppConfig> apply_gui(const app::AppConfig& base, const servic
         return std::nullopt;
     }
     d.desired_power_watts = gui.desired_power_watts;
+    const auto hz = gui.hri_frequency_hz;
+    if (hz % 1000U != 0U || !((hz >= 144000000U && hz <= 148000000U) ||
+                               (hz >= 430000000U && hz <= 440000000U)) ||
+        (gui.hri_mode != hri_y::LchMode::fm && gui.hri_mode != hri_y::LchMode::c4fm_dn)) {
+        error = "HRI 频率或调制模式无效。";
+        return std::nullopt;
+    }
+    d.hri_frequency_hz = gui.hri_frequency_hz;
+    d.hri_mode = gui.hri_mode == hri_y::LchMode::c4fm_dn ? "c4fm_dn" : "fm";
 
     // 增益：只有档位变化时才改写，避免把 1.5× 之类的 PS 值舍入成整数档。
     if (gain_step(base.audio.radio_playback_gain_milli) != gui.playback_gain_step) {

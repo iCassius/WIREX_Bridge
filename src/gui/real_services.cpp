@@ -742,12 +742,15 @@ private:
         }
         app::CatJob job;
         job.connection = *conn;
-        job.operation = app::CatOperation::query;
-        auto r = run(job, generation);
-        absorb_observed(r);
-        if (r.status != app::CatResultStatus::confirmed) {
-            finish(generation, done, to_command_result(r), [&](services::CatState& s) { s.error = r.error_message; });
-            return;
+        app::CatResult r;
+        if (!settings.force_power_write) {
+            job.operation = app::CatOperation::query;
+            r = run(job, generation);
+            absorb_observed(r);
+            if (r.status != app::CatResultStatus::confirmed) {
+                finish(generation, done, to_command_result(r), [&](services::CatState& s) { s.error = r.error_message; });
+                return;
+            }
         }
         const auto observed = worker_.snapshot().observed;
         int steps = 0;
@@ -775,10 +778,11 @@ private:
             ok = step(j);
         }
         const int watts = static_cast<int>(settings.power_w);
-        if (ok && watts != 0 && (!observed.power || observed.power->value.watts != watts)) {
+        if (ok && watts != 0 && (settings.force_power_write || !observed.power || observed.power->value.watts != watts)) {
             app::CatJob j;
             j.operation = app::CatOperation::set_power;
             j.power_watts = watts;
+            j.force_power_write = settings.force_power_write;
             ok = step(j);
         }
         if (!ok) {

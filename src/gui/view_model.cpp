@@ -46,6 +46,37 @@ std::string fmt(const char* format, ...) {
 
 ChannelKey key_of(const services::ChannelEntry& e) { return {e.id, e.kind, e.slot}; }
 
+std::optional<std::uint32_t> parse_channel_frequency(const std::string& text) {
+    if (text.empty()) return std::nullopt;
+    std::uint32_t mhz = 0U;
+    std::uint32_t khz = 0U;
+    unsigned decimals = 0U;
+    bool dot = false;
+    bool digit = false;
+    for (const char c : text) {
+        if (c == '.' && !dot) { dot = true; continue; }
+        if (c < '0' || c > '9') return std::nullopt;
+        digit = true;
+        const auto n = static_cast<std::uint32_t>(c - '0');
+        if (!dot) {
+            if (mhz > 1000U) return std::nullopt;
+            mhz = mhz * 10U + n;
+        } else if (decimals < 3U) {
+            khz = khz * 10U + n;
+            ++decimals;
+        } else if (n != 0U) {
+            return std::nullopt;
+        }
+    }
+    if (!digit || mhz > 1000U) return std::nullopt;
+    while (decimals++ < 3U) khz *= 10U;
+    const auto hz = mhz * 1000000U + khz * 1000U;
+    if (!((hz >= 144000000U && hz <= 148000000U) || (hz >= 430000000U && hz <= 440000000U))) {
+        return std::nullopt;
+    }
+    return hz;
+}
+
 std::uint32_t gain_milli(int step) { return static_cast<std::uint32_t>(std::clamp(step, 1, 16)) * 1000U; }
 
 int gain_step(std::uint32_t milli) {
@@ -378,6 +409,7 @@ bool ViewModel::pump() {
     sync_volume_targets();
     retry_deferred_cat();
     service_hri_power_confirmation();
+    service_hri_channel_confirmation();
     if (!transient_text_.empty() && !transient_visible()) {
         transient_text_.clear();
         changed = true;
@@ -387,7 +419,7 @@ bool ViewModel::pump() {
 
 std::optional<std::uint32_t> ViewModel::idle_timeout_ms() const {
     // 命令等待中：轮询 future（引擎完成时也会唤醒，这里只作兜底）。
-    if (!pending_.empty() || static_.busy || hri_power_request_ || pending_radio_attach_) return 100U;
+    if (!pending_.empty() || static_.busy || hri_power_request_ || hri_channel_request_ || pending_radio_attach_) return 100U;
     if (startup_group_activation_.active() &&
         snapshot_->bm_link == BmLink::connected && !startup_group_activation_.command_pending()) {
         if (const auto retry_at = startup_group_activation_.retry_at()) {
@@ -759,6 +791,7 @@ void ViewModel::report(Str op, const CommandResult& r) {
         return;
     }
     const bool ok = r.status == CommandStatus::accepted || r.status == CommandStatus::idempotent;
+    if (op == Str::op_cat && ok && r.detail == "deferred_hri_downlink") return;
     // 成功由状态本身体现；Quick Call 的本机发送结果由 quick_call_result 事件文本提示。
     if (ok && op != Str::op_cat) return;
     if (r.detail.empty() || ok) {
@@ -1044,6 +1077,7 @@ void ViewModel::stop() {
     if (pending(Str::op_stop)) return;
     pending_radio_attach_.reset();
     hri_power_request_.reset();
+    hri_channel_request_.reset();
     cat_mode_after_power_.reset();
     const auto generation = ++radio_connection_generation_;
     if (services_.cat.disconnect) {
@@ -1153,6 +1187,8 @@ std::optional<engine::RadioStartConfig> ViewModel::make_radio_start_config(std::
         return std::nullopt;
     }
     result.initial_tx_power_deciwatts = static_cast<std::uint16_t>(config_.desired_power_watts * 10U);
+    result.initial_lch_frequency_hz = config_.hri_frequency_hz;
+    result.initial_lch_mode = config_.hri_mode;
     if (auto log = dev_log()) {
         log->line("gui", std::string(result.ap_mode ? "radio connect y_template=ap" : "radio connect y_template=direct") +
                              " relay=" + (config_.relay_enabled ? "on" : "off"));
@@ -1642,17 +1678,19 @@ void ViewModel::cat_apply() {
     }
     services::CatSettings settings;
     settings.main_mode = static_cast<services::CatMode>(cat_form.mode_index);
-    double mhz = 0.0;
-    if (!cat_form.frequency_mhz.empty()) {
-        const auto [ptr, ec] = std::from_chars(cat_form.frequency_mhz.data(),
-            cat_form.frequency_mhz.data() + cat_form.frequency_mhz.size(), mhz);
-        if (ec != std::errc{} || ptr != cat_form.frequency_mhz.data() + cat_form.frequency_mhz.size() ||
-            mhz <= 0.0 || mhz > 1000.0) {
-            flash(fmt(tr(Str::result_fmt), tr(Str::op_cat), tr(Str::st_invalid)), true);
+    if (!cat_form.frequency_mhz.empty() || cat_form_dirty_[1]) {
+        const auto hz = parse_channel_frequency(cat_form.frequency_mhz);
+        if (!hz) {
+            flash(tr(Str::hri_frequency_invalid), true, Str::op_cat);
             return;
         }
+        settings.main_frequency_hz = *hz;
     }
-    settings.main_frequency_hz = static_cast<std::uint64_t>(std::llround(mhz * 1'000'000.0));
+    if (snapshot_->hri_ready && settings.main_mode != services::CatMode::fm &&
+        settings.main_mode != services::CatMode::c4fm_dn) {
+        flash(fmt(tr(Str::result_fmt), tr(Str::op_cat), tr(Str::st_invalid)), true);
+        return;
+    }
     const auto watts = kPowerWatts[cat_form.power_index];
     const auto current = services_.cat.state ? services_.cat.state() : cat_;
     if (current.power_maximum_watts && watts > *current.power_maximum_watts) {
@@ -1687,15 +1725,42 @@ void ViewModel::cat_apply() {
                 return;
             }
             hri_power_request_->waiting_for_engine = result.detail == "deferred_hri_downlink";
-            if (!hri_power_request_->waiting_for_engine) {
-                submit_cat_power(hri_power_request_->watts, true, hri_power_request_->revision);
-            }
+            if (hri_power_request_->waiting_for_engine) flash(tr(Str::hri_y_deferred), false, Str::op_cat);
         });
+    submit_cat_power(watts, true, cat_form_edit_revision_[2]);
 }
 
 void ViewModel::submit_cat_mode_frequency(services::CatSettings settings,
                                          std::array<std::uint64_t, 3> revisions) {
     settings.power_w = 0U;
+    if (snapshot_->hri_ready && snapshot_->phase == Phase::running) {
+        const auto current = services_.cat.state ? services_.cat.state() : cat_;
+        const bool mode_changed = cat_form_dirty_[0] || (current.observed_mode && *current.observed_mode != settings.main_mode);
+        const bool frequency_changed = cat_form_dirty_[1] || (settings.main_frequency_hz != 0U &&
+            current.observed_frequency_hz && *current.observed_frequency_hz != settings.main_frequency_hz);
+        if (!mode_changed && !frequency_changed) return;
+        const auto hz = settings.main_frequency_hz == 0U ? snapshot_->hri_y_lch_frequency_hz :
+            static_cast<std::uint32_t>(settings.main_frequency_hz);
+        const auto mode = settings.main_mode == services::CatMode::c4fm_dn ? hri_y::LchMode::c4fm_dn : hri_y::LchMode::fm;
+        track(Str::op_cat, engine_.set_hri_channel(hz, mode), [this, hz, mode, revisions](const CommandResult& result) {
+            if (result.status != CommandStatus::accepted && result.status != CommandStatus::idempotent) return;
+            auto next = config_;
+            next.hri_frequency_hz = hz;
+            next.hri_mode = mode;
+            std::string error;
+            if (!save_config(next, error)) {
+                post_to_ui([this, error = std::move(error)]() {
+                    flash(fmt(tr(Str::settings_save_failed), error.c_str()), true, Str::op_cat);
+                });
+                return;
+            }
+            const bool deferred = result.detail == "deferred_hri_downlink";
+            if (deferred) flash(tr(Str::hri_y_deferred), false, Str::op_cat);
+            hri_channel_request_ = HriChannelRequest{hz, mode, deferred, false,
+                std::chrono::steady_clock::now() + std::chrono::milliseconds{1200}, revisions};
+        });
+        return;
+    }
     const auto current = services_.cat.state ? services_.cat.state() : cat_;
     const bool mode_changed = !current.observed_mode || *current.observed_mode != settings.main_mode;
     const bool frequency_changed = settings.main_frequency_hz != 0U &&
@@ -1748,6 +1813,7 @@ void ViewModel::submit_cat_power(std::uint32_t watts, bool hri, std::uint64_t re
     services::CatSettings settings;
     settings.apply_mode = false;
     settings.power_w = watts;
+    settings.force_power_write = hri;
     services_.cat.apply(settings, [this, watts, hri, revision](CommandResult r) {
         post_to_ui([this, watts, hri, revision, r = std::move(r)]() {
             if (!hri_power_request_ || hri_power_request_->watts != watts) return;
@@ -1791,7 +1857,7 @@ void ViewModel::service_hri_power_confirmation() {
         if (!snapshot_->hri_ready || snapshot_->hri_y_tx_power_pending ||
             snapshot_->hri_y_tx_power_deciwatts != request.watts * 10U || cat_.busy) return;
         request.waiting_for_engine = false;
-        submit_cat_power(request.watts, true, request.revision);
+        request.confirm_after = std::chrono::steady_clock::now() + std::chrono::milliseconds{1200};
         return;
     }
     if (!request.confirm_after || request.confirmation_requested || cat_.busy ||
@@ -1818,6 +1884,53 @@ void ViewModel::service_hri_power_confirmation() {
                 return;
             }
             persist_power(watts, revision);
+        });
+    });
+}
+
+void ViewModel::service_hri_channel_confirmation() {
+    if (!hri_channel_request_) return;
+    auto& request = *hri_channel_request_;
+    if (!snapshot_->hri_ready) {
+        if (!snapshot_->hri_reconnecting) {
+            hri_channel_request_.reset();
+            flash(tr(Str::hri_power_link_lost), true, Str::op_cat);
+        }
+        return;
+    }
+    if (request.waiting_for_engine) {
+        if (snapshot_->hri_y_channel_pending || snapshot_->hri_y_lch_frequency_hz != request.hz ||
+            snapshot_->hri_y_lch_mode != request.mode) return;
+        request.waiting_for_engine = false;
+        request.confirm_after = std::chrono::steady_clock::now() + std::chrono::milliseconds{1200};
+    }
+    if (request.confirmation_requested || cat_.busy || hri_power_request_ ||
+        std::chrono::steady_clock::now() < request.confirm_after) return;
+    if (!services_.cat.query) {
+        hri_channel_request_.reset();
+        flash(tr(Str::hri_power_query_unavailable), true, Str::op_cat);
+        return;
+    }
+    request.confirmation_requested = true;
+    const auto hz = request.hz;
+    const auto mode = request.mode;
+    services_.cat.query([this, hz, mode](CommandResult result) {
+        post_to_ui([this, hz, mode, result = std::move(result)]() {
+            if (!hri_channel_request_ || hri_channel_request_->hz != hz || hri_channel_request_->mode != mode) return;
+            const auto revisions = hri_channel_request_->revisions;
+            hri_channel_request_.reset();
+            if (result.status != CommandStatus::accepted && result.status != CommandStatus::idempotent) {
+                report(Str::op_cat, result);
+                return;
+            }
+            const auto state = services_.cat.state ? services_.cat.state() : services::CatState{};
+            const auto cat_mode = mode == hri_y::LchMode::fm ? services::CatMode::fm : services::CatMode::c4fm_dn;
+            if (!state.observed_frequency_hz || *state.observed_frequency_hz != hz ||
+                !state.observed_mode || *state.observed_mode != cat_mode) {
+                flash(tr(Str::hri_channel_not_retained), true, Str::op_cat);
+            } else {
+                cat_form_sync::clear_applied_dirty(cat_form_dirty_, revisions, cat_form_edit_revision_, {true, true, false});
+            }
         });
     });
 }

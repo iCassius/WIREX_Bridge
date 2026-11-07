@@ -72,11 +72,37 @@ public:
         promise.set_value({engine::CommandStatus::accepted, 0U, "deferred_hri_downlink"});
         return promise.get_future();
     }
+    std::future<engine::CommandResult> set_hri_channel(std::uint32_t hz, wirex::hri_y::LchMode mode) override {
+        calls.push_back("channel:" + std::to_string(hz));
+        auto next = std::make_shared<engine::Snapshot>(*state);
+        ++next->seq;
+        if (defer_channel) {
+            next->hri_y_channel_pending = true;
+            pending_channel_hz = hz;
+            pending_channel_mode = mode;
+        } else {
+            next->hri_y_lch_frequency_hz = hz;
+            next->hri_y_lch_mode = mode;
+        }
+        state = std::move(next);
+        if (!defer_channel) return ready();
+        std::promise<engine::CommandResult> promise;
+        promise.set_value({engine::CommandStatus::accepted, 0U, "deferred_hri_downlink"});
+        return promise.get_future();
+    }
     void finish_downlink() {
         auto next = std::make_shared<engine::Snapshot>(*state);
         ++next->seq;
         next->hri_y_tx_power_deciwatts = pending_power;
         next->hri_y_tx_power_pending = false;
+        state = std::move(next);
+    }
+    void finish_channel() {
+        auto next = std::make_shared<engine::Snapshot>(*state);
+        ++next->seq;
+        next->hri_y_lch_frequency_hz = pending_channel_hz;
+        next->hri_y_lch_mode = pending_channel_mode;
+        next->hri_y_channel_pending = false;
         state = std::move(next);
     }
     std::shared_ptr<const engine::Snapshot> snapshot() const override { return state; }
@@ -85,6 +111,9 @@ public:
     std::shared_ptr<engine::Snapshot> state{};
     bool defer_power{};
     std::uint16_t pending_power{};
+    bool defer_channel{};
+    std::uint32_t pending_channel_hz{};
+    wirex::hri_y::LchMode pending_channel_mode{wirex::hri_y::LchMode::fm};
     std::vector<std::string> calls{};
     std::optional<engine::RadioStartConfig> last_radio{};
 };
@@ -117,7 +146,7 @@ struct Harness {
         services.cat.state = [this]() { return cat; };
         services.cat.apply = [this](gui::services::CatSettings s, gui::services::Done done) {
             if (s.power_w != 0U) {
-                calls.push_back("PC:" + std::to_string(s.power_w));
+                calls.push_back(std::string(s.force_power_write ? "PC-forced:" : "PC:") + std::to_string(s.power_w));
                 cat.observed_power_w = s.power_w;
                 ++cat.observed_revision;
                 ++cat.revision;
@@ -154,6 +183,8 @@ void test_connect_uses_saved_power()
     services.config.load = [](std::string&) -> std::optional<gui::services::GuiConfig> {
         gui::services::GuiConfig config;
         config.desired_power_watts = 15U;
+        config.hri_frequency_hz = 430125000U;
+        config.hri_mode = wirex::hri_y::LchMode::c4fm_dn;
         return config;
     };
     services.config.make_start_config = [](const gui::services::GuiConfig&, std::string&)
@@ -170,6 +201,9 @@ void test_connect_uses_saved_power()
     vm.start();
     check(engine.last_radio && engine.last_radio->initial_tx_power_deciwatts == 150U,
           "connect_radio receives saved power in deciwatts");
+    check(engine.last_radio && engine.last_radio->initial_lch_frequency_hz == 430125000U &&
+          engine.last_radio->initial_lch_mode == wirex::hri_y::LchMode::c4fm_dn,
+          "connect_radio receives saved HRI frequency and mode");
 }
 
 void test_connect_waits_for_cat_power_path()
@@ -236,11 +270,12 @@ void test_deferred_hri_power()
     vm.cat_apply();
     (void)vm.pump();
     (void)vm.pump();
-    check(h.calls.empty() && h.saves == 0, "deferred downlink does not change CAT power early");
+    check(!h.calls.empty() && h.calls[0] == "PC-forced:5" && h.saves == 0,
+          "deferred Y still sends CAT power immediately");
     engine.finish_downlink();
     (void)vm.pump();
     (void)vm.pump();
-    check(!h.calls.empty() && h.calls[0] == "PC:5", "CAT power is applied after the queued Y power is sent");
+    check(h.calls.size() == 1U, "deferred Y does not send CAT power twice");
 }
 
 void test_without_hri()
@@ -256,27 +291,19 @@ void test_without_hri()
     check(h.saves == 1 && h.saved.desired_power_watts == 5U, "CAT-only success persists desired power");
 }
 
-void test_with_hri(bool mismatch, bool reject_frequency)
+void test_with_hri(bool mismatch)
 {
     RecordingEngine engine(true);
     Harness h;
     h.mismatch = mismatch;
-    h.reject_frequency = reject_frequency;
     gui::ViewModel vm(engine, h.services(), true);
     select_5w(vm);
-    if (reject_frequency) {
-        vm.cat_form.frequency_mhz = "146.000";
-        vm.mark_cat_form_edited(gui::CatFormField::frequency);
-    }
     vm.cat_apply();
-    check(engine.calls.size() == 1U && engine.calls[0] == "Y:50" && h.calls.empty(),
-          "HRI command is sent before CAT power");
+    check(engine.calls.size() == 1U && engine.calls[0] == "Y:50" &&
+          !h.calls.empty() && h.calls[0] == "PC-forced:5", "HRI power sends both Y and CAT immediately");
     (void)vm.pump();
     (void)vm.pump();
-    check(!h.calls.empty() && h.calls[0] == "PC:5", "HRI path sets CAT power independently");
     check(h.saves == 0, "HRI power is not persisted before post-Y confirmation");
-    if (reject_frequency) check(h.calls.size() >= 2U && h.calls[1] == "mode-frequency",
-                                 "frequency change is submitted separately after power");
     std::this_thread::sleep_for(1300ms);
     (void)vm.pump();
     (void)vm.pump();
@@ -285,8 +312,79 @@ void test_with_hri(bool mismatch, bool reject_frequency)
         check(h.saves == 0 && vm.transient_failed() && vm.transient_text().find("电台未保持设定功率") != std::string::npos,
               "mismatched readback reports that power was not retained and does not persist");
     } else {
-        check(h.saves == 1 && h.saved.desired_power_watts == 5U,
-              "confirmed HRI power persists even if frequency was rejected");
+        check(h.saves == 1 && h.saved.desired_power_watts == 5U, "confirmed HRI power persists");
+    }
+}
+
+void test_channel(bool hri)
+{
+    RecordingEngine engine(hri);
+    Harness h;
+    gui::ViewModel vm(engine, h.services(), true);
+    (void)vm.pump();
+    vm.cat_form.frequency_mhz = "146.000";
+    vm.cat_form.mode_index = 2;
+    vm.mark_cat_form_edited(gui::CatFormField::frequency);
+    vm.mark_cat_form_edited(gui::CatFormField::mode);
+    vm.cat_apply();
+    (void)vm.pump();
+    if (!hri) {
+        check(engine.calls.empty() && !h.calls.empty() && h.calls[0] == "mode-frequency",
+              "without HRI channel uses CAT");
+        return;
+    }
+    check(engine.calls.size() == 1U && engine.calls[0] == "channel:146000000" && h.calls.empty(),
+          "HRI channel goes to engine without CAT writes");
+    check(h.saves == 1 && h.saved.hri_frequency_hz == 146000000U &&
+          h.saved.hri_mode == wirex::hri_y::LchMode::c4fm_dn, "HRI channel is persisted");
+    std::this_thread::sleep_for(1300ms);
+    (void)vm.pump();
+    (void)vm.pump();
+    check(!h.calls.empty() && h.calls.back() == "query" && vm.transient_failed() &&
+          vm.transient_text().find("电台未保持设定频率/模式") != std::string::npos,
+          "HRI channel mismatch is reported after readback");
+}
+
+void test_deferred_channel()
+{
+    RecordingEngine engine(true);
+    engine.defer_channel = true;
+    Harness h;
+    gui::ViewModel vm(engine, h.services(), true);
+    (void)vm.pump();
+    vm.cat_form.frequency_mhz = "146.000";
+    vm.mark_cat_form_edited(gui::CatFormField::frequency);
+    vm.cat_apply();
+    (void)vm.pump();
+    check(vm.transient_text().find("延后") != std::string::npos && h.calls.empty(),
+          "deferred channel reports delay without CAT writes");
+    std::this_thread::sleep_for(1300ms);
+    (void)vm.pump();
+    check(h.calls.empty(), "deferred channel does not query before engine applies it");
+    engine.finish_channel();
+    h.cat.observed_frequency_hz = 146000000U;
+    ++h.cat.observed_revision;
+    ++h.cat.revision;
+    (void)vm.pump();
+    std::this_thread::sleep_for(1300ms);
+    (void)vm.pump();
+    (void)vm.pump();
+    check(!h.calls.empty() && h.calls.back() == "query" && !vm.transient_failed(),
+          "deferred channel queries after Y and accepts matching readback");
+}
+
+void test_invalid_frequency()
+{
+    for (const char* text : {"143.999", "148.001", "429.999", "440.001", "145.1001", "invalid"}) {
+        RecordingEngine engine(true);
+        Harness h;
+        gui::ViewModel vm(engine, h.services(), true);
+        (void)vm.pump();
+        vm.cat_form.frequency_mhz = text;
+        vm.mark_cat_form_edited(gui::CatFormField::frequency);
+        vm.cat_apply();
+        check(engine.calls.empty() && h.calls.empty() && vm.transient_failed(),
+              "invalid frequency is rejected without submitting");
     }
 }
 
@@ -299,9 +397,12 @@ int main()
     test_head_power_limit();
     test_deferred_hri_power();
     test_without_hri();
-    test_with_hri(false, false);
-    test_with_hri(true, false);
-    test_with_hri(false, true);
+    test_with_hri(false);
+    test_with_hri(true);
+    test_channel(false);
+    test_channel(true);
+    test_deferred_channel();
+    test_invalid_frequency();
     std::cout << "PASS: " << assertions << " HRI power ViewModel assertions\n";
     return 0;
 }

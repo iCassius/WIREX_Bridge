@@ -87,6 +87,7 @@ struct CatSettings {
     std::uint64_t main_frequency_hz{};
     std::uint32_t power_w{};
     bool apply_mode{true};
+    bool force_power_write{};
 };
 
 struct CatState {
@@ -163,6 +164,8 @@ struct GuiConfig {
     std::wstring wave_in_endpoint_id{};         // 空 = "auto"
     std::wstring wave_out_endpoint_id{};
     std::uint32_t desired_power_watts{25U};
+    std::uint32_t hri_frequency_hz{145100000U};
+    hri_y::LchMode hri_mode{hri_y::LchMode::fm};
     std::uint32_t playback_gain_step{1U};       // 1..16，对应 1000..16000 milli
     std::uint32_t transmit_gain_step{16U};
     std::vector<ChannelEntry> channels{};

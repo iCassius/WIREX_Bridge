@@ -699,6 +699,9 @@ std::future<CommandResult> FakeEngine::connect_radio(engine::RadioStartConfig co
         s->pending_hri_power.reset();
         s->state.hri_y_tx_power_deciwatts = power;
         s->state.hri_y_tx_power_pending = false;
+        s->state.hri_y_lch_frequency_hz = config.initial_lch_frequency_hz.value_or(145100000U);
+        s->state.hri_y_lch_mode = config.initial_lch_mode.value_or(hri_y::LchMode::fm);
+        s->state.hri_y_channel_pending = false;
         s->state.hri_port = config.hri_port;
         s->state.serial_open = true;
         s->state.hri_ready = true;
@@ -732,6 +735,16 @@ std::future<CommandResult> FakeEngine::set_hri_tx_power(std::uint16_t deciwatts)
         s->pending_hri_power.reset();
         s->state.hri_y_tx_power_deciwatts = deciwatts;
         s->state.hri_y_tx_power_pending = false;
+        return result(CommandStatus::accepted);
+    });
+}
+
+std::future<CommandResult> FakeEngine::set_hri_channel(std::uint32_t hz, hri_y::LchMode mode) {
+    auto* s = impl_.get();
+    return s->command(0ms, [s, hz, mode]() {
+        s->state.hri_y_lch_frequency_hz = hz;
+        s->state.hri_y_lch_mode = mode;
+        s->state.hri_y_channel_pending = false;
         return result(CommandStatus::accepted);
     });
 }

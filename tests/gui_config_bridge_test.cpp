@@ -559,6 +559,21 @@ void test_round_trip_preserves_unknown() {
     check(reread.ok() && cb::to_gui(reread.value()).device_number == "07", "reread device number");
     check(reread.ok() && cb::to_gui(reread.value()).desired_power_watts == 15U,
           "desired power round-trips through config.json");
+    auto channel = cb::to_gui(reread.value());
+    channel.hri_frequency_hz = 430125000U;
+    channel.hri_mode = wirex::hri_y::LchMode::c4fm_dn;
+    const auto channel_config = cb::apply_gui(reread.value(), channel, error);
+    check(channel_config && channel_config->devices.hri_frequency_hz == 430125000U &&
+          channel_config->devices.hri_mode == "c4fm_dn", "GUI channel converts to portable config");
+    if (channel_config) {
+        const auto saved_channel = wirex::app::save(path, *channel_config);
+        const auto loaded_channel = wirex::app::load(path);
+        check(saved_channel && loaded_channel && cb::to_gui(loaded_channel.value()).hri_frequency_hz == 430125000U &&
+              cb::to_gui(loaded_channel.value()).hri_mode == wirex::hri_y::LchMode::c4fm_dn,
+              "GUI channel round-trips through config.json");
+    }
+    channel.hri_frequency_hz = 145100001U;
+    check(!cb::apply_gui(reread.value(), channel, error), "GUI rejects invalid HRI frequency");
     auto invalid_power = gui;
     invalid_power.desired_power_watts = 51U;
     check(!cb::apply_gui(reread.value(), invalid_power, error), "reject GUI desired power above 50 W");

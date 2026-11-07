@@ -438,6 +438,11 @@ namespace wirex::gui {
     X(hri_power_not_retained, "电台未保持设定功率", "The radio did not retain the requested power.") \
     X(hri_power_link_lost, "HRI 已断开，功率设置未确认。", "HRI disconnected before the power setting was confirmed.") \
     X(hri_power_query_unavailable, "无法确认电台功率：CAT 查询不可用。", "Cannot confirm radio power: CAT query is unavailable.")
+#define WIREX_GUI_STRINGS_R133(X) \
+    X(hri_channel_tooltip, "HRI 模式下频率/调制由本软件通过 Y 记录下发（每秒一次）", "In HRI mode, frequency and modulation are sent by this software through Y records once per second.") \
+    X(hri_frequency_invalid, "频率需在 144–148 / 430–440 MHz，精度 1 kHz", "Frequency must be 144–148 or 430–440 MHz, in 1 kHz steps.") \
+    X(hri_channel_not_retained, "电台未保持设定频率/模式", "The radio did not retain the requested frequency or mode.") \
+    X(hri_y_deferred, "HRI 正在播放来话，设定已延后，将在来话结束后生效。", "The setting is deferred until HRI playback ends.")
 // clang-format on
 
 enum class Str : std::uint16_t {
@@ -445,6 +450,7 @@ enum class Str : std::uint16_t {
     WIREX_GUI_STRINGS(WIREX_GUI_STR_ENUM)
     WIREX_GUI_STRINGS_R131(WIREX_GUI_STR_ENUM)
     WIREX_GUI_STRINGS_HRI_POWER(WIREX_GUI_STR_ENUM)
+    WIREX_GUI_STRINGS_R133(WIREX_GUI_STR_ENUM)
 #undef WIREX_GUI_STR_ENUM
         count_
 };
@@ -463,6 +469,7 @@ inline constexpr StrEntry kStrings[] = {
     WIREX_GUI_STRINGS(WIREX_GUI_STR_ROW)
     WIREX_GUI_STRINGS_R131(WIREX_GUI_STR_ROW)
     WIREX_GUI_STRINGS_HRI_POWER(WIREX_GUI_STR_ROW)
+    WIREX_GUI_STRINGS_R133(WIREX_GUI_STR_ROW)
 #undef WIREX_GUI_STR_ROW
 };
 static_assert(sizeof(kStrings) / sizeof(kStrings[0]) == static_cast<std::size_t>(Str::count_));

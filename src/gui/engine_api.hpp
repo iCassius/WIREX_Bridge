@@ -33,6 +33,9 @@ public:
     virtual std::future<engine::CommandResult> set_hri_tx_power(std::uint16_t) {
         return ready_result(engine::CommandStatus::forbidden, "hri_tx_power_unsupported");
     }
+    virtual std::future<engine::CommandResult> set_hri_channel(std::uint32_t, hri_y::LchMode) {
+        return ready_result(engine::CommandStatus::not_ready, "hri_not_connected");
+    }
     virtual std::future<engine::CommandResult> disconnect_radio() = 0;
     virtual std::future<engine::CommandResult> replace_rx_policy(std::uint64_t expected_revision,
                                                                  talkgroup_routing::RxPolicy policy) = 0;
@@ -99,6 +102,9 @@ public:
     }
     std::future<engine::CommandResult> set_hri_tx_power(std::uint16_t deciwatts) override {
         return engine_.set_hri_tx_power(deciwatts);
+    }
+    std::future<engine::CommandResult> set_hri_channel(std::uint32_t hz, hri_y::LchMode mode) override {
+        return engine_.set_hri_channel(hz, mode);
     }
     std::future<engine::CommandResult> disconnect_radio() override {
         return engine_.disconnect_radio();

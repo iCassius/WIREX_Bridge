@@ -36,6 +36,7 @@ public:
     std::future<engine::CommandResult> configure_bm(engine::BmTarget config) override;
     std::future<engine::CommandResult> connect_radio(engine::RadioStartConfig config) override;
     std::future<engine::CommandResult> set_hri_tx_power(std::uint16_t deciwatts) override;
+    std::future<engine::CommandResult> set_hri_channel(std::uint32_t hz, hri_y::LchMode mode) override;
     std::future<engine::CommandResult> disconnect_radio() override;
     std::future<engine::CommandResult> replace_rx_policy(std::uint64_t expected_revision,
                                                          talkgroup_routing::RxPolicy policy) override;

@@ -328,6 +328,7 @@ private:
                                    std::array<std::uint64_t, 3> revisions);
     void submit_cat_power(std::uint32_t watts, bool hri, std::uint64_t revision);
     void service_hri_power_confirmation();
+    void service_hri_channel_confirmation();
     void persist_power(std::uint32_t watts, std::uint64_t revision);
     void add_channel_entry(services::ChannelEntry entry);
     [[nodiscard]] std::chrono::system_clock::time_point to_wall(std::uint64_t engine_ms) const;
@@ -398,6 +399,15 @@ private:
         std::optional<std::chrono::steady_clock::time_point> confirm_after{};
     };
     std::optional<HriPowerRequest> hri_power_request_{};
+    struct HriChannelRequest {
+        std::uint32_t hz{};
+        hri_y::LchMode mode{hri_y::LchMode::fm};
+        bool waiting_for_engine{};
+        bool confirmation_requested{};
+        std::chrono::steady_clock::time_point confirm_after{};
+        std::array<std::uint64_t, 3> revisions{};
+    };
+    std::optional<HriChannelRequest> hri_channel_request_{};
     std::optional<services::CatSettings> cat_mode_after_power_{};
     std::array<std::uint64_t, 3> cat_mode_after_power_revisions_{};
     std::optional<ChannelKey> quick_call_pending_{};
