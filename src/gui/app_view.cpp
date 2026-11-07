@@ -168,9 +168,22 @@ float line_height(ImFont* font, float size) {
     return h;
 }
 
+// ImGui 1.92 的 FontSize 是行高（ascent+descent），行框中心比大写字母的视觉中心偏低，
+// 且不同字号的偏移量不同。统一用字体的大写字母高度（'H' 字形）作为中心基准，
+// 使同一行内不同字号、含括号或下伸部的文字都落在同一条视觉中心线上。
+float row_text_top(const Row& row) {
+    ImFontBaked* baked = ImGui::GetFontBaked();
+    const ImFontGlyph* cap = baked != nullptr ? baked->FindGlyph('H') : nullptr;
+    if (baked != nullptr && baked->Size > 0.0F && cap != nullptr && cap->Visible && cap->Y1 > cap->Y0) {
+        const float scale = ImGui::GetFontSize() / baked->Size;
+        return std::round(row.top + row.h * 0.5F - (cap->Y0 + cap->Y1) * 0.5F * scale);
+    }
+    return std::round(row.top + (row.h - ImGui::GetTextLineHeight()) * 0.5F);
+}
+
 void row_text(const Row& row, const char* text, ImU32 col, ImFont* font, float size) {
     ImGui::PushFont(font, size);
-    row.place(ImGui::GetTextLineHeight());
+    ImGui::SetCursorPosY(row_text_top(row));
     ImGui::GetCurrentWindow()->DC.CurrLineTextBaseOffset = 0.0F;
     ImGui::PushStyleColor(ImGuiCol_Text, col);
     ImGui::TextUnformatted(text);
@@ -933,6 +946,11 @@ void AppView::draw_header() {
             ImGui::PushFont(nullptr, layout::kFontCaption);
             const float pill_h = px(20.0F);
             const float pill_w = std::round(ImGui::CalcTextSize(text.c_str()).x + px(14.0F));
+            // 按钮文字在 [FramePadding, 高度-FramePadding] 内居中；若行高 + 2×内边距超过 pill 高度，
+            // ImGui 会把文字钉在上内边距处（偏低）。收紧纵向内边距，让文字行框真正居中。
+            const ImVec2 frame_padding = ImGui::GetStyle().FramePadding;
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                                ImVec2(frame_padding.x, std::max(0.0F, std::round((pill_h - ImGui::GetTextLineHeight()) * 0.5F))));
             row.place(pill_h);
             if (available) {
                 ImGui::PushStyleColor(ImGuiCol_Button, vec(color::ok_button));
@@ -948,6 +966,7 @@ void AppView::draw_header() {
                 ImGui::PushStyleColor(ImGuiCol_Text, vec(color::muted));
             }
             if (ImGui::Button(label.c_str(), ImVec2(pill_w, pill_h))) vm_.open_update_page();
+            ImGui::PopStyleVar();
             ImGui::PopStyleColor(5);
             ImGui::PopFont();
             switch (update.state) {
@@ -1048,7 +1067,7 @@ void AppView::draw_header() {
             const float available = std::max(px(24.0F), ImGui::GetContentRegionAvail().x - clear_w - metrics_w -
                                                              px(layout::kGroupGap));
             ImGui::PushFont(nullptr, layout::kFontBody);
-            row.place(ImGui::GetTextLineHeight());
+            ImGui::SetCursorPosY(row_text_top(row));
             text_ellipsis(summary_text.c_str(), available, rgb(summary_error ? color::error : color::muted));
             ImGui::PopFont();
             ImGui::SetItemTooltip("%s", summary_text.c_str());
