@@ -183,6 +183,9 @@ public:
     [[nodiscard]] std::optional<FilteredHint> filtered_hint() const;
     [[nodiscard]] const StaticGroupsView& static_groups() const noexcept { return static_; }
     [[nodiscard]] std::uint32_t bm_device_id() const noexcept { return services::effective_gateway_id(config_); }
+    // BM 登录字段是否完整（呼号、DMR ID/设备 ID、密码、服务器）。API Key 可选，不参与判断。
+    // 不完整时 BM 保持未配置，电台连接与控制不受影响。
+    [[nodiscard]] bool bm_profile_complete() const noexcept;
     [[nodiscard]] bool bm_api_available() const noexcept { return static_cast<bool>(services_.bm_api.list_static_groups); }
     [[nodiscard]] bool pending(Str op) const;
     [[nodiscard]] const std::string& transient_text() const noexcept { return transient_text_; }

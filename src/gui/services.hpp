@@ -176,6 +176,13 @@ struct GuiConfig {
     bool relay_y_template_ap{false};            // relay.y_template == "ap"（R131；默认 DIRECT）
 };
 
+// 引擎本地源 ID：DMR ID 未配置时使用 1（与 config_bridge::make_runtime_config 一致）。
+// 路由策略必须使用同一个值，否则私呼 peer 的 local_destination_id 与 StartConfig 不匹配，引擎会以
+// routing_policy_invalid 拒绝启动（表现为“核心已停止”）。
+[[nodiscard]] inline std::uint32_t effective_source_id(const GuiConfig& c) noexcept {
+    return c.dmr_id == 0U ? 1U : c.dmr_id;
+}
+
 // BM 设备 ID（Hotspot ID）：两位设备编号时为 DMR ID×100+编号，否则沿用已保存的 gateway_id。
 // 对应 bridge-ui.ps1 Get-UiGatewayIdentityForSave。
 [[nodiscard]] inline std::uint32_t effective_gateway_id(const GuiConfig& c) noexcept {

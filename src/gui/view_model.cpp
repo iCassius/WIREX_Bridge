@@ -849,6 +849,12 @@ std::string ViewModel::engine_failure_banner() const {
     return banner;
 }
 
+bool ViewModel::bm_profile_complete() const noexcept {
+    return config_.dmr_id != 0U && !config_.callsign.empty() && !config_.bm_password.empty() &&
+           !config_.master_host.empty() && config_.master_port != 0U &&
+           services::effective_gateway_id(config_) != 0U;
+}
+
 bool ViewModel::can_mutate_channels() const noexcept {
     return !pending(Str::op_rx_policy) && !pending(Str::op_tx_policy) &&
            (snapshot_->phase == Phase::running || snapshot_->phase == Phase::stopped);
@@ -1074,6 +1080,11 @@ void ViewModel::start() {
                 pending_radio_runtime_ready_ = true;
                 attach_radio_when_ready(generation);
             }
+            // BM 登录字段不完整时保持未配置：不发连接请求，也不产生红色错误；电台照常连接。
+            if (!bm_profile_complete()) {
+                flash(tr(Str::bm_not_configured), false, Str::brandmeister);
+                return;
+            }
             const auto base_revision = snapshot_->bm_connection_revision;
             if (base_revision == std::numeric_limits<std::uint64_t>::max()) {
                 flash("BM 连接 revision 已达到上限，未发起连接。", true);
@@ -1132,6 +1143,10 @@ void ViewModel::toggle_bm() {
         return;
     }
 
+    if (!bm_profile_complete()) {
+        flash(tr(Str::bm_not_configured), false, Str::brandmeister);
+        return;
+    }
     std::string error;
     auto target = make_bm_target(error);
     if (!target) {
@@ -1221,8 +1236,10 @@ std::optional<engine::BmTarget> ViewModel::make_bm_target(std::string& error) co
 }
 
 // Get-UiNativeRxPolicyForChannels：停用 = 从 allow 列表中移除（make_rx_policy 跳过 disabled）；静音不影响策略。
+// local_source_id 必须与 StartConfig 的本地源 ID 相同（未配置 DMR ID 时为 1），否则引擎拒绝路由策略。
 talkgroup_routing::RxPolicy ViewModel::build_rx_policy() const {
-    return config_bridge::make_rx_policy(config_.channels, {}, config_.dmr_id, config_.blocked_source_ids);
+    return config_bridge::make_rx_policy(config_.channels, {}, services::effective_source_id(config_),
+                                         config_.blocked_source_ids);
 }
 
 std::vector<talkgroup_routing::GroupRoute> ViewModel::muted_groups() const {

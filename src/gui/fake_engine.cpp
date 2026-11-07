@@ -1389,7 +1389,7 @@ services::Services make_fake_services(FakeEngine& engine) {
         sc.bm.profile.gateway_id = config.dmr_id;
         sc.bm.profile.callsign = config.callsign;
         sc.bm.profile.password = config.bm_password;
-        sc.local_source_id = config.dmr_id;
+        sc.local_source_id = services::effective_source_id(config);
         return sc;
     };
     sv.config.make_start_config = [](const services::GuiConfig& config, std::string& error) -> std::optional<engine::StartConfig> {
@@ -1406,7 +1406,7 @@ services::Services make_fake_services(FakeEngine& engine) {
         sc.bm.profile.gateway_id = config.dmr_id;
         sc.bm.profile.callsign = config.callsign;
         sc.bm.profile.password = config.bm_password;
-        sc.local_source_id = config.dmr_id;
+        sc.local_source_id = services::effective_source_id(config);
         sc.start_radio = true;
         return sc;
     };

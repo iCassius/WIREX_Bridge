@@ -147,8 +147,9 @@ engine::StartConfig lenient_start_config(const services::GuiConfig& gui) {
     sc.bm.profile.gateway_id = services::effective_gateway_id(gui);
     sc.bm.profile.callsign = gui.callsign;
     sc.bm.profile.password = gui.bm_password;
-    sc.local_source_id = gui.dmr_id;
-    sc.rx_policy = config_bridge::make_rx_policy(gui.channels, {}, gui.dmr_id, gui.blocked_source_ids);
+    sc.local_source_id = services::effective_source_id(gui);
+    sc.rx_policy = config_bridge::make_rx_policy(gui.channels, {}, sc.local_source_id,
+                                                 gui.blocked_source_ids);
     if (gui.tx_target) {
         sc.tx_policy.target = *gui.tx_target;
         sc.tx_policy.transmit_enabled = true;

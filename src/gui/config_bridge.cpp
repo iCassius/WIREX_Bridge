@@ -692,7 +692,7 @@ std::optional<engine::StartConfig> make_runtime_config(const services::GuiConfig
                                                        std::string& error) {
     error.clear();
     // runtime 先按保存配置创建；BM 字段缺失只会让 BM 命令失败，不阻止 radio 启动。
-    const auto local_source_id = gui.dmr_id == 0U ? 1U : gui.dmr_id;
+    const auto local_source_id = services::effective_source_id(gui);
     talkgroup_routing::TxTarget target = gui.channels.empty()
         ? talkgroup_routing::TxTarget{1U, CallKind::group, dmr_call::Slot::ts1}
         : talkgroup_routing::TxTarget{gui.channels.front().id, gui.channels.front().kind, gui.channels.front().slot};

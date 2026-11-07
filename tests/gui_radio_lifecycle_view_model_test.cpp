@@ -30,6 +30,9 @@ public:
     explicit RecordingEngine(wirex::gui::FakeEngine& engine) : engine_(engine) {}
 
     std::future<CommandResult> start(wirex::engine::StartConfig config) override {
+        started_local_source_id = config.local_source_id;
+        started_rx_policy = config.rx_policy;
+        started_tx_policy = config.tx_policy;
         return engine_.start(std::move(config));
     }
     std::future<CommandResult> stop() override { return engine_.stop(); }
@@ -77,6 +80,9 @@ public:
 
     std::string configured_password{}; // test-only observation; never printed
     int disconnect_calls{};
+    std::uint32_t started_local_source_id{};
+    wirex::talkgroup_routing::RxPolicy started_rx_policy{};
+    wirex::talkgroup_routing::TxPolicy started_tx_policy{};
 
 private:
     wirex::gui::FakeEngine& engine_;
@@ -184,16 +190,19 @@ void test_empty_bm_profile_does_not_block_radio_and_startup_stop_cancels_only_ra
 
         check(pump_until(vm, [&]() {
             return vm.snapshot().phase == wirex::engine::Phase::running && vm.snapshot().serial_open &&
-                vm.snapshot().bm_link == wirex::engine::BmLink::failed;
-        }), "empty BM identity/password leaves BM failed and disconnected while radio starts");
-        check(!vm.snapshot().bm_requested_enabled && vm.snapshot().bm_error == "password_required",
-              "empty saved password reports a concrete BM error without claiming a connection");
+                vm.snapshot().bm_link == wirex::engine::BmLink::disabled;
+        }), "empty BM identity/password leaves BM not configured while the radio starts");
+        check(!vm.bm_profile_complete(), "empty BM profile is reported as incomplete");
+        check(!vm.snapshot().bm_requested_enabled && !vm.snapshot().bm_transport_open,
+              "incomplete BM profile never opens a BM transport");
+        check(vm.snapshot().bm_connection_revision == 0U,
+              "startup with an incomplete BM profile does not issue a BM connection request");
         const auto revision = vm.snapshot().bm_connection_revision;
         std::this_thread::sleep_for(1300ms);
         (void)vm.pump();
         check(vm.snapshot().bm_connection_revision == revision &&
-              vm.snapshot().bm_link == wirex::engine::BmLink::failed,
-              "a failed BM profile does not trigger an automatic retry loop");
+              vm.snapshot().bm_link == wirex::engine::BmLink::disabled,
+              "an incomplete BM profile does not trigger an automatic retry loop");
     }
 
     {
@@ -210,6 +219,95 @@ void test_empty_bm_profile_does_not_block_radio_and_startup_stop_cancels_only_ra
         check(vm.snapshot().phase == wirex::engine::Phase::running,
               "startup-time radio disconnect never stops the BM runtime");
     }
+}
+
+// 回归：DMR ID 未配置（0）时，runtime 的 local_source_id 默认为 1，RX 策略里的私呼 peer 必须使用同一个
+// local_destination_id；否则引擎 enable_routing 返回 routing_policy_invalid，启动即“核心已停止”，
+// 界面提示点“连接电台”但每次重试都失败（v0.2.0 首启空 BM 配置的现场）。
+void test_empty_bm_profile_rx_policy_matches_engine_local_source_id()
+{
+    wirex::gui::FakeEngine fake;
+    RecordingEngine engine(fake);
+    auto services = wirex::gui::make_fake_services(fake);
+    auto config = usable_config();
+    config.callsign.clear();
+    config.dmr_id = 0U;
+    config.gateway_id = 0U;
+    config.bm_password.clear();
+    install_config(services, std::move(config));
+    // 模拟真实 config_bridge::make_runtime_config：DMR ID 为 0 时使用本地源 ID 1。
+    auto base_runtime = services.config.make_runtime_config;
+    services.config.make_runtime_config = [base_runtime](const wirex::gui::services::GuiConfig& gui,
+                                                          std::string& error) {
+        auto sc = base_runtime(gui, error);
+        if (sc) sc->local_source_id = wirex::gui::services::effective_source_id(gui);
+        return sc;
+    };
+    wirex::gui::ViewModel vm(engine, std::move(services), false);
+    check(pump_until(vm, [&]() {
+        return vm.snapshot().phase == wirex::engine::Phase::running && vm.snapshot().serial_open;
+    }), "empty BM profile still reaches a running engine with the radio attached");
+    check(vm.engine_failure_banner().empty(), "empty BM profile does not produce a core error banner");
+    check(engine.started_local_source_id == 1U, "runtime local source ID defaults to 1 without a DMR ID");
+
+    wirex::talkgroup_routing::Router router(engine.started_local_source_id);
+    check(static_cast<bool>(router.replace_rx_policy(1U, engine.started_rx_policy)),
+          "RX policy built by the view model is valid for the runtime local source ID");
+    check(static_cast<bool>(router.replace_tx_policy(1U, engine.started_tx_policy)),
+          "TX policy built by the view model is valid for the runtime local source ID");
+    check(!engine.started_rx_policy.private_peers.empty() &&
+              engine.started_rx_policy.private_peers.front().local_destination_id ==
+                  engine.started_local_source_id,
+          "private peer routes use the same local source ID as StartConfig");
+}
+
+// 空 BM 配置 → 电台可用、BM 未配置；之后保存完整设置即可连接 BM，无需重启或断开电台。
+void test_incomplete_bm_settings_can_be_completed_without_radio_restart()
+{
+    wirex::gui::FakeEngine fake;
+    RecordingEngine engine(fake);
+    auto services = wirex::gui::make_fake_services(fake);
+    auto config = usable_config();
+    config.callsign.clear();
+    config.dmr_id = 0U;
+    config.gateway_id = 0U;
+    config.bm_password.clear();
+    install_config(services, std::move(config));
+    wirex::gui::ViewModel vm(engine, std::move(services), false);
+
+    check(pump_until(vm, [&]() {
+        return vm.snapshot().phase == wirex::engine::Phase::running && vm.snapshot().serial_open;
+    }), "radio connects with an incomplete BM profile");
+    check(!vm.bm_profile_complete(), "incomplete BM settings are detected");
+    check(vm.snapshot().bm_link == wirex::engine::BmLink::disabled && !vm.snapshot().bm_requested_enabled,
+          "BM stays disabled instead of failing at startup");
+
+    vm.toggle_bm();
+    check(pump_until(vm, [&]() { return !vm.pending(wirex::gui::Str::op_bm); }),
+          "toggle_bm with an incomplete profile resolves without a BM command");
+    check(engine.configured_password.empty() && !vm.snapshot().bm_requested_enabled &&
+              vm.snapshot().bm_link == wirex::engine::BmLink::disabled,
+          "BM connect is refused while the profile is incomplete");
+    check(vm.snapshot().serial_open && vm.snapshot().phase == wirex::engine::Phase::running,
+          "refusing BM does not disturb the connected radio");
+
+    auto updated = vm.config();
+    updated.callsign = "N0CALL";
+    updated.dmr_id = 4609100U;
+    updated.device_number = "01";
+    updated.bm_password = "offline-completed-profile";
+    std::string save_error;
+    check(vm.save_config(updated, save_error), "completed BM settings save through the existing config service");
+    check(vm.bm_profile_complete(), "saved BM settings are complete (API Key stays optional)");
+
+    vm.toggle_bm();
+    check(pump_until(vm, [&]() { return vm.snapshot().bm_link == wirex::engine::BmLink::connected; }),
+          "BM connects after settings are completed");
+    check(engine.configured_password == "offline-completed-profile",
+          "BM uses the newly saved password");
+    check(vm.snapshot().serial_open && vm.snapshot().phase == wirex::engine::Phase::running &&
+              engine.disconnect_calls == 0,
+          "BM connects without restarting the engine or disconnecting the radio");
 }
 
 } // namespace
@@ -293,6 +391,8 @@ int main()
 {
     test_production_mode_autostarts_independent_services_and_radio_stop_keeps_bm();
     test_empty_bm_profile_does_not_block_radio_and_startup_stop_cancels_only_radio();
+    test_empty_bm_profile_rx_policy_matches_engine_local_source_id();
+    test_incomplete_bm_settings_can_be_completed_without_radio_restart();
     test_hri_auto_reconnect_wiring();
     test_engine_failure_display_and_reconnect_restarts_engine();
     std::cout << "PASS: " << assertions << " VM radio/BM lifecycle assertions\n";

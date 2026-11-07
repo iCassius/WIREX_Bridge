@@ -2068,8 +2068,8 @@ void AppView::draw_radio_panel(float width, float height) {
         draft_.device_number != cfg.device_number || draft_.master_preset != cfg.master_preset ||
         draft_.master_host != cfg.master_host || draft_master_port_ != std::to_string(cfg.master_port) ||
         draft_.bm_password != cfg.bm_password || draft_.bm_api_key != cfg.bm_api_key;
-    const bool bm_config_complete = cfg.dmr_id != 0U && !cfg.callsign.empty() &&
-                                    !cfg.bm_password.empty() && !cfg.master_host.empty();
+    // BM 与电台解耦：登录字段不完整只禁用 BM 连接，不影响电台。
+    const bool bm_config_complete = vm_.bm_profile_complete();
     {
         // 两个按钮各占一个按钮列，与左侧输入框同一控件行、等高（frame_h）。
         FieldRow row(grid, caption_h, row_gap);
@@ -2089,14 +2089,18 @@ void AppView::draw_radio_panel(float width, float height) {
                        (s.bm_requested_enabled || (!bm_config_dirty && bm_config_complete)))) toggle_bm();
         if (bm_cooling) {
             ImGui::SetItemTooltip("%s", tr(Str::bm_cooldown_tip));
-        } else if (!s.bm_requested_enabled && (bm_config_dirty || !bm_config_complete)) {
+        } else if (!s.bm_requested_enabled && !bm_config_complete) {
+            ImGui::SetItemTooltip("%s", tr(Str::bm_connect_disabled_tip));
+        } else if (!s.bm_requested_enabled && bm_config_dirty) {
             ImGui::SetItemTooltip("%s", tr(Str::bm_save_before_connect));
         }
         row.end();
     }
     ImGui::PushFont(nullptr, layout::kFontCaption);
     std::string bm_note = settings_error_.empty() ? tr(Str::bm_changes_next_connection) : settings_error_;
-    if (settings_error_.empty() && bm_stale_retry) {
+    if (settings_error_.empty() && !bm_config_complete) {
+        bm_note = tr(Str::bm_not_configured); // 非错误提示：电台可独立使用
+    } else if (settings_error_.empty() && bm_stale_retry) {
         bm_note = *bm_stale_retry == 0U ? std::string(tr(Str::bm_stale_retrying))
                                         : fmt(tr(Str::bm_stale_retry_fmt), *bm_stale_retry);
     }

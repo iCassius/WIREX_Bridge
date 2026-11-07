@@ -458,6 +458,22 @@ void test_start_config() {
               error.empty(),
           "runtime-only config clears stale errors and does not resolve or open radio devices");
 
+    // v0.2.0 回归：空 BM 配置（DMR ID 0）时 runtime 的本地源 ID 回落为 1；RX 策略必须使用同一个值，
+    // 否则引擎以 routing_policy_invalid 拒绝启动（界面显示“核心已停止”）。
+    auto empty_bm = sample_gui();
+    empty_bm.callsign.clear();
+    empty_bm.dmr_id = 0U;
+    empty_bm.gateway_id = 0U;
+    empty_bm.bm_password.clear();
+    error.clear();
+    const auto empty_runtime = cb::make_runtime_config(empty_bm, 1U, error);
+    check(empty_runtime && empty_runtime->local_source_id == 1U && error.empty(),
+          "empty BM profile still yields a runtime local source ID of 1");
+    check(empty_runtime && empty_runtime->rx_policy.private_peers.size() == 1U &&
+              empty_runtime->rx_policy.private_peers.front().local_destination_id ==
+                  empty_runtime->local_source_id,
+          "empty BM profile keeps private peer routes aligned with the runtime local source ID");
+
     struct Bad {
         const char* name;
         void (*mutate)(wirex::gui::services::GuiConfig&, cb::StartInputs&);

@@ -1242,6 +1242,68 @@ void test_invalid_initial_bm_profile_does_not_fail_runtime_stop()
           "the radio resource opens and closes independently of rejected BM credentials");
 }
 
+// v0.2.0 回归：空 BM 配置（无呼号/DMR ID/密码）只让 BM 保持未配置；引擎启动与 connect_radio 不受影响，
+// 之后补齐 BM 设置可在不重启引擎、不断开电台的情况下连接 BM。
+void test_empty_bm_profile_engine_starts_and_radio_connects()
+{
+    auto log = std::make_shared<DeviceLog>();
+    wirex::engine::Engine engine(std::make_shared<FakeDevices>(log, FakeOptions{}));
+    auto config = base_config();
+    config.start_radio = false;
+    config.hri_port.clear();
+    config.hri_body_file.clear();
+    config.bm.master_host = "127.0.0.1";
+    config.bm.master_port = 62031U;
+    config.bm.profile = wirex::bm::Profile{};
+    config.local_source_id = 1U;
+    const auto started = get_within(engine.start(std::move(config)), 5s, "start with empty BM profile");
+    check(started.status == CommandStatus::accepted, "an empty BM profile does not block engine start");
+    check(wait_for_snapshot(engine, 2s, [](const wirex::engine::Snapshot& snapshot) {
+              return snapshot.phase == wirex::engine::Phase::running && !snapshot.bm_requested_enabled;
+          }), "the engine reaches running with BM disabled and not configured");
+
+    wirex::engine::RadioStartConfig radio{};
+    radio.hri_port = L"COM99";
+    radio.hri_body_file = "C:/fake/device-y.bin";
+    radio.audio.expected_wave_in_endpoint_id = L"fake-input-1";
+    radio.audio.expected_wave_out_endpoint_id = L"fake-output-1";
+    radio.initial_tx_power_deciwatts = 250U;
+    const auto connected = get_within(engine.connect_radio(std::move(radio)), 5s,
+                                      "connect radio with empty BM profile");
+    check(connected.status == CommandStatus::accepted,
+          "connect_radio is accepted while the BM profile is empty");
+    check(wait_for_snapshot(engine, 2s, [](const wirex::engine::Snapshot& snapshot) {
+              return snapshot.phase == wirex::engine::Phase::running && snapshot.hri_ready &&
+                  !snapshot.bm_requested_enabled;
+          }), "the radio becomes ready while BM stays disabled");
+
+    const auto rejected = get_within(engine.set_bm_connection(true, 1U), 2s,
+                                     "enable BM with empty profile");
+    check(rejected.status == CommandStatus::invalid && rejected.detail == "bm_password_required",
+          "BM connect is rejected until the login fields are complete");
+
+    wirex::engine::BmTarget target{};
+    target.master_host = "127.0.0.1";
+    target.master_port = 62031U;
+    target.profile.callsign = "TEST";
+    target.profile.gateway_id = 100U;
+    target.profile.color_code = 1U;
+    target.profile.password = "offline-empty-bm-completed";
+    target.local_source_id = 1U;
+    const auto configured = get_within(engine.configure_bm(std::move(target)), 2s,
+                                       "configure completed BM profile");
+    check(configured.status == CommandStatus::accepted,
+          "a completed BM profile is accepted without restarting the engine");
+    const auto enabled = get_within(engine.set_bm_connection(true, 2U), 2s,
+                                    "enable completed BM profile");
+    check(enabled.status == CommandStatus::accepted, "BM can be enabled after the settings are completed");
+    check(engine.snapshot()->phase == wirex::engine::Phase::running && engine.snapshot()->serial_open,
+          "BM configuration leaves the radio attached");
+    check(get_within(engine.stop(), 4s, "stop after empty-to-complete BM profile").status ==
+              CommandStatus::accepted,
+          "the empty-to-complete BM flow still shuts down cleanly");
+}
+
 void test_bm_auth_rejection_does_not_fail_runtime_stop()
 {
     constexpr std::uint32_t gateway_id = 100U;
@@ -3913,6 +3975,7 @@ int main()
         test_stop_with_reason_and_status_failure();
         test_bm_connection_semantics();
         test_invalid_initial_bm_profile_does_not_fail_runtime_stop();
+        test_empty_bm_profile_engine_starts_and_radio_connects();
         test_bm_auth_rejection_does_not_fail_runtime_stop();
         test_connect_radio_after_slow_serial_open_reaches_hri_ready();
         test_radio_bm_independent_lifecycle_and_master_rejection();

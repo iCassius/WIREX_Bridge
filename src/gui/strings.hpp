@@ -452,6 +452,15 @@ namespace wirex::gui {
 // quick-call deferral: kept separate to ease concurrent string-table merges.
 #define WIREX_GUI_STRINGS_QUICK_CALL_DEFERRAL(X) \
     X(quick_call_deferred, "来话结束后执行。", "Will run after the current call.")
+
+// radio/BM decoupling: BM 未配置时电台独立可用；BM 连接需完整登录字段（API Key 可选）。
+#define WIREX_GUI_STRINGS_RADIO_BM_DECOUPLING(X) \
+    X(bm_not_configured, "BM 未配置：填写呼号、DMR ID、密码后可连接 BM", \
+                          "BM not configured: enter callsign, DMR ID and password to connect BM") \
+    X(bm_connect_disabled_tip, "BM 设置不完整：填写呼号、DMR ID、密码并保存后可连接 BM", \
+                               "BM settings incomplete: enter callsign, DMR ID and password, then save, to connect BM") \
+    X(radio_bm_independent, "电台连接与 BM 相互独立；BM 未配置不影响电台使用。", \
+                            "Radio and BM connect independently; an unconfigured BM does not affect the radio.")
 // clang-format on
 
 enum class Str : std::uint16_t {
@@ -461,6 +470,7 @@ enum class Str : std::uint16_t {
     WIREX_GUI_STRINGS_HRI_POWER(WIREX_GUI_STR_ENUM)
     WIREX_GUI_STRINGS_R133(WIREX_GUI_STR_ENUM)
     WIREX_GUI_STRINGS_QUICK_CALL_DEFERRAL(WIREX_GUI_STR_ENUM)
+    WIREX_GUI_STRINGS_RADIO_BM_DECOUPLING(WIREX_GUI_STR_ENUM)
 #undef WIREX_GUI_STR_ENUM
         count_
 };
@@ -481,6 +491,7 @@ inline constexpr StrEntry kStrings[] = {
     WIREX_GUI_STRINGS_HRI_POWER(WIREX_GUI_STR_ROW)
     WIREX_GUI_STRINGS_R133(WIREX_GUI_STR_ROW)
     WIREX_GUI_STRINGS_QUICK_CALL_DEFERRAL(WIREX_GUI_STR_ROW)
+    WIREX_GUI_STRINGS_RADIO_BM_DECOUPLING(WIREX_GUI_STR_ROW)
 #undef WIREX_GUI_STR_ROW
 };
 static_assert(sizeof(kStrings) / sizeof(kStrings[0]) == static_cast<std::size_t>(Str::count_));
