@@ -1225,8 +1225,8 @@ void test_short_downlink_eot_waits_for_t3_and_final_audio_ack()
 void test_private_echo_ts2_return_and_narrow_filter()
 {
     BmLoopback link;
-    constexpr std::uint32_t echo_gateway_id = 461135501U;
-    constexpr std::uint32_t echo_radio_id = 4611355U;
+    constexpr std::uint32_t echo_gateway_id = 460999901U;
+    constexpr std::uint32_t echo_radio_id = 4609999U;
     constexpr std::uint32_t echo_service_id = 460997U;
     auto make_echo_call = [=](std::uint32_t destination, wirex::dmr_call::CallKind kind,
                               wirex::dmr_call::Slot slot, std::uint8_t stream_tail) {
@@ -1357,9 +1357,9 @@ void test_tg91_ts2_group_receive_filter()
                                            preset->kind}) == Error::none,
               "TG91 receive filter selects only destination 91, TS2, and group calls");
         wirex::dmr_call::CallConfig call{};
-        call.source_id = 4611355U;
+        call.source_id = 4609999U;
         call.destination_id = destination;
-        call.gateway_id = 461135501U;
+        call.gateway_id = 460999901U;
         call.stream_id = {0x91U, 0x92U, 0x93U, stream};
         call.slot = slot;
         call.kind = kind;

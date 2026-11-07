@@ -133,7 +133,7 @@ function Update-UiTransientStatusExpiry {
     }
 }
 $script:storedProfile = [pscustomobject]@{
-    connection = [pscustomobject]@{ gateway_id = [uint64]461135501 }
+    connection = [pscustomobject]@{ gateway_id = [uint64]460999901 }
 }
 $script:activeProfile = $null
 $script:bmManagementModulePath = $modulePath
@@ -189,13 +189,13 @@ try {
     $window.FindName('BmApiKeyBox').Password = $fakeToken
     Set-BmFakeResponses @(
         [pscustomobject]@{ status_code = 200; body = '[]' },
-        [pscustomobject]@{ status_code = 200; body = '{"id":461135501,"status":4}' }
+        [pscustomobject]@{ status_code = 200; body = '{"id":460999901,"status":4}' }
     )
     Assert-BmManagementUi (Request-BmManagementUiRefresh) 'configured API path should start a GET'
     Wait-BmManagementUiIdle
     Assert-BmManagementUi ($state.requests.Count -eq 2 -and $state.requests[0].method -ceq 'GET' -and $state.requests[1].method -ceq 'GET') 'refresh should read the static list and device metadata once each'
-    Assert-BmManagementUi ($state.requests[0].uri -ceq 'https://api.brandmeister.network/v2/device/461135501/talkgroup') 'UI static list GET should use the dedicated talkgroup endpoint'
-    Assert-BmManagementUi ($state.requests[1].uri -ceq 'https://api.brandmeister.network/v2/device/461135501') 'UI metadata GET should use the device endpoint'
+    Assert-BmManagementUi ($state.requests[0].uri -ceq 'https://api.brandmeister.network/v2/device/460999901/talkgroup') 'UI static list GET should use the dedicated talkgroup endpoint'
+    Assert-BmManagementUi ($state.requests[1].uri -ceq 'https://api.brandmeister.network/v2/device/460999901') 'UI metadata GET should use the device endpoint'
     $authObserved = [string]$state.seen_auths[0]
     Assert-BmManagementUi ($authObserved -ceq ('Bearer ' + $fakeToken)) ("fake auth header should be exact (length={0}, bearer={1}, exact={2})" -f $authObserved.Length, $authObserved.StartsWith('Bearer '), ($authObserved -ceq ('Bearer ' + $fakeToken)))
     Assert-BmManagementUi ($window.FindName('BmStaticGroupPanel').Visibility -eq [System.Windows.Visibility]::Visible -and $window.FindName('StaticApiRequiredOverlay').Visibility -eq [System.Windows.Visibility]::Collapsed) 'a successful GET should keep the panel fixed and hide the API overlay'
@@ -263,14 +263,14 @@ try {
     Assert-BmManagementUi (Start-BmManagementUiRequest -Operation Remove) 'Remove should start for a selected current-device static group'
     Wait-BmManagementUiIdle
     Assert-BmManagementUi ($state.requests.Count -eq 2 -and $state.requests[0].method -ceq 'DELETE' -and $state.requests[1].method -ceq 'GET') 'Remove should issue one DELETE followed by one readback GET'
-    Assert-BmManagementUi ($state.requests[0].uri -ceq 'https://api.brandmeister.network/v2/device/461135501/talkgroup/0/12345') 'Remove should use the selected row original slot and TG'
+    Assert-BmManagementUi ($state.requests[0].uri -ceq 'https://api.brandmeister.network/v2/device/460999901/talkgroup/0/12345') 'Remove should use the selected row original slot and TG'
     Assert-BmManagementUi ($window.FindName('BmStaticGroupsList').Items.Count -eq 0 -and $script:bmManagementLastReadbackStatus -ceq 'confirmed') 'confirmed Remove should display the empty BM list'
 
     foreach ($invalidStatusBody in @(
-        '{"id":461135501,"status":null}',
-        '{"id":461135501,"status":5}',
-        '{"id":461135502,"status":4}',
-        '{"id":461135501}'
+        '{"id":460999901,"status":null}',
+        '{"id":460999901,"status":5}',
+        '{"id":460999902,"status":4}',
+        '{"id":460999901}'
     )) {
         Set-BmFakeResponses @(
             [pscustomobject]@{ status_code = 200; body = '[]' },
@@ -280,7 +280,7 @@ try {
         Wait-BmManagementUiIdle
         Assert-BmManagementUi ($script:bmManagementStatus -ceq 'loaded' -and $window.FindName('BmStaticGroupsList').Visibility -eq [System.Windows.Visibility]::Visible) 'device status errors should leave the static list readable'
         Assert-BmManagementUi (-not $window.FindName('AddBmStaticGroupButton').IsEnabled -and $null -eq $script:bmManagementAddContext) 'missing, invalid, or mismatched device status must disable Add'
-        if ($invalidStatusBody -ceq '{"id":461135501,"status":5}') {
+        if ($invalidStatusBody -ceq '{"id":460999901,"status":5}') {
             Assert-BmManagementUi ($window.FindName('TransientStatusText').Text.Contains('5')) 'a numeric unknown status should be shown as a short transient current value'
         }
         $requestCount = $state.requests.Count
@@ -290,7 +290,7 @@ try {
 
     Set-BmFakeResponses @(
         [pscustomobject]@{ status_code = 200; body = '[]' },
-        [pscustomobject]@{ status_code = 200; body = '{"id":461135501,"status":0}' }
+        [pscustomobject]@{ status_code = 200; body = '{"id":460999901,"status":0}' }
     )
     Assert-BmManagementUi (Request-BmManagementUiRefresh) 'valid network-linked status should restore Add'
     Wait-BmManagementUiIdle
@@ -321,27 +321,27 @@ try {
     $window.FindName('BmApiKeyBox').Password = $newFakeToken
     Set-BmFakeResponses @(
         [pscustomobject]@{ status_code = 200; body = '[]' },
-        [pscustomobject]@{ status_code = 200; body = '{"id":461135501,"status":2}' }
+        [pscustomobject]@{ status_code = 200; body = '{"id":460999901,"status":2}' }
     )
     [void](Poll-BmManagementUi)
     Wait-BmManagementUiIdle
     Assert-BmManagementUi ($state.requests.Count -eq 2 -and $state.seen_auths[0] -ceq ('Bearer ' + $newFakeToken)) 'API key change should trigger a fresh list and device-context read'
     Assert-BmManagementUi ($script:bmManagementAddContext.add_slot -eq 2 -and $script:bmManagementObservedApiKey -ceq $newFakeToken) 'new API key context should be cached for the current device'
 
-    $script:storedProfile.connection.gateway_id = [uint64]461135502
+    $script:storedProfile.connection.gateway_id = [uint64]460999902
     Set-BmFakeResponses @(
         [pscustomobject]@{ status_code = 200; body = '[]' },
-        [pscustomobject]@{ status_code = 200; body = '{"id":461135502,"status":4}' }
+        [pscustomobject]@{ status_code = 200; body = '{"id":460999902,"status":4}' }
     )
     [void](Poll-BmManagementUi)
     Wait-BmManagementUiIdle
-    Assert-BmManagementUi ($state.requests.Count -eq 2 -and $state.requests[0].uri -ceq 'https://api.brandmeister.network/v2/device/461135502/talkgroup' -and $state.requests[1].uri -ceq 'https://api.brandmeister.network/v2/device/461135502') 'device ID change should refresh list and metadata once for the new device'
-    Assert-BmManagementUi ($script:bmManagementAddContext.add_slot -eq 0 -and $script:bmManagementObservedDeviceId -ceq '461135502') 'new device status should replace the prior Add context'
+    Assert-BmManagementUi ($state.requests.Count -eq 2 -and $state.requests[0].uri -ceq 'https://api.brandmeister.network/v2/device/460999902/talkgroup' -and $state.requests[1].uri -ceq 'https://api.brandmeister.network/v2/device/460999902') 'device ID change should refresh list and metadata once for the new device'
+    Assert-BmManagementUi ($script:bmManagementAddContext.add_slot -eq 0 -and $script:bmManagementObservedDeviceId -ceq '460999902') 'new device status should replace the prior Add context'
 
     $pageRequestCount = $state.requests.Count
     $pageGroups = @(
         foreach ($id in 30001..30007) {
-            [pscustomobject][ordered]@{ device_id='461135502'; talkgroup=[uint64]$id; slot=2; type='static'; text=('TG {0}' -f $id) }
+            [pscustomobject][ordered]@{ device_id='460999902'; talkgroup=[uint64]$id; slot=2; type='static'; text=('TG {0}' -f $id) }
         }
     )
     Set-BmManagementUiGroupRows -Groups $pageGroups

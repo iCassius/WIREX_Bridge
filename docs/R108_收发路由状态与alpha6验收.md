@@ -9,7 +9,7 @@ alpha6 的手工连接启动会在本次运行目录生成独立的 `routing-sta
 ```json
 {
   "schema_version": 1,
-  "local_source_id": 4611355,
+  "local_source_id": 4609999,
   "rx_policy": {
     "group_mode": "selected",
     "private_mode": "disabled",

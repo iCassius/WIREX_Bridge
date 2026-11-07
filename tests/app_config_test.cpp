@@ -781,8 +781,8 @@ std::string ps_fixture()
         "    \"schema_version\":  1,\r\n"
         "    \"connection\":  {\r\n"
         "                       \"callsign\":  \"N0CALL\",\r\n"
-        "                       \"gateway_id\":  461135501,\r\n"
-        "                       \"source_id\":  4611355,\r\n"
+        "                       \"gateway_id\":  460999901,\r\n"
+        "                       \"source_id\":  4609999,\r\n"
         "                       \"master\":  \"43.129.83.124\",\r\n"
         "                       \"master_port\":  62031,\r\n"
         "                       \"color_code\":  1,\r\n"
@@ -853,7 +853,7 @@ std::string ps_fixture()
         "                                                                ],\r\n"
         "                                        \"local_private_routes\":  [\r\n"
         "                                                                     {\r\n"
-        "                                                                         \"local_destination_id\":  4611355,\r\n"
+        "                                                                         \"local_destination_id\":  4609999,\r\n"
         "                                                                         \"slot\":  2\r\n"
         "                                                                     }\r\n"
         "                                                                 ],\r\n"
@@ -913,7 +913,7 @@ void test_file_round_trips(const fs::path& root)
     check(loaded.ok(), "PS fixture loads");
     if (loaded.ok()) {
         const AppConfig& c = loaded.value();
-        check(c.connection.callsign == "N0CALL" && c.connection.gateway_id == 461135501 && c.devices.cat_port == "COM7",
+        check(c.connection.callsign == "N0CALL" && c.connection.gateway_id == 460999901 && c.devices.cat_port == "COM7",
             "fixture typed fields");
         check(c.audio.radio_playback_gain_milli == 1250 && c.audio.mic_transmit_gain_milli == 12000, "fixture gains");
         check(c.channels.size() == 4 && c.tx_channel_id == "group:46001:1", "fixture channels");

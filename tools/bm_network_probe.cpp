@@ -47,7 +47,7 @@ using wirex::bm::Snapshot;
 using wirex::bm::State;
 using wirex::bm::UdpTransport;
 
-constexpr std::uint32_t gateway_id = 461135501U;
+constexpr std::uint32_t gateway_id = 460999901U;
 constexpr std::uint32_t deadline_ms = 15000U;
 constexpr char password_file[] = "private/bm-device-password.txt";
 constexpr std::uintmax_t max_password_file_bytes = 258U;
@@ -300,7 +300,7 @@ int main(int argc, char* argv[])
     profile.gateway_id = gateway_id;
     profile.password = std::move(password);
     erase_string(password);
-    profile.callsign = "BI7KGD";
+    profile.callsign = "N0CALL";
     wirex::bm::apply_network_metadata(profile);
     profile.color_code = 1U;
 

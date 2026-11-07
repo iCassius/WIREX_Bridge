@@ -27,9 +27,9 @@ void check_common_identity(const wirex::bm_test_profile::Preset& preset)
 {
     using wirex::dmr_call::CallKind;
     using wirex::dmr_call::Slot;
-    check(preset.callsign == "BI7KGD", "preset uses the confirmed callsign");
-    check(preset.gateway_id == 461135501U, "preset uses Gateway ID with ESSID 01");
-    check(preset.source_id == 4611355U, "preset uses the base Radio ID as Source ID");
+    check(preset.callsign == "N0CALL", "preset uses the placeholder callsign");
+    check(preset.gateway_id == 460999901U, "preset uses the placeholder Gateway ID");
+    check(preset.source_id == 4609999U, "preset uses the placeholder Source ID");
     check(preset.master_ipv4 == "43.129.83.124", "preset uses the pinned BrandMeister IPv4 address");
     check(preset.master_port == 62031U, "preset uses BrandMeister UDP port 62031");
     check(preset.slot == Slot::ts2, "preset uses the BM echo return timeslot TS2");
@@ -92,7 +92,7 @@ std::vector<std::uint8_t> rptc_for(wirex::bm::Profile profile)
     }
 
     std::vector<std::uint8_t> auth_ack{'R', 'P', 'T', 'A', 'C', 'K'};
-    append_id(auth_ack, 461135501U);
+    append_id(auth_ack, 460999901U);
     if (session.on_datagram(auth_ack.data(), auth_ack.size(), master, 2U) != InputResult::accepted) {
         check(false, "production Session accepts the matching offline test acknowledgement");
         return {};
@@ -119,7 +119,7 @@ void check_rptc_metadata(const std::vector<std::uint8_t>& packet,
                          std::string_view callsign_field, std::string_view cc_field)
 {
     check(packet.size() == 302U, "RPTC metadata packet has the protocol-defined length");
-    const std::array<std::uint8_t, 4U> expected_gateway{{0x1bU, 0x7cU, 0x5eU, 0x8dU}};
+    const std::array<std::uint8_t, 4U> expected_gateway{{0x1bU, 0x7aU, 0x4cU, 0xddU}};
     check(field(packet, 4U, 4U) == std::string(expected_gateway.begin(), expected_gateway.end()),
           "RPTC preserves the configured Gateway ID");
     check(field(packet, 8U, 8U) == std::string(callsign_field),
@@ -146,30 +146,30 @@ void check_rptc_metadata(const std::vector<std::uint8_t>& packet,
 void test_shared_network_metadata()
 {
     wirex::bm::Profile preset{};
-    preset.gateway_id = 461135501U;
-    preset.callsign = "BI7KGD";
+    preset.gateway_id = 460999901U;
+    preset.callsign = "N0CALL";
     preset.password = "offline-secret-sentinel";
     preset.color_code = 1U;
     preset.options = "stale-option";
     const auto preset_password = preset.password;
     wirex::bm::apply_network_metadata(preset);
-    check(preset.gateway_id == 461135501U && preset.callsign == "BI7KGD",
+    check(preset.gateway_id == 460999901U && preset.callsign == "N0CALL",
           "shared BM metadata does not overwrite Gateway ID or callsign");
     check(preset.password == preset_password,
           "shared BM metadata does not overwrite the secret");
     check(preset.color_code == 1U,
           "preset caller retains its explicitly selected color code");
     check(preset.options.empty(), "shared metadata clears the old optional RPTC options");
-    check_rptc_metadata(rptc_for(std::move(preset)), "BI7KGD  ", "01");
+    check_rptc_metadata(rptc_for(std::move(preset)), "N0CALL  ", "01");
 
     wirex::bm::Profile manual{};
-    manual.gateway_id = 461135501U;
+    manual.gateway_id = 460999901U;
     manual.callsign = "N0MAN";
     manual.password = "manual-secret-sentinel";
     manual.color_code = 7U;
     const auto manual_password = manual.password;
     wirex::bm::apply_network_metadata(manual);
-    check(manual.gateway_id == 461135501U && manual.callsign == "N0MAN" &&
+    check(manual.gateway_id == 460999901U && manual.callsign == "N0MAN" &&
               manual.password == manual_password && manual.color_code == 7U,
           "shared BM metadata preserves manual identity, password, and color-code input");
     check_rptc_metadata(rptc_for(std::move(manual)), "N0MAN   ", "07");

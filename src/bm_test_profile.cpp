@@ -5,18 +5,20 @@
 namespace wirex::bm_test_profile {
 namespace {
 
+// Placeholder identity only: replace the callsign and DMR IDs with your own
+// licensed values before connecting to BrandMeister or transmitting.
 constexpr std::array<Preset, 4U> presets{{
-    {"parrot-cn", "中国鹦鹉 460997", "BI7KGD", "43.129.83.124",
-     461135501U, 4611355U, 460997U, 62031U, dmr_call::Slot::ts2,
+    {"parrot-cn", "中国鹦鹉 460997", "N0CALL", "43.129.83.124",
+     460999901U, 4609999U, 460997U, 62031U, dmr_call::Slot::ts2,
      dmr_call::CallKind::private_call, 1U},
-    {"parrot-global", "通用鹦鹉 9990", "BI7KGD", "43.129.83.124",
-     461135501U, 4611355U, 9990U, 62031U, dmr_call::Slot::ts2,
+    {"parrot-global", "通用鹦鹉 9990", "N0CALL", "43.129.83.124",
+     460999901U, 4609999U, 9990U, 62031U, dmr_call::Slot::ts2,
      dmr_call::CallKind::private_call, 1U},
-    {"listen-46001", "全国频道 46001（仅接收）", "BI7KGD", "43.129.83.124",
-     461135501U, 4611355U, 46001U, 62031U, dmr_call::Slot::ts2,
+    {"listen-46001", "全国频道 46001（仅接收）", "N0CALL", "43.129.83.124",
+     460999901U, 4609999U, 46001U, 62031U, dmr_call::Slot::ts2,
      dmr_call::CallKind::group, 1U, true},
-    {"listen-91", "全球 TG91（仅接收）", "BI7KGD", "43.129.83.124",
-     461135501U, 4611355U, 91U, 62031U, dmr_call::Slot::ts2,
+    {"listen-91", "全球 TG91（仅接收）", "N0CALL", "43.129.83.124",
+     460999901U, 4609999U, 91U, 62031U, dmr_call::Slot::ts2,
      dmr_call::CallKind::group, 1U, true},
 }};
 

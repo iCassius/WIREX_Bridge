@@ -216,13 +216,13 @@ try {
 
     $profile = [ordered]@{
         schema_version=2
-        connection=[ordered]@{ callsign='N0CALL'; gateway_id=461135501; source_id=4611355; master='43.129.83.124'; master_port=62031; color_code=1 }
+        connection=[ordered]@{ callsign='N0CALL'; gateway_id=460999901; source_id=4609999; master='43.129.83.124'; master_port=62031; color_code=1 }
         tx_target=[ordered]@{ destination_id=460997; kind='private'; slot=2 }
         devices=[ordered]@{ serial_port='COM5'; wave_in_endpoint_id='auto'; wave_out_endpoint_id='auto' }
         rx_policy=[ordered]@{
             group_mode='selected'; private_mode='selected_peers'
             allow_groups=@([ordered]@{ destination_id=12345; slot=1 })
-            allow_private_peers=@([ordered]@{ source_id=2345678; local_destination_id=4611355; slot=2 })
+            allow_private_peers=@([ordered]@{ source_id=2345678; local_destination_id=4609999; slot=2 })
             local_private_routes=@(); blocked_groups=@(); blocked_source_ids=@(3456789)
         }
         transmit_enabled=$true
@@ -262,7 +262,7 @@ try {
             group_mode='selected'; private_mode='all_peers_to_local'
             allow_groups=@([ordered]@{ destination_id=12345; slot=1 })
             allow_private_peers=$emptyLegacyRoutes
-            local_private_routes=@([ordered]@{ local_destination_id=4611355; slot=2 })
+            local_private_routes=@([ordered]@{ local_destination_id=4609999; slot=2 })
             blocked_groups=$emptyLegacyRoutes; blocked_source_ids=@(3456789)
         }
         transmit_enabled=$true
@@ -270,7 +270,7 @@ try {
     [System.IO.File]::WriteAllText((Join-Path $legacyDirectory 'connection-profile.json'), (ConvertTo-Json -InputObject $localRouteProfile -Depth 12), $utf8NoBom)
     $localRouteMigrated = Get-WirexPortableConfig -Path (Join-Path $portableDirectory 'local-route-config.json') -LegacyDirectory $legacyDirectory
     Assert-PortableConfig ($localRouteMigrated.channels.Count -eq 2 -and $localRouteMigrated.channels[0].id -eq 460997 -and $localRouteMigrated.channels[1].id -eq 12345) 'a migrated local private destination must not become a peer channel and TX must remain first'
-    Assert-PortableConfig ($localRouteMigrated.ui.legacy_rx_policy.local_private_routes.Count -eq 1 -and $localRouteMigrated.ui.legacy_rx_policy.local_private_routes[0].local_destination_id -eq 4611355 -and $localRouteMigrated.ui.legacy_rx_policy.local_private_routes[0].slot -eq 2) 'legacy local private routes must remain unchanged in the archived RX policy'
+    Assert-PortableConfig ($localRouteMigrated.ui.legacy_rx_policy.local_private_routes.Count -eq 1 -and $localRouteMigrated.ui.legacy_rx_policy.local_private_routes[0].local_destination_id -eq 4609999 -and $localRouteMigrated.ui.legacy_rx_policy.local_private_routes[0].slot -eq 2) 'legacy local private routes must remain unchanged in the archived RX policy'
     Assert-PortableConfig ($null -eq $migrated.PSObject.Properties['favorites']) 'legacy favorites should not be copied into new channels or preferences'
     Assert-PortableConfig (-not [System.IO.File]::Exists($configPath)) 'migration read should not write either old or new config files'
     Assert-PortableConfig ([System.IO.File]::Exists((Join-Path $legacyDirectory 'channel-favorites.json'))) 'migration should leave the old favorites file untouched'

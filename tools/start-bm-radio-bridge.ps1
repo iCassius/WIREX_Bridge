@@ -1182,7 +1182,7 @@ try {
         (Format-GainDecimal -GainMilli $audioSettings.RadioPlaybackGainMilli),
         (Format-GainDecimal -GainMilli $audioSettings.MicTransmitGainMilli))
     if ($selectedPreset -eq 'listen-91') {
-        Write-Host '请在 BM SelfCare 为 Gateway 461135501 的 TS2 添加 TG91 静态订阅。连接后在电台扬声器收听，按 Q 停止并退出。'
+        Write-Host '请在 BM SelfCare 为本机 Gateway 的 TS2 添加 TG91 静态订阅。连接后在电台扬声器收听，按 Q 停止并退出。'
     } elseif ($selectedPreset -eq 'listen-46001') {
         Write-Host '连接后在电台扬声器收听 BM 组呼，按 Q 停止并退出。'
     } elseif ($selectedPreset -eq 'parrot-cn' -or $selectedPreset -eq 'parrot-global') {

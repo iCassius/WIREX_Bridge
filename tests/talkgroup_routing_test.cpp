@@ -12,7 +12,7 @@ using wirex::dmr_call::CallConfig;
 using wirex::dmr_call::CallKind;
 using wirex::dmr_call::Slot;
 
-constexpr std::uint32_t local_id = 4611355U;
+constexpr std::uint32_t local_id = 4609999U;
 int failures = 0;
 
 } // 匿名命名空间
@@ -58,7 +58,7 @@ CallConfig make_call(std::uint32_t source,
     CallConfig call{};
     call.source_id = source;
     call.destination_id = destination;
-    call.gateway_id = 4611355U;
+    call.gateway_id = 4609999U;
     call.stream_id = {{0U, 0U, 0U, stream}};
     call.slot = slot;
     call.kind = kind;

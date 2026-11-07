@@ -63,7 +63,7 @@ void test_pure_helpers()
 {
     struct CallsignCase { const char* input; const char* expected; };
     const std::vector<CallsignCase> callsigns{
-        {"N0CALL", "N0CALL"}, {" bi7kgd/p ", "BI7KGD/P"}, {"a123456789", "A123456789"},
+        {"N0CALL", "N0CALL"}, {" N0CALL/p ", "N0CALL/P"}, {"a123456789", "A123456789"},
         {"1234567890", nullptr}, {"A1234567890", nullptr}, {"N0 CALL", nullptr}, {"", nullptr},
         {"N0CALL\"", nullptr}, {"N0-CALL", "N0-CALL"},
     };

@@ -32,7 +32,7 @@ try {
 
     $profilePath = Join-Path $configPath 'connection-profile.json'
     $legacyConnection = [pscustomobject][ordered]@{
-        callsign = 'BI7KGD'; gateway_id = [uint64]461135501; source_id = [uint64]4611355
+        callsign = 'N0CALL'; gateway_id = [uint64]460999901; source_id = [uint64]4609999
         master = '43.129.83.124'; master_port = [uint64]62031; destination_id = [uint64]460997
         slot = [uint64]2; color_code = [uint64]0; call_kind = 'private'
     }
@@ -47,14 +47,14 @@ try {
     Assert-True ($legacyPrivate.schema_version -eq 2 -and $legacyPrivate.tx_target.destination_id -eq 460997 -and
         $legacyPrivate.rx_policy.private_mode -ceq 'all_peers_to_local' -and
         $legacyPrivate.rx_policy.local_private_routes.Count -eq 1 -and
-        $legacyPrivate.rx_policy.local_private_routes[0].local_destination_id -eq 4611355 -and
+        $legacyPrivate.rx_policy.local_private_routes[0].local_destination_id -eq 4609999 -and
         $legacyPrivate.transmit_enabled -and $legacyPrivate.migration_source_schema_version -eq 1) `
         'v1 私呼配置在内存中迁为 schema 2，TX 目标、任意私呼 peer 和本机 ID 均保留'
     Assert-True ([System.IO.File]::ReadAllText($profilePath, [System.Text.Encoding]::UTF8) -ceq $legacyOriginal) `
         '读取 v1 配置只生成内存迁移视图，不写回原文件'
     $legacyRuntime = Get-BridgeLegacyRuntimeProfile -Profile $legacyPrivate
     Assert-True ($legacyRuntime.connection.destination_id -eq 460997 -and
-        $legacyRuntime.receive.destination_id -eq 4611355 -and $legacyRuntime.receive.call_kind -ceq 'private') `
+        $legacyRuntime.receive.destination_id -eq 4609999 -and $legacyRuntime.receive.call_kind -ceq 'private') `
         'alpha4投影保留旧私呼 TX 目标与本机私呼接收过滤'
     Write-BridgeUserConnectionProfile -Path $profilePath -Profile $legacyPrivate
     $backupPaths = @(Get-ChildItem -LiteralPath $configPath -Filter 'connection-profile.json.bak-*' | Select-Object -ExpandProperty FullName)
@@ -83,15 +83,15 @@ try {
         (New-Object System.Text.UTF8Encoding($false)))
     Assert-Throws { Read-BridgeUserConnectionProfile -Path $profilePath | Out-Null } `
         '旧配置把私呼收件目标设为非本机 Source ID 时拒绝静默改写'
-    $legacyDocument.receive.destination_id = [uint64]4611355
+    $legacyDocument.receive.destination_id = [uint64]4609999
     [System.IO.File]::WriteAllText($profilePath, (ConvertTo-Json -InputObject $legacyDocument -Depth 5),
         (New-Object System.Text.UTF8Encoding($false)))
     $customPrivate = Read-BridgeUserConnectionProfile -Path $profilePath
-    Assert-True ($customPrivate.rx_policy.local_private_routes[0].local_destination_id -eq 4611355 -and
+    Assert-True ($customPrivate.rx_policy.local_private_routes[0].local_destination_id -eq 4609999 -and
         $customPrivate.rx_policy.local_private_routes[0].slot -eq 1 -and
         $customPrivate.rx_policy.allow_private_peers.Count -eq 1 -and
         $customPrivate.rx_policy.allow_private_peers[0].source_id -eq 460997 -and
-        $customPrivate.rx_policy.allow_private_peers[0].local_destination_id -eq 4611355 -and
+        $customPrivate.rx_policy.allow_private_peers[0].local_destination_id -eq 4609999 -and
         $customPrivate.rx_policy.allow_private_peers[0].slot -eq 2) `
         '旧 receive.private 迁为本机任意 peer 路由，并另外保存不在主路由内的精确TX回程'
     $legacyConnection.call_kind = 'private'
@@ -112,7 +112,7 @@ try {
         'alpha4旧主过滤器和TX私呼精确回程可以被完整表达'
 
     $v2Connection = [pscustomobject][ordered]@{
-        callsign='BI7KGD'; gateway_id=[uint64]461135501; source_id=[uint64]4611355
+        callsign='N0CALL'; gateway_id=[uint64]460999901; source_id=[uint64]4609999
         master='43.129.83.124'; master_port=[uint64]62031; color_code=[uint64]0
     }
     $v2Target = [pscustomobject][ordered]@{ destination_id=[uint64]460997; kind='private'; slot=[uint64]2 }
@@ -136,7 +136,7 @@ try {
         -RxPolicy ([pscustomobject][ordered]@{
             group_mode='selected'; private_mode='selected_peers'
             allow_groups=@([pscustomobject]@{ destination_id=[uint64]91; slot=[uint64]2 }, [pscustomobject]@{ destination_id=[uint64]46000; slot=[uint64]1 })
-            allow_private_peers=@([pscustomobject]@{ source_id=[uint64]800001; local_destination_id=[uint64]4611355; slot=[uint64]2 })
+            allow_private_peers=@([pscustomobject]@{ source_id=[uint64]800001; local_destination_id=[uint64]4609999; slot=[uint64]2 })
             local_private_routes=@(); blocked_groups=@([pscustomobject]@{ destination_id=[uint64]46001; slot=[uint64]1 })
             blocked_source_ids=@([uint64]812345)
         }) -TransmitEnabled $false
@@ -151,8 +151,8 @@ try {
         '同一组呼不能同时位于 allow 与 block'
     $selectedPeerWithLocalRoute = [pscustomobject][ordered]@{
         group_mode='selected'; private_mode='selected_peers'; allow_groups=@()
-        allow_private_peers=@([pscustomobject]@{source_id=[uint64]460997;local_destination_id=[uint64]4611355;slot=[uint64]2})
-        local_private_routes=@([pscustomobject]@{local_destination_id=[uint64]4611355;slot=[uint64]2})
+        allow_private_peers=@([pscustomobject]@{source_id=[uint64]460997;local_destination_id=[uint64]4609999;slot=[uint64]2})
+        local_private_routes=@([pscustomobject]@{local_destination_id=[uint64]4609999;slot=[uint64]2})
         blocked_groups=@(); blocked_source_ids=@()
     }
     Assert-Throws { ConvertTo-BridgeUserConnectionProfile -Connection $v2Connection -TxTarget $v2Target `
@@ -175,7 +175,7 @@ try {
     Assert-Throws { Get-BridgeLegacyRuntimeProfile -Profile $privateDisabledProfile } `
         'private_mode=disabled不能借alpha4自动回程额外接收private call'
 
-    $exactReturn = [pscustomobject][ordered]@{ source_id=[uint64]460997; local_destination_id=[uint64]4611355; slot=[uint64]2 }
+    $exactReturn = [pscustomobject][ordered]@{ source_id=[uint64]460997; local_destination_id=[uint64]4609999; slot=[uint64]2 }
     $privatePeerPolicy = [pscustomobject][ordered]@{
         group_mode='selected'; private_mode='selected_peers'; allow_groups=@([pscustomobject]@{ destination_id=[uint64]91; slot=[uint64]2 })
         allow_private_peers=@($exactReturn); local_private_routes=@(); blocked_groups=@(); blocked_source_ids=@()
@@ -187,7 +187,7 @@ try {
 
     $bothPrimaryRoutes = [pscustomobject][ordered]@{
         group_mode='selected'; private_mode='all_peers_to_local'; allow_groups=@([pscustomobject]@{ destination_id=[uint64]91; slot=[uint64]2 })
-        allow_private_peers=@(); local_private_routes=@([pscustomobject]@{ local_destination_id=[uint64]4611355; slot=[uint64]2 })
+        allow_private_peers=@(); local_private_routes=@([pscustomobject]@{ local_destination_id=[uint64]4609999; slot=[uint64]2 })
         blocked_groups=@(); blocked_source_ids=@()
     }
     $bothPrimaryProfile = ConvertTo-BridgeUserConnectionProfile -Connection $v2Connection -TxTarget $v2Target `
@@ -197,7 +197,7 @@ try {
 
     $allPeersWithPreciseReturn = [pscustomobject][ordered]@{
         group_mode='selected'; private_mode='all_peers_to_local'; allow_groups=@()
-        allow_private_peers=@($exactReturn); local_private_routes=@([pscustomobject]@{ local_destination_id=[uint64]4611355; slot=[uint64]1 })
+        allow_private_peers=@($exactReturn); local_private_routes=@([pscustomobject]@{ local_destination_id=[uint64]4609999; slot=[uint64]1 })
         blocked_groups=@(); blocked_source_ids=@()
     }
     $allPeersWithPreciseReturnProfile = ConvertTo-BridgeUserConnectionProfile -Connection $v2Connection -TxTarget $v2TargetPrivate `

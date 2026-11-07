@@ -29,7 +29,7 @@ foreach ($functionName in $functionNames) {
 }
 
 $legacyConnection = [pscustomobject][ordered]@{
-    callsign='BI7KGD'; gateway_id=[uint64]461135501; source_id=[uint64]4611355
+    callsign='N0CALL'; gateway_id=[uint64]460999901; source_id=[uint64]4609999
     master='43.129.83.124'; master_port=[uint64]62031; destination_id=[uint64]460997
     slot=[uint64]2; color_code=[uint64]0; call_kind='private'
 }
@@ -39,7 +39,7 @@ $parrot = New-EffectiveTargetProfile -Profile $baseProfile -Target 'parrot-cn'
 Assert-UiTarget ($parrot.tx_target.destination_id -eq 460997 -and $parrot.tx_target.kind -ceq 'private' -and
     $parrot.tx_target.slot -eq 2 -and $parrot.rx_policy.private_mode -ceq 'all_peers_to_local' -and
     $parrot.rx_policy.local_private_routes.Count -eq 1 -and
-    $parrot.rx_policy.local_private_routes[0].local_destination_id -eq 4611355 -and
+    $parrot.rx_policy.local_private_routes[0].local_destination_id -eq 4609999 -and
     $parrot.rx_policy.local_private_routes[0].slot -eq 2 -and $parrot.transmit_enabled) `
     '鹦鹉预设应保存本机私呼主路由与私呼目标，不再用旧 connection 目标字段'
 
@@ -64,7 +64,7 @@ Assert-UiTarget ($custom.tx_target.destination_id -eq 460997 -and $custom.rx_pol
     -not $custom.transmit_enabled) '使用已保存目标应保留独立保存的 TX、RX 与发射许可'
 
 $v2Connection = [pscustomobject][ordered]@{
-    callsign='BI7KGD'; gateway_id=[uint64]461135501; source_id=[uint64]4611355
+    callsign='N0CALL'; gateway_id=[uint64]460999901; source_id=[uint64]4609999
     master='43.129.83.124'; master_port=[uint64]62031; color_code=[uint64]0
 }
 $v2Tx = [pscustomobject][ordered]@{ destination_id=[uint64]460997; kind='private'; slot=[uint64]2 }

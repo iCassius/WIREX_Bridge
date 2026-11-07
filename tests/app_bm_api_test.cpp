@@ -135,8 +135,8 @@ void test_device_id_and_request_building()
 {
     struct IdCase { const char* text; bool valid; };
     const std::vector<IdCase> ids{
-        {"461135501", true}, {"1", true}, {"4294967295", true}, {"0", false}, {"4294967296", false},
-        {"461135501/elsewhere", false}, {"", false}, {"-1", false}, {"12345678901", false},
+        {"460999901", true}, {"1", true}, {"4294967295", true}, {"0", false}, {"4294967296", false},
+        {"460999901/elsewhere", false}, {"", false}, {"-1", false}, {"12345678901", false},
     };
     for (const auto& c : ids) check(parse_device_id(c.text).has_value() == c.valid, std::string("device id ") + c.text);
 
@@ -146,11 +146,11 @@ void test_device_id_and_request_building()
         const char* url; bool valid;
     };
     const std::vector<ReqCase> cases{
-        {"static list GET", "GET", "talkgroup", "", "https://api.brandmeister.network/v2/device/461135501/talkgroup", true},
-        {"device GET", "GET", "", "", "https://api.brandmeister.network/v2/device/461135501", true},
-        {"add POST", "POST", "talkgroup", "", "https://api.brandmeister.network/v2/device/461135501/talkgroup", true},
+        {"static list GET", "GET", "talkgroup", "", "https://api.brandmeister.network/v2/device/460999901/talkgroup", true},
+        {"device GET", "GET", "", "", "https://api.brandmeister.network/v2/device/460999901", true},
+        {"add POST", "POST", "talkgroup", "", "https://api.brandmeister.network/v2/device/460999901/talkgroup", true},
         {"remove DELETE", "DELETE", "talkgroup", "/2/91",
-         "https://api.brandmeister.network/v2/device/461135501/talkgroup/2/91", true},
+         "https://api.brandmeister.network/v2/device/460999901/talkgroup/2/91", true},
         {"device only allows GET", "POST", "", "", "", false},
         {"suffix only on DELETE", "GET", "talkgroup", "/2/91", "", false},
         {"suffix must be digits", "DELETE", "talkgroup", "/2/../x", "", false},
@@ -158,7 +158,7 @@ void test_device_id_and_request_building()
         {"unknown method", "PUT", "talkgroup", "", "", false},
     };
     for (const auto& c : cases) {
-        auto request = build_request(c.method, 461135501U, c.resource, c.suffix, key, 2500U);
+        auto request = build_request(c.method, 460999901U, c.resource, c.suffix, key, 2500U);
         check(request.method.empty() == !c.valid, std::string("request validity: ") + c.name);
         if (!c.valid) continue;
         check(request.url == c.url, std::string("request url: ") + c.name);
@@ -188,7 +188,7 @@ void test_list_parsing()
     struct Case { const char* name; std::string json; bool ok; std::size_t count; };
     const std::vector<Case> cases{
         {"two items with extra fields",
-         R"([{"talkgroup":91,"slot":2,"repeaterid":461135501},{"talkgroup":46001,"slot":1,"repeaterid":461135501}])", true, 2U},
+         R"([{"talkgroup":91,"slot":2,"repeaterid":460999901},{"talkgroup":46001,"slot":1,"repeaterid":460999901}])", true, 2U},
         {"empty array", "[]", true, 0U},
         {"slot 0 simplex", R"([{"talkgroup":91,"slot":0}])", true, 1U},
         {"string numbers accepted like PS", R"([{"talkgroup":"91","slot":"2"}])", true, 1U},
@@ -210,14 +210,14 @@ void test_list_parsing()
     for (const auto& c : cases) {
         std::vector<StaticGroup> groups;
         Error error{};
-        const bool ok = parse_static_group_list(c.json, 461135501U, groups, &error);
+        const bool ok = parse_static_group_list(c.json, 460999901U, groups, &error);
         check(ok == c.ok, std::string("list parse: ") + c.name);
         if (ok) check(groups.size() == c.count, std::string("list count: ") + c.name);
         else check(error.kind == ErrorKind::invalid_response, std::string("list error kind: ") + c.name);
     }
     std::vector<StaticGroup> groups;
-    check(parse_static_group_list(R"([{"talkgroup":91,"slot":2}])", 461135501U, groups) &&
-              groups[0].talkgroup == 91U && groups[0].slot == 2 && groups[0].device_id == 461135501U,
+    check(parse_static_group_list(R"([{"talkgroup":91,"slot":2}])", 460999901U, groups) &&
+              groups[0].talkgroup == 91U && groups[0].slot == 2 && groups[0].device_id == 460999901U,
           "list preserves TG, slot and device id");
 }
 
@@ -225,25 +225,25 @@ void test_add_context()
 {
     struct Case { const char* name; std::string json; bool success; std::optional<std::int64_t> status; std::optional<int> slot; };
     const std::vector<Case> cases{
-        {"status 4 → slot 0", R"({"id":461135501,"status":4,"callsign":"PRIVATE-CALL"})", true, 4, 0},
-        {"status 0 → slot 2", R"({"id":461135501,"status":0})", true, 0, 2},
-        {"status 1 → slot 2", R"({"id":461135501,"status":1})", true, 1, 2},
-        {"status 2 → slot 2", R"({"id":461135501,"status":2})", true, 2, 2},
-        {"status 3 → slot 2", R"({"id":461135501,"status":3})", true, 3, 2},
-        {"null status", R"({"id":461135501,"status":null})", false, std::nullopt, std::nullopt},
-        {"unknown numeric status kept", R"({"id":461135501,"status":5})", false, 5, std::nullopt},
-        {"string status", R"({"id":461135501,"status":"4"})", false, std::nullopt, std::nullopt},
-        {"bool status", R"({"id":461135501,"status":true})", false, std::nullopt, std::nullopt},
-        {"missing status", R"({"id":461135501})", false, std::nullopt, std::nullopt},
-        {"mismatched id", R"({"id":461135502,"status":4})", false, std::nullopt, std::nullopt},
+        {"status 4 → slot 0", R"({"id":460999901,"status":4,"callsign":"PRIVATE-CALL"})", true, 4, 0},
+        {"status 0 → slot 2", R"({"id":460999901,"status":0})", true, 0, 2},
+        {"status 1 → slot 2", R"({"id":460999901,"status":1})", true, 1, 2},
+        {"status 2 → slot 2", R"({"id":460999901,"status":2})", true, 2, 2},
+        {"status 3 → slot 2", R"({"id":460999901,"status":3})", true, 3, 2},
+        {"null status", R"({"id":460999901,"status":null})", false, std::nullopt, std::nullopt},
+        {"unknown numeric status kept", R"({"id":460999901,"status":5})", false, 5, std::nullopt},
+        {"string status", R"({"id":460999901,"status":"4"})", false, std::nullopt, std::nullopt},
+        {"bool status", R"({"id":460999901,"status":true})", false, std::nullopt, std::nullopt},
+        {"missing status", R"({"id":460999901})", false, std::nullopt, std::nullopt},
+        {"mismatched id", R"({"id":460999902,"status":4})", false, std::nullopt, std::nullopt},
         {"array body", "[]", false, std::nullopt, std::nullopt},
         // 真实设备响应含经纬度等负数/小数字段：与 PS ConvertFrom-Json 一致，不影响 id/status 解析。
-        {"negative/decimal fields ignored", R"({"id":461135501,"status":4,"lat":-33.5,"lng":151.2})", true, 4, 0},
-        {"negative status rejected", R"({"id":461135501,"status":-1})", false, std::nullopt, std::nullopt},
-        {"decimal status rejected", R"({"id":461135501,"status":4.0})", false, std::nullopt, std::nullopt},
+        {"negative/decimal fields ignored", R"({"id":460999901,"status":4,"lat":-33.5,"lng":151.2})", true, 4, 0},
+        {"negative status rejected", R"({"id":460999901,"status":-1})", false, std::nullopt, std::nullopt},
+        {"decimal status rejected", R"({"id":460999901,"status":4.0})", false, std::nullopt, std::nullopt},
     };
     for (const auto& c : cases) {
-        const auto ctx = parse_add_context(c.json, 461135501U);
+        const auto ctx = parse_add_context(c.json, 460999901U);
         check(ctx.success == c.success, std::string("context success: ") + c.name);
         check(ctx.status == c.status, std::string("context status: ") + c.name);
         check(ctx.add_slot == c.slot, std::string("context slot: ") + c.name);
@@ -280,28 +280,28 @@ void test_client_flows()
     Client client(server.transport());
     const auto key = make_key();
 
-    server.reset({ok(200, R"([{"talkgroup":91,"slot":2,"repeaterid":461135501},{"talkgroup":46001,"slot":1}])")});
-    auto list = client.list_static_groups(key, "461135501", 2500U);
+    server.reset({ok(200, R"([{"talkgroup":91,"slot":2,"repeaterid":460999901},{"talkgroup":46001,"slot":1}])")});
+    auto list = client.list_static_groups(key, "460999901", 2500U);
     check(!list.error && list.groups.size() == 2U, "GET returns static groups");
     check(server.requests.size() == 1U && server.requests[0].method == "GET" &&
-              server.requests[0].url == "https://api.brandmeister.network/v2/device/461135501/talkgroup",
+              server.requests[0].url == "https://api.brandmeister.network/v2/device/460999901/talkgroup",
           "GET targets the static talkgroup endpoint");
     check(server.requests[0].authorization == "Bearer " + fake_token, "explicit token becomes Bearer authorization");
     check(server.requests[0].timeout_ms == 2500U, "caller timeout reaches transport");
 
-    server.reset({ok(200, R"({"id":461135501,"status":4,"callsign":"PRIVATE-CALL"})")});
-    auto context = client.get_add_context(key, "461135501");
+    server.reset({ok(200, R"({"id":460999901,"status":4,"callsign":"PRIVATE-CALL"})")});
+    auto context = client.get_add_context(key, "460999901");
     check(!context.error && context.context.success && context.context.add_slot == 0, "device context selects slot 0");
-    check(server.requests[0].url == "https://api.brandmeister.network/v2/device/461135501", "device endpoint used");
+    check(server.requests[0].url == "https://api.brandmeister.network/v2/device/460999901", "device endpoint used");
     check(server.requests[0].timeout_ms == default_timeout_ms, "default timeout 3000 ms");
 
     server.reset({ok(403, "{\"message\":\"denied\",\"echo\":\"" + fake_token + "\"}")});
-    context = client.get_add_context(key, "461135501");
+    context = client.get_add_context(key, "460999901");
     check(context.error.kind == ErrorKind::http_status && context.error.http_status == 403 &&
               !contains_token(context.error.message), "device HTTP 403 rejected without echoing token");
 
     server.reset({ok(201, ""), ok(200, R"([{"talkgroup":91,"slot":2},{"talkgroup":12345,"slot":1}])")});
-    auto add = client.add_static_group(key, "461135501", 12345U, 1);
+    auto add = client.add_static_group(key, "460999901", 12345U, 1);
     check(!add.error && add.write_accepted && add.readback_status == ReadbackStatus::confirmed, "POST then confirming GET");
     check(server.requests.size() == 2U && server.requests[0].method == "POST" && server.requests[1].method == "GET",
           "add order POST then GET");
@@ -309,19 +309,19 @@ void test_client_flows()
               server.requests[0].content_type == "application/json; charset=utf-8", "POST body and content type");
 
     server.reset({ok(204, ""), ok(200, "[]")});
-    auto remove = client.remove_static_group(key, "461135501", 91U, 2);
+    auto remove = client.remove_static_group(key, "460999901", 91U, 2);
     check(!remove.error && remove.readback_status == ReadbackStatus::confirmed, "DELETE then confirming GET");
     check(server.requests[0].method == "DELETE" &&
-              server.requests[0].url == "https://api.brandmeister.network/v2/device/461135501/talkgroup/2/91",
+              server.requests[0].url == "https://api.brandmeister.network/v2/device/460999901/talkgroup/2/91",
           "DELETE URI includes slot and talkgroup");
 
     server.reset({ok(200, R"({"success":true})"), ok(200, R"([{"talkgroup":91,"slot":0}])")});
-    add = client.add_static_group(key, "461135501", 91U, 0);
+    add = client.add_static_group(key, "460999901", 91U, 0);
     check(add.readback_status == ReadbackStatus::confirmed && server.requests[0].body == "{\"slot\":0,\"group\":91}",
           "slot 0 add confirmed");
 
     server.reset({ok(201, ""), ok(200, "[]")});
-    add = client.add_static_group(key, "461135501", 12345U, 1);
+    add = client.add_static_group(key, "460999901", 12345U, 1);
     check(add.write_accepted && add.readback_status == ReadbackStatus::not_confirmed, "absent after add is not_confirmed");
 
     // 写后回读失败的表驱动场景
@@ -335,7 +335,7 @@ void test_client_flows()
     };
     for (const auto& c : readbacks) {
         server.reset({ok(201, ""), c.readback});
-        add = client.add_static_group(key, "461135501", 23456U, 2);
+        add = client.add_static_group(key, "460999901", 23456U, 2);
         check(!add.error && add.write_accepted && add.readback_status == c.status && add.readback_error == c.error,
               std::string("write accepted, ") + c.name);
         check(server.requests.size() == 2U && server.requests[0].method == "POST",
@@ -353,8 +353,8 @@ void test_client_flows()
     };
     for (const auto& c : write_failures) {
         server.reset({c.response, ok(200, "[]")});
-        const auto result = c.remove ? client.remove_static_group(key, "461135501", 91U, 2)
-                                     : client.add_static_group(key, "461135501", 23457U, 2);
+        const auto result = c.remove ? client.remove_static_group(key, "460999901", 91U, 2)
+                                     : client.add_static_group(key, "460999901", 23457U, 2);
         check(result.error.kind == c.kind && !result.write_accepted, std::string("write failure kind: ") + c.name);
         check(server.requests.size() == 1U, std::string("no readback or retry: ") + c.name);
         check(!contains_token(result.error.message), std::string("write error has no token: ") + c.name);
@@ -363,32 +363,32 @@ void test_client_flows()
     // 请求前即被拒绝的情况
     std::atomic<bool> canceled{true};
     server.reset({ok(200, "[]")});
-    list = client.list_static_groups(key, "461135501", default_timeout_ms, &canceled);
+    list = client.list_static_groups(key, "460999901", default_timeout_ms, &canceled);
     check(list.error.kind == ErrorKind::canceled && server.requests.empty(), "pre-canceled GET makes no request");
 
     server.reset({ok(200, "[]")});
-    list = client.list_static_groups(key, "461135501/elsewhere");
+    list = client.list_static_groups(key, "460999901/elsewhere");
     check(list.error.kind == ErrorKind::invalid_request && server.requests.empty(), "path injection rejected before transport");
 
     server.reset({ok(201, "")});
-    add = client.add_static_group(key, "461135501", 91U, 3);
+    add = client.add_static_group(key, "460999901", 91U, 3);
     check(add.error.kind == ErrorKind::invalid_request && server.requests.empty(), "slot 3 add rejected before transport");
 
     server.reset({ok(201, "")});
-    add = client.add_static_group(key, "461135501", 0U, 2);
+    add = client.add_static_group(key, "460999901", 0U, 2);
     check(add.error.kind == ErrorKind::invalid_request && server.requests.empty(), "TG 0 rejected before transport");
 
     server.reset({ok(200, "[]")});
-    list = client.list_static_groups(ApiKey{}, "461135501");
+    list = client.list_static_groups(ApiKey{}, "460999901");
     check(list.error.kind == ErrorKind::invalid_key && server.requests.empty(), "empty key rejected before transport");
 
     server.reset({ok(200, "[]")});
-    list = client.list_static_groups(key, "461135501", 20000U);
+    list = client.list_static_groups(key, "460999901", 20000U);
     check(list.error.kind == ErrorKind::invalid_request && server.requests.empty(), "timeout above 10 s rejected");
 
     // 抛异常的 transport 被归类为 transport，不泄露 token
     Client throwing([](const HttpRequest&, const std::atomic<bool>*) -> HttpResponse { throw std::runtime_error(fake_token); });
-    list = throwing.list_static_groups(key, "461135501");
+    list = throwing.list_static_groups(key, "460999901");
     check(list.error.kind == ErrorKind::transport && !contains_token(list.error.message), "throwing transport classified");
 }
 

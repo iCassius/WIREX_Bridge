@@ -2,7 +2,7 @@
 
 本文保留旧 RPTC profile 的四轮拒绝记录，并补充 2026-10-24 对照 DroidStar/DMRHost 配置后的 A、D、E1、E2、E3 有界 network-only 结果。旧 profile 全部收到 `MSTNAK`；E3 组合 profile 到达 `ready` 并由诊断工具本机 UDP 发送 `RPTCL` 成功。E3 只验证 BM 控制配置阶段，不代表已完成 DMR Echo 语音、HRI/COM、WinMM 或 RF 联测。
 
-用户确认其 Android 成功登录 BM 的客户端是 DroidStar；截图 Gateway ID 为 `461135502`。本轮配置对照使用用户授权的独立 Gateway ID `461135501`，没有修改或复用 ESSID `02` 的配置。
+用户确认其 Android 成功登录 BM 的客户端是 DroidStar；截图 Gateway ID 为 `460999902`。本轮配置对照使用用户授权的独立 Gateway ID `460999901`，没有修改或复用 ESSID `02` 的配置。
 
 ## 范围与基线
 
@@ -21,7 +21,7 @@
 
 | RPTC 字段 | 第一次 | 第二次 | 第三次 | 第四次 |
 | --- | --- | --- | --- | --- |
-| callsign / gateway ID | `BI7KGD` / `461135501` | 相同 | 相同 | 相同 |
+| callsign / gateway ID | `N0CALL` / `460999901` | 相同 | 相同 | 相同 |
 | RX/TX frequency | `0` / `0` | `0` / `0` | `145100000` / `145100000`（145.100 MHz） | 相同 |
 | power / color code | `0` / `0` | 相同 | 相同 | `0` / `1` |
 | latitude / longitude | `0` / `0`，按字段宽度补尾部空格 | `0.000000` / `00.000000` | 相同 | 相同 |
@@ -58,7 +58,7 @@ DMRHost 的网络对象构造函数会把 RX/TX frequency、power、color code�
 
 ## 当前对照：A、D 与 E 系列配置
 
-这些对照都使用生产 `Session`/`UdpTransport` 向固定 BM 4602 发送控制包，使用呼号 `BI7KGD`、Gateway ID `461135501` 和同一份本机凭据。它们没有打开 native 桥接、COM、WinMM，也没有发送 DMRD 或语音。A 是旧 WIREX profile 的一次变体；D 是完整 DroidStar 参数参考；E1–E3 从 D 逐项改成适用于本程序的虚拟节点元数据。
+这些对照都使用生产 `Session`/`UdpTransport` 向固定 BM 4602 发送控制包，使用呼号 `N0CALL`、Gateway ID `460999901` 和同一份本机凭据。它们没有打开 native 桥接、COM、WinMM，也没有发送 DMRD 或语音。A 是旧 WIREX profile 的一次变体；D 是完整 DroidStar 参数参考；E1–E3 从 D 逐项改成适用于本程序的虚拟节点元数据。
 
 | 配置 | 相对前项的差异 | 关键 RPTC 字段 | 观测结果 |
 | --- | --- | --- | --- |
@@ -68,7 +68,7 @@ DMRHost 的网络对象构造函数会把 RX/TX frequency、power、color code�
 | E2 | 仅把 E1 的第一个 40 字节字段改为 `20261024` | 其他字段与 E1 相同 | 到达 `ready`；诊断工具报告本机 UDP `RPTCL` send 成功 |
 | E3 | 仅把 E2 的 power 从 `1` 改成 `0` | 其他字段与 E2 相同 | 到达 `ready`；诊断工具报告本机 UDP `RPTCL` send 成功 |
 
-已确认可用于本程序的 E3 profile 为：呼号 `BI7KGD`、Gateway ID `461135501`、RX/TX metadata `438800000`、power `0`、CC `1`、latitude `0.000000`、longitude `00.000000`、height `0`、location `DIRECT`、description `FTX-1`、slot flags `'4'`、URL `www.qrz.com`、version `20261024`、第二个 40 字节字段 `MMDVM_WIREX_Bridge`、options 空。native 的 DMR 配置继续使用 TS1、Source ID `4611355` 与原有三个目标 ID。`438800000` 是 BM 节点配置元数据，不会修改 CAT 频率或发射 RF。`MMDVM_WIREX_Bridge` 表示本程序提供的虚拟 MMDVM 兼容节点类型，不声明存在实体 MMDVM Hat。
+已确认可用于本程序的 E3 profile 为：呼号 `N0CALL`、Gateway ID `460999901`、RX/TX metadata `438800000`、power `0`、CC `1`、latitude `0.000000`、longitude `00.000000`、height `0`、location `DIRECT`、description `FTX-1`、slot flags `'4'`、URL `www.qrz.com`、version `20261024`、第二个 40 字节字段 `MMDVM_WIREX_Bridge`、options 空。native 的 DMR 配置继续使用 TS1、Source ID `4609999` 与原有三个目标 ID。`438800000` 是 BM 节点配置元数据，不会修改 CAT 频率或发射 RF。`MMDVM_WIREX_Bridge` 表示本程序提供的虚拟 MMDVM 兼容节点类型，不声明存在实体 MMDVM Hat。
 
 这些对照确认 E3 整体配置可通过 BM 控制配置阶段；它们没有证明旧 profile 的拒绝由某一个字段单独造成。D/E 系列在相同参考 profile 上的单项更改维持 `ready`，不等于已识别旧 profile 的服务端拒绝规则。`RPTCL` 的 send 成功只表示本机 UDP 调用成功，不表示 BM 返回了关闭确认。BM 网页显示的节点 `Firmware`/类型文本来自程序上报的 RPTC 标识，不是 FTX-1 电台固件，也不是实体 Hat 声明。
 

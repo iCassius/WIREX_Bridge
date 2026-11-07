@@ -18,7 +18,7 @@ void check(bool condition, std::string_view message)
 
 wirex::bm_connection_config::Fields valid_fields() noexcept
 {
-    return {"BI7KGD", 461135501U, 4611355U, "43.129.83.124", 62031U, 460997U, 2U, 1U, "P"};
+    return {"N0CALL", 460999901U, 4609999U, "43.129.83.124", 62031U, 460997U, 2U, 1U, "P"};
 }
 
 } // namespace
@@ -48,8 +48,8 @@ int main()
     check(wirex::bm_connection_config::parse_receive_target("91", "2", "G", receive_target) &&
           receive_target.destination_id == 91U && receive_target.slot == 2U &&
           receive_target.call_kind == 'G', "独立TG91 TS2接收目标能正确解析");
-    check(wirex::bm_connection_config::parse_receive_target("4611355", "2", "P", receive_target) &&
-          receive_target.destination_id == 4611355U && receive_target.slot == 2U &&
+    check(wirex::bm_connection_config::parse_receive_target("4609999", "2", "P", receive_target) &&
+          receive_target.destination_id == 4609999U && receive_target.slot == 2U &&
           receive_target.call_kind == 'P', "独立本机Radio ID私呼接收目标能正确解析");
     check(!parse_receive_target("0", "2", "G", receive_target) &&
           !parse_receive_target("16777216", "2", "G", receive_target) &&

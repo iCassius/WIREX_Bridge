@@ -19,7 +19,7 @@ function Assert-Throws {
 function New-ProfileFixture {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Json,
-        [string]$DeviceId = '461135501',
+        [string]$DeviceId = '460999901',
         [string]$ObservationId = ([guid]::NewGuid().ToString('N')),
         [datetime]$ObservedAtUtc = [DateTime]::UtcNow,
         [datetime]$RequestStartedAtUtc,
@@ -93,39 +93,39 @@ try {
             '未知 schema 不得泄漏部分解析出的订阅集合'
     }
 
-    $readPlan = New-BmApiRequestPlan -Action ReadProfile -DeviceId '461135501'
+    $readPlan = New-BmApiRequestPlan -Action ReadProfile -DeviceId '460999901'
     Assert-True ($readPlan.method -ceq 'GET') 'profile 读回必须使用 GET'
-    Assert-True ($readPlan.uri -ceq 'https://api.brandmeister.network/v2/device/461135501/profile') 'profile URL 必须使用固定 HTTPS BM v2 host'
+    Assert-True ($readPlan.uri -ceq 'https://api.brandmeister.network/v2/device/460999901/profile') 'profile URL 必须使用固定 HTTPS BM v2 host'
     Assert-True ($null -eq $readPlan.api_slot) '读取整台设备 profile 不应强制或虚构某一个 API slot'
     Assert-True (-not $readPlan.uri.Contains('62031')) 'DMR UDP 端口不得拼入 HTTPS API 请求'
     $maximumDevicePlan = New-BmApiRequestPlan -Action ReadProfile -DeviceId '4294967295'
     Assert-True ($maximumDevicePlan.device_id -ceq '4294967295') '设备 ID 不得使用未经 API 证据支持的窄范围'
 
-    $addPlan = New-BmApiRequestPlan -Action AddStatic -DeviceId '461135501' -ApiSlot 0 -Talkgroup 91
+    $addPlan = New-BmApiRequestPlan -Action AddStatic -DeviceId '460999901' -ApiSlot 0 -Talkgroup 91
     $addBody = ConvertFrom-Json -InputObject $addPlan.body -ErrorAction Stop
-    Assert-True ($addPlan.method -ceq 'POST' -and $addPlan.uri -ceq 'https://api.brandmeister.network/v2/device/461135501/talkgroup') `
+    Assert-True ($addPlan.method -ceq 'POST' -and $addPlan.uri -ceq 'https://api.brandmeister.network/v2/device/460999901/talkgroup') `
         '静态组添加必须使用 BM v2 POST 路径'
     Assert-True ($addBody.slot -eq 0 -and $addBody.group -eq 91) 'JSON body 应保留 API slot 0 与 TG 91'
     Assert-True ($null -eq $addPlan.PSObject.Properties['dmr_slot']) 'API slot 不得被伪装成 DMR 媒体时隙'
 
-    $removePlan = New-BmApiRequestPlan -Action RemoveStatic -DeviceId '461135501' -ApiSlot 2 -Talkgroup 3100
+    $removePlan = New-BmApiRequestPlan -Action RemoveStatic -DeviceId '460999901' -ApiSlot 2 -Talkgroup 3100
     Assert-True ($removePlan.method -ceq 'DELETE' -and
-        $removePlan.uri -ceq 'https://api.brandmeister.network/v2/device/461135501/talkgroup/2/3100') `
+        $removePlan.uri -ceq 'https://api.brandmeister.network/v2/device/460999901/talkgroup/2/3100') `
         '静态组删除必须精确指定 API slot 和 TG'
 
-    $dropDynamicPlan = New-BmApiRequestPlan -Action DropDynamic -DeviceId '461135501' -ApiSlot 0
-    $dropCallPlan = New-BmApiRequestPlan -Action DropCallRoute -DeviceId '461135501' -ApiSlot 2
+    $dropDynamicPlan = New-BmApiRequestPlan -Action DropDynamic -DeviceId '460999901' -ApiSlot 0
+    $dropCallPlan = New-BmApiRequestPlan -Action DropCallRoute -DeviceId '460999901' -ApiSlot 2
     Assert-True ($dropDynamicPlan.method -ceq 'GET' -and $dropDynamicPlan.is_action -and
         $dropDynamicPlan.uri.EndsWith('/action/dropDynamicGroups/0')) '清除动态组虽然是 GET，仍必须标记为有副作用动作'
     Assert-True ($dropCallPlan.method -ceq 'GET' -and $dropCallPlan.is_action -and
         $dropCallPlan.uri.EndsWith('/action/dropCallRoute/2')) '结束 QSO 虽然是 GET，仍必须标记为有副作用动作'
     Assert-Throws { New-BmApiRequestPlan -Action ReadProfile -DeviceId 'not-a-device' -ApiSlot 0 } '设备 ID 不允许 URL 注入'
-    Assert-Throws { New-BmApiRequestPlan -Action AddStatic -DeviceId '461135501' -ApiSlot 0 -Talkgroup 0 } 'TG 0 不作为静态订阅'
-    Assert-Throws { New-BmApiRequestPlan -Action AddStatic -DeviceId '461135501' -Talkgroup 91 } '静态组写入必须显式给出 API slot'
-    Assert-Throws { New-BmApiRequestPlan -Action QuickCall -DeviceId '461135501' -ApiSlot 0 -Talkgroup 91 } `
+    Assert-Throws { New-BmApiRequestPlan -Action AddStatic -DeviceId '460999901' -ApiSlot 0 -Talkgroup 0 } 'TG 0 不作为静态订阅'
+    Assert-Throws { New-BmApiRequestPlan -Action AddStatic -DeviceId '460999901' -Talkgroup 91 } '静态组写入必须显式给出 API slot'
+    Assert-Throws { New-BmApiRequestPlan -Action QuickCall -DeviceId '460999901' -ApiSlot 0 -Talkgroup 91 } `
         'Quick Call 不是 BM REST API action'
 
-    $diffPlans = @(New-BmStaticReconciliationPlans -ProfileState $profile -DeviceId '461135501' -ApiSlot 0 `
+    $diffPlans = @(New-BmStaticReconciliationPlans -ProfileState $profile -DeviceId '460999901' -ApiSlot 0 `
         -ManagedTalkgroups @(91) -DesiredTalkgroups @(93))
     Assert-True ($diffPlans.Count -eq 2) '静态组差集应生成一条添加与一条删除计划'
     Assert-True (@($diffPlans | Where-Object { $_.action -ceq 'AddStatic' -and $_.talkgroup -eq 93 }).Count -eq 1) `
@@ -134,17 +134,17 @@ try {
         '仅管理集合中多余的 TG 应计划删除'
     Assert-True (@($diffPlans | Where-Object { $_.talkgroup -eq 3100 }).Count -eq 0) `
         '不属于 adapter 管理集合的静态 TG 应保留'
-    $noDiffPlans = @(New-BmStaticReconciliationPlans -ProfileState $profile -DeviceId '461135501' -ApiSlot 0 `
+    $noDiffPlans = @(New-BmStaticReconciliationPlans -ProfileState $profile -DeviceId '460999901' -ApiSlot 0 `
         -ManagedTalkgroups @(91) -DesiredTalkgroups @(91))
     Assert-True ($noDiffPlans.Count -eq 0) '已符合目标状态时不得重复 POST/DELETE'
     $unknownPlans = @(New-BmStaticReconciliationPlans -ProfileState (New-ProfileFixture -Json '{"unexpected":true}') `
-        -DeviceId '461135501' -ApiSlot 0 -ManagedTalkgroups @(91) -DesiredTalkgroups @(91, 93))
+        -DeviceId '460999901' -ApiSlot 0 -ManagedTalkgroups @(91) -DesiredTalkgroups @(91, 93))
     Assert-True ($unknownPlans.Count -eq 0) 'profile schema 未知时不得计划写入'
     $missingScopePlans = @(New-BmStaticReconciliationPlans -ProfileState ([pscustomobject]@{}) `
-        -DeviceId '461135501' -ApiSlot 0 -ManagedTalkgroups @(91) -DesiredTalkgroups @(93))
+        -DeviceId '460999901' -ApiSlot 0 -ManagedTalkgroups @(91) -DesiredTalkgroups @(93))
     Assert-True ($missingScopePlans.Count -eq 0) '缺少 ProfileState scope 字段时不得抛错或计划写入'
-    $crossDevicePlans = @(New-BmStaticReconciliationPlans -ProfileState (New-ProfileFixture -Json $validProfileJson -DeviceId '461135502') `
-        -DeviceId '461135501' -ApiSlot 0 -ManagedTalkgroups @(91) -DesiredTalkgroups @(91, 93))
+    $crossDevicePlans = @(New-BmStaticReconciliationPlans -ProfileState (New-ProfileFixture -Json $validProfileJson -DeviceId '460999902') `
+        -DeviceId '460999901' -ApiSlot 0 -ManagedTalkgroups @(91) -DesiredTalkgroups @(91, 93))
     Assert-True ($crossDevicePlans.Count -eq 0) '静态差集必须绑定同一 BM device ID'
 
     $mockState = [pscustomobject]@{
@@ -236,13 +236,13 @@ try {
     Assert-True ($afterRemove.state -ceq 'confirmed') '静态删除需从精确 API slot 和 TG 中读回缺失'
     $crossDeviceReadback = Get-BmStaticMutationReadback -Plan $addPlan `
         -ProfileState (New-ProfileFixture -Json '{"staticSubscriptions":[{"talkgroup":91,"slot":0}],"dynamicSubscriptions":[]}' `
-            -DeviceId '461135502' -AfterMutationRequestId $addPlan.plan_id) `
+            -DeviceId '460999902' -AfterMutationRequestId $addPlan.plan_id) `
         -MutationInvocation $syntheticMutationInvocation
     Assert-True ($crossDeviceReadback.state -ceq 'unknown') '读回来自其他设备时不得确认'
     $crossDeviceMutationInvocation = [pscustomobject]@{
         request_id = $addPlan.plan_id
         plan_action = $addPlan.action
-        device_id = '461135502'
+        device_id = '460999902'
         request_completed_at_utc = [DateTime]::UtcNow.AddSeconds(-2).ToString('o')
         result_state = 'success_awaiting_readback'
     }

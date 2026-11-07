@@ -66,7 +66,7 @@ void test_input_rejections()
           "an empty callsign is rejected");
     check(overlay_single_callsign(base, CallsignField::source, "123456789").error == Error::invalid_callsign,
           "callsigns longer than eight ASCII characters are rejected");
-    check(overlay_single_callsign(base, CallsignField::source, "4611355").error == Error::invalid_callsign,
+    check(overlay_single_callsign(base, CallsignField::source, "4609999").error == Error::invalid_callsign,
           "numeric DMR source IDs cannot be substituted for callsigns");
     check(overlay_single_callsign(base, CallsignField::source, "A B").error == Error::invalid_callsign,
           "input spaces are rejected because the builder adds its own right padding");
@@ -100,11 +100,11 @@ void test_source_id_label_boundaries_and_scope()
           "maximum source ID fills the ten-byte field without truncation");
 
     auto expected = base;
-    constexpr std::string_view middle_label = "ID4611355 ";
+    constexpr std::string_view middle_label = "ID4609999 ";
     for (std::size_t index = 0; index < middle_label.size(); ++index) {
         expected[source_offset + index] = static_cast<std::uint8_t>(middle_label[index]);
     }
-    const auto middle = overlay_source_id_label(base, 4611355U);
+    const auto middle = overlay_source_id_label(base, 4609999U);
     check(static_cast<bool>(middle) && middle.body == expected,
           "source ID overlay changes only the source ten-byte field in the default T90 candidate");
     check(middle.body[wirex::hri_call_header::t_body_mode_offset] == '4' &&
@@ -117,9 +117,9 @@ void test_source_id_label_boundaries_and_scope()
     check(overlay_source_id_label(base, 16777216U).error == Error::invalid_source_id,
           "source IDs above the 24-bit DMR limit are rejected");
     const auto stop = wirex::hri_t_payload::build_empty_header_empty_ambe_candidate_body(0, 1, 9U);
-    check(overlay_source_id_label(stop, 4611355U).error == Error::invalid_base_body,
+    check(overlay_source_id_label(stop, 4609999U).error == Error::invalid_base_body,
           "source ID overlay cannot modify the existing T0 stop body");
-    check(!is_valid_callsign_input("4611355"),
+    check(!is_valid_callsign_input("4609999"),
           "adding a DMR test label does not relax the separate amateur callsign validator");
 }
 
@@ -130,7 +130,7 @@ void test_source_callsign_overlay_changes_only_the_known_field()
         wirex::hri_call_header::source_callsign_offset;
     const auto base = wirex::hri_t_payload::build_empty_header_empty_ambe_candidate_body(1, 1, 9U);
 
-    for (const std::string_view callsign : {"N0CALL", "BI7KGD/P", "A123456789"}) {
+    for (const std::string_view callsign : {"N0CALL", "N0CALL/P", "A123456789"}) {
         const auto result = overlay_source_callsign(base, callsign);
         check(static_cast<bool>(result), "a normalized cached callsign creates a start-body candidate");
         check(std::string_view(result.label.data(), callsign.size()) == callsign,
@@ -155,7 +155,7 @@ void test_source_callsign_overlay_changes_only_the_known_field()
           "production overlay rejects lowercase input until the UI normalizes it");
     check(overlay_source_callsign(base, "N0CALL\"").error == Error::invalid_callsign,
           "production overlay rejects JSON-unsafe punctuation");
-    check(overlay_source_callsign(base, "4611355").error == Error::invalid_callsign,
+    check(overlay_source_callsign(base, "4609999").error == Error::invalid_callsign,
           "a numeric DMR ID is not accepted as a resolved callsign");
     const auto stop = wirex::hri_t_payload::build_empty_header_empty_ambe_candidate_body(0, 1, 9U);
     check(overlay_source_callsign(stop, "N0CALL").error == Error::invalid_base_body,
@@ -166,7 +166,7 @@ void test_fallback_and_callsign_candidates_have_valid_t_envelope_checksums()
 {
     using namespace wirex::hri_lcd_identity_candidate;
     const auto base = wirex::hri_t_payload::build_empty_header_empty_ambe_candidate_body(1, 1, 9U);
-    const auto fallback = overlay_source_id_label(base, 4611355U);
+    const auto fallback = overlay_source_id_label(base, 4609999U);
     const auto resolved = overlay_source_callsign(base, "N0CALL");
     check(static_cast<bool>(fallback) && static_cast<bool>(resolved),
           "both the existing decimal fallback and resolved callsign build valid start bodies");

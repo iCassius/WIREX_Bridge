@@ -168,7 +168,7 @@ R84 全量 bundle 为 [`r84_hri_t_mode_payload_chain_20261026.evidence.json`](..
 
 ## 显示 DMR 呼号的安全数据来源
 
-当前 Bridge 的 `CallConfig` / `ReceiveEvent` 有远端 Source ID、目标 TG、时隙、CC 等，不含远端呼号或 TA 文本。远端呼号不能使用本机 `BI7KGD`、`USER_INF/CallSign` 或静态订阅值代替。
+当前 Bridge 的 `CallConfig` / `ReceiveEvent` 有远端 Source ID、目标 TG、时隙、CC 等，不含远端呼号或 TA 文本。远端呼号不能使用本机 `N0CALL`、`USER_INF/CallSign` 或静态订阅值代替。
 
 建议显示时先以当前通话的 Source ID 作身份主值；可选地按单个 ID 查询官方 RadioID 服务，并把结果标为外部映射及记录更新时间。缓存应带 TTL/检索时间，离线或无记录时继续显示数字 ID；不要把整份 Radio ID 目录镜像进便携包。call-start 建立远端身份，收到同一通话的补充资料时更新，call-end、断线或会话切换时清除临时身份。本机呼号始终作为本机资料单独显示。
 

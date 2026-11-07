@@ -35,7 +35,7 @@ using wirex::talkgroup_routing::RxPolicy;
 using wirex::talkgroup_routing::TxPolicy;
 using wirex::talkgroup_routing::TxTarget;
 
-constexpr std::uint32_t local_id = 4611355U;
+constexpr std::uint32_t local_id = 4609999U;
 int failures = 0;
 
 void check(bool condition, std::string_view message)

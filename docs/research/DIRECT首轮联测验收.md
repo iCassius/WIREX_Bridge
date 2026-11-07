@@ -9,7 +9,7 @@ FTX-1 DIRECT 个人终端的自动手咪上行、BrandMeister 鹦鹉回声和电
 - 源码提交：`005c5e8e6d95a3ce2f29cf928d59e90c7551ffb1`；正式 clean build 的 26 项离线测试全部通过。
 - 便携候选：`build/bm-radio-bridge-005c5e8`，root 已完成独立包审计。
 - 电台接口：COM5；USB 音频 WaveIn 1、WaveOut 3；FTX-1 设为 HRI `ON`、Node Mode `DIRECT`。
-- BM 预设：中国鹦鹉单呼 `parrot-cn`；呼号 `BI7KGD`、Gateway ID `461135501`、Source ID `4611355`、Master `43.129.83.124:62031`、单呼目标 `460997`、TS2、CC1。凭据不记录在本文。
+- BM 预设：中国鹦鹉单呼 `parrot-cn`；呼号 `N0CALL`、Gateway ID `460999901`、Source ID `4609999`、Master `43.129.83.124:62031`、单呼目标 `460997`、TS2、CC1。凭据不记录在本文。
 
 ## 会话证据
 

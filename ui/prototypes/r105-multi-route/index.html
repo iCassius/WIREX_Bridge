@@ -482,10 +482,10 @@
                 <button class="mode-button" type="button" data-private-mode="all_peers_to_local" aria-pressed="false">本机全部</button>
               </div>
             </div>
-            <p class="mode-description" id="privateModeDescription">仅收所选远端 peer 发往本机 ID 4611355、TS2 的私呼。组呼模式与 TX 目标分别维护。</p>
+            <p class="mode-description" id="privateModeDescription">仅收所选远端 peer 发往本机 ID 4609999、TS2 的私呼。组呼模式与 TX 目标分别维护。</p>
           </div>
-          <div class="subscription-row" style="grid-template-columns:minmax(100px,.8fr) minmax(110px,1fr) minmax(150px,1fr) minmax(110px,.9fr)" data-peer="800001:4611355:2">
-            <div class="channel-cell"><div class="channel-title">peer ID 800001 <span class="pill">TS2 · P</span></div><div class="channel-subtitle">发往本机 ID 4611355 · 测试联系人</div></div>
+          <div class="subscription-row" style="grid-template-columns:minmax(100px,.8fr) minmax(110px,1fr) minmax(150px,1fr) minmax(110px,.9fr)" data-peer="800001:4609999:2">
+            <div class="channel-cell"><div class="channel-title">peer ID 800001 <span class="pill">TS2 · P</span></div><div class="channel-subtitle">发往本机 ID 4609999 · 测试联系人</div></div>
             <div class="remote-cell"><div class="remote-title"><span class="type-dot unknown"></span>呼号未知</div><div class="remote-detail">来源映射未提供</div></div>
             <div class="local-cell"><button class="button quiet" type="button" data-action="toggle-private-listen">私呼已选 · 停止</button><div class="local-detail">Selected private peer allow</div></div>
             <div class="row-actions"><button class="button quiet" type="button" data-action="set-target" data-target="ID 800001" data-detail="私呼 · TS2 · 呼号未知 · 本地备注“测试联系人”">设为 TX 私呼</button></div>
@@ -514,7 +514,7 @@
       blockedGroups: new Set(),
       blockedSources: new Set(),
       privateMode: "selected_peers",
-      allowPrivatePeers: new Set(["800001:4611355:2"]),
+      allowPrivatePeers: new Set(["800001:4609999:2"]),
       currentCallKey: "91:2",
       currentCallPlaying: true,
       rxCleanupPending: false,
@@ -605,14 +605,14 @@
       });
       const description = {
         disabled: "私呼关闭；组呼 RX 策略和 TX 目标不受影响。",
-        selected_peers: "仅收所选远端 peer 发往本机 ID 4611355、TS2 的私呼。组呼模式与 TX 目标分别维护。",
-        all_peers_to_local: "允许发往本机 ID 4611355 的合法私呼；speaker 屏蔽仍跨所有 RX 路由生效。"
+        selected_peers: "仅收所选远端 peer 发往本机 ID 4609999、TS2 的私呼。组呼模式与 TX 目标分别维护。",
+        all_peers_to_local: "允许发往本机 ID 4609999 的合法私呼；speaker 屏蔽仍跨所有 RX 路由生效。"
       }[state.privateMode];
       document.getElementById("privateModeDescription").textContent = description;
       const button = document.querySelector("[data-action='toggle-private-listen']");
       const note = button.parentElement.querySelector(".local-detail");
       const peerBlocked = state.blockedSources.has("800001");
-      const selected = state.allowPrivatePeers.has("800001:4611355:2");
+      const selected = state.allowPrivatePeers.has("800001:4609999:2");
       if (peerBlocked) {
         button.textContent = "peer 已全路由屏蔽";
         button.classList.add("warn");
@@ -874,7 +874,7 @@
       }
 
       if (action === "toggle-private-listen") {
-        const key = "800001:4611355:2";
+        const key = "800001:4609999:2";
         state.privateMode = "selected_peers";
         if (state.allowPrivatePeers.has(key)) {
           state.allowPrivatePeers.delete(key);

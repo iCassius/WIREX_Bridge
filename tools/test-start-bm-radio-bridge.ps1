@@ -152,19 +152,19 @@ try {
         -DefaultPath $credentialPathFixture))) 'manual 默认密码文件存在时只解析独立文件路径'
     Assert-True ($null -eq (Read-ConnectionProfile -Path $connectionProfilePath)) '连接配置文件缺失时应触发首次配置流程'
     $firstRunValues = New-Object System.Collections.Queue
-    foreach ($entry in @('BI7KGD', '461135501', '4611355', '43.129.83.124', '62031', '460997', '2', '1', 'private')) {
+    foreach ($entry in @('N0CALL', '460999901', '4609999', '43.129.83.124', '62031', '460997', '2', '1', 'private')) {
         $firstRunValues.Enqueue($entry)
     }
     $inputReader = { param($prompt) [string]$firstRunValues.Dequeue() }.GetNewClosure()
     $firstRunProfile = Read-ManualConnectionProfile -InputReader $inputReader
-    Assert-True ($firstRunProfile.connection.gateway_id -eq 461135501 -and
+    Assert-True ($firstRunProfile.connection.gateway_id -eq 460999901 -and
         $firstRunProfile.tx_target.destination_id -eq 460997 -and $firstRunProfile.tx_target.kind -ceq 'private') `
         '首次输入应规范化并校验手工连接字段'
     Write-ConnectionProfile -Path $connectionProfilePath -Profile $firstRunProfile
-    Assert-True ((Read-ConnectionProfile -Path $connectionProfilePath).connection.source_id -eq 4611355) `
+    Assert-True ((Read-ConnectionProfile -Path $connectionProfilePath).connection.source_id -eq 4609999) `
         '首次手工输入保存后应可用于下次启动'
     $profileConnection = [pscustomobject][ordered]@{
-        callsign = 'BI7KGD'
+        callsign = 'N0CALL'
         gateway_id = [uint64]4294967295
         source_id = [uint64]16777215
         master = '43.129.83.124'
@@ -214,9 +214,9 @@ try {
     $legacyPrivateConnection = $profileConnection.PSObject.Copy()
     $legacyPrivateConnection.call_kind = 'private'
     $legacyPrivateConnection.destination_id = [uint64]460997
-    $legacyPrivateConnection.source_id = [uint64]4611355
+    $legacyPrivateConnection.source_id = [uint64]4609999
     $legacyPrivateProfile = ConvertTo-ValidatedConnectionProfile -Connection $legacyPrivateConnection -Devices $profileDevices
-    Assert-True ($legacyPrivateProfile.rx_policy.local_private_routes[0].local_destination_id -eq 4611355 -and
+    Assert-True ($legacyPrivateProfile.rx_policy.local_private_routes[0].local_destination_id -eq 4609999 -and
         $legacyPrivateProfile.rx_policy.allow_private_peers.Count -eq 0) '本机私呼默认接收路由已经覆盖同slot TX精确回程'
     $legacyPrivateState = New-RoutingStateDocument -Profile $legacyPrivateProfile
     Assert-True ($legacyPrivateState.rx_policy.local_private_routes.Count -eq 1 -and
@@ -280,11 +280,11 @@ try {
     $legacyDocument = [ordered]@{
         schema_version = 1
         connection = [ordered]@{
-            callsign='BI7KGD'; gateway_id=[uint64]461135501; source_id=[uint64]4611355
+            callsign='N0CALL'; gateway_id=[uint64]460999901; source_id=[uint64]4609999
             master='43.129.83.124'; master_port=[uint64]62031; destination_id=[uint64]460997
             slot=[uint64]2; color_code=[uint64]1; call_kind='private'
         }
-        receive = [ordered]@{ destination_id=[uint64]4611355; slot=[uint64]2; call_kind='private' }
+        receive = [ordered]@{ destination_id=[uint64]4609999; slot=[uint64]2; call_kind='private' }
         devices = [ordered]@{ serial_port='auto'; wave_in_endpoint_id='auto'; wave_out_endpoint_id='auto' }
         transmit_enabled = $true
     }
@@ -299,8 +299,8 @@ try {
     Assert-True ([System.IO.File]::ReadAllText($legacyMigrationPath, [System.Text.Encoding]::UTF8) -ceq $legacyOriginal) `
         '读取旧 schema 1 profile 不得自动改写用户文件'
     $migratedState = New-RoutingStateDocument -Profile $migratedProfile
-    Assert-True ($migratedState.local_source_id -eq 4611355 -and
-        $migratedState.rx_policy.local_private_routes[0].local_destination_id -eq 4611355) `
+    Assert-True ($migratedState.local_source_id -eq 4609999 -and
+        $migratedState.rx_policy.local_private_routes[0].local_destination_id -eq 4609999) `
         '迁移后的 source ID 与 RX 路由必须一致'
     Assert-Throws {
         ConvertTo-ValidatedConnectionProfile -Connection $profileConnection -Devices $profileDevices `
@@ -313,7 +313,7 @@ try {
     Assert-True (@(Get-ChildItem -LiteralPath $temporaryRoot | Where-Object { $_.Name -match '^connection-profile\.json\.bak-' }).Count -ge 1) '覆盖 profile 时应保留原文件备份'
 
     $profileJson = [System.IO.File]::ReadAllText($connectionProfilePath, [System.Text.Encoding]::UTF8)
-    $duplicateConnectionJson = [regex]::Replace($profileJson, '"callsign"\s*:\s*"BI7KGD"', '"callsign": "BI7KGD", "callsign": "BI7KGD"', 1)
+    $duplicateConnectionJson = [regex]::Replace($profileJson, '"callsign"\s*:\s*"N0CALL"', '"callsign": "N0CALL", "callsign": "N0CALL"', 1)
     [System.IO.File]::WriteAllText($connectionProfilePath, $duplicateConnectionJson, (New-Object System.Text.UTF8Encoding($false)))
     Assert-Throws { Read-ConnectionProfile -Path $connectionProfilePath | Out-Null } '连接对象内重复字段必须拒绝'
     $duplicateDeviceJson = [regex]::Replace($profileJson, '"serial_port"\s*:\s*"auto"', '"serial_port": "auto", "serial_port": "auto"', 1)

@@ -422,7 +422,7 @@ struct RxSource {
                  "independent TG91 receive filter setup failed")) return false;
 
     wirex::bm_voice::ReceiveFilter parrot_return{};
-    parrot_return.destination_id = 4611355U;
+    parrot_return.destination_id = 4609999U;
     parrot_return.source_id = 460997U;
     parrot_return.slot = Slot::ts2;
     parrot_return.call_kind = CallKind::private_call;
@@ -486,7 +486,7 @@ struct RxSource {
     RxSource parrot;
     wirex::dmr_call::TxPacket parrot_header{};
     const auto parrot_start = TimePoint{} + 61s;
-    if (!require(parrot.start(make_call(460997U, 4611355U, 32U, Slot::ts2, CallKind::private_call),
+    if (!require(parrot.start(make_call(460997U, 4609999U, 32U, Slot::ts2, CallKind::private_call),
                               parrot_header), "could not create private parrot return")) return false;
     if (!require(pipeline.ingest_rx(parrot_header.datagram, parrot_start).error == Error::none &&
                  pipeline.playback_ready(parrot_start) == Error::none,
@@ -516,25 +516,25 @@ struct RxSource {
     while (const auto event = pipeline.take_event()) {
         parrot_network_end = parrot_network_end ||
             (event->kind == EventKind::network_ended && event->call.source_id == 460997U &&
-             event->call.destination_id == 4611355U);
+             event->call.destination_id == 4609999U);
     }
     if (!require(parrot_network_end, "parrot return EOT did not end the decoded receive call")) return false;
     pipeline.cancel_rx();
 
     filter_check_now = parrot_start + 1s;
-    if (!check_header(make_call(3149876U, 4611355U, 33U, Slot::ts2, CallKind::private_call), false,
+    if (!check_header(make_call(3149876U, 4609999U, 33U, Slot::ts2, CallKind::private_call), false,
                       "private call from an unselected source was accepted as the parrot reply")) return false;
     if (!check_header(make_call(460997U, 1234567U, 34U, Slot::ts2, CallKind::private_call), false,
                       "private reply to another Radio ID was accepted")) return false;
-    if (!check_header(make_call(460997U, 4611355U, 35U, Slot::ts1, CallKind::private_call), false,
+    if (!check_header(make_call(460997U, 4609999U, 35U, Slot::ts1, CallKind::private_call), false,
                       "private reply on a different timeslot was accepted")) return false;
-    if (!check_header(make_call(460997U, 4611355U, 36U, Slot::ts2, CallKind::group), false,
+    if (!check_header(make_call(460997U, 4609999U, 36U, Slot::ts2, CallKind::group), false,
                       "group call was accepted by the private parrot return filter")) return false;
     if (!check_header(make_call(3149876U, 91U, 38U, Slot::ts2, CallKind::group), true,
                       "RX filter changed after a completed parrot return")) return false;
     if (!require(pipeline.set_secondary_receive_filter(std::nullopt) == Error::none,
                  "secondary receive rule did not clear for listen-only mode")) return false;
-    if (!check_header(make_call(460997U, 4611355U, 39U, Slot::ts2, CallKind::private_call), false,
+    if (!check_header(make_call(460997U, 4609999U, 39U, Slot::ts2, CallKind::private_call), false,
                       "listen-only mode retained the optional private parrot return rule")) return false;
     if (!check_header(make_call(3149876U, 91U, 37U, Slot::ts1, CallKind::group), false,
                       "TG91 group on a different timeslot was accepted")) return false;

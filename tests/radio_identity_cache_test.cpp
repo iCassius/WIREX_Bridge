@@ -18,7 +18,7 @@ void test_callsign_validation()
 {
     using wirex::radio_identity_cache::Cache;
     check(Cache::is_valid_callsign("N0CALL"), "a typical ASCII callsign is accepted");
-    check(Cache::is_valid_callsign("BI7KGD/P"), "a slash suffix is accepted as printable ASCII");
+    check(Cache::is_valid_callsign("N0CALL/P"), "a slash suffix is accepted as printable ASCII");
     check(Cache::is_valid_callsign("A123456789"), "a ten-byte callsign is accepted without truncation");
     check(!Cache::is_valid_callsign("n0call"), "lowercase callsigns are rejected and must be normalized by the UI");
     check(!Cache::is_valid_callsign(""), "an empty callsign is rejected");
@@ -68,7 +68,7 @@ void test_source_id_boundaries_and_upsert()
               cache.upsert(1U, 5U, existing_view->callsign) == UpsertResult::updated &&
               cache.find(1U)->callsign == "W1ABC",
           "a lookup view can safely supply a later revision for the same cache entry");
-    check(cache.upsert(2U, 1U, "4611355") == UpsertResult::invalid_callsign,
+    check(cache.upsert(2U, 1U, "4609999") == UpsertResult::invalid_callsign,
           "a numeric source ID cannot be stored as a callsign");
     check(cache.remove(1U, 6U) == UpsertResult::removed && !cache.find(1U).has_value() &&
               cache.size() == 1U,
