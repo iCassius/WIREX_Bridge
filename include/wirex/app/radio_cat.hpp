@@ -309,6 +309,7 @@ public:
                                      const CatCoreStateProvider& core,
                                      const std::atomic<bool>* cancel = nullptr) const;
     /// 功率设置值（非实测输出）。要求核心空闲、MAIN 为语音模式、目标在当前路径范围内。
+    /// force_write 用于 HRI 显示回显，强制写 PC2，即使当前读数已经相同。
     [[nodiscard]] CatResult set_power(const CatConnection& connection, int watts,
                                       const CatCoreStateProvider& core,
                                       const std::atomic<bool>* cancel = nullptr,

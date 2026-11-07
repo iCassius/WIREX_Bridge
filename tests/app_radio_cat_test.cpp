@@ -412,6 +412,14 @@ void test_client_against_fake()
     }
     {
         auto s = std::make_shared<FakeState>();
+        s->power_path = '1';
+        s->power_watts = 5;
+        const auto r = fake_client(s).set_power(connection(), 5, stopped_core(), nullptr, true);
+        check(r.status == CatResultStatus::confirmed && count_writes(*s, "PC2005;") == 1,
+              "forced HRI echo uses the requested PC2 path");
+    }
+    {
+        auto s = std::make_shared<FakeState>();
         const auto r = fake_client(s).set_mode(connection(), CatSide::main, CatMode::fm, stopped_core());
         check(r.status == CatResultStatus::confirmed && count_writes(*s, "MD04;") == 0, "same-value mode is not written");
     }

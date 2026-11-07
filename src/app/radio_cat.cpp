@@ -978,14 +978,15 @@ CatResult CatClient::run(const Request& request) const
                 throw CatFailure(CatError::power_out_of_range,
                                  "当前功率路径的应用范围为 5-" + std::to_string(maximum) + " W；不会自动钳位。");
             }
+            const auto target_path = request.force_power_write ? CatPowerPath::spa1 : old_power.path;
             if (request.force_power_write || old_power.watts != request.watts) {
-                const auto frame = cat_power_command(old_power.path, request.watts);
+                const auto frame = cat_power_command(target_path, request.watts);
                 if (!frame) throw CatFailure(CatError::power_out_of_range, "功率命令无法构造。");
-                write_gate(*frame, "power", old_power.path);
+                write_gate(*frame, "power", target_path);
             }
             const auto power = session.read_value("PC;", CatCommand::pc).power;
             result.observed.power = session.observe(power);
-            if (power.path != old_power.path || power.watts != request.watts) {
+            if (power.path != target_path || power.watts != request.watts) {
                 throw CatFailure(CatError::readback_mismatch, "Power readback was " + std::to_string(power.watts) +
                                                                   " W, not " + std::to_string(request.watts) + " W.");
             }
