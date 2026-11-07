@@ -221,6 +221,8 @@ struct Snapshot {
     std::uint32_t hri_y_lch_frequency_hz{hri_y::default_lch_frequency_hz};
     hri_y::LchMode hri_y_lch_mode{hri_y::LchMode::fm};
     bool hri_y_channel_pending{};
+    // R134：Quick Call 在来话/媒体收尾期间排队等待发送。
+    bool quick_call_pending{};
 };
 
 // FM 中继单段上行的最长时长；超时后引擎自动结束本段（end_reason "timeout"）。
@@ -362,9 +364,9 @@ public:
     //   accepted（集合变化，revision = Snapshot::muted_groups_revision）；idempotent（集合相同）；
     //   invalid "invalid_muted_group"（destination_id==0 或 >16777215）。
     std::future<CommandResult> set_muted_groups(std::vector<talkgroup_routing::GroupRoute> groups);
-    // 向 BM 发送 TG4000 组呼 header+terminator，断开该时隙全部动态组。就绪/忙碌门控与返回码与
-    // quick_call_join 完全一致（accepted；busy "media_busy"；not_ready "quick_call_not_ready"；
-    // failed "quick_call_send_failed" / "quick_call_partial_send"）；结果同样推送 quick_call_result 事件。
+    // 向 BM 发送 TG4000 组呼 header+terminator，断开该时隙全部动态组。就绪/忙碌门控与 quick_call_join 一致：
+    // 媒体忙时 accepted "deferred_media_busy"（同一时隙的新请求替换旧请求）；BM 未就绪时 not_ready。
+    // 已发送/失败结果同样推送 quick_call_result 事件，延后请求可能因断线或超时而丢弃。
     std::future<CommandResult> disconnect_dynamic_groups(dmr_call::Slot slot);
     // ---------- R131 增补（只增不改） ----------
     // 中继段内静音/恢复上行（静噪疑似关门/重新开门）。muted=true 时送入管线的样本清零（帧节奏不变），

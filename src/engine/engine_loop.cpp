@@ -70,6 +70,15 @@ constexpr std::uint64_t bm_bridge_cleanup_ms = 3000U;
 constexpr std::uint64_t snapshot_heartbeat_ms = 100U;
 constexpr auto audio_endpoint_wait = std::chrono::seconds{30};
 
+std::optional<std::size_t> quick_call_slot_index(wirex::dmr_call::Slot slot) noexcept
+{
+    switch (slot) {
+    case wirex::dmr_call::Slot::ts1: return 0U;
+    case wirex::dmr_call::Slot::ts2: return 1U;
+    }
+    return std::nullopt;
+}
+
 struct ProfileSecretGuard {
     bm::Profile& profile;
     ~ProfileSecretGuard() { (void)wipe_secret(profile.password); }
@@ -466,6 +475,12 @@ CommandResult run_loop(Shared& shared, StartConfig config)
     // R131 按组静音输出：已排序去重的 (TG, 时隙) 集合；当前来话命中时播放 PCM 清零，来话发布不变。
     std::vector<wirex::talkgroup_routing::GroupRoute> muted_groups;
     std::uint64_t muted_groups_revision = 0U;
+    struct DeferredQuickCall {
+        wirex::talkgroup_routing::GroupRoute group{};
+        bool disconnect{};
+        Clock::time_point queued_at{};
+    };
+    std::array<std::optional<DeferredQuickCall>, 2U> deferred_quick_calls{};
     auto published_rx_call_muted = [&]() {
         if (!published_rx_call || published_rx_call->kind != wirex::dmr_call::CallKind::group) return false;
         return std::any_of(muted_groups.begin(), muted_groups.end(), [&](const auto& group) {
@@ -525,6 +540,8 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         next.hri_y_lch_frequency_hz = hri_y_fields_sent.lch_frequency_hz;
         next.hri_y_lch_mode = hri_y_fields_sent.lch_mode;
         next.hri_y_channel_pending = pending_hri_y_channel.has_value();
+        next.quick_call_pending = std::any_of(deferred_quick_calls.begin(), deferred_quick_calls.end(),
+            [](const auto& pending) { return pending.has_value(); });
         next.wave_in_open = radio_input_open;
         next.wave_out_open = radio_output_open;
         next.wave_in_endpoint_id = config.audio.expected_wave_in_endpoint_id;
@@ -2605,10 +2622,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
         return true;
     };
 
-    // 结果映射与 control-v2 Dispatcher 对 QuickCallStatus 的错误码一致；revision 字段携带已发帧数。
-    // disconnect=true（R131）：改用 TG4000 断开计划，其余门控、发送与结果完全相同。
-    process_quick_call = [&](const wirex::talkgroup_routing::GroupRoute& group,
-                             bool disconnect) -> CommandResult {
+    auto quick_call_readiness = [&]() {
         const auto pipeline_state = pipeline->snapshot();
         const auto routing_state = pipeline->routing_snapshot().router;
         const auto hri_stream_state = stream_session->snapshot();
@@ -2620,7 +2634,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             !local_audio_state.call_active && !pending_receive_start &&
             !pending_receive_ended && !pending_playback_drain;
         // 原条件含 dispatcher->hello_seen()：协议层在 hello 之前不会转发本命令，引擎侧等价为真。
-        const wirex::quick_call::Readiness readiness{
+        return wirex::quick_call::Readiness{
             !shutdown_requested && !failed && !bm_connection->disable_pending() &&
                 !active_quick_call_plan.has_value(),
             !bm_connection->disable_pending() && network_ready_seen &&
@@ -2632,12 +2646,33 @@ CommandResult run_loop(Shared& shared, StartConfig config)
                 !routing_state.ptt_release_required,
             hri_stream_state.phase == StreamPhase::idle,
             cleanup_idle};
-        const auto gate = wirex::quick_call::check_readiness(readiness);
+    };
+
+    // 结果映射与 control-v2 Dispatcher 对 QuickCallStatus 的错误码一致；revision 字段携带已发帧数。
+    // disconnect=true（R131）：改用 TG4000 断开计划，其余门控、发送与结果完全相同。
+    process_quick_call = [&](const wirex::talkgroup_routing::GroupRoute& group,
+                             bool disconnect) -> CommandResult {
+        const auto gate = wirex::quick_call::check_readiness(quick_call_readiness());
         if (gate == wirex::quick_call::GateStatus::not_ready) {
             return CommandResult{CommandStatus::not_ready, 0U, "quick_call_not_ready"};
         }
         if (gate == wirex::quick_call::GateStatus::busy) {
-            return CommandResult{CommandStatus::busy, 0U, "media_busy"};
+            const std::array<std::uint8_t, 4U> validation_stream{};
+            const auto validation = disconnect
+                ? wirex::quick_call::make_disconnect_plan(call_template.source_id, call_template.gateway_id,
+                    group.slot, call_template.color_code, validation_stream)
+                : wirex::quick_call::make_group_plan(call_template.source_id, call_template.gateway_id,
+                    group, call_template.color_code, validation_stream);
+            if (!validation) {
+                return validation.error == wirex::quick_call::PlanError::disconnect_group_forbidden
+                    ? CommandResult{CommandStatus::forbidden, 0U, "disconnect_group_forbidden"}
+                    : CommandResult{CommandStatus::invalid, 0U, "invalid_or_forbidden_group"};
+            }
+            const auto slot_index = quick_call_slot_index(group.slot);
+            if (!slot_index) return CommandResult{CommandStatus::invalid, 0U, "invalid_or_forbidden_group"};
+            deferred_quick_calls[*slot_index] = DeferredQuickCall{group, disconnect, Clock::now()};
+            status("quick_call_deferred_media_busy");
+            return CommandResult{CommandStatus::accepted, 0U, "deferred_media_busy"};
         }
 
         std::array<std::uint8_t, 4U> stream_id{};
@@ -2656,6 +2691,8 @@ CommandResult run_loop(Shared& shared, StartConfig config)
                 : CommandResult{CommandStatus::invalid, 0U, "invalid_or_forbidden_group"};
         }
 
+        // A newer valid request supersedes any saved request on this slot even if media just became idle.
+        if (const auto slot_index = quick_call_slot_index(group.slot)) deferred_quick_calls[*slot_index].reset();
         active_quick_call_plan = plan_result.plan;
         active_quick_call_next_frame = 0U;
         active_quick_call_frames_sent = 0U;
@@ -3573,6 +3610,30 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             it = deferred_bm_commands.erase(it);
         }
     };
+    auto drain_deferred_quick_calls = [&]() {
+        const auto now = Clock::now();
+        for (auto& pending : deferred_quick_calls) {
+            if (!pending) continue;
+            const auto readiness = quick_call_readiness();
+            if (shutdown_requested || failed || !readiness.bm_ready || !readiness.transport_open) {
+                pending.reset();
+                status("quick_call_deferred_dropped");
+                continue;
+            }
+            if (wirex::quick_call::deferred_expired(now - pending->queued_at)) {
+                pending.reset();
+                status("quick_call_deferred_expired");
+                continue;
+            }
+            if (wirex::quick_call::check_readiness(readiness) != wirex::quick_call::GateStatus::ready) continue;
+            const auto request = *pending;
+            pending.reset();
+            const auto result = process_quick_call(request.group, request.disconnect);
+            if (result.detail == "deferred_media_busy") continue;
+            status(result.status == CommandStatus::accepted
+                ? "quick_call_deferred_executed" : "quick_call_deferred_failed");
+        }
+    };
     bool stop_seen = false;
 
     bool exception_while_running = false;
@@ -4064,6 +4125,7 @@ CommandResult run_loop(Shared& shared, StartConfig config)
             if (transport.is_open()) (void)drain_bm_outbound();
             advance_bm_disconnect();
             if (failed && !shutdown_requested) begin_shutdown(failure_reason);
+            drain_deferred_quick_calls();
 
             if (shutdown_requested && cleanup_deadline && Clock::now() >= *cleanup_deadline) {
                 cleanup_forced = pipeline->snapshot().tx_state != wirex::bm_voice::TxState::idle ||
@@ -4130,6 +4192,13 @@ CommandResult run_loop(Shared& shared, StartConfig config)
 
     // 收尾期间仍在队列中的命令：明确拒绝，避免调用方永久等待。
     try { process_commands(); } catch (...) {}
+    try {
+        for (auto& pending : deferred_quick_calls) {
+            if (!pending) continue;
+            pending.reset();
+            status("quick_call_deferred_dropped");
+        }
+    } catch (...) {}
     try { if (relay_fm_active) finish_relay_fm("shutdown"); } catch (...) {}
     if (!shutdown_requested) begin_shutdown("runtime_loop_ended");
     report_shutdown_terminator_not_sent("shutdown_tx_terminator_not_sent_cleanup_ended");

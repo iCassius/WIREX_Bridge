@@ -544,6 +544,10 @@ void test_group_quick_call_is_a_two_frame_control_call()
     readiness.bm_ready = false;
     check(wirex::quick_call::check_readiness(readiness) == GateStatus::not_ready,
           "Quick Call gate refuses a BM session that is not ready");
+    check(!wirex::quick_call::deferred_expired(std::chrono::milliseconds{59999}) &&
+          wirex::quick_call::deferred_expired(std::chrono::seconds{60}) &&
+          wirex::quick_call::deferred_expired(std::chrono::seconds{61}),
+          "deferred Quick Calls expire exactly at 60 seconds");
 
     auto listen_46001 = group;
     listen_46001.destination_id = 46001U;

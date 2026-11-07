@@ -475,6 +475,7 @@ public:
     [[nodiscard]] unsigned dmrd_count() const noexcept { return dmrd_count_.load(); }
     // R131：目标为 TG4000 的 DMRD 数（DMRD 布局：marker 4 + seq 1 + src 3 + dst 3）。
     [[nodiscard]] unsigned dmrd_tg4000_count() const noexcept { return dmrd_tg4000_count_.load(); }
+    [[nodiscard]] unsigned dmrd_tg3100_count() const noexcept { return dmrd_tg3100_count_.load(); }
     void reject_auth(bool value) noexcept { reject_auth_ = value; }
     [[nodiscard]] bool send_downlink(const wirex::dmr_call::TxPacket& packet) noexcept
     {
@@ -531,7 +532,9 @@ private:
                     const auto byte_at = [&](std::size_t index) {
                         return static_cast<std::uint32_t>(static_cast<unsigned char>(packet[index]));
                     };
-                    if (((byte_at(8U) << 16U) | (byte_at(9U) << 8U) | byte_at(10U)) == 4000U) ++dmrd_tg4000_count_;
+                    const auto destination = (byte_at(8U) << 16U) | (byte_at(9U) << 8U) | byte_at(10U);
+                    if (destination == 4000U) ++dmrd_tg4000_count_;
+                    if (destination == 3100U) ++dmrd_tg3100_count_;
                 }
             } else if (packet.size() >= 5U && packet.substr(0U, 5U) == "RPTCL") {
                 ++disconnect_count_;
@@ -570,6 +573,7 @@ private:
     std::atomic<unsigned> disconnect_count_{0U};
     std::atomic<unsigned> dmrd_count_{0U};
     std::atomic<unsigned> dmrd_tg4000_count_{0U};
+    std::atomic<unsigned> dmrd_tg3100_count_{0U};
     std::mutex remote_mutex_{};
     sockaddr_in remote_{};
     bool remote_valid_{};
@@ -1851,6 +1855,11 @@ void test_bm_only_local_playback_quick_call_and_reconnect()
                   active->local_audio.route == wirex::bm_local_playback::Route::local_output &&
                   active->local_audio.audio_state == wirex::bm_local_playback::AudioState::playing,
                   "local receive publishes the accepted group call and locks the PC output route");
+            const auto deferred = get_within(engine.disconnect_dynamic_groups(wirex::dmr_call::Slot::ts2),
+                                             2s, "defer disconnect during actual downlink");
+            check(deferred.status == CommandStatus::accepted && deferred.detail == "deferred_media_busy" &&
+                  master.dmrd_tg4000_count() == 0U,
+                  "TG4000 waits without sending during an active downlink");
         }
         std::this_thread::sleep_for(60ms);
     }
@@ -1861,6 +1870,10 @@ void test_bm_only_local_playback_quick_call_and_reconnect()
     const auto ended_before = engine.snapshot()->counters.calls_ended;
     check(wait_for_local_rx_idle(engine, ended_before, 4s),
           "local WaveOut playback drain releases the Router lease after network EOT");
+    const auto deferred_deadline = std::chrono::steady_clock::now() + 2s;
+    while (std::chrono::steady_clock::now() < deferred_deadline && master.dmrd_tg4000_count() < 2U)
+        std::this_thread::sleep_for(5ms);
+    check(master.dmrd_tg4000_count() == 2U, "deferred TG4000 is sent after the downlink and cleanup end");
     check(engine.snapshot()->local_audio.audio_state == wirex::bm_local_playback::AudioState::ready &&
           engine.snapshot()->wave_out_open && engine.snapshot()->bm_link == wirex::engine::BmLink::connected,
           "the selected output remains ready for the next BM group call");
@@ -1888,6 +1901,81 @@ void test_bm_only_local_playback_quick_call_and_reconnect()
           "late local WaveOut completion overflow remains visible without stopping BM runtime");
     check(get_within(engine.stop(), 5s, "stop after BM-only local playback").status == CommandStatus::accepted,
           "BM-only playback runtime shuts down cleanly after local output loss");
+}
+
+void test_quick_call_deferred_until_media_idle()
+{
+    using wirex::dmr_call::Slot;
+    LoopbackMaster master(100U);
+    master.reject_auth(false);
+    auto log = std::make_shared<DeviceLog>();
+    std::mutex status_mutex;
+    std::vector<std::string> events;
+    wirex::engine::Engine engine(std::make_shared<FakeDevices>(log, FakeOptions{}));
+    auto config = make_bm_only_config(master, L"fake-output-deferred");
+    config.diagnostics.status = [&](const wirex::engine::StatusRecord& record) {
+        std::lock_guard<std::mutex> lock(status_mutex);
+        events.emplace_back(record.event);
+        return true;
+    };
+    check(get_within(engine.start(std::move(config)), 5s, "start deferred Quick Call runtime").status ==
+              CommandStatus::accepted, "deferred Quick Call runtime starts");
+    check(get_within(engine.set_bm_connection(true, 1U), 2s, "connect deferred Quick Call runtime").status ==
+              CommandStatus::accepted, "deferred Quick Call runtime connects");
+    const auto connected_deadline = std::chrono::steady_clock::now() + 4s;
+    while (std::chrono::steady_clock::now() < connected_deadline &&
+           engine.snapshot()->bm_link != wirex::engine::BmLink::connected) std::this_thread::sleep_for(5ms);
+    check(engine.snapshot()->bm_link == wirex::engine::BmLink::connected, "fake master is ready");
+
+    log->output_drained = false;
+    const auto disconnect = get_within(engine.disconnect_dynamic_groups(Slot::ts2), 2s, "defer disconnect");
+    check(disconnect.status == CommandStatus::accepted && disconnect.detail == "deferred_media_busy" &&
+          engine.snapshot()->quick_call_pending, "busy cleanup defers TG4000 without rejecting it");
+    const auto join = get_within(engine.quick_call_join({3100U, Slot::ts2}), 2s, "replace with activation");
+    check(join.status == CommandStatus::accepted && join.detail == "deferred_media_busy",
+          "new activation replaces the deferred disconnect on the same slot");
+    const auto invalid = get_within(engine.quick_call_join({4000U, Slot::ts2}), 2s, "invalid deferred join");
+    check(invalid.status == CommandStatus::forbidden && invalid.detail == "disconnect_group_forbidden",
+          "invalid activation is rejected without replacing the pending request");
+    const auto other_slot = get_within(engine.disconnect_dynamic_groups(Slot::ts1), 2s, "defer other slot");
+    check(other_slot.status == CommandStatus::accepted && other_slot.detail == "deferred_media_busy",
+          "other slot has an independent pending request");
+    std::this_thread::sleep_for(80ms);
+    check(master.dmrd_count() == 0U, "no deferred frames are sent while media cleanup is busy");
+    log->output_drained = true;
+    const auto sent_deadline = std::chrono::steady_clock::now() + 3s;
+    while (std::chrono::steady_clock::now() < sent_deadline &&
+           (master.dmrd_tg3100_count() < 2U || master.dmrd_tg4000_count() < 2U ||
+            engine.snapshot()->quick_call_pending)) std::this_thread::sleep_for(5ms);
+    check(master.dmrd_tg3100_count() == 2U && master.dmrd_tg4000_count() == 2U &&
+          !engine.snapshot()->quick_call_pending,
+          "each slot executes its latest request exactly once after cleanup");
+
+    log->output_drained = false;
+    const auto pending_disconnect = get_within(engine.disconnect_dynamic_groups(Slot::ts2), 2s,
+                                               "defer disconnect before BM loss");
+    check(pending_disconnect.status == CommandStatus::accepted && pending_disconnect.detail == "deferred_media_busy",
+          "a second disconnect waits while cleanup is busy");
+    check(get_within(engine.set_bm_connection(false, 2U), 2s, "disconnect BM with pending Quick Call").status ==
+              CommandStatus::accepted, "BM disconnect request is accepted");
+    const auto drop_deadline = std::chrono::steady_clock::now() + 2s;
+    while (std::chrono::steady_clock::now() < drop_deadline && engine.snapshot()->quick_call_pending)
+        std::this_thread::sleep_for(5ms);
+    check(!engine.snapshot()->quick_call_pending && master.dmrd_tg4000_count() == 2U,
+          "disconnect drops the pending request without sending it");
+    const auto not_ready = get_within(engine.quick_call_join({91U, Slot::ts2}), 2s, "join while BM disconnected");
+    check(not_ready.status == CommandStatus::not_ready && not_ready.detail == "quick_call_not_ready" &&
+          !engine.snapshot()->quick_call_pending, "BM not ready is rejected immediately and never queued");
+    log->output_drained = true;
+    check(get_within(engine.stop(), 5s, "stop deferred Quick Call runtime").status == CommandStatus::accepted,
+          "deferred Quick Call runtime stops cleanly");
+    {
+        std::lock_guard<std::mutex> lock(status_mutex);
+        check(std::count(events.begin(), events.end(), "quick_call_deferred_media_busy") == 4 &&
+              std::count(events.begin(), events.end(), "quick_call_deferred_executed") == 2 &&
+              std::count(events.begin(), events.end(), "quick_call_deferred_dropped") == 1,
+              "deferral, execution and disconnect drop are reported as status events");
+    }
 }
 
 // R131：静音组的来话照常发布（active_rx_call / 事件），但提交给 WaveOut 的 PCM 全为 0；解除静音后恢复出声。
@@ -3834,6 +3922,7 @@ int main()
         test_wavein_detach_close_failure_and_recovery();
         test_serial_detach_close_failure_is_unconfirmed();
         test_bm_only_local_playback_quick_call_and_reconnect();
+        test_quick_call_deferred_until_media_idle();
         test_bm_only_unavailable_output_still_displays_and_drains();
         test_bm_local_output_submit_failure_keeps_call_visible();
         test_radio_output_switch_keeps_failed_handles_tracked();

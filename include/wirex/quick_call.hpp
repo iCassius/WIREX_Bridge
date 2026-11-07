@@ -4,6 +4,7 @@
 #include "wirex/talkgroup_routing.hpp"
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 
@@ -165,6 +166,13 @@ struct Readiness {
         return GateStatus::busy;
     }
     return GateStatus::ready;
+}
+
+inline constexpr auto deferred_timeout = std::chrono::seconds{60};
+
+[[nodiscard]] constexpr bool deferred_expired(std::chrono::steady_clock::duration age) noexcept
+{
+    return age >= deferred_timeout;
 }
 
 enum class SendStatus : std::uint8_t {
