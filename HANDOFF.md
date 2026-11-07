@@ -1,6 +1,6 @@
 ﻿# WIREX Bridge 交接入口
 
-更新：2026-11-07（R128–R134）。本文只记录当前状态；更早的交接（R103–R127）可用 `git log -- HANDOFF.md` 查看。系统组成见 [ARCHITECTURE](docs/ARCHITECTURE.md)，待办以 [TODO](TODO.md) 为准。
+更新：2026-11-07（R128–R135）。本文只记录当前状态；更早的交接（R103–R127）可用 `git log -- HANDOFF.md` 查看。系统组成见 [ARCHITECTURE](docs/ARCHITECTURE.md)，待办以 [TODO](TODO.md) 为准。
 
 ## 当前版本
 
@@ -10,6 +10,21 @@
 | 旧 WPF UI | `ui/windows/`、launcher、`tools/start-*.ps1`、`--ui-pipe` 适配层仍在仓库中，实机验收通过后退役 |
 | stable `v0.1.0` | tag 指向 `c12b50a`，GitHub Release 已发布；发布审计见 [R124_RELEASE](docs/R124_RELEASE.md) |
 | `v0.2.0` 发布包 | 单 EXE ZIP profile：`wirex build --gui --release` 后用 `wirex package-gui --version v0.2.0` 生成（`package-gui` 由另一 Agent 实现中）；包内为 `WirexBridge.exe` + `licenses/` + `README.md`，不含 `private/device-y.bin` |
+
+## R135 版本号与更新提示（2026-11-07）
+
+- 版本/作者单一来源：`include/wirex/version_rc.h`（普通宏，供 rc.exe 与 C++ 共用），`include/wirex/version.hpp` 由它派生；`src/gui/wirex_gui.rc` 写入 VERSIONINFO（版本、ProductName、CompanyName=BI7KGD、GPL 版权）。
+- `wirex package-gui --version` 校验 `--version`（去掉 `v`）与 `version_rc.h` 一致，不一致直接拒绝；`manifest.json` 记录 `app_version`。
+- GUI：标题栏版本标签 + `by BI7KGD`，检测到新版本时标签变绿并链接发布页；不弹窗，启动后检查一次、之后每 6 h，`ui.update_check: false` 可关闭；窗口标题含版本。
+- 文档：README 版本指针改为 v0.2.2，新增 [docs/releases/v0.2.2.md](docs/releases/v0.2.2.md)。
+
+## 发版步骤
+
+1. 修改 `include/wirex/version_rc.h`（版本与作者；`version.hpp` 自动派生）。
+2. 编写 `docs/releases/vX.Y.Z.md`。
+3. 提交改动。
+4. `wirex build --gui --release`。
+5. `wirex package-gui --version vX.Y.Z`（与版本头文件不一致会被拒绝）。
 
 ## HRI 动态 Y 记录与实机修复（R132–R134）
 
