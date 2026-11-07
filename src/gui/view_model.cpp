@@ -34,6 +34,11 @@ using namespace std::chrono_literals;
 
 constexpr auto kTransientDuration = 6s;
 
+bool hri_downlink_active(const engine::Snapshot& snapshot) {
+    return snapshot.hri_ready && (snapshot.media_owner == MediaOwner::rx_active ||
+        snapshot.media_owner == MediaOwner::rx_draining || snapshot.media_owner == MediaOwner::rx_stopping);
+}
+
 std::string fmt(const char* format, ...) {
     char buffer[512];
     va_list args;
@@ -1670,7 +1675,8 @@ void ViewModel::cat_apply() {
         cat_deferred_text_.clear();
         cat_deferred_retried_ = false;
     }
-    if (!services_.cat.apply || hri_power_request_) return;
+    if (!services_.cat.apply) return;
+    if (hri_power_request_ && (!hri_power_request_->hri || hri_power_request_->cat_submitted)) return;
     if (cat_form.mode_index < 0 || cat_form.mode_index >= 4 ||
         cat_form.power_index < 0 || cat_form.power_index >= 5) {
         flash(fmt(tr(Str::result_fmt), tr(Str::op_cat), tr(Str::st_invalid)), true);
@@ -1697,7 +1703,12 @@ void ViewModel::cat_apply() {
         flash(fmt(tr(Str::result_fmt), tr(Str::op_cat), tr(Str::st_invalid)), true);
         return;
     }
-    const bool power_changed = !current.observed_power_w || *current.observed_power_w != watts ||
+    if (hri_power_request_ && hri_power_request_->revision == cat_form_edit_revision_[2]) {
+        cat_mode_after_power_ = settings;
+        cat_mode_after_power_revisions_ = cat_form_edit_revision_;
+        return;
+    }
+    const bool power_changed = hri_power_request_ || !current.observed_power_w || *current.observed_power_w != watts ||
         config_.desired_power_watts != watts ||
         (snapshot_->hri_ready && snapshot_->hri_y_tx_power_deciwatts != watts * 10U);
     if (!power_changed) {
@@ -1707,14 +1718,15 @@ void ViewModel::cat_apply() {
     cat_mode_after_power_ = settings;
     cat_mode_after_power_revisions_ = cat_form_edit_revision_;
     const bool hri = snapshot_->hri_ready && snapshot_->phase == Phase::running;
-    hri_power_request_ = HriPowerRequest{watts, cat_form_edit_revision_[2], hri, hri, false, false, {}};
+    const auto revision = cat_form_edit_revision_[2];
+    hri_power_request_ = HriPowerRequest{watts, revision, hri, hri, !hri, false, false, {}};
     if (!hri) {
         submit_cat_power(watts, false, cat_form_edit_revision_[2]);
         return;
     }
     track(Str::op_cat, engine_.set_hri_tx_power(static_cast<std::uint16_t>(watts * 10U)),
-        [this](const CommandResult& result) {
-            if (!hri_power_request_) return;
+        [this, revision](const CommandResult& result) {
+            if (!hri_power_request_ || hri_power_request_->revision != revision) return;
             if (result.status != CommandStatus::accepted && result.status != CommandStatus::idempotent) {
                 hri_power_request_.reset();
                 if (cat_mode_after_power_) {
@@ -1724,10 +1736,9 @@ void ViewModel::cat_apply() {
                 }
                 return;
             }
-            hri_power_request_->waiting_for_engine = result.detail == "deferred_hri_downlink";
-            if (hri_power_request_->waiting_for_engine) flash(tr(Str::hri_y_deferred), false, Str::op_cat);
+            hri_power_request_->engine_result_received = true;
+            if (result.detail == "deferred_hri_downlink") flash(tr(Str::hri_y_deferred), false, Str::op_cat);
         });
-    submit_cat_power(watts, true, cat_form_edit_revision_[2]);
 }
 
 void ViewModel::submit_cat_mode_frequency(services::CatSettings settings,
@@ -1854,13 +1865,14 @@ void ViewModel::service_hri_power_confirmation() {
     }
     if (request.hri && !snapshot_->hri_ready) return;
     if (request.waiting_for_engine) {
-        if (!snapshot_->hri_ready || snapshot_->hri_y_tx_power_pending ||
+        if (!request.engine_result_received || snapshot_->hri_y_tx_power_pending || hri_downlink_active(*snapshot_) ||
             snapshot_->hri_y_tx_power_deciwatts != request.watts * 10U || cat_.busy) return;
         request.waiting_for_engine = false;
-        request.confirm_after = std::chrono::steady_clock::now() + std::chrono::milliseconds{1200};
+        submit_cat_power(request.watts, true, request.revision);
         return;
     }
     if (!request.confirm_after || request.confirmation_requested || cat_.busy ||
+        snapshot_->hri_y_tx_power_pending || hri_downlink_active(*snapshot_) ||
         std::chrono::steady_clock::now() < *request.confirm_after) return;
     if (!services_.cat.query) {
         hri_power_request_.reset();
@@ -1898,9 +1910,12 @@ void ViewModel::service_hri_channel_confirmation() {
         }
         return;
     }
+    if (snapshot_->hri_y_channel_pending || hri_downlink_active(*snapshot_)) {
+        request.waiting_for_engine = true;
+        return;
+    }
     if (request.waiting_for_engine) {
-        if (snapshot_->hri_y_channel_pending || snapshot_->hri_y_lch_frequency_hz != request.hz ||
-            snapshot_->hri_y_lch_mode != request.mode) return;
+        if (snapshot_->hri_y_lch_frequency_hz != request.hz || snapshot_->hri_y_lch_mode != request.mode) return;
         request.waiting_for_engine = false;
         request.confirm_after = std::chrono::steady_clock::now() + std::chrono::milliseconds{1200};
     }

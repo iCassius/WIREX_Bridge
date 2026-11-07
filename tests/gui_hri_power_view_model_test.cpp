@@ -264,18 +264,33 @@ void test_deferred_hri_power()
 {
     RecordingEngine engine(true);
     engine.defer_power = true;
+    engine.state->media_owner = wirex::talkgroup_routing::MediaOwner::rx_active;
     Harness h;
     gui::ViewModel vm(engine, h.services(), true);
     select_5w(vm);
     vm.cat_apply();
     (void)vm.pump();
+    check(h.calls.empty() && !vm.transient_failed(), "deferred Y does not send CAT or report an error");
+    vm.cat_form.power_index = 1;
+    vm.mark_cat_form_edited(gui::CatFormField::power);
+    vm.cat_apply();
     (void)vm.pump();
-    check(!h.calls.empty() && h.calls[0] == "PC-forced:5" && h.saves == 0,
-          "deferred Y still sends CAT power immediately");
+    check(engine.calls.size() == 2U && engine.calls.back() == "Y:100" && h.calls.empty(),
+          "a newer power replaces the deferred request without a CAT write");
     engine.finish_downlink();
     (void)vm.pump();
+    check(h.calls.empty(), "cleared pending flag alone does not bypass active downlink");
+    engine.state = std::make_shared<engine::Snapshot>(*engine.state);
+    ++engine.state->seq;
+    engine.state->media_owner = wirex::talkgroup_routing::MediaOwner::idle;
     (void)vm.pump();
-    check(h.calls.size() == 1U, "deferred Y does not send CAT power twice");
+    (void)vm.pump();
+    check(h.calls.size() == 1U && h.calls[0] == "PC-forced:10", "only the latest deferred power is echoed");
+    std::this_thread::sleep_for(1300ms);
+    (void)vm.pump();
+    (void)vm.pump();
+    check(h.calls.size() == 2U && h.calls[1] == "query" && h.saves == 1 &&
+          h.saved.desired_power_watts == 10U, "deferred echo is read back and persisted");
 }
 
 void test_without_hri()
@@ -299,9 +314,10 @@ void test_with_hri(bool mismatch)
     gui::ViewModel vm(engine, h.services(), true);
     select_5w(vm);
     vm.cat_apply();
-    check(engine.calls.size() == 1U && engine.calls[0] == "Y:50" &&
-          !h.calls.empty() && h.calls[0] == "PC-forced:5", "HRI power sends both Y and CAT immediately");
+    check(engine.calls.size() == 1U && engine.calls[0] == "Y:50" && h.calls.empty(),
+          "HRI power waits for the engine result before sending CAT");
     (void)vm.pump();
+    check(!h.calls.empty() && h.calls[0] == "PC-forced:5", "accepted HRI power sends CAT echo");
     (void)vm.pump();
     check(h.saves == 0, "HRI power is not persisted before post-Y confirmation");
     std::this_thread::sleep_for(1300ms);
@@ -373,6 +389,34 @@ void test_deferred_channel()
           "deferred channel queries after Y and accepts matching readback");
 }
 
+void test_channel_readback_waits_for_pending()
+{
+    RecordingEngine engine(true);
+    Harness h;
+    gui::ViewModel vm(engine, h.services(), true);
+    (void)vm.pump();
+    vm.cat_form.frequency_mhz = "146.000";
+    vm.mark_cat_form_edited(gui::CatFormField::frequency);
+    vm.cat_apply();
+    (void)vm.pump();
+    engine.state = std::make_shared<engine::Snapshot>(*engine.state);
+    ++engine.state->seq;
+    engine.state->hri_y_channel_pending = true;
+    std::this_thread::sleep_for(1300ms);
+    (void)vm.pump();
+    check(h.calls.empty(), "channel readback waits whenever the engine reports a pending channel");
+    engine.state = std::make_shared<engine::Snapshot>(*engine.state);
+    ++engine.state->seq;
+    engine.state->hri_y_channel_pending = false;
+    h.cat.observed_frequency_hz = 146000000U;
+    (void)vm.pump();
+    std::this_thread::sleep_for(1300ms);
+    (void)vm.pump();
+    (void)vm.pump();
+    check(h.calls.size() == 1U && h.calls[0] == "query" && !vm.transient_failed(),
+          "channel readback resumes after pending clears");
+}
+
 void test_invalid_frequency()
 {
     for (const char* text : {"143.999", "148.001", "429.999", "440.001", "145.1001", "invalid"}) {
@@ -402,6 +446,7 @@ int main()
     test_channel(false);
     test_channel(true);
     test_deferred_channel();
+    test_channel_readback_waits_for_pending();
     test_invalid_frequency();
     std::cout << "PASS: " << assertions << " HRI power ViewModel assertions\n";
     return 0;

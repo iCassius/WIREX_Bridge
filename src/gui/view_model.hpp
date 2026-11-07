@@ -394,6 +394,7 @@ private:
         std::uint64_t revision{};
         bool hri{};
         bool waiting_for_engine{};
+        bool engine_result_received{};
         bool cat_submitted{};
         bool confirmation_requested{};
         std::optional<std::chrono::steady_clock::time_point> confirm_after{};
