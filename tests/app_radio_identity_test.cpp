@@ -174,6 +174,8 @@ void test_cache_compat_and_query()
     const auto mappings = native_mappings(path);
     check(mappings.size() == 1U && mappings[0].source_id == 1001U && mappings[0].callsign == "BI7ABC",
           "native mappings: fresh, first-per-id, uppercase");
+    check(mappings[0].country == std::optional<std::string>("China") && !mappings[0].state.has_value(),
+          "native mappings carry country/state for call display");
 
     // 新鲜度规则
     CacheEntry entry{};
