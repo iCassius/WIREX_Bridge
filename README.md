@@ -10,10 +10,6 @@
 >
 > FM 中继为实验功能，并非 Yaesu 官方功能。The FM relay is experimental and is not a Yaesu feature.
 
-> **版本说明**：当前发布为 v0.2.2 原生单 EXE GUI，界面与本页早期的 WPF 描述不同，详见 [docs/releases/v0.2.2.md](docs/releases/v0.2.2.md)。
-
-> **更新提示**：标题栏的版本标签在检测到新版本时变绿（如 `v0.2.2 → v0.2.3`），点击打开 GitHub 发布页；程序启动后检查一次、之后每 6 小时检查一次，失败静默；可在 `config.json` 设置 `ui.update_check: false` 关闭。
-
 ---
 
 ## 一、电台操作步骤
