@@ -481,7 +481,7 @@ namespace wirex::gui {
 #define WIREX_GUI_STRINGS_R136_CALLER_REGION(X) \
     X(caller_region_tip_fmt, "国家/地区：%s",                        "Country/region: %s")             /* new */
 // R136 title/links：BM 密码 / API Key 旁的“设置”链接。
-#define WIREX_GUI_STRINGS_R136(X) \
+#define WIREX_GUI_STRINGS_R136_TITLE_LINKS(X) \
     X(bm_link_setup,        "设置",                                "Set up")                         /* new */ \
     X(bm_link_setup_tip,    "打开 BrandMeister 自助服务页，设置账号密码", \
                             "Open the BrandMeister self-care page to set your account password") /* new */ \
@@ -500,6 +500,7 @@ enum class Str : std::uint16_t {
     WIREX_GUI_STRINGS_R135(WIREX_GUI_STR_ENUM)
     WIREX_GUI_STRINGS_R136(WIREX_GUI_STR_ENUM)
     WIREX_GUI_STRINGS_R136_CALLER_REGION(WIREX_GUI_STR_ENUM)
+    WIREX_GUI_STRINGS_R136_TITLE_LINKS(WIREX_GUI_STR_ENUM)
 #undef WIREX_GUI_STR_ENUM
         count_
 };
@@ -524,6 +525,7 @@ inline constexpr StrEntry kStrings[] = {
     WIREX_GUI_STRINGS_R135(WIREX_GUI_STR_ROW)
     WIREX_GUI_STRINGS_R136(WIREX_GUI_STR_ROW)
     WIREX_GUI_STRINGS_R136_CALLER_REGION(WIREX_GUI_STR_ROW)
+    WIREX_GUI_STRINGS_R136_TITLE_LINKS(WIREX_GUI_STR_ROW)
 #undef WIREX_GUI_STR_ROW
 };
 static_assert(sizeof(kStrings) / sizeof(kStrings[0]) == static_cast<std::size_t>(Str::count_));
