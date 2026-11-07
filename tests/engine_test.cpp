@@ -3090,6 +3090,12 @@ void test_relay_fm_rejected_during_bm_downlink()
     check(power.status == CommandStatus::accepted && power.detail == "deferred_hri_downlink" &&
           engine.snapshot()->hri_y_tx_power_pending && engine.snapshot()->hri_y_tx_power_deciwatts == 250U,
           "HRI power remains unchanged and is queued during downlink");
+    const auto channel = get_within(engine.set_hri_channel(430500000U, wirex::hri_y::LchMode::c4fm_dn), 2s,
+                                    "channel during downlink");
+    check(channel.status == CommandStatus::accepted && channel.detail == "deferred_hri_downlink" &&
+          engine.snapshot()->hri_y_channel_pending && engine.snapshot()->hri_y_tx_power_pending &&
+          engine.snapshot()->hri_y_lch_frequency_hz == 145100000U,
+          "channel and power are independently deferred during downlink");
     const auto rejected = get_within(engine.relay_fm_start(), 2s, "relay_fm_start during downlink");
     check(rejected.status == CommandStatus::busy && rejected.detail == "relay_fm_busy_downlink",
           "relay_fm_start is busy during BM downlink: " + rejected.detail);
@@ -3099,8 +3105,17 @@ void test_relay_fm_rejected_during_bm_downlink()
     (void)send_test_downlink_terminator(master, transmitter);
     (void)wait_for_local_rx_idle(engine, ended_before, 4s);
     check(wait_for_snapshot(engine, 3s, [](const wirex::engine::Snapshot& s) {
-              return !s.hri_y_tx_power_pending && s.hri_y_tx_power_deciwatts == 100U;
-          }), "queued HRI power is sent after downlink ends");
+              return !s.hri_y_tx_power_pending && s.hri_y_tx_power_deciwatts == 100U &&
+                  !s.hri_y_channel_pending && s.hri_y_lch_frequency_hz == 430500000U &&
+                  s.hri_y_lch_mode == wirex::hri_y::LchMode::c4fm_dn;
+          }), "queued HRI power and channel are sent after downlink ends");
+    {
+        std::lock_guard<std::mutex> lock(log->y_mutex);
+        check(!log->y_bodies.empty() && log->y_bodies.back()[0x0E] == '2' &&
+              std::string(log->y_bodies.back().begin() + 0x10, log->y_bodies.back().begin() + 0x1A) == "0430500000" &&
+              std::string(log->y_bodies.back().begin() + 0x2F, log->y_bodies.back().begin() + 0x33) == "0100",
+              "deferred Y contains both updates");
+    }
     check(get_within(engine.stop(), 5s, "stop after downlink rejection").status == CommandStatus::accepted,
           "runtime stops after downlink rejection test");
 }
@@ -3426,6 +3441,12 @@ void test_hri_reconnects_after_serial_transport_error()
     check(wait_for_snapshot(engine, 3s, [](const wirex::engine::Snapshot& s) {
               return s.hri_y_tx_power_deciwatts == 100U;
           }), "updated power is sent before reconnect");
+    check(get_within(engine.set_hri_channel(430500000U, wirex::hri_y::LchMode::c4fm_dn), 2s,
+                     "set channel before reconnect").status == CommandStatus::accepted,
+          "channel update is accepted before reconnect");
+    check(wait_for_snapshot(engine, 3s, [](const wirex::engine::Snapshot& s) {
+              return s.hri_y_lch_frequency_hz == 430500000U && s.hri_y_lch_mode == wirex::hri_y::LchMode::c4fm_dn;
+          }), "updated channel is sent before reconnect");
     (void)engine.drain_events();
     const auto opened_before = log->serial_opened.load();
 
@@ -3460,8 +3481,10 @@ void test_hri_reconnects_after_serial_transport_error()
     {
         std::lock_guard<std::mutex> lock(log->y_mutex);
         check(!log->y_bodies.empty() &&
-              std::string(log->y_bodies.back().begin() + 0x2F, log->y_bodies.back().begin() + 0x33) == "0100",
-              "first Y after reconnect retains the last selected power");
+              std::string(log->y_bodies.back().begin() + 0x2F, log->y_bodies.back().begin() + 0x33) == "0100" &&
+              log->y_bodies.back()[0x0E] == '2' &&
+              std::string(log->y_bodies.back().begin() + 0x10, log->y_bodies.back().begin() + 0x1A) == "0430500000",
+              "first Y after reconnect retains power and channel");
     }
     check(engine.snapshot()->failure_reason.find("clock_regressed") == std::string::npos &&
               engine.snapshot()->phase == wirex::engine::Phase::running,
@@ -3635,11 +3658,17 @@ void test_hri_dynamic_power()
     config.start_radio = false;
     check(get_within(engine.start(config), 5s, "start power test").status == CommandStatus::accepted,
           "runtime starts without HRI for dynamic power test");
+    const auto disconnected = get_within(engine.set_hri_channel(145200000U, wirex::hri_y::LchMode::fm), 2s,
+                                         "channel without HRI");
+    check(disconnected.status == CommandStatus::not_ready && disconnected.detail == "hri_not_connected",
+          "channel update requires an HRI connection");
     wirex::engine::RadioStartConfig radio{};
     radio.hri_port = config.hri_port;
     radio.hri_body_file = config.hri_body_file;
     radio.audio = config.audio;
     radio.initial_tx_power_deciwatts = std::uint16_t{50U};
+    radio.initial_lch_frequency_hz = 145200000U;
+    radio.initial_lch_mode = wirex::hri_y::LchMode::c4fm_dn;
     check(get_within(engine.connect_radio(radio), 2s, "connect with power").status == CommandStatus::accepted,
           "radio accepts initial 50 deciwatts");
     check(wait_for_snapshot(engine, 4s, [](const wirex::engine::Snapshot& s) { return s.hri_ready; }),
@@ -3647,8 +3676,10 @@ void test_hri_dynamic_power()
     {
         std::lock_guard<std::mutex> lock(log->y_mutex);
         check(!log->y_bodies.empty() && log->y_bodies.front().size() == 100U &&
-              std::string(log->y_bodies.front().begin() + 0x2F, log->y_bodies.front().begin() + 0x33) == "0050",
-              "first Y carries 50 deciwatts");
+              std::string(log->y_bodies.front().begin() + 0x2F, log->y_bodies.front().begin() + 0x33) == "0050" &&
+              log->y_bodies.front()[0x0E] == '2' &&
+              std::string(log->y_bodies.front().begin() + 0x10, log->y_bodies.front().begin() + 0x1A) == "0145200000",
+              "first Y carries initial power and channel");
     }
     check(get_within(engine.set_hri_tx_power(100U), 2s, "set power").status == CommandStatus::accepted,
           "runtime power change is accepted");
@@ -3658,8 +3689,78 @@ void test_hri_dynamic_power()
     const auto invalid = get_within(engine.set_hri_tx_power(55U), 2s, "invalid power");
     check(invalid.status == CommandStatus::invalid && engine.snapshot()->hri_y_tx_power_deciwatts == 100U,
           "non-integral watt power is rejected without changing Y");
+    check(get_within(engine.set_hri_tx_power(50U), 2s, "set power before channel").status == CommandStatus::accepted,
+          "power update before channel is accepted");
+    check(get_within(engine.set_hri_channel(430500000U, wirex::hri_y::LchMode::fm), 2s, "set channel").status ==
+              CommandStatus::accepted, "channel update is accepted");
+    check(wait_for_snapshot(engine, 3s, [](const wirex::engine::Snapshot& s) {
+              return s.hri_y_tx_power_deciwatts == 50U && s.hri_y_lch_frequency_hz == 430500000U &&
+                  s.hri_y_lch_mode == wirex::hri_y::LchMode::fm;
+          }), "next Y sends both power and channel");
+    {
+        std::lock_guard<std::mutex> lock(log->y_mutex);
+        check(!log->y_bodies.empty() && log->y_bodies.back()[0x0E] == '1' &&
+              std::string(log->y_bodies.back().begin() + 0x10, log->y_bodies.back().begin() + 0x1A) == "0430500000" &&
+              std::string(log->y_bodies.back().begin() + 0x2F, log->y_bodies.back().begin() + 0x33) == "0050",
+              "power and frequency survive successive updates");
+    }
+    std::vector<std::uint8_t> previous_y;
+    std::size_t previous_count = 0U;
+    {
+        std::lock_guard<std::mutex> lock(log->y_mutex);
+        if (!log->y_bodies.empty()) previous_y = log->y_bodies.back();
+        previous_count = log->y_bodies.size();
+    }
+    const auto bad_frequency = get_within(engine.set_hri_channel(145100500U, wirex::hri_y::LchMode::fm), 2s,
+                                          "invalid frequency");
+    const auto bad_mode = get_within(engine.set_hri_channel(145100000U, static_cast<wirex::hri_y::LchMode>(99)), 2s,
+                                     "invalid mode");
+    check(bad_frequency.status == CommandStatus::invalid && bad_frequency.detail == "invalid_hri_y_frequency" &&
+          bad_mode.status == CommandStatus::invalid && bad_mode.detail == "invalid_hri_y_mode" &&
+          engine.snapshot()->hri_y_lch_frequency_hz == 430500000U, "invalid channel leaves snapshot unchanged");
+    bool unchanged_y = false;
+    const auto deadline = std::chrono::steady_clock::now() + 3s;
+    while (std::chrono::steady_clock::now() < deadline) {
+        {
+            std::lock_guard<std::mutex> lock(log->y_mutex);
+            if (log->y_bodies.size() > previous_count) {
+                unchanged_y = !previous_y.empty() && log->y_bodies.back() == previous_y;
+                break;
+            }
+        }
+        std::this_thread::sleep_for(10ms);
+    }
+    check(unchanged_y, "next Y remains byte-identical after invalid channel commands");
     check(get_within(engine.stop(), 5s, "stop power test").status == CommandStatus::accepted,
           "runtime stops after power test");
+}
+
+void test_hri_start_channel()
+{
+    for (const bool custom : {false, true}) {
+        auto log = std::make_shared<DeviceLog>();
+        wirex::engine::Engine engine(std::make_shared<FakeDevices>(log, FakeOptions{}));
+        auto config = base_config();
+        if (custom) {
+            config.initial_lch_frequency_hz = 145200000U;
+            config.initial_lch_mode = wirex::hri_y::LchMode::c4fm_dn;
+        }
+        check(get_within(engine.start(config), 5s, "start initial channel").status == CommandStatus::accepted,
+              "start accepts initial channel");
+        check(wait_for_snapshot(engine, 4s, [](const wirex::engine::Snapshot& s) { return s.hri_ready; }),
+              "start channel reaches ready");
+        {
+            std::lock_guard<std::mutex> lock(log->y_mutex);
+            const auto& approved = wirex::approved_resources::hri_y_template;
+            check(!log->y_bodies.empty() && (custom
+                ? log->y_bodies.front()[0x0E] == '2' &&
+                  std::string(log->y_bodies.front().begin() + 0x10, log->y_bodies.front().begin() + 0x1A) == "0145200000"
+                : std::equal(log->y_bodies.front().begin(), log->y_bodies.front().end(), approved.begin(), approved.end())),
+                "start first Y uses initial channel or exact default template");
+        }
+        check(get_within(engine.stop(), 5s, "stop initial channel").status == CommandStatus::accepted,
+              "initial channel runtime stops");
+    }
 }
 
 void test_embedded_hri_template()
@@ -3716,6 +3817,7 @@ int main()
         test_quarantined_rx_output_cleanup_gate_requires_t0_and_full_drain();
         test_embedded_hri_template();
         test_hri_dynamic_power();
+        test_hri_start_channel();
         test_commands_before_start();
         test_start_failures();
         test_hri_handshake_failures_report_exact_stop_reason();

@@ -412,6 +412,15 @@ std::future<CommandResult> Engine::set_hri_tx_power(std::uint16_t deciwatts)
     return impl_->enqueue(std::move(command));
 }
 
+std::future<CommandResult> Engine::set_hri_channel(std::uint32_t lch_frequency_hz, hri_y::LchMode mode)
+{
+    Command command{};
+    command.kind = CommandKind::set_hri_channel;
+    command.hri_lch_frequency_hz = lch_frequency_hz;
+    command.hri_lch_mode = mode;
+    return impl_->enqueue(std::move(command));
+}
+
 std::future<CommandResult> Engine::disconnect_radio()
 {
     Command command{};

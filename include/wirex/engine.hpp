@@ -10,6 +10,7 @@
 #include "wirex/bm_local_playback.hpp"
 #include "wirex/dmr_call.hpp"
 #include "wirex/engine_diagnostics.hpp"
+#include "wirex/hri_y_body.hpp"
 #include "wirex/talkgroup_routing.hpp"
 
 #include <chrono>
@@ -45,6 +46,8 @@ struct RadioStartConfig {
     bool ap_mode{false};
     // 首条周期 Y 使用的 A 通道发射功率，单位 0.1 W；省略时使用批准模板默认值 250。
     std::optional<std::uint16_t> initial_tx_power_deciwatts{};
+    std::optional<std::uint32_t> initial_lch_frequency_hz{};
+    std::optional<hri_y::LchMode> initial_lch_mode{};
 };
 
 struct BmTarget {
@@ -90,6 +93,8 @@ struct StartConfig {
     std::uint64_t hri_reconnect_max_interval_ms{0U};
     // 启动时首条 HRI Y 使用的 A 通道功率，单位 0.1 W；省略时使用 250。
     std::optional<std::uint16_t> initial_tx_power_deciwatts{};
+    std::optional<std::uint32_t> initial_lch_frequency_hz{};
+    std::optional<hri_y::LchMode> initial_lch_mode{};
 };
 
 // ---------- 状态快照（只读、不可变） ----------
@@ -213,6 +218,9 @@ struct Snapshot {
     // 当前已装入会话、尚未被下行锁定延后的 Y 功率。
     std::uint16_t hri_y_tx_power_deciwatts{250U};
     bool hri_y_tx_power_pending{};
+    std::uint32_t hri_y_lch_frequency_hz{hri_y::default_lch_frequency_hz};
+    hri_y::LchMode hri_y_lch_mode{hri_y::LchMode::fm};
+    bool hri_y_channel_pending{};
 };
 
 // FM 中继单段上行的最长时长；超时后引擎自动结束本段（end_reason "timeout"）。
@@ -306,6 +314,7 @@ public:
     std::future<CommandResult> connect_radio(RadioStartConfig config);
     // 更新下一条 HRI Y 的 A 通道发射功率，单位 0.1 W。
     std::future<CommandResult> set_hri_tx_power(std::uint16_t deciwatts);
+    std::future<CommandResult> set_hri_channel(std::uint32_t lch_frequency_hz, hri_y::LchMode mode);
     std::future<CommandResult> disconnect_radio();
     std::future<CommandResult> replace_rx_policy(std::uint64_t expected_revision,
                                                  talkgroup_routing::RxPolicy policy);
