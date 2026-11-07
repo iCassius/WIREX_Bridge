@@ -8,7 +8,8 @@ namespace {
 
 bool is_whitelisted(std::size_t offset) noexcept
 {
-    return offset == mode_offset || offset == ptt_mirror_offset ||
+    return offset == mode_offset || offset == ptt_mirror_offset || offset == lch_mode_offset ||
+        (offset >= lch_frequency_offset && offset < lch_frequency_offset + lch_frequency_length) ||
         (offset >= tx_power_offset && offset < tx_power_offset + tx_power_length);
 }
 
@@ -39,6 +40,12 @@ bool valid_tx_power_deciwatts(std::uint16_t deciwatts) noexcept
         deciwatts % 10U == 0U;
 }
 
+bool valid_lch_frequency_hz(std::uint32_t hz) noexcept
+{
+    return hz % 1000U == 0U && ((hz >= 144000000U && hz <= 148000000U) ||
+                                (hz >= 430000000U && hz <= 440000000U));
+}
+
 BuildResult build(const std::array<std::uint8_t, body_size>& approved_template,
                   const DynamicFields& fields, bool ap_mode)
 {
@@ -48,7 +55,22 @@ BuildResult build(const std::array<std::uint8_t, body_size>& approved_template,
         return result;
     }
 
+    if (!valid_lch_frequency_hz(fields.lch_frequency_hz)) {
+        result.error = "invalid_hri_y_frequency";
+        return result;
+    }
+    if (fields.lch_mode != LchMode::fm && fields.lch_mode != LchMode::c4fm_dn) {
+        result.error = "invalid_hri_y_mode";
+        return result;
+    }
+
     result.body = approved_template;
+    result.body[lch_mode_offset] = static_cast<std::uint8_t>(fields.lch_mode == LchMode::fm ? '1' : '2');
+    auto frequency = fields.lch_frequency_hz;
+    for (std::size_t i = lch_frequency_length; i > 0U; --i) {
+        result.body[lch_frequency_offset + i - 1U] = static_cast<std::uint8_t>('0' + frequency % 10U);
+        frequency /= 10U;
+    }
     result.body[mode_offset] = static_cast<std::uint8_t>(ap_mode ? '1' : '2');
     const auto power = fields.lch_tx_power_deciwatts;
     result.body[tx_power_offset] = static_cast<std::uint8_t>('0' + (power / 1000U) % 10U);
@@ -67,6 +89,14 @@ bool validate(const std::array<std::uint8_t, body_size>& approved_template,
               const std::uint8_t* body, std::size_t size, bool ap_mode) noexcept
 {
     if (body == nullptr || size != body_size || !valid_mode(body[mode_offset], ap_mode)) return false;
+    if (body[lch_mode_offset] != '1' && body[lch_mode_offset] != '2') return false;
+    std::uint64_t frequency = 0U;
+    for (std::size_t i = 0U; i < lch_frequency_length; ++i) {
+        const auto digit = body[lch_frequency_offset + i];
+        if (digit < '0' || digit > '9') return false;
+        frequency = frequency * 10U + static_cast<unsigned>(digit - '0');
+    }
+    if (frequency > 440000000U || !valid_lch_frequency_hz(static_cast<std::uint32_t>(frequency))) return false;
     // The non-import X branch mirrors this byte verbatim, including unknown PTT values.
     std::uint16_t power = 0U;
     if (!parse_power(body + tx_power_offset, power) || !valid_tx_power_deciwatts(power)) return false;

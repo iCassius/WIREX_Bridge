@@ -54,6 +54,32 @@ void test_power_encoding()
     }
 }
 
+void test_channel_encoding()
+{
+    struct Case { std::uint32_t hz; const char* text; };
+    constexpr Case cases[]{{145100000U, "0145100000"}, {145200000U, "0145200000"},
+        {144000000U, "0144000000"}, {148000000U, "0148000000"},
+        {430000000U, "0430000000"}, {439995000U, "0439995000"}, {440000000U, "0440000000"}};
+    for (const auto& test : cases) {
+        for (const auto mode : {wirex::hri_y::LchMode::fm, wirex::hri_y::LchMode::c4fm_dn}) {
+            const auto result = wirex::hri_y::build(wirex::approved_resources::hri_y_template,
+                wirex::hri_y::DynamicFields{250U, test.hz, mode}, false);
+            check(result.ok && std::string(result.body.begin() + wirex::hri_y::lch_frequency_offset,
+                  result.body.begin() + wirex::hri_y::lch_frequency_offset + wirex::hri_y::lch_frequency_length) == test.text &&
+                  result.body[wirex::hri_y::lch_mode_offset] == (mode == wirex::hri_y::LchMode::fm ? '1' : '2'),
+                  std::string("channel encoding ") + test.text);
+        }
+    }
+    for (const auto hz : {143999000U, 148001000U, 145100500U, 0U, 439999500U}) {
+        const auto result = wirex::hri_y::build(wirex::approved_resources::hri_y_template,
+            wirex::hri_y::DynamicFields{250U, hz, wirex::hri_y::LchMode::fm}, false);
+        check(!result.ok && result.error == "invalid_hri_y_frequency", "invalid frequency rejected");
+    }
+    const auto bad_mode = wirex::hri_y::build(wirex::approved_resources::hri_y_template,
+        wirex::hri_y::DynamicFields{250U, 145100000U, static_cast<wirex::hri_y::LchMode>(99)}, false);
+    check(!bad_mode.ok && bad_mode.error == "invalid_hri_y_mode", "invalid mode rejected");
+}
+
 void test_rejections_and_whitelist()
 {
     for (const auto value : {std::uint16_t{0U}, std::uint16_t{49U}, std::uint16_t{55U},
@@ -66,10 +92,37 @@ void test_rejections_and_whitelist()
     const auto valid = wirex::hri_y::build(wirex::approved_resources::hri_y_template,
                                            wirex::hri_y::DynamicFields{250U}, false);
     auto changed = valid.body;
-    changed[0x10U] = '9';
+    for (std::size_t offset = 0U; offset < valid.body.size(); ++offset) {
+        if (offset == 0x05U || offset == 0x0CU || offset == 0x0EU ||
+            (offset >= 0x10U && offset <= 0x19U) || (offset >= 0x2FU && offset <= 0x32U)) continue;
+        changed = valid.body;
+        changed[offset] ^= 1U;
+        check(!wirex::hri_y::validate(wirex::approved_resources::hri_y_template,
+                                      changed.data(), changed.size(), false),
+              "non-whitelisted byte rejected at " + std::to_string(offset));
+    }
+    changed = valid.body;
+    changed[0x10U] = 'x';
     check(!wirex::hri_y::validate(wirex::approved_resources::hri_y_template,
                                   changed.data(), changed.size(), false),
-          "frequency byte outside the whitelist must be rejected");
+          "non-digit frequency must be rejected");
+    for (const auto offset : {0x1AU, 0x25U}) {
+        changed = valid.body;
+        changed[offset] = '?';
+        check(!wirex::hri_y::validate(wirex::approved_resources::hri_y_template,
+                                      changed.data(), changed.size(), false),
+              "offset and squelch outside the whitelist must be rejected");
+    }
+    changed = valid.body;
+    changed[wirex::hri_y::lch_mode_offset] = '0';
+    check(!wirex::hri_y::validate(wirex::approved_resources::hri_y_template,
+                                  changed.data(), changed.size(), false), "invalid mode text rejected");
+    for (const std::string value : {"9999999999", "0143999000", "0145100500", "0440001000"}) {
+        changed = valid.body;
+        std::copy(value.begin(), value.end(), changed.begin() + wirex::hri_y::lch_frequency_offset);
+        check(!wirex::hri_y::validate(wirex::approved_resources::hri_y_template,
+                                      changed.data(), changed.size(), false), "invalid frequency text " + value);
+    }
     changed = valid.body;
     changed[0x5BU] = '9';
     check(!wirex::hri_y::validate(wirex::approved_resources::hri_y_template,
@@ -108,6 +161,7 @@ int main()
 {
     test_default_template_and_modes();
     test_power_encoding();
+    test_channel_encoding();
     test_rejections_and_whitelist();
     if (failures != 0) {
         std::cerr << failures << " HRI Y body check(s) failed.\n";
