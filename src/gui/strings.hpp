@@ -469,6 +469,14 @@ namespace wirex::gui {
     X(update_tip_up_to_date,"已是最新版本",                        "You have the latest version")    /* new */ \
     X(update_tip_failed,    "未能检查更新；点击打开发布页",        "Could not check for updates; click to open the releases page") /* new */ \
     X(update_tip_available_fmt, "有新版本 %s，点击打开发布页",     "New version %s is available; click to open the releases page") /* new */
+
+// R136 history/channels：来话历史改为“向来源单呼”，以及新增动态组自动激活。
+#define WIREX_GUI_STRINGS_R136(X) \
+    X(set_history_private_target, "设为单呼目标",                  "Set private TX target") /* new */ \
+    X(tip_history_private_target_fmt, "向 %s（%u）单呼",           "Private call to %s (%u)") /* new */ \
+    X(tip_history_private_target_id_fmt, "向 %u 单呼",             "Private call to %u") /* new */ \
+    X(tip_history_target_none, "选择一条来话记录后，可将其来源 DMR ID 设为单呼目标。", \
+                            "Select a call record to target its source DMR ID as a private call.") /* new */
 // clang-format on
 
 enum class Str : std::uint16_t {
@@ -480,6 +488,7 @@ enum class Str : std::uint16_t {
     WIREX_GUI_STRINGS_QUICK_CALL_DEFERRAL(WIREX_GUI_STR_ENUM)
     WIREX_GUI_STRINGS_RADIO_BM_DECOUPLING(WIREX_GUI_STR_ENUM)
     WIREX_GUI_STRINGS_R135(WIREX_GUI_STR_ENUM)
+    WIREX_GUI_STRINGS_R136(WIREX_GUI_STR_ENUM)
 #undef WIREX_GUI_STR_ENUM
         count_
 };
@@ -502,6 +511,7 @@ inline constexpr StrEntry kStrings[] = {
     WIREX_GUI_STRINGS_QUICK_CALL_DEFERRAL(WIREX_GUI_STR_ROW)
     WIREX_GUI_STRINGS_RADIO_BM_DECOUPLING(WIREX_GUI_STR_ROW)
     WIREX_GUI_STRINGS_R135(WIREX_GUI_STR_ROW)
+    WIREX_GUI_STRINGS_R136(WIREX_GUI_STR_ROW)
 #undef WIREX_GUI_STR_ROW
 };
 static_assert(sizeof(kStrings) / sizeof(kStrings[0]) == static_cast<std::size_t>(Str::count_));

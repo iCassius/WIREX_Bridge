@@ -410,6 +410,7 @@ bool ViewModel::pump() {
         changed = true;
     }
     if (pump_startup_group_activation()) changed = true;
+    if (service_pending_connect_activation()) changed = true;
     if (bm_stale_retry_at_ && !bm_stale_retry_pending_ && std::chrono::steady_clock::now() >= *bm_stale_retry_at_) {
         // 服务器尚未释放上次会话：到期后自动重连一次（不受用户冷却限制）。
         bm_stale_retry_at_.reset();
@@ -1313,7 +1314,10 @@ void ViewModel::push_rx_policy() {
             if (!enable_after_policy_ || rx_policy_dirty_) return;
             const auto key = *enable_after_policy_;
             enable_after_policy_.reset();
-            if (r.status == CommandStatus::accepted || r.status == CommandStatus::idempotent) quick_call(key);
+            if (r.status != CommandStatus::accepted && r.status != CommandStatus::idempotent) return;
+            quick_call(key);
+            // 启动组呼或另一 Quick Call 在途时本次没发出去：连接/空闲后由待激活队列补发。
+            if (!quick_call_pending_ || !(*quick_call_pending_ == key)) pending_connect_activation_.insert(key);
         });
 }
 
@@ -1325,6 +1329,12 @@ void ViewModel::persist() {
 
 void ViewModel::set_tx_target(const ChannelKey& key) {
     if (!can_mutate_channels()) return;
+    apply_tx_target(key);
+}
+
+// 不重复检查 can_mutate_channels：历史“设为单呼目标”可能刚把新频道加入列表，
+// 此时 RX 策略请求在途，但仍需把 TX 策略发出去。
+void ViewModel::apply_tx_target(const ChannelKey& key) {
     talkgroup_routing::TxTarget target{key.id, key.kind, key.slot};
     if (snapshot_->phase != Phase::running) {
         config_.tx_target = target;
@@ -1350,6 +1360,7 @@ void ViewModel::erase_channel(const ChannelKey& key) {
     const bool was_muted = std::any_of(chs.begin(), chs.end(), [&](const auto& e) { return key_of(e) == key && e.muted; });
     chs.erase(std::remove_if(chs.begin(), chs.end(), [&](const auto& e) { return key_of(e) == key; }), chs.end());
     quick_call_sent_.erase(key);
+    pending_connect_activation_.erase(key);
     if (was_muted) push_muted_groups();
     if (config_.tx_target && config_.tx_target->destination_id == key.id && config_.tx_target->kind == key.kind &&
         config_.tx_target->slot == key.slot) {
@@ -1427,6 +1438,7 @@ void ViewModel::disable_channel(const ChannelKey& key) {
                 auto* current = find_channel(key);
                 if (current && !current->disabled) {
                     current->disabled = true;
+                    pending_connect_activation_.erase(key);
                     if (enable_after_policy_ && *enable_after_policy_ == key) enable_after_policy_.reset();
                     persist();
                     push_rx_policy();
@@ -1443,6 +1455,7 @@ void ViewModel::disable_channel(const ChannelKey& key) {
     }
     entry->disabled = true;
     const bool was_muted = entry->muted;
+    pending_connect_activation_.erase(key);
     if (enable_after_policy_ && *enable_after_policy_ == key) enable_after_policy_.reset();
     persist();
     push_rx_policy();
@@ -1466,6 +1479,8 @@ void ViewModel::enable_channel(const ChannelKey& key) {
         push_rx_policy();
         if (muted) push_muted_groups();
         if (dynamic) {
+            pending_connect_activation_.erase(key);
+            if (enable_after_policy_ && !(*enable_after_policy_ == key)) pending_connect_activation_.insert(*enable_after_policy_);
             if (pending(Str::op_rx_policy) || rx_policy_dirty_) {
                 enable_after_policy_ = key;
             } else {
@@ -1474,7 +1489,10 @@ void ViewModel::enable_channel(const ChannelKey& key) {
         }
         return;
     }
-    if (dynamic) quick_call(key);
+    if (dynamic) {
+        pending_connect_activation_.erase(key);
+        quick_call(key);
+    }
 }
 
 void ViewModel::channel_primary_action(const ChannelKey& key) {
@@ -1523,11 +1541,30 @@ void ViewModel::add_channel() {
 }
 
 void ViewModel::add_channel_entry(services::ChannelEntry entry) {
-    entry.name = config_bridge::known_channel_name(entry.id, entry.kind);
+    if (entry.name.empty()) entry.name = config_bridge::known_channel_name(entry.id, entry.kind);
+    const ChannelKey key = key_of(entry);
+    // 动态组（非静态、非 TG4000）：BM 已连接时立即激活；未连接时记下来，连接后自动激活。
+    const bool dynamic =
+        entry.kind == dmr_call::CallKind::group && entry.id != 4000U && !is_static_channel(entry);
     config_.channels.push_back(std::move(entry));
     set_channel_page(channel_page_count() - 1U);
     persist();
     push_rx_policy();
+    if (!dynamic) return;
+    const bool bm_ready = snapshot_->phase == Phase::running && snapshot_->bm_link == BmLink::connected;
+    if (!bm_ready) {
+        pending_connect_activation_.insert(key);
+        return;
+    }
+    // 与 enable_channel 相同：RX 策略下发完成后再 Quick Call（R134 来话占用时由引擎延后）。
+    // 连续新增时保留前一个待激活项，避免只记住最后一个。
+    if (enable_after_policy_ && !(*enable_after_policy_ == key)) pending_connect_activation_.insert(*enable_after_policy_);
+    if (pending(Str::op_rx_policy) || rx_policy_dirty_) {
+        enable_after_policy_ = key;
+    } else {
+        quick_call(key);
+        if (!quick_call_pending_ || !(*quick_call_pending_ == key)) pending_connect_activation_.insert(key);
+    }
 }
 
 std::optional<FilteredHint> ViewModel::filtered_hint() const {
@@ -1702,20 +1739,35 @@ void ViewModel::set_audio_output(std::wstring wave_out_endpoint_id) {
     persist();
 }
 
-void ViewModel::set_history_target() {
-    if (!selected_history_ || *selected_history_ >= history_.size()) return;
+std::optional<engine::CallInfo> ViewModel::selected_history_caller() const {
+    if (!selected_history_ || *selected_history_ >= history_.size()) return std::nullopt;
     const auto& rec = history_[*selected_history_];
-    const auto& call = rec.call;
-    // FM 中继记录的 destination_id 就是当时的上行目标（私呼时为对端 ID）。
-    ChannelKey key{call.kind == dmr_call::CallKind::group || rec.relay_fm ? call.destination_id : call.source_id,
-                   call.kind, call.slot};
-    const bool listed = std::any_of(config_.channels.begin(), config_.channels.end(),
-                                    [&](const auto& e) { return key_of(e) == key; });
-    if (!listed) {
-        flash(tr(Str::tip_history_target), true);
-        return;
+    // FM 中继记录没有来源呼号/ID（source_id 恒为 0），无法作为单呼目标。
+    if (rec.relay_fm) return std::nullopt;
+    const auto source_id = rec.call.source_id;
+    if (source_id == 0U || source_id > 16777215U) return std::nullopt;
+    return with_callsign(rec.call);
+}
+
+bool ViewModel::can_set_history_target() const {
+    return can_mutate_channels() && selected_history_caller().has_value();
+}
+
+// 来话历史：无论记录是组呼还是私呼，都把来源 DMR ID 作为单呼 PTT 目标。
+// 来源的单呼频道不在列表时按呼号命名加入，之后只切换 TX 目标。
+void ViewModel::set_history_target() {
+    const auto caller = selected_history_caller();
+    if (!caller || !can_mutate_channels()) return;
+    const ChannelKey key{caller->source_id, dmr_call::CallKind::private_call, caller->slot};
+    if (find_channel(key) == nullptr) {
+        services::ChannelEntry entry;
+        entry.id = key.id;
+        entry.kind = key.kind;
+        entry.slot = key.slot;
+        entry.name = caller->callsign; // 未知时由 add_channel_entry 补内置名称
+        add_channel_entry(std::move(entry));
     }
-    set_tx_target(key);
+    apply_tx_target(key);
 }
 
 void ViewModel::cat_toggle_connection() {
@@ -2441,6 +2493,34 @@ bool ViewModel::pump_startup_group_activation() {
         changed = changed || previous != startup_group_activation_status_;
     }
     return true;
+}
+
+// BM 未连接时新增的动态组：连接后按添加顺序逐个 Quick Call（一次只发一个，等上一个结果）。
+// 启动组呼队列仍在进行时让路，避免两个自动激活源同时占用本机发送。
+bool ViewModel::service_pending_connect_activation() {
+    if (pending_connect_activation_.empty()) return false;
+    if (snapshot_->phase != Phase::running || snapshot_->bm_link != BmLink::connected) return false;
+    if (startup_group_activation_.active() || quick_call_pending_ || pending(Str::op_rx_policy) || rx_policy_dirty_) {
+        return false;
+    }
+    bool changed = false;
+    for (auto it = pending_connect_activation_.begin(); it != pending_connect_activation_.end();) {
+        const auto* entry = find_channel(*it);
+        if (entry == nullptr || entry->disabled || entry->kind != dmr_call::CallKind::group || entry->id == 4000U ||
+            is_static_channel(*entry)) {
+            it = pending_connect_activation_.erase(it);
+            changed = true;
+            continue;
+        }
+        const ChannelKey key = *it;
+        quick_call(key);
+        if (quick_call_pending_ && *quick_call_pending_ == key) {
+            pending_connect_activation_.erase(it);
+            changed = true;
+        }
+        break; // 一次只发一个 Quick Call
+    }
+    return changed;
 }
 
 void ViewModel::update_startup_group_activation_status() {

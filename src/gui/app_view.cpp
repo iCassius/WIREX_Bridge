@@ -1702,11 +1702,21 @@ void AppView::draw_history(float width, float height) {
     const float target_w = px(layout::kActionWidth);
     ImGui::SameLine(inner_w - target_w + ImGui::GetCursorStartPos().x);
     title.place(bh);
-    if (button(tr(Str::set_history_target), ImVec2(target_w, bh), Tone::normal,
-               vm_.selected_history().has_value() && vm_.can_mutate_channels())) {
+    if (button(tr(Str::set_history_private_target), ImVec2(target_w, bh), Tone::normal,
+               vm_.can_set_history_target())) {
         vm_.set_history_target();
     }
-    ImGui::SetItemTooltip("%s", tr(Str::tip_history_target));
+    if (const auto caller = vm_.selected_history_caller()) {
+        if (!caller->callsign.empty()) {
+            const auto tip = fmt(tr(Str::tip_history_private_target_fmt), caller->callsign.c_str(), caller->source_id);
+            ImGui::SetItemTooltip("%s", tip.c_str());
+        } else {
+            const auto tip = fmt(tr(Str::tip_history_private_target_id_fmt), caller->source_id);
+            ImGui::SetItemTooltip("%s", tip.c_str());
+        }
+    } else {
+        ImGui::SetItemTooltip("%s", tr(Str::tip_history_target_none));
+    }
     ImGui::PopStyleVar();
     title.end();
 

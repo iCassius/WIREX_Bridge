@@ -83,8 +83,9 @@ public:
         rx_policies.push_back(std::move(policy));
         return ready();
     }
-    std::future<engine::CommandResult> replace_tx_policy(std::uint64_t, talkgroup_routing::TxTarget, bool) override
+    std::future<engine::CommandResult> replace_tx_policy(std::uint64_t, talkgroup_routing::TxTarget target, bool) override
     {
+        tx_targets.push_back(target);
         return ready();
     }
     std::future<engine::CommandResult> quick_call_join(talkgroup_routing::GroupRoute route) override
@@ -111,7 +112,12 @@ public:
     }
 
     std::shared_ptr<const engine::Snapshot> snapshot() const override { return published; }
-    std::vector<engine::Event> drain_events(std::size_t) override { return {}; }
+    std::vector<engine::Event> drain_events(std::size_t) override
+    {
+        auto drained = std::move(events);
+        events.clear();
+        return drained;
+    }
     void set_wakeup(std::function<void()>) override {}
 
     template <class F>
@@ -124,7 +130,9 @@ public:
     }
 
     std::shared_ptr<const engine::Snapshot> published{};
+    std::vector<engine::Event> events{};
     std::vector<talkgroup_routing::GroupRoute> quick_calls{};
+    std::vector<talkgroup_routing::TxTarget> tx_targets{};
     std::vector<talkgroup_routing::RxPolicy> rx_policies{};
     std::vector<std::vector<talkgroup_routing::GroupRoute>> muted_sets{};
     std::vector<Slot> disconnects{};
@@ -515,6 +523,152 @@ void test_cat_gate_keeps_draft_and_retries_once()
     check(applies->size() == 2U, "only one automatic retry is made");
 }
 
+// R136：BM 已连接时新增动态组 → 先下发 RX 策略，再 Quick Call 一次。
+void test_add_dynamic_group_activates_when_connected()
+{
+    RecordingEngine engine;
+    Harness h;
+    h.static_groups.clear();
+    gui::ViewModel vm(engine, h.make({}), true);
+    h.finish_list();
+    for (int i = 0; i < 3; ++i) (void)vm.pump();
+    check(engine.quick_calls.empty(), "no startup Quick Calls without channels");
+
+    vm.add_channel_id = "4200";
+    vm.add_channel_kind = 2;
+    vm.add_channel();
+    check(!engine.rx_policies.empty() && allows(engine.rx_policies.back(), 4200U),
+          "adding a dynamic group pushes it into the RX policy");
+    check(engine.quick_calls.empty(), "the Quick Call waits for the RX policy to be applied");
+    (void)vm.pump();
+    check(engine.quick_calls.size() == 1U && engine.quick_calls[0].destination_id == 4200U,
+          "the added dynamic group is quick-called once after the RX policy");
+    check(saved_entry(*h.saved, 4200U) != nullptr, "the added group is persisted");
+    (void)vm.pump();
+    check(engine.quick_calls.size() == 1U, "the activation is sent only once");
+}
+
+// R136：BM 未连接时只加入列表；连接后由待激活队列补发 Quick Call。
+void test_add_dynamic_group_while_disconnected_waits_for_bm()
+{
+    RecordingEngine engine;
+    engine.publish([](engine::Snapshot& s) {
+        s.bm_link = engine::BmLink::disabled;
+        s.bm_requested_enabled = false;
+    });
+    Harness h;
+    h.static_groups.clear();
+    gui::ViewModel vm(engine, h.make({}), true);
+    h.finish_list();
+    (void)vm.pump();
+
+    vm.add_channel_id = "4300";
+    vm.add_channel_kind = 2;
+    vm.add_channel();
+    (void)vm.pump();
+    (void)vm.pump();
+    check(engine.quick_calls.empty(), "no Quick Call while BM is disconnected");
+    check(saved_entry(*h.saved, 4300U) != nullptr, "the group is still added and persisted");
+
+    engine.publish([](engine::Snapshot& s) {
+        s.bm_link = engine::BmLink::connected;
+        s.bm_requested_enabled = true;
+    });
+    (void)vm.pump();
+    (void)vm.pump();
+    check(engine.quick_calls.size() == 1U && engine.quick_calls[0].destination_id == 4300U,
+          "the pending dynamic group is activated after BM connects");
+}
+
+// R136：来话历史“设为单呼目标”永远把来源 DMR ID 作为私呼目标，并补建/复用其单呼频道。
+void test_history_set_target_is_private_to_caller()
+{
+    RecordingEngine engine;
+    Harness h;
+    h.static_groups.clear();
+    gui::ViewModel vm(engine, h.make({}), true);
+    h.finish_list();
+    (void)vm.pump();
+
+    engine::Event ev;
+    ev.kind = engine::EventKind::rx_call_started;
+    engine::CallInfo call;
+    call.source_id = 4609008U;
+    call.destination_id = 46001U;
+    call.slot = Slot::ts2;
+    call.kind = CallKind::group;
+    call.callsign = "BG0AQM";
+    call.started_ms = 1000U;
+    ev.call = call;
+    engine.events.push_back(ev);
+    (void)vm.pump();
+    check(vm.history().size() == 1U, "the group call is recorded in history");
+
+    check(!vm.can_set_history_target(), "no record selected: target is disabled");
+    vm.select_history(0);
+    check(vm.can_set_history_target(), "a group-call record with a source ID can be targeted");
+    const auto caller = vm.selected_history_caller();
+    check(caller && caller->source_id == 4609008U && caller->callsign == "BG0AQM",
+          "the selected caller is reported with callsign");
+
+    const int saves_before = *h.saves;
+    vm.set_history_target();
+    (void)vm.pump();
+    check(engine.tx_targets.size() == 1U && engine.tx_targets[0].destination_id == 4609008U &&
+              engine.tx_targets[0].kind == CallKind::private_call && engine.tx_targets[0].slot == Slot::ts2,
+          "a group-call record sets a PRIVATE TX target to the caller");
+    check(!engine.rx_policies.empty() && engine.rx_policies.back().private_peers.size() == 1U &&
+              engine.rx_policies.back().private_peers[0].source_id == 4609008U,
+          "the caller's private channel is added to the RX policy");
+    const ChannelEntry* added = saved_entry(*h.saved, 4609008U);
+    check(added && added->kind == CallKind::private_call && added->slot == Slot::ts2 && added->name == "BG0AQM",
+          "the private channel is added once with the callsign as its name");
+    check(h.saved->tx_target && h.saved->tx_target->destination_id == 4609008U &&
+              h.saved->tx_target->kind == CallKind::private_call,
+          "the TX target is persisted");
+    check(*h.saves > saves_before, "the change is saved to config");
+
+    // 同一来源再次设置：只切换 TX 目标，不重复建频道。
+    vm.set_history_target();
+    (void)vm.pump();
+    check(engine.tx_targets.size() == 2U, "setting the same target again pushes the TX policy again");
+    const auto duplicates = std::count_if(h.saved->channels.begin(), h.saved->channels.end(),
+                                          [](const ChannelEntry& e) { return e.id == 4609008U; });
+    check(duplicates == 1, "the private channel is not duplicated");
+}
+
+// R136：没有选中记录或来源 DMR ID 无效（0 / 超范围）时，“设为单呼目标”不可用且无副作用。
+void test_history_target_disabled_without_valid_source()
+{
+    RecordingEngine engine;
+    Harness h;
+    h.static_groups.clear();
+    gui::ViewModel vm(engine, h.make({}), true);
+    h.finish_list();
+    (void)vm.pump();
+    check(!vm.can_set_history_target(), "no selection: target is disabled");
+
+    engine::Event ev;
+    ev.kind = engine::EventKind::rx_call_started;
+    engine::CallInfo call;
+    call.source_id = 0U;
+    call.destination_id = 46001U;
+    call.slot = Slot::ts2;
+    call.kind = CallKind::group;
+    call.started_ms = 1000U;
+    ev.call = call;
+    engine.events.push_back(ev);
+    (void)vm.pump();
+    vm.select_history(0);
+    check(!vm.can_set_history_target(), "a record without a source DMR ID is disabled");
+
+    const int saves_before = *h.saves;
+    vm.set_history_target();
+    (void)vm.pump();
+    check(engine.tx_targets.empty(), "no TX policy is pushed for an invalid source");
+    check(*h.saves == saves_before && h.saved->channels.empty(), "no config change for an invalid source");
+}
+
 } // namespace
 
 int main()
@@ -526,6 +680,10 @@ int main()
     test_bm_cooldown_and_stale_session_retry();
     test_endpoint_volume_slider();
     test_cat_gate_keeps_draft_and_retries_once();
+    test_add_dynamic_group_activates_when_connected();
+    test_add_dynamic_group_while_disconnected_waits_for_bm();
+    test_history_set_target_is_private_to_caller();
+    test_history_target_disabled_without_valid_source();
     std::cout << "PASS: " << assertions << " channel state ViewModel assertions\n";
     return EXIT_SUCCESS;
 }

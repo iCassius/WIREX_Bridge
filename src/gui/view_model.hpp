@@ -184,6 +184,9 @@ public:
     [[nodiscard]] std::size_t history_page_index() const noexcept { return history_page_; }
     [[nodiscard]] std::size_t history_page_count() const noexcept;
     [[nodiscard]] std::optional<std::size_t> selected_history() const noexcept { return selected_history_; }
+    // 来话历史“设为单呼目标”：所选记录来源 DMR ID 有效且当前可改频道时可用。
+    [[nodiscard]] bool can_set_history_target() const;
+    [[nodiscard]] std::optional<engine::CallInfo> selected_history_caller() const;
     [[nodiscard]] std::vector<CallRecord> recent_callers(std::size_t max) const;
     [[nodiscard]] std::optional<std::chrono::system_clock::time_point> current_call_started() const;
     // 当前来话（呼号缺失时用身份查询结果补全）。
@@ -353,6 +356,8 @@ private:
     void service_hri_channel_confirmation();
     void persist_power(std::uint32_t watts, std::uint64_t revision);
     void add_channel_entry(services::ChannelEntry entry);
+    void apply_tx_target(const ChannelKey& key);
+    [[nodiscard]] bool service_pending_connect_activation();
     [[nodiscard]] std::chrono::system_clock::time_point to_wall(std::uint64_t engine_ms) const;
     // BM 静态组 / 身份查询
     void static_sync();
@@ -396,6 +401,7 @@ private:
     std::uint64_t last_cat_observed_revision_{};
     std::set<ChannelKey> quick_call_sent_{};
     std::optional<ChannelKey> enable_after_policy_{};      // 启用动态组：RX 策略下发后再 Quick Call
+    std::set<ChannelKey> pending_connect_activation_{};    // BM 未连接时新增的动态组，连接后自动 Quick Call
     bool muted_groups_dirty_{};
     // BM 冷却 / 旧会话重试
     std::optional<std::chrono::steady_clock::time_point> bm_disconnected_at_{};
