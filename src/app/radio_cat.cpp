@@ -656,6 +656,7 @@ struct CatClient::Request {
     CatMode mode{CatMode::fm};
     std::uint32_t frequency_hz{};
     int watts{};
+    bool force_power_write{};
     const CatCoreStateProvider* core{};
     const std::atomic<bool>* cancel{};
 };
@@ -827,12 +828,13 @@ CatResult CatClient::set_mode(const CatConnection& connection, CatSide side, Cat
 }
 
 CatResult CatClient::set_power(const CatConnection& connection, int watts, const CatCoreStateProvider& core,
-                               const std::atomic<bool>* cancel) const
+                               const std::atomic<bool>* cancel, bool force_write) const
 {
     Request request;
     request.operation = CatOperation::set_power;
     request.connection = &connection;
     request.watts = watts;
+    request.force_power_write = force_write;
     request.core = &core;
     request.cancel = cancel;
     return run(request);
@@ -976,7 +978,7 @@ CatResult CatClient::run(const Request& request) const
                 throw CatFailure(CatError::power_out_of_range,
                                  "当前功率路径的应用范围为 5-" + std::to_string(maximum) + " W；不会自动钳位。");
             }
-            if (old_power.watts != request.watts) {
+            if (request.force_power_write || old_power.watts != request.watts) {
                 const auto frame = cat_power_command(old_power.path, request.watts);
                 if (!frame) throw CatFailure(CatError::power_out_of_range, "功率命令无法构造。");
                 write_gate(*frame, "power", old_power.path);
@@ -1388,7 +1390,9 @@ CatResult CatWorker::execute(const CatJob& job, std::uint64_t generation)
         result = client_.set_main_frequency(job.connection, job.frequency_hz, core_state_, &cancel_);
         break;
     case CatOperation::set_mode: result = client_.set_mode(job.connection, job.side, job.mode, core_state_, &cancel_); break;
-    case CatOperation::set_power: result = client_.set_power(job.connection, job.power_watts, core_state_, &cancel_); break;
+    case CatOperation::set_power:
+        result = client_.set_power(job.connection, job.power_watts, core_state_, &cancel_, job.force_power_write);
+        break;
     }
     absorb(result, job, generation);
     return result;

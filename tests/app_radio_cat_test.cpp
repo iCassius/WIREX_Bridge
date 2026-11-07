@@ -406,6 +406,12 @@ void test_client_against_fake()
     }
     {
         auto s = std::make_shared<FakeState>();
+        const auto r = fake_client(s).set_power(connection(), 25, stopped_core(), nullptr, true);
+        check(r.status == CatResultStatus::confirmed && count_writes(*s, "PC2025;") == 1,
+              "forced same-value power sends the CAT write for display echo");
+    }
+    {
+        auto s = std::make_shared<FakeState>();
         const auto r = fake_client(s).set_mode(connection(), CatSide::main, CatMode::fm, stopped_core());
         check(r.status == CatResultStatus::confirmed && count_writes(*s, "MD04;") == 0, "same-value mode is not written");
     }

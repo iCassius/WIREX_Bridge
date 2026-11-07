@@ -311,7 +311,8 @@ public:
     /// 功率设置值（非实测输出）。要求核心空闲、MAIN 为语音模式、目标在当前路径范围内。
     [[nodiscard]] CatResult set_power(const CatConnection& connection, int watts,
                                       const CatCoreStateProvider& core,
-                                      const std::atomic<bool>* cancel = nullptr) const;
+                                      const std::atomic<bool>* cancel = nullptr,
+                                      bool force_write = false) const;
     /// R130 只读静噪采样：短会话只发 `RI0;` 与 `SM0;`（不发 ID/AI，身份由 1 s 周期 query 保证）。
     /// SM0 失败不影响 RI 结果。不改动任何写授权或观测值。
     [[nodiscard]] CatSquelchSample query_squelch(const CatConnection& connection,
@@ -332,6 +333,7 @@ struct CatJob {
     CatMode mode{CatMode::fm};
     std::uint32_t frequency_hz{};
     int power_watts{};
+    bool force_power_write{};
 };
 
 struct CatWorkerSnapshot {
