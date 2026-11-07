@@ -34,12 +34,14 @@ const usage = `用法：wirex <命令> [参数]
   doctor                                   检查构建/运行环境
   build [--release|--debug] [--compile-only] [--cmake] [--with-launcher]
                                            构建 Native 核心（默认复用 tools/build-bm-bridge.ps1）
-  build --gui                              构建 R128 原生 GUI（tools/build-gui.ps1）
+  build --gui [--release]                  构建 R128 原生 GUI（tools/build-gui.ps1；--release 关闭 dev 日志）
   test [--offline|--all] [--build-dir D] [--launcher P] [--run S]
                                            运行 Native 测试与 PowerShell 离线测试
   package --version V [--build-dir D] [--build-log L] [--launcher-dir D] [--fixture F] [--native-repo R]
   package --version V --zip [--package-root D]
                                            包装 tools/package-release.ps1 / ZipOnlyRelease
+  package-gui --version V [--gui-dir D] [--notes P] [--allow-dirty]
+                                           将正式版原生 GUI 打包为单 EXE ZIP、SHA256SUMS 与 manifest
 `
 
 const approvedFixtureSha256 = "82e0085ccaccb769a83362c5b335ce6b9a0e3ae93afdf2ad4f46eb81f908577f"
@@ -74,6 +76,8 @@ func run(args []string) error {
 		return cmdTest(args[1:])
 	case "package":
 		return cmdPackage(args[1:])
+	case "package-gui":
+		return cmdPackageGUI(args[1:])
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return nil
@@ -624,6 +628,7 @@ func fileSha256(path string) (string, error) {
 // ---------------------------------------------------------------- build
 
 type buildOptions struct {
+	Release      bool
 	Debug        bool
 	CompileOnly  bool
 	CMake        bool
@@ -646,7 +651,7 @@ func parseBuildArgs(args []string) (buildOptions, error) {
 		if *debug || *compileOnly || *useCMake || *withLauncher {
 			return buildOptions{}, usageError{"--gui 只构建原生 GUI，不能与 --debug/--compile-only/--cmake/--with-launcher 同时使用"}
 		}
-		return buildOptions{GUI: true}, nil
+		return buildOptions{GUI: true, Release: *release}, nil
 	}
 	if *release && *debug {
 		return buildOptions{}, usageError{"--release 与 --debug 不能同时使用"}
@@ -654,7 +659,7 @@ func parseBuildArgs(args []string) (buildOptions, error) {
 	if *debug && !*useCMake {
 		return buildOptions{}, usageError{"tools/build-bm-bridge.ps1 固定为 Release（/O2 /MT）；Debug 构建请加 --cmake"}
 	}
-	return buildOptions{Debug: *debug, CompileOnly: *compileOnly, CMake: *useCMake, WithLauncher: *withLauncher}, nil
+	return buildOptions{Release: *release, Debug: *debug, CompileOnly: *compileOnly, CMake: *useCMake, WithLauncher: *withLauncher}, nil
 }
 
 func cmdBuild(args []string) error {
@@ -667,7 +672,7 @@ func cmdBuild(args []string) error {
 		return err
 	}
 	if opts.GUI {
-		exe, err := buildGUI(root)
+		exe, err := buildGUI(root, opts.Release)
 		if err != nil {
 			return err
 		}
@@ -774,12 +779,16 @@ func buildLauncher(root string) (string, error) {
 var guiOutputLine = regexp.MustCompile(`(?m)^GUI 构建产物：(.+?)\s*$`)
 
 // buildGUI runs tools/build-gui.ps1; the script picks its own build/_work/wirex-gui-* directory.
-func buildGUI(root string) (string, error) {
+func buildGUI(root string, release bool) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
-	fmt.Println("运行 tools/build-gui.ps1")
+	var scriptArgs []string
+	if release {
+		scriptArgs = append(scriptArgs, "-Release")
+	}
+	fmt.Println("运行 tools/build-gui.ps1", strings.Join(scriptArgs, " "))
 	var captured strings.Builder
-	cmd := powershellFile(ctx, root, false, filepath.Join(root, "tools", "build-gui.ps1"))
+	cmd := powershellFile(ctx, root, false, filepath.Join(root, "tools", "build-gui.ps1"), scriptArgs...)
 	code, err := runStreaming(ctx, cmd, consoleCodePage(), os.Stdout, &captured)
 	if err != nil {
 		return "", err
@@ -1226,7 +1235,7 @@ func parsePackageArgs(args []string) (packageOptions, error) {
 	if err := parseFlags(fs, args); err != nil {
 		return o, err
 	}
-	if !regexp.MustCompile(`^v\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$`).MatchString(o.Version) {
+	if !releaseVersionPattern.MatchString(o.Version) {
 		return o, usageError{fmt.Sprintf("--version 必须形如 v0.1.1 或 v0.1.1-test.2，实际 %q", o.Version)}
 	}
 	if o.Zip && (o.BuildDir != "" || o.BuildLog != "" || o.LauncherDir != "" || o.Fixture != "" || o.NativeRepo != "") {
