@@ -68,6 +68,8 @@ struct DevicesConfig {
     std::string wave_in_endpoint_id{"auto"};
     std::string wave_out_endpoint_id{"auto"};
     std::uint32_t desired_power_watts{25};
+    std::uint32_t hri_frequency_hz{145100000U};
+    std::string hri_mode{"fm"};
 };
 
 struct AudioConfig {

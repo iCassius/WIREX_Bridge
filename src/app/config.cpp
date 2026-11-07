@@ -477,6 +477,12 @@ void write_typed(Value& doc, const AppConfig& config, const Value* gain_source)
     devices.set("wave_in_endpoint_id", Value::string(config.devices.wave_in_endpoint_id));
     devices.set("wave_out_endpoint_id", Value::string(config.devices.wave_out_endpoint_id));
     devices.set("desired_power_watts", Value::number(config.devices.desired_power_watts));
+    if (devices.find("hri_frequency_hz") != nullptr || config.devices.hri_frequency_hz != 145100000U) {
+        devices.set("hri_frequency_hz", Value::number(config.devices.hri_frequency_hz));
+    }
+    if (devices.find("hri_mode") != nullptr || config.devices.hri_mode != "fm") {
+        devices.set("hri_mode", Value::string(config.devices.hri_mode));
+    }
 
     Value& audio = *doc.find("audio");
     const Value* source_audio = gain_source != nullptr ? gain_source->find("audio") : nullptr;
@@ -625,6 +631,23 @@ ConfigResult<AppConfig> validate(const Value& input)
     if (!power) return power.error();
     if (power.value() < 5) return out_of_range("devices.desired_power_watts");
     config.devices.desired_power_watts = static_cast<std::uint32_t>(power.value());
+    if (const Value* value = devices.find("hri_frequency_hz")) {
+        if (!value->is_number()) return invalid_number("devices.hri_frequency_hz");
+        const auto frequency = to_unsigned(value, "devices.hri_frequency_hz", 440000000ULL, false);
+        if (!frequency) return frequency.error();
+        const auto hz = frequency.value();
+        if (hz % 1000U != 0U || !((hz >= 144000000U && hz <= 148000000U) ||
+                                   (hz >= 430000000U && hz <= 440000000U))) {
+            return out_of_range("devices.hri_frequency_hz");
+        }
+        config.devices.hri_frequency_hz = static_cast<std::uint32_t>(hz);
+    }
+    if (const Value* value = devices.find("hri_mode")) {
+        if (!value->is_string() || (value->text != "fm" && value->text != "c4fm_dn")) {
+            return make_error(ConfigErrorCode::invalid_format, "devices.hri_mode", "HRI 调制模式无效。");
+        }
+        config.devices.hri_mode = value->text;
+    }
 
     // audio
     const Value& audio = *merged.find("audio");

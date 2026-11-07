@@ -313,7 +313,37 @@ void test_device_fields()
         {"power 4", set("desired_power_watts", num("4")), E::out_of_range},
         {"power 51", set("desired_power_watts", num("51")), E::out_of_range},
         {"power 0", set("desired_power_watts", num("0")), E::out_of_range},
+        {"HRI lower VHF", [](json::Value& d) { d.find("devices")->set("hri_frequency_hz", num("144000000")); }, std::nullopt},
+        {"HRI upper VHF", [](json::Value& d) { d.find("devices")->set("hri_frequency_hz", num("148000000")); }, std::nullopt},
+        {"HRI lower UHF", [](json::Value& d) { d.find("devices")->set("hri_frequency_hz", num("430000000")); }, std::nullopt},
+        {"HRI upper UHF", [](json::Value& d) { d.find("devices")->set("hri_frequency_hz", num("440000000")); }, std::nullopt},
+        {"HRI below VHF", [](json::Value& d) { d.find("devices")->set("hri_frequency_hz", num("143999000")); }, E::out_of_range},
+        {"HRI band gap", [](json::Value& d) { d.find("devices")->set("hri_frequency_hz", num("148001000")); }, E::out_of_range},
+        {"HRI precision", [](json::Value& d) { d.find("devices")->set("hri_frequency_hz", num("145100001")); }, E::out_of_range},
+        {"HRI frequency string", [](json::Value& d) { d.find("devices")->set("hri_frequency_hz", str("145100000")); }, E::invalid_value},
+        {"HRI C4FM", [](json::Value& d) { d.find("devices")->set("hri_mode", str("c4fm_dn")); }, std::nullopt},
+        {"HRI invalid mode", [](json::Value& d) { d.find("devices")->set("hri_mode", str("am")); }, E::invalid_format},
     });
+    auto config = wirex::app::default_config();
+    check(config.devices.hri_frequency_hz == 145100000U && config.devices.hri_mode == "fm", "HRI defaults");
+    check(wirex::app::to_document(config).find("devices")->find("hri_frequency_hz") == nullptr,
+          "default HRI frequency remains omitted");
+    config.devices.hri_frequency_hz = 430125000U;
+    config.devices.hri_mode = "c4fm_dn";
+    auto doc = wirex::app::to_document(config);
+    doc.find("devices")->set("unknown_hri_test", str("kept"));
+    auto loaded = wirex::app::from_document(doc);
+    check(loaded && loaded.value().devices.hri_frequency_hz == 430125000U &&
+          loaded.value().devices.hri_mode == "c4fm_dn", "HRI fields round trip");
+    if (loaded) {
+        loaded.value().devices.hri_frequency_hz = 145100000U;
+        loaded.value().devices.hri_mode = "fm";
+        const auto saved = wirex::app::to_document(loaded.value());
+        check(saved.find("devices")->find("hri_frequency_hz") != nullptr &&
+              saved.find("devices")->find("hri_mode") != nullptr &&
+              saved.find("devices")->find("unknown_hri_test") != nullptr,
+              "explicit HRI defaults and unknown fields remain present");
+    }
 }
 
 void test_audio_fields()
