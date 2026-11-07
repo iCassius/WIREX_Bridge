@@ -791,9 +791,14 @@ CommandResult run_loop(Shared& shared, StartConfig config)
     bool radio_fault_pending = false;
     std::string radio_fault_reason;
     auto serial_trace = [&](bool tx, const std::uint8_t* data, std::size_t size) {
-        if (!hooks.serial || data == nullptr || size == 0U) return;
-        const std::uint8_t record_type = (size >= 2U && data[0] == 0x01U) ? data[1] : 0U;
-        try { hooks.serial(tx, record_type, size, elapsed_ms()); } catch (...) {}
+        if ((!hooks.serial && !hooks.serial_data) || data == nullptr || size == 0U) return;
+        if (hooks.serial) {
+            const std::uint8_t record_type = (size >= 2U && data[0] == 0x01U) ? data[1] : 0U;
+            try { hooks.serial(tx, record_type, size, elapsed_ms()); } catch (...) {}
+        }
+        if (hooks.serial_data) {
+            try { hooks.serial_data(tx, data, size); } catch (...) {}
+        }
     };
     auto serial_write = [&](const std::uint8_t* data, std::size_t size) {
         const bool ok = port != nullptr && port->write_all(data, size);

@@ -255,7 +255,8 @@ try {
         @{ Name='bm_routing_lifecycle_test'; Source='tests\bm_routing_lifecycle_test.cpp' },
         @{ Name='routing_state_test'; Source='tests\routing_state_test.cpp' },
         @{ Name='engine_test'; Source='tests\engine_test.cpp' },
-        @{ Name='hri_y_body_test'; Source='tests\hri_y_body_test.cpp' }
+        @{ Name='hri_y_body_test'; Source='tests\hri_y_body_test.cpp' },
+        @{ Name='gui_hri_diagnostics_test'; Source='tests\gui_hri_diagnostics_test.cpp' }
     )
     $testObjects = @()
     foreach ($test in $testSpecs) {

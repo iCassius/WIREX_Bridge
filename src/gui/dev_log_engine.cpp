@@ -1,4 +1,6 @@
 #include "dev_log.hpp"
+#include "hri_diagnostics.hpp"
+#include "wirex/direct_stream.hpp"
 
 // DevLog::attach 依赖引擎的 append_status_line，单独成文件，使只用 line() 的 ViewModel 单元测试不必链接引擎。
 
@@ -32,6 +34,8 @@ void DevLog::attach(engine::DiagnosticsHooks& hooks, std::string_view run_label)
     hooks.status = [self, previous_status, seq, run_id](const engine::StatusRecord& record) {
         bool ok = true;
         if (previous_status) ok = previous_status(record);
+        if (record.event == "radio_detached_bm_runtime_preserved") self->reset_hri_correlation();
+        else if (record.event == "runtime_snapshot") self->poll_hri_correlation();
         std::ostringstream text;
         if (engine::append_status_line(text, run_id, ++*seq, record)) {
             auto s = text.str();
@@ -54,6 +58,30 @@ void DevLog::attach(engine::DiagnosticsHooks& hooks, std::string_view run_label)
         self->line("hri", std::string(tx ? "TX " : "RX ") +
                               (record_type == 0U ? std::string("(cont)") : printable_type(record_type)) + " bytes=" +
                               std::to_string(bytes) + " t=" + std::to_string(elapsed_ms) + "ms");
+    };
+    struct SerialDiagnostics {
+        direct_stream::Parser tx;
+        direct_stream::Parser rx;
+        hri_diagnostics::Records records;
+    };
+    auto serial_diagnostics = std::make_shared<SerialDiagnostics>();
+    auto previous_serial_data = hooks.serial_data;
+    hooks.serial_data = [self, previous_serial_data, serial_diagnostics](bool tx, const std::uint8_t* data,
+                                                                       std::size_t size) {
+        if (previous_serial_data) previous_serial_data(tx, data, size);
+        auto& parser = tx ? serial_diagnostics->tx : serial_diagnostics->rx;
+        const auto parsed = parser.feed(data, size);
+        for (const auto& event : parsed.events) {
+            if (!event.has_record) continue;
+            if (tx && event.record.type == 'V' && event.record.payload.empty()) {
+                serial_diagnostics->records.reset();
+                serial_diagnostics->rx.reset();
+                self->reset_hri_correlation();
+            }
+            serial_diagnostics->records.record(tx, event.record.type, event.record.payload,
+                [self](const std::string& text) { self->line("hri", text); },
+                [self](bool pressed) { self->observe_hri_ptt(pressed); });
+        }
     };
     auto previous_rx_policy = hooks.rx_policy;
     hooks.rx_policy = [self, previous_rx_policy](std::string_view summary) {

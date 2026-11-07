@@ -1,4 +1,5 @@
 #include "dev_log.hpp"
+#include "hri_diagnostics.hpp"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -13,6 +14,8 @@ namespace wirex::gui {
 
 struct DevLog::Impl {
     std::mutex mutex;
+    std::mutex correlation_mutex;
+    hri_diagnostics::PttCorrelation correlation;
     std::ofstream out;
     std::filesystem::path path;
     std::uint64_t run_seq{};
@@ -75,6 +78,42 @@ void DevLog::line(std::string_view category, std::string_view text)
         impl_->out.flush();
     } catch (...) {
     }
+}
+
+void DevLog::reset_hri_correlation()
+{
+    std::lock_guard<std::mutex> lock(impl_->correlation_mutex);
+    impl_->correlation.reset();
+}
+
+void DevLog::observe_hri_ptt(bool pressed)
+{
+    bool warn = false;
+    {
+        std::lock_guard<std::mutex> lock(impl_->correlation_mutex);
+        warn = impl_->correlation.ptt(pressed, hri_diagnostics::PttCorrelation::Clock::now());
+    }
+    if (warn) line("hri", "warn ptt_pressed_but_radio_not_transmitting");
+}
+
+void DevLog::poll_hri_correlation()
+{
+    bool warn = false;
+    {
+        std::lock_guard<std::mutex> lock(impl_->correlation_mutex);
+        warn = impl_->correlation.tick(hri_diagnostics::PttCorrelation::Clock::now());
+    }
+    if (warn) line("hri", "warn ptt_pressed_but_radio_not_transmitting");
+}
+
+void DevLog::observe_cat_frame(std::string_view frame)
+{
+    bool warn = false;
+    {
+        std::lock_guard<std::mutex> lock(impl_->correlation_mutex);
+        warn = impl_->correlation.cat(frame, hri_diagnostics::PttCorrelation::Clock::now());
+    }
+    if (warn) line("hri", "warn ptt_pressed_but_radio_not_transmitting");
 }
 
 void set_dev_log(std::shared_ptr<DevLog> log)

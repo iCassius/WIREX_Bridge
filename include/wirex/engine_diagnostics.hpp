@@ -118,6 +118,8 @@ struct DiagnosticsHooks {
     // （SOH + 类型 + 4 位十六进制长度 + 正文 + EOT + 校验）第 2 字节；块不以 SOH 开头时为 0。
     // 只给类型与字节数，不传正文；必须非阻塞，异常被吞掉。tx=true 为 PC→电台。
     std::function<void(bool tx, std::uint8_t record_type, std::size_t bytes, std::uint64_t elapsed_ms)> serial{};
+    // Optional raw serial chunks for dev diagnostics. Data is valid only during the callback.
+    std::function<void(bool tx, const std::uint8_t* data, std::size_t bytes)> serial_data{};
     // 可选（dev 日志）：RX 策略生效时（启动与每次 replace_rx_policy 成功后）调用，参数为可读摘要。
     std::function<void(std::string_view summary)> rx_policy{};
 };

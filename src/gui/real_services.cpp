@@ -325,6 +325,7 @@ app::CatClient make_traced_cat_client() {
                 line.push_back(' ');
                 line.append(frame);
                 log->line("cat-frame", line);
+                if (!tx) log->observe_cat_frame(frame);
             }
         }));
 }

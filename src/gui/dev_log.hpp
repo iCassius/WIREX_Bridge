@@ -2,8 +2,8 @@
 
 // 隐藏的 dev 日志：开发版（WIREX_DEV_BUILD=1）默认开启，正式版默认关闭；
 // 命令行 --dev-log / --no-dev-log 覆盖默认值。输出到 <exe 目录>/logs/wirex-<本地时间>.log。
-// 只记录：引擎状态行（与旧 status.jsonl 同字段）、操作员提示、GUI 操作结果、HRI 串口帧类型/字节数。
-// 不记录 BM 密码、API Key、串口正文或音频数据。
+// 记录引擎状态、操作员提示、GUI 操作结果及 HRI/CAT 诊断帧。
+// 不记录 BM 密码、API Key 或音频数据。
 
 #include "wirex/engine_diagnostics.hpp"
 
@@ -28,6 +28,11 @@ public:
 
     // 把引擎诊断钩子接到本日志；保留调用方已设置的钩子（先调原钩子，再写日志）。
     void attach(engine::DiagnosticsHooks& hooks, std::string_view run_label);
+
+    void reset_hri_correlation();
+    void observe_hri_ptt(bool pressed);
+    void poll_hri_correlation();
+    void observe_cat_frame(std::string_view frame);
 
     [[nodiscard]] const std::filesystem::path& path() const noexcept;
     // 每次 attach 递增的运行序号（日志里区分同一进程内的多次引擎运行）。
