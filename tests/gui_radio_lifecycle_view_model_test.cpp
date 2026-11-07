@@ -234,6 +234,8 @@ void test_empty_bm_profile_rx_policy_matches_engine_local_source_id()
     config.dmr_id = 0U;
     config.gateway_id = 0U;
     config.bm_password.clear();
+    // 与首次启动生成的默认配置一致：含鹦鹉私呼频道，才能覆盖私呼 peer 的本地源 ID。
+    config.channels.push_back({460997U, wirex::dmr_call::CallKind::private_call, wirex::dmr_call::Slot::ts2});
     install_config(services, std::move(config));
     // 模拟真实 config_bridge::make_runtime_config：DMR ID 为 0 时使用本地源 ID 1。
     auto base_runtime = services.config.make_runtime_config;

@@ -1267,7 +1267,7 @@ void test_empty_bm_profile_engine_starts_and_radio_connects()
     radio.hri_body_file = "C:/fake/device-y.bin";
     radio.audio.expected_wave_in_endpoint_id = L"fake-input-1";
     radio.audio.expected_wave_out_endpoint_id = L"fake-output-1";
-    radio.initial_tx_power_deciwatts = 250U;
+    radio.initial_tx_power_deciwatts = static_cast<std::uint16_t>(250U);
     const auto connected = get_within(engine.connect_radio(std::move(radio)), 5s,
                                       "connect radio with empty BM profile");
     check(connected.status == CommandStatus::accepted,
