@@ -239,6 +239,11 @@ public:
     // R135 更新提示
     [[nodiscard]] const UpdateStatus& update_status() const noexcept { return update_status_; }
     void open_update_page();
+    // 仅截图验收（--screenshot-update-available）：直接设置更新状态，并停止定时检查以免覆盖。
+    void set_update_status_for_screenshot(UpdateStatus status) {
+        update_status_ = std::move(status);
+        update_next_check_.reset();
+    }
 
     // 视图可直接编辑的表单状态
     CatForm cat_form{};
