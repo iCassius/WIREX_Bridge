@@ -119,6 +119,8 @@ struct FilteredHint {
     engine::FilteredTraffic traffic{};
     std::uint32_t age_s{};
     ChannelKey key{};             // “加入收听”要加入的频道：组呼为 TG，私呼为对端 ID
+    bool addressed_to_local{};    // 私呼目标是否为本机 DMR ID
+    bool joinable{true};          // false：仅提示，不提供“加入收听”（例如私呼目标不是本机）
 };
 
 struct CatForm {

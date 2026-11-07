@@ -2614,27 +2614,38 @@ void AppView::preview_static_remove_modal() {
 void AppView::draw_filtered_hint(const FilteredHint& hint, float inner_w) {
     const auto& t = hint.traffic;
     const int slot = static_cast<int>(t.slot);
-    const std::string text = t.kind == dmr_call::CallKind::group
-        ? fmt(tr(Str::filtered_group_fmt), t.destination_id, slot, t.source_id, hint.age_s)
-        : fmt(tr(Str::filtered_private_fmt), slot, t.source_id, hint.age_s);
+    std::string text;
+    if (t.kind == dmr_call::CallKind::group) {
+        text = fmt(tr(Str::filtered_group_fmt), t.destination_id, slot, t.source_id, hint.age_s);
+    } else {
+        const std::string destination = hint.addressed_to_local
+            ? std::string(tr(Str::filtered_local_dst)) : std::to_string(t.destination_id);
+        text = fmt(tr(Str::filtered_private_fmt), t.source_id, destination.c_str(), slot, hint.age_s);
+    }
+    const bool show_join = hint.joinable;
     const float bh = px(layout::kRowHeight);
     ImGui::PushFont(nullptr, layout::kFontCaption);
-    const float button_w = ImGui::CalcTextSize(tr(Str::filtered_join)).x + px(layout::kInlineGap) * 2.0F;
+    const float button_w = show_join
+        ? ImGui::CalcTextSize(tr(Str::filtered_join)).x + px(layout::kInlineGap) * 2.0F : 0.0F;
     const Row row = begin_row(bh);
     row.place(ImGui::GetTextLineHeight());
-    const float text_w = std::max(px(40.0F), inner_w - button_w - px(layout::kInlineGap));
+    const float text_w = std::max(px(40.0F),
+        inner_w - (show_join ? button_w + px(layout::kInlineGap) : 0.0F));
     text_ellipsis(text.c_str(), text_w, rgb(color::warn));
-    ImGui::SetItemTooltip("%s", text.c_str());
-    ImGui::SameLine(ImGui::GetCursorStartPos().x + inner_w - button_w);
-    row.place(bh);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0F, 0.0F));
-    if (button(fmt("%s##listen-filtered", tr(Str::filtered_join)).c_str(), ImVec2(button_w, bh), Tone::normal,
-               vm_.can_mutate_channels())) {
-        vm_.listen_filtered();
+    if (show_join) ImGui::SetItemTooltip("%s", text.c_str());
+    else ImGui::SetItemTooltip("%s\n%s", text.c_str(), tr(Str::tip_filtered_private_info));
+    if (show_join) {
+        ImGui::SameLine(ImGui::GetCursorStartPos().x + inner_w - button_w);
+        row.place(bh);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0F, 0.0F));
+        if (button(fmt("%s##listen-filtered", tr(Str::filtered_join)).c_str(), ImVec2(button_w, bh), Tone::normal,
+                   vm_.can_mutate_channels())) {
+            vm_.listen_filtered();
+        }
+        ImGui::PopStyleVar();
+        ImGui::SetItemTooltip("%s", tr(t.kind == dmr_call::CallKind::group ? Str::tip_filtered_join
+                                                                             : Str::tip_filtered_private_join));
     }
-    ImGui::PopStyleVar();
-    ImGui::SetItemTooltip("%s", tr(t.kind == dmr_call::CallKind::group ? Str::tip_filtered_join
-                                                                         : Str::tip_filtered_private_join));
     ImGui::PopFont();
     row.end();
 }

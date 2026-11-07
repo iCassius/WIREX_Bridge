@@ -1496,6 +1496,8 @@ void ViewModel::add_channel_entry(services::ChannelEntry entry) {
 std::optional<FilteredHint> ViewModel::filtered_hint() const {
     if (!snapshot_ || !snapshot_->last_filtered || snapshot_->bm_link != BmLink::connected) return std::nullopt;
     const auto& traffic = *snapshot_->last_filtered;
+    // 迟到包/暂存中间态不是“未收听的流量”，旧快照或假引擎的 unknown 仍按可提示处理。
+    if (!engine::filter_reason_actionable(traffic.reason)) return std::nullopt;
     const auto age = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::system_clock::now() - to_wall(traffic.last_ms));
     if (age >= FilteredHint::window) return std::nullopt;
@@ -1506,6 +1508,17 @@ std::optional<FilteredHint> ViewModel::filtered_hint() const {
     hint.key = traffic.kind == dmr_call::CallKind::group
                    ? ChannelKey{traffic.destination_id, traffic.kind, traffic.slot}
                    : ChannelKey{traffic.source_id, traffic.kind, traffic.slot};
+    if (traffic.kind == dmr_call::CallKind::private_call) {
+        // 私呼频道只能收听“打给本机”的对端；目标不是本机 ID 时只提示，不提供加入。
+        hint.addressed_to_local = config_.dmr_id != 0U && traffic.destination_id == config_.dmr_id;
+        hint.joinable = hint.addressed_to_local || config_.dmr_id == 0U;
+        if (traffic.reason == engine::FilteredReason::private_not_for_local) hint.joinable = false;
+    }
+    // 被用户拉黑的源/组即使加入频道也不会被 Router 准入，只提示不提供加入。
+    if (traffic.reason == engine::FilteredReason::blocked_source ||
+        traffic.reason == engine::FilteredReason::blocked_group) {
+        hint.joinable = false;
+    }
     // 已加入且未屏蔽：过滤记录是加入前的旧流量，不再提示。
     const bool listening = std::any_of(config_.channels.begin(), config_.channels.end(),
                                        [&](const auto& e) { return key_of(e) == hint.key && !e.disabled; });
@@ -1515,7 +1528,7 @@ std::optional<FilteredHint> ViewModel::filtered_hint() const {
 
 void ViewModel::listen_filtered() {
     const auto hint = filtered_hint();
-    if (!hint) return;
+    if (!hint || !hint->joinable) return;
     if (!can_mutate_channels()) {
         flash(tr(Str::channel_not_ready), true);
         return;

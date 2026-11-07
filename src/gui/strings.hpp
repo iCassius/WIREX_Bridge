@@ -358,15 +358,18 @@ namespace wirex::gui {
                             "TG %u TS%d：本机 Quick Call 失败（%s）。", \
                             "TG %u TS%d: local Quick Call failed (%s).") /* new */ \
     X(muted_badge,          "已屏蔽",                              "Muted")                         /* new */ \
-    X(filtered_group_fmt,   "BM 有流量未收听：TG %u TS%d（来自 %u）· %u 秒前", \
-                            "Unheard BM traffic: TG %u TS%d (from %u) · %us ago") /* new */ \
-    X(filtered_private_fmt, "BM 有流量未收听：单呼 TS%d（来自 %u）· %u 秒前", \
-                            "Unheard BM traffic: private TS%d (from %u) · %us ago") /* new */ \
+    X(filtered_group_fmt,   "BM 有未收听的组呼：TG %u（TS%d）· 发起 %u · %u 秒前", \
+                            "Unheard BM group call: TG %u (TS%d) · from %u · %us ago") /* new */ \
+    X(filtered_private_fmt, "BM 有未收听的私呼：%u → %s（TS%d）· %u 秒前", \
+                            "Unheard BM private call: %u → %s (TS%d) · %us ago") /* new */ \
+    X(filtered_local_dst,   "本机",                                "this radio")                    /* new */ \
     X(filtered_join,        "加入收听",                            "Listen")                        /* new */ \
-    X(tip_filtered_join,    "把该 TG/时隙加入频道列表并开始收听。", \
-                            "Add this TG/slot to the channel list and start listening.") /* new */ \
-    X(tip_filtered_private_join, "把该私呼对端加入私呼频道并开始收听。", \
-                            "Add this private-call peer as a private channel and start listening.") /* new */ \
+    X(tip_filtered_join,    "把该 TG/时隙加入频道列表并开始收听。\nBM 只转发本机在服务器上静态订阅或动态激活的 TG。", \
+                            "Add this TG/slot to the channel list and start listening.\nBM only forwards TGs statically subscribed or dynamically activated for this hotspot.") /* new */ \
+    X(tip_filtered_private_join, "把该私呼对端加入私呼频道并开始收听。\n该呼叫的目标是本机 DMR ID。", \
+                            "Add this private-call peer as a private channel and start listening.\nThe call was addressed to this radio's DMR ID.") /* new */ \
+    X(tip_filtered_private_info, "该私呼的目标不是本机 DMR ID，仅供提示；加入该对端也不会收到此呼叫。", \
+                            "This private call is not addressed to this radio; it is shown for information only.") /* new */ \
     /* ---------- R131：频道状态机 / BM 冷却 / 端点音量 / CAT 门控（独立块，追加在末尾） ---------- */ \
     X(op_muted_groups,      "静音频道",                            "Muted channels")                /* new */ \
     X(op_disconnect_dynamic,"停用动态组",                          "Disable dynamic group")         /* new */ \
