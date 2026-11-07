@@ -41,18 +41,20 @@ CommandResult result(CommandStatus status, std::uint64_t revision = 0U, std::str
 struct FakeCaller {
     std::uint32_t source_id;
     const char* callsign; // nullptr：身份缓存未命中
+    const char* country;  // R136：演示身份查询返回的国家/地区
+    const char* state;
 };
 
 // 虚构呼号与 ID，仅用于离线演示。
 constexpr std::array<FakeCaller, 8> kCallers{{
-    {4609001U, "BA0TST"},
-    {4609002U, "BG0DMO"},
-    {4609003U, "BH0SIM"},
-    {4609004U, nullptr},
-    {4609005U, "BD0LAB"},
-    {4609006U, "BI0FAK"},
-    {3109007U, "N0CALL"},
-    {4609008U, nullptr},
+    {4609001U, "BA0TST", "China", "Guangdong"},
+    {4609002U, "BG0DMO", "China", nullptr},
+    {4609003U, "BH0SIM", "China", "Beijing"},
+    {4609004U, nullptr, "China", "Guangdong"},
+    {4609005U, "BD0LAB", "China", "Guangdong"},
+    {4609006U, "BI0FAK", "China", nullptr},
+    {3109007U, "N0CALL", "United States", "Colorado"},
+    {4609008U, nullptr, "China", nullptr},
 }};
 
 bool same_group(const talkgroup_routing::GroupRoute& a, const talkgroup_routing::GroupRoute& b) {
@@ -1479,11 +1481,27 @@ services::Services make_fake_services(FakeEngine& engine) {
         return true;
     };
 
+    // RadioID：预载演示呼号与国家/地区，使 --fake 的来话卡片能显示地区。
+    sv.identity.preload = []() {
+        std::vector<services::IdentityResult> out;
+        for (const auto& c : kCallers) {
+            if (c.callsign == nullptr) continue;
+            services::IdentityResult r{c.source_id, true, std::string(c.callsign), std::nullopt, std::nullopt};
+            if (c.country != nullptr) r.country = c.country;
+            if (c.state != nullptr) r.state = c.state;
+            out.push_back(std::move(r));
+        }
+        return out;
+    };
     // RadioID：模拟查询（kCallers 中未命中的 ID 返回演示呼号）。
     sv.identity.lookup = [&engine](std::uint32_t id, services::IdentityDone done) {
         engine.post_after(700ms, [id, done = std::move(done)]() {
-            services::IdentityResult r{id, true, std::nullopt};
-            if (id == 4609004U) r.callsign = "BY0QRY";
+            services::IdentityResult r{id, true, std::nullopt, std::nullopt, std::nullopt};
+            if (id == 4609004U) {
+                r.callsign = "BY0QRY";
+                r.country = "China";
+                r.state = "Guangdong";
+            }
             done(r);
         });
     };

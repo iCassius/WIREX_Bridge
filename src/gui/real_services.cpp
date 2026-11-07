@@ -1057,7 +1057,7 @@ public:
     std::vector<services::IdentityResult> preload() const {
         std::vector<services::IdentityResult> out;
         for (auto& m : app::radio_identity::native_mappings(cache_, app::radio_identity::cache_entry_limit)) {
-            out.push_back({m.source_id, true, std::move(m.callsign)});
+            out.push_back({m.source_id, true, std::move(m.callsign), std::move(m.country), std::move(m.state)});
         }
         return out;
     }
@@ -1129,8 +1129,12 @@ private:
     static std::optional<services::IdentityResult> known(const app::radio_identity::Result& r) {
         using app::radio_identity::Status;
         if (r.status != Status::found && r.status != Status::not_found) return std::nullopt;
-        services::IdentityResult out{r.id, true, std::nullopt};
-        if (r.status == Status::found && r.callsign) out.callsign = app::radio_identity::native_callsign(*r.callsign);
+        services::IdentityResult out{r.id, true, std::nullopt, std::nullopt, std::nullopt};
+        if (r.status == Status::found && r.callsign) {
+            out.callsign = app::radio_identity::native_callsign(*r.callsign);
+            out.country = r.country;
+            out.state = r.state;
+        }
         return out;
     }
 

@@ -686,7 +686,7 @@ std::vector<NativeMapping> native_mappings(const std::filesystem::path& path, st
         if (!entry.callsign) continue;
         auto callsign = native_callsign(*entry.callsign);
         if (!callsign) continue;
-        mappings.push_back({entry.id, std::move(*callsign)});
+        mappings.push_back({entry.id, std::move(*callsign), entry.country, entry.state});
         if (mappings.size() >= limit) break;
     }
     return mappings;

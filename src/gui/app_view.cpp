@@ -694,8 +694,9 @@ std::string call_target_text(const engine::CallInfo& call) {
     return fmt(tr(Str::call_target_private), static_cast<int>(call.slot));
 }
 
-// 呼号（大号、可点击打开 QRZ）+ DMR ID（可点击打开 BM 资料页）。
-void caller_block(const engine::CallInfo& call, ImFont* bold, float big, float small, ImU32 callsign_color) {
+// 呼号（大号、可点击打开 QRZ）+ 国家/地区（弱化色，超宽省略）+ DMR ID（可点击打开 BM 资料页）。
+void caller_block(const engine::CallInfo& call, ImFont* bold, float big, float small, ImU32 callsign_color,
+                  const std::string& region) {
     const auto cs = safe_callsign(call.callsign);
     ImGui::PushFont(bold, big);
     if (!cs.empty()) {
@@ -707,7 +708,18 @@ void caller_block(const engine::CallInfo& call, ImFont* bold, float big, float s
         ImGui::Text("DMR ID %u", call.source_id);
         ImGui::PopStyleColor();
     }
+    const float big_line_h = ImGui::GetTextLineHeight();
     ImGui::PopFont();
+    if (!region.empty()) {
+        // 与呼号同一行、垂直居中；宽度不足时省略，完整文本进 tooltip，不改变行高。
+        ImGui::SameLine(0.0F, ImGui::GetStyle().ItemInnerSpacing.x);
+        ImGui::PushFont(nullptr, small);
+        const float small_line_h = ImGui::GetTextLineHeight();
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + std::max(0.0F, (big_line_h - small_line_h) * 0.5F));
+        text_ellipsis(region.c_str(), std::max(0.0F, ImGui::GetContentRegionAvail().x), rgb(color::muted));
+        ImGui::SetItemTooltip(tr(Str::caller_region_tip_fmt), region.c_str());
+        ImGui::PopFont();
+    }
     if (!cs.empty()) {
         ImGui::PushFont(nullptr, small);
         const auto id = fmt("DMR ID %u", call.source_id);
@@ -1554,7 +1566,8 @@ void AppView::draw_channel_card(const ChannelView& ch, float width, float height
     ImGui::BeginChild("##call", ImVec2(call_w, content_h), ImGuiChildFlags_Borders,
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     if (ch.current_call) {
-        caller_block(*ch.current_call, fonts_.bold, 23.0F, 17.0F, ch.is_tx_active ? rgb(0xFFFFFF) : rgb(color::callsign));
+        caller_block(*ch.current_call, fonts_.bold, 23.0F, 17.0F,
+                     ch.is_tx_active ? rgb(0xFFFFFF) : rgb(color::callsign), ch.current_call_region);
     } else {
         // 空闲：显示该频道最近一次来话（呼号 + 时间），没有记录时显示“空闲”。
         const float call_inner = ImGui::GetContentRegionAvail().x;
@@ -1570,8 +1583,10 @@ void AppView::draw_channel_card(const ChannelView& ch, float width, float height
             ImGui::PopFont();
             ImGui::PushFont(nullptr, 12.0F);
             const auto when = fmt(tr(Str::last_call_fmt), format_clock(ch.last_call->started_wall).c_str());
-            const auto id = cs.empty() ? when : fmt("%s · %u", when.c_str(), last.source_id);
+            auto id = cs.empty() ? when : fmt("%s · %u", when.c_str(), last.source_id);
+            if (!ch.last_call_region.empty()) id += " · " + ch.last_call_region;
             text_ellipsis(id.c_str(), call_inner, rgb(color::muted));
+            if (!ch.last_call_region.empty()) ImGui::SetItemTooltip(tr(Str::caller_region_tip_fmt), ch.last_call_region.c_str());
             ImGui::PopFont();
         }
     }
@@ -1738,7 +1753,10 @@ void AppView::draw_history(float width, float height) {
                        : fmt(tr(Str::relay_history_private_fmt), clock.c_str(), rec.call.destination_id,
                              static_cast<int>(rec.call.slot), secs, peak.c_str());
         } else {
-            const auto from = source_label(vm_.with_callsign(rec.call));
+            auto from = source_label(vm_.with_callsign(rec.call));
+            if (const auto region = vm_.caller_region(rec.call.source_id); !region.empty()) {
+                from += " · " + region;
+            }
             text = rec.call.kind == dmr_call::CallKind::group
                        ? fmt(tr(Str::history_group), clock.c_str(), rec.call.destination_id, from.c_str())
                        : fmt(tr(Str::history_private), clock.c_str(), rec.call.destination_id, from.c_str());
@@ -1789,7 +1807,7 @@ void AppView::draw_current_call(float width, float height) {
     title.end();
     if (rx) {
         const auto& call = *active;
-        caller_block(call, fonts_.bold, 22.0F, 15.0F, rgb(color::callsign));
+        caller_block(call, fonts_.bold, 22.0F, 15.0F, rgb(color::callsign), vm_.caller_region(call.source_id));
         ImGui::PushStyleColor(ImGuiCol_Text, vec(color::muted));
         ImGui::TextUnformatted(call_target_text(call).c_str());
         ImGui::PopStyleColor();
@@ -1839,6 +1857,21 @@ void AppView::draw_recent_calls(float width, float height) {
         ImGui::TextUnformatted(who.c_str());
         ImGui::PopStyleColor();
         ImGui::PopFont();
+        // 国家/地区：呼号后弱化色；给 DMR ID 与右侧时间留出空间，超宽时省略。
+        float id_reserve = 0.0F;
+        if (!cs.empty()) {
+            id_reserve = ImGui::CalcTextSize(fmt("%u", rec.call.source_id).c_str()).x + px(layout::kTitleGap);
+        }
+        const float right_limit =
+            ImGui::GetCursorStartPos().x + inner_w - clock_w - px(layout::kTitleGap);
+        if (!rec.caller_region.empty()) {
+            ImGui::SameLine(0.0F, px(layout::kTitleGap));
+            const float region_w = right_limit - ImGui::GetCursorPosX() - id_reserve;
+            if (region_w > px(12.0F)) {
+                text_ellipsis(rec.caller_region.c_str(), region_w, rgb(color::muted));
+                ImGui::SetItemTooltip(tr(Str::caller_region_tip_fmt), rec.caller_region.c_str());
+            }
+        }
         if (!cs.empty()) {
             ImGui::SameLine(0.0F, px(layout::kTitleGap));
             ImGui::PushStyleColor(ImGuiCol_Text, vec(color::link));

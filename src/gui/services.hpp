@@ -236,6 +236,8 @@ struct IdentityResult {
     std::uint32_t source_id{};
     bool known{};                               // true：found（callsign 有值）或 not_found（callsign 为空）
     std::optional<std::string> callsign{};      // 已规范化，可直接写入引擎身份缓存
+    std::optional<std::string> country{};       // R136：RadioID.net 原样字段，用于来话显示
+    std::optional<std::string> state{};
 };
 
 using IdentityDone = std::function<void(IdentityResult result)>;

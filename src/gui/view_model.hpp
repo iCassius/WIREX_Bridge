@@ -23,6 +23,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace wirex::gui {
@@ -36,7 +37,19 @@ struct CallRecord {
     std::uint64_t relay_duration_ms{};
     std::optional<unsigned> relay_s_peak{};
     std::string relay_end_reason{};
+    std::string caller_region{};   // R136：身份查询得到的国家/地区（recent_callers 填充）
 };
+
+// R136：身份查询缓存条目（呼号 + 原样保留的国家/地区字段）。
+struct CallerIdentity {
+    std::string callsign{};
+    std::string country{};
+    std::string state{};
+};
+
+// R136：来话显示用的国家/地区文本：country + " " + state；
+// state 为空或与 country 相同则只显示 country；两者都未知时为空。不做翻译。
+[[nodiscard]] std::string format_caller_region(std::string_view country, std::string_view state);
 
 // FM 中继状态（右上角提示）。
 enum class RelayStatus : std::uint8_t { off, c4fm_only, no_cat, waiting, active };
@@ -91,6 +104,8 @@ struct ChannelView {
     bool quick_call_allowed{};    // 组呼且不是 TG 4000
     std::optional<engine::CallInfo> current_call{};
     std::optional<CallRecord> last_call{};  // 空闲时显示该频道最近一次来话
+    std::string current_call_region{};      // R136：当前来话的国家/地区（未知时为空）
+    std::string last_call_region{};         // R136：最近来话的国家/地区
 };
 
 // BM 静态组面板（对应 ui/windows/BmManagementUi.ps1）。
@@ -192,6 +207,8 @@ public:
     // 当前来话（呼号缺失时用身份查询结果补全）。
     [[nodiscard]] std::optional<engine::CallInfo> active_call() const;
     [[nodiscard]] engine::CallInfo with_callsign(engine::CallInfo call) const;
+    // R136：该 DMR ID 的国家/地区显示文本（身份查询缓存；未知时为空）。
+    [[nodiscard]] std::string caller_region(std::uint32_t source_id) const;
     [[nodiscard]] std::optional<FilteredHint> filtered_hint() const;
     [[nodiscard]] const StaticGroupsView& static_groups() const noexcept { return static_; }
     [[nodiscard]] std::uint32_t bm_device_id() const noexcept { return services::effective_gateway_id(config_); }
@@ -370,6 +387,7 @@ private:
     void lookup_identity(const engine::CallInfo& call);
     void apply_identity(const services::IdentityResult& result);
     void push_identity(std::uint32_t source_id, std::optional<std::string> callsign);
+    void preload_identities(bool push_to_engine);
     void on_engine_running();
     [[nodiscard]] bool pump_startup_group_activation();
     void update_startup_group_activation_status();
@@ -451,7 +469,7 @@ private:
     bool startup_static_resolved_{};      // 启动组呼在首次静态组读取结束（或超时）后才激活
     std::optional<std::chrono::steady_clock::time_point> startup_static_wait_since_{};
     bool rx_policy_dirty_{};              // 频道已变但收听策略尚未下发（引擎未运行或策略命令在途）
-    std::map<std::uint32_t, std::string> callsigns_{};     // RadioID 查询得到的呼号
+    std::map<std::uint32_t, CallerIdentity> identities_{}; // RadioID 查询得到的呼号与国家/地区
     std::set<std::uint32_t> identity_requested_{};
     std::uint64_t identity_revision_{};                    // 每次引擎进入 running 从 0 开始
     std::uint64_t radio_connection_generation_{};            // 取消过期的并行 CAT 连接回调

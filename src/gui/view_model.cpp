@@ -131,6 +131,15 @@ bool bm_profile_changed(const services::GuiConfig& current, const services::GuiC
 
 // ---------------------------------------------------------------- 显示工具
 
+std::string format_caller_region(std::string_view country, std::string_view state) {
+    if (country.empty()) return std::string(state);
+    if (state.empty() || state == country) return std::string(country);
+    std::string out(country);
+    out.push_back(' ');
+    out.append(state);
+    return out;
+}
+
 std::string to_utf8(const std::wstring& w) {
     if (w.empty()) return {};
     const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
@@ -240,6 +249,9 @@ ViewModel::ViewModel(EngineApi& engine, services::Services services, bool fake)
         }
     }
     last_phase_ = snapshot_->phase;
+    // --fake 的引擎在构造时已处于 running，不会触发 on_engine_running 的相位切换；
+    // 先把身份预载（呼号/国家/地区）放进 GUI 缓存，供来话显示使用（不重复写回引擎）。
+    if (snapshot_->phase == Phase::running) preload_identities(false);
     last_bm_link_ = snapshot_->bm_link;
     last_bm_requested_ = snapshot_->bm_requested_enabled;
     if (last_bm_link_ == BmLink::connected) bm_connected_profile_generation_ = bm_profile_generation_;
@@ -918,12 +930,14 @@ std::vector<ChannelView> ViewModel::channel_page() const {
         if (!v.is_disabled && snapshot_->active_rx_call &&
             call_matches(*snapshot_->active_rx_call, entry, config_.dmr_id)) {
             v.current_call = with_callsign(*snapshot_->active_rx_call);
+            v.current_call_region = caller_region(v.current_call->source_id);
         } else {
             for (const auto& rec : history_) {
                 if (rec.relay_fm) continue;
                 if (call_matches(rec.call, entry, config_.dmr_id)) {
                     v.last_call = rec;
                     v.last_call->call = with_callsign(rec.call);
+                    v.last_call_region = caller_region(rec.call.source_id);
                     break;
                 }
             }
@@ -971,6 +985,7 @@ std::vector<CallRecord> ViewModel::recent_callers(std::size_t max) const {
         if (!seen.insert(rec.call.source_id).second) continue;
         out.push_back(rec);
         out.back().call = with_callsign(rec.call);
+        out.back().caller_region = caller_region(rec.call.source_id);
         if (out.size() >= max) break;
     }
     return out;
@@ -988,9 +1003,15 @@ std::optional<engine::CallInfo> ViewModel::active_call() const {
 
 engine::CallInfo ViewModel::with_callsign(engine::CallInfo call) const {
     if (call.callsign.empty()) {
-        if (auto it = callsigns_.find(call.source_id); it != callsigns_.end()) call.callsign = it->second;
+        if (auto it = identities_.find(call.source_id); it != identities_.end()) call.callsign = it->second.callsign;
     }
     return call;
+}
+
+std::string ViewModel::caller_region(std::uint32_t source_id) const {
+    const auto it = identities_.find(source_id);
+    if (it == identities_.end()) return {};
+    return format_caller_region(it->second.country, it->second.state);
 }
 
 // ---------------------------------------------------------------- 命令
@@ -2361,7 +2382,7 @@ void ViewModel::static_select(std::optional<std::size_t> index) { static_.select
 
 void ViewModel::lookup_identity(const engine::CallInfo& call) {
     if (!services_.identity.lookup || call.source_id == 0U || call.source_id > 16777215U) return;
-    if (callsigns_.count(call.source_id) != 0U || !identity_requested_.insert(call.source_id).second) return;
+    if (identities_.count(call.source_id) != 0U || !identity_requested_.insert(call.source_id).second) return;
     services_.identity.lookup(call.source_id, [this](services::IdentityResult r) {
         post_to_ui([this, r = std::move(r)]() { apply_identity(r); });
     });
@@ -2371,9 +2392,12 @@ void ViewModel::apply_identity(const services::IdentityResult& r) {
     identity_requested_.erase(r.source_id);
     if (!r.known) return;
     if (r.callsign) {
-        callsigns_[r.source_id] = *r.callsign;
+        auto& identity = identities_[r.source_id];
+        identity.callsign = *r.callsign;
+        identity.country = r.country.value_or("");
+        identity.state = r.state.value_or("");
     } else {
-        callsigns_.erase(r.source_id);
+        identities_.erase(r.source_id);
     }
     if (snapshot_->phase == Phase::running) push_identity(r.source_id, r.callsign);
 }
@@ -2383,23 +2407,31 @@ void ViewModel::push_identity(std::uint32_t source_id, std::optional<std::string
     identity_ops_.push_back(engine_.upsert_radio_identity(source_id, ++identity_revision_, std::move(callsign)));
 }
 
+void ViewModel::preload_identities(bool push_to_engine) {
+    if (!services_.identity.preload) return;
+    std::set<std::uint32_t> pushed;
+    for (auto& m : services_.identity.preload()) {
+        if (!m.callsign) continue;
+        pushed.insert(m.source_id);
+        CallerIdentity identity;
+        identity.callsign = *m.callsign;
+        identity.country = m.country.value_or("");
+        identity.state = m.state.value_or("");
+        identities_[m.source_id] = std::move(identity);
+        if (push_to_engine) push_identity(m.source_id, std::move(m.callsign));
+    }
+    if (!push_to_engine) return;
+    for (const auto& [id, identity] : identities_) {
+        if (pushed.count(id) == 0U) push_identity(id, identity.callsign);
+    }
+}
+
 void ViewModel::on_engine_running() {
     // 引擎每次进入 running 时静音集合为空：补发已保存的静音组。
     if (!muted_groups().empty()) push_muted_groups();
     // Initialize-UiNativeIdentitySync：预载缓存中的新鲜映射，再回放本次会话查到的结果。
     identity_revision_ = 0U;
-    std::set<std::uint32_t> pushed;
-    if (services_.identity.preload) {
-        for (auto& m : services_.identity.preload()) {
-            if (!m.callsign) continue;
-            pushed.insert(m.source_id);
-            callsigns_.emplace(m.source_id, *m.callsign);
-            push_identity(m.source_id, std::move(m.callsign));
-        }
-    }
-    for (const auto& [id, callsign] : callsigns_) {
-        if (pushed.count(id) == 0U) push_identity(id, callsign);
-    }
+    preload_identities(true);
 }
 
 bool ViewModel::pump_startup_group_activation() {

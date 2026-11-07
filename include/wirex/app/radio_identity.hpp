@@ -124,6 +124,8 @@ struct ParseResult {
 struct NativeMapping {
     std::uint32_t source_id{};
     std::string callsign{};
+    std::optional<std::string> country{};   // R136：原样保留缓存中的国家/地区字段
+    std::optional<std::string> state{};
 };
 // Get-RadioIdentityNativeMappings：新鲜 found 条目、同 ID 只取第一条、呼号需合规。
 [[nodiscard]] std::vector<NativeMapping> native_mappings(const std::filesystem::path& path,

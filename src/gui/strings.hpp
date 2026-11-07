@@ -477,6 +477,9 @@ namespace wirex::gui {
     X(tip_history_private_target_id_fmt, "向 %u 单呼",             "Private call to %u") /* new */ \
     X(tip_history_target_none, "选择一条来话记录后，可将其来源 DMR ID 设为单呼目标。", \
                             "Select a call record to target its source DMR ID as a private call.") /* new */
+// R136 caller region
+#define WIREX_GUI_STRINGS_R136_CALLER_REGION(X) \
+    X(caller_region_tip_fmt, "国家/地区：%s",                        "Country/region: %s")             /* new */
 // clang-format on
 
 enum class Str : std::uint16_t {
@@ -489,6 +492,7 @@ enum class Str : std::uint16_t {
     WIREX_GUI_STRINGS_RADIO_BM_DECOUPLING(WIREX_GUI_STR_ENUM)
     WIREX_GUI_STRINGS_R135(WIREX_GUI_STR_ENUM)
     WIREX_GUI_STRINGS_R136(WIREX_GUI_STR_ENUM)
+    WIREX_GUI_STRINGS_R136_CALLER_REGION(WIREX_GUI_STR_ENUM)
 #undef WIREX_GUI_STR_ENUM
         count_
 };
@@ -512,6 +516,7 @@ inline constexpr StrEntry kStrings[] = {
     WIREX_GUI_STRINGS_RADIO_BM_DECOUPLING(WIREX_GUI_STR_ROW)
     WIREX_GUI_STRINGS_R135(WIREX_GUI_STR_ROW)
     WIREX_GUI_STRINGS_R136(WIREX_GUI_STR_ROW)
+    WIREX_GUI_STRINGS_R136_CALLER_REGION(WIREX_GUI_STR_ROW)
 #undef WIREX_GUI_STR_ROW
 };
 static_assert(sizeof(kStrings) / sizeof(kStrings[0]) == static_cast<std::size_t>(Str::count_));
