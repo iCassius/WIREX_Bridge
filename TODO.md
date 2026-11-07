@@ -110,6 +110,7 @@
 
 - [x] v0.2.0 单 EXE ZIP profile：`wirex build --gui --release` + `wirex package-gui --version v0.2.0`（Go 原生，精确清单：exe + licenses + README；确定性 ZIP、`SHA256SUMS.txt`、`manifest.json`）。
 - [x] 干净目录冒烟（2026-11-07，release 构建）：首次启动生成无个人数据的默认配置；正式版无 dev 日志；关窗 10 s 内退出无残留；仅系统 DLL。
+- [x] v0.2.1（2026-11-07）：电台与 BM 解耦（空 BM 配置下核心不再因本地源 ID 0/1 不一致启动失败；BM 未配置仅提示）；未收听提示区分组呼/私呼并记录 `[rx-filtered]`；仓库身份改为 `N0CALL` 占位，新增 GPL-3.0 `LICENSE` 与合规声明（历史提交未改写）。
 - [ ] 冒烟遗留：损坏配置不备份且 `--check-config` 静默（仅退出码 3）；`--fake` 也会创建 `private/runtime/` 并访问 RadioID.net；`icuuc.dll` 需 Win10 1703+；`build-gui.ps1` 在 `NoDefaultCurrentDirectoryInExePath=1` 下 vswhere 失败（Invoke-MsvcStep 内临时清除）。
 - [ ] engine_test 音频设备切换断言偶发失败（基线即有），时序原因待查。
 - [ ] 端到端实机通话联测；输出重构前后文件数、包体积、内存占用与启动耗时对比。

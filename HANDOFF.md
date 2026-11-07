@@ -6,7 +6,7 @@
 
 | 项 | 状态 |
 | --- | --- |
-| `feat/r128-native-gui` | 单进程原生 C++ GUI（Dear ImGui + DX11）+ 进程内引擎 + C++ 服务；R132–R134 动态 Y 记录与实机修复。已作为 `v0.2.0` 发布，发布源 `e23dff9`。已推送（main 与 tag `v0.2.0`）。 |
+| `feat/r128-native-gui` | 单进程原生 C++ GUI（Dear ImGui + DX11）+ 进程内引擎 + C++ 服务；R132–R134 动态 Y 记录与实机修复。已发布 `v0.2.0`（`e23dff9`）与 `v0.2.1`（电台/BM 解耦、未收听提示、身份占位与 GPL-3.0 LICENSE）；main 与 tag 均已推送。 |
 | 旧 WPF UI | `ui/windows/`、launcher、`tools/start-*.ps1`、`--ui-pipe` 适配层仍在仓库中，实机验收通过后退役 |
 | stable `v0.1.0` | tag 指向 `c12b50a`，GitHub Release 已发布；发布审计见 [R124_RELEASE](docs/R124_RELEASE.md) |
 | `v0.2.0` 发布包 | 单 EXE ZIP profile：`wirex build --gui --release` 后用 `wirex package-gui --version v0.2.0` 生成（`package-gui` 由另一 Agent 实现中）；包内为 `WirexBridge.exe` + `licenses/` + `README.md`，不含 `private/device-y.bin` |

@@ -10,7 +10,7 @@
 >
 > FM 中继为实验功能，并非 Yaesu 官方功能。The FM relay is experimental and is not a Yaesu feature.
 
-> **版本说明**：当前发布为 v0.2.0 原生单 EXE GUI，界面与本页早期的 WPF 描述不同，详见 [docs/releases/v0.2.0.md](docs/releases/v0.2.0.md)。
+> **版本说明**：当前发布为 v0.2.1 原生单 EXE GUI，界面与本页早期的 WPF 描述不同，详见 [docs/releases/v0.2.1.md](docs/releases/v0.2.1.md)。
 
 ---
 
