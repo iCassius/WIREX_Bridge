@@ -5,6 +5,7 @@
 #include "item_id_scope.hpp"
 
 #include "wirex/bm_local_playback.hpp"
+#include "wirex/version.hpp"
 #include "wirex/app/bm_servers.hpp"
 
 #include <algorithm>
@@ -897,8 +898,9 @@ void AppView::draw_header() {
     const float actions_w = lang_w + action_w * 2.0F + log_w + inline_gap * 3.0F + fm_group_w;
     if (ImGui::BeginTable("##header", 3, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoPadOuterX |
                                            ImGuiTableFlags_NoBordersInBody)) {
-        ImGui::TableSetupColumn("##title", ImGuiTableColumnFlags_WidthStretch, 1.0F);
-        ImGui::TableSetupColumn("##status", ImGuiTableColumnFlags_WidthStretch, 1.1F);
+        // 标题列略宽于状态列：最小窗口宽度下也要容下“标题 + 版本标签 + 作者 + 模拟引擎”。
+        ImGui::TableSetupColumn("##title", ImGuiTableColumnFlags_WidthStretch, 1.1F);
+        ImGui::TableSetupColumn("##status", ImGuiTableColumnFlags_WidthStretch, 1.0F);
         ImGui::TableSetupColumn("##actions", ImGuiTableColumnFlags_WidthFixed, actions_w);
         ImGui::TableNextRow(ImGuiTableRowFlags_None, row_h);
 
@@ -906,9 +908,69 @@ void AppView::draw_header() {
         ImGui::TableSetColumnIndex(0);
         const Row row{ImGui::GetCursorPosX(), ImGui::GetCursorPosY(), row_h};
         row_text(row, tr(Str::app_title), rgb(color::text), fonts_.bold, 19.0F);
-        if (vm_.fake()) {
+        // R135：版本标签本身就是更新按钮；检测到新版本时绿色高亮并显示“当前 → 最新”。
+        {
+            const auto& update = vm_.update_status();
+            const bool available = update.state == UpdateStatus::State::available;
+            const std::string current = update.current.empty() ? fmt("v%s", wirex::app_version) : update.current;
+            const std::string text = available && !update.latest.empty()
+                                         ? fmt("%s → %s", current.c_str(), update.latest.c_str())
+                                         : current;
+            const std::string label = text + "##update-version";
             ImGui::SameLine(0.0F, px(layout::kTitleGap));
-            row_text(row, fmt("[%s]", tr(Str::fake_banner)).c_str(), rgb(color::warn), nullptr, layout::kFontBody);
+            ImGui::PushFont(nullptr, layout::kFontCaption);
+            const float pill_h = px(20.0F);
+            const float pill_w = std::round(ImGui::CalcTextSize(text.c_str()).x + px(14.0F));
+            row.place(pill_h);
+            if (available) {
+                ImGui::PushStyleColor(ImGuiCol_Button, vec(color::ok_button));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, vec(0x2F6A48));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, vec(color::ok_button));
+                ImGui::PushStyleColor(ImGuiCol_Border, vec(color::ok_border));
+                ImGui::PushStyleColor(ImGuiCol_Text, vec(color::green));
+            } else {
+                ImGui::PushStyleColor(ImGuiCol_Button, vec(color::button));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, vec(color::button_hover));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, vec(color::button_pressed));
+                ImGui::PushStyleColor(ImGuiCol_Border, vec(color::line));
+                ImGui::PushStyleColor(ImGuiCol_Text, vec(color::muted));
+            }
+            if (ImGui::Button(label.c_str(), ImVec2(pill_w, pill_h))) vm_.open_update_page();
+            ImGui::PopStyleColor(5);
+            ImGui::PopFont();
+            switch (update.state) {
+            case UpdateStatus::State::available:
+                ImGui::SetItemTooltip("%s", fmt(tr(Str::update_tip_available_fmt), update.latest.c_str()).c_str());
+                break;
+            case UpdateStatus::State::checking:
+                ImGui::SetItemTooltip("%s", tr(Str::update_tip_checking));
+                break;
+            case UpdateStatus::State::up_to_date:
+                ImGui::SetItemTooltip("%s", tr(Str::update_tip_up_to_date));
+                break;
+            case UpdateStatus::State::failed:
+                ImGui::SetItemTooltip("%s", tr(Str::update_tip_failed));
+                break;
+            case UpdateStatus::State::unknown:
+                ImGui::SetItemTooltip("%s", tr(Str::update_tip_unknown));
+                break;
+            }
+        }
+        ImGui::SameLine(0.0F, px(layout::kTitleGap));
+        row_text(row, fmt("by %s", wirex::app_author).c_str(), rgb(color::muted), nullptr, layout::kFontCaption);
+        if (vm_.fake()) {
+            // 最小窗口宽度（尤其开启中继、右侧按钮变多时）放不下就隐藏，避免被标题列裁切。
+            const std::string fake_text = fmt("[%s]", tr(Str::fake_banner));
+            ImGui::PushFont(nullptr, layout::kFontBody);
+            const float fake_w = ImGui::CalcTextSize(fake_text.c_str()).x;
+            ImGui::PopFont();
+            // 作者文字结束后光标回到行首，用 ItemRect 右边界和列右边界判断剩余空间。
+            const float author_right = ImGui::GetItemRectMax().x;
+            const float title_right = ImGui::GetCursorScreenPos().x + ImGui::GetColumnWidth();
+            if (title_right - author_right >= px(layout::kTitleGap) + fake_w + px(2.0F)) {
+                ImGui::SameLine(0.0F, px(layout::kTitleGap));
+                row_text(row, fake_text.c_str(), rgb(color::warn), nullptr, layout::kFontBody);
+            }
         }
 
         // RTT/丢包：连接日志摘要显示时靠右，否则与 BM/核心状态一起居中；宽度取上一帧实测值。

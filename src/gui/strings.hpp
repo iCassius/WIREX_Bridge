@@ -14,7 +14,7 @@ namespace wirex::gui {
 // clang-format off
 #define WIREX_GUI_STRINGS(X) \
     X(app_title,            "WIREX BRIDGE  ·  FTX-1",              "WIREX BRIDGE  ·  FTX-1") \
-    X(window_title,         "WIREX Bridge · FTX-1",                "WIREX Bridge · FTX-1") \
+    X(window_title,         "WIREX Bridge v%s — FTX-1 · by %s",    "WIREX Bridge v%s — FTX-1 · by %s") \
     X(brandmeister,         "BrandMeister",                        "BrandMeister") \
     X(bm_disabled,          "未连接",                              "Not connected") \
     X(bm_resolving,         "BM 主站名称解析中",                   "Resolving BM server name") \
@@ -461,6 +461,14 @@ namespace wirex::gui {
                                "BM settings incomplete: enter callsign, DMR ID and password, then save, to connect BM") \
     X(radio_bm_independent, "电台连接与 BM 相互独立；BM 未配置不影响电台使用。", \
                             "Radio and BM connect independently; an unconfigured BM does not affect the radio.")
+
+// R135 version/update：标题栏版本标签（更新提示）的 tooltip。独立块，追加在末尾。
+#define WIREX_GUI_STRINGS_R135(X) \
+    X(update_tip_unknown,   "尚未检查更新；点击打开发布页",        "Update not checked yet; click to open the releases page") /* new */ \
+    X(update_tip_checking,  "正在检查更新…",                       "Checking for updates…")          /* new */ \
+    X(update_tip_up_to_date,"已是最新版本",                        "You have the latest version")    /* new */ \
+    X(update_tip_failed,    "未能检查更新；点击打开发布页",        "Could not check for updates; click to open the releases page") /* new */ \
+    X(update_tip_available_fmt, "有新版本 %s，点击打开发布页",     "New version %s is available; click to open the releases page") /* new */
 // clang-format on
 
 enum class Str : std::uint16_t {
@@ -471,6 +479,7 @@ enum class Str : std::uint16_t {
     WIREX_GUI_STRINGS_R133(WIREX_GUI_STR_ENUM)
     WIREX_GUI_STRINGS_QUICK_CALL_DEFERRAL(WIREX_GUI_STR_ENUM)
     WIREX_GUI_STRINGS_RADIO_BM_DECOUPLING(WIREX_GUI_STR_ENUM)
+    WIREX_GUI_STRINGS_R135(WIREX_GUI_STR_ENUM)
 #undef WIREX_GUI_STR_ENUM
         count_
 };
@@ -492,6 +501,7 @@ inline constexpr StrEntry kStrings[] = {
     WIREX_GUI_STRINGS_R133(WIREX_GUI_STR_ROW)
     WIREX_GUI_STRINGS_QUICK_CALL_DEFERRAL(WIREX_GUI_STR_ROW)
     WIREX_GUI_STRINGS_RADIO_BM_DECOUPLING(WIREX_GUI_STR_ROW)
+    WIREX_GUI_STRINGS_R135(WIREX_GUI_STR_ROW)
 #undef WIREX_GUI_STR_ROW
 };
 static_assert(sizeof(kStrings) / sizeof(kStrings[0]) == static_cast<std::size_t>(Str::count_));

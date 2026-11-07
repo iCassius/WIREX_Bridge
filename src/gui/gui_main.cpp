@@ -10,6 +10,8 @@
 //                          仅截图验收（需 --fake --screenshot）：内存中开启中继与 FM（不写配置），注入一段 FM 中继历史
 //   --screenshot-modal remove-static
 //                          仅截图验收（需 --fake --screenshot）：打开“移除静态组”确认弹窗后再截图
+//   --screenshot-update-available
+//                          仅截图验收（需 --fake --screenshot）：版本标签显示“有新版本”状态
 //   --check-config         只做 config.json 生成/读取检查并退出（退出码 0 = 成功；不打开窗口）
 // 不带 --fake 时使用真实引擎（需以 WIREX_GUI_REAL_ENGINE=1 编译；否则提示“真实引擎尚未接入”）。
 //
@@ -44,6 +46,8 @@
 #include "strings.hpp"
 #include "view_model.hpp"
 #include "dev_log.hpp"
+
+#include "wirex/version.hpp"
 
 #ifndef WIREX_GUI_REAL_ENGINE
 #define WIREX_GUI_REAL_ENGINE 0
@@ -369,6 +373,7 @@ struct Options {
     bool screenshot_relay_demo{};           // 仅截图验收：开启中继/FM 并注入一段 FM 中继历史（R130）
     bool screenshot_channel_states{};       // 仅截图验收：造出全部频道卡片状态（R131）
     bool screenshot_bm_cooldown{};          // 仅截图验收：模拟刚断开 BM，显示冷却倒计时（R131）
+    bool screenshot_update_available{};     // 仅截图验收：版本标签显示“有新版本”（R135）
     std::optional<std::filesystem::path> config{};
     std::wstring error{};
 };
@@ -410,6 +415,8 @@ Options parse_args() {
             o.screenshot_channel_states = true;
         } else if (a == L"--screenshot-bm-cooldown") {
             o.screenshot_bm_cooldown = true;
+        } else if (a == L"--screenshot-update-available") {
+            o.screenshot_update_available = true;
         } else if (a == L"--check-config") {
             o.check_config = true;
         } else if (a == L"--config") {
@@ -440,7 +447,7 @@ Options parse_args() {
             o.error = L"未知参数：" + a +
                       L"\n用法：WirexBridge.exe [--fake [--fake-services]] [--config <json>] [--screenshot <png>] [--lang zh-CN|en-US] "
                       L"[--screenshot-modal remove-static] [--screenshot-relay-demo] "
-                      L"[--screenshot-channel-states] [--screenshot-bm-cooldown] "
+                      L"[--screenshot-channel-states] [--screenshot-bm-cooldown] [--screenshot-update-available] "
                       L"[--check-config]";
             break;
         }
@@ -455,6 +462,9 @@ Options parse_args() {
     }
     if (o.error.empty() && o.screenshot_relay_demo && (!o.screenshot || !o.fake)) {
         o.error = L"--screenshot-relay-demo 只能与 --fake 和 --screenshot 一起使用。";
+    }
+    if (o.error.empty() && o.screenshot_update_available && (!o.screenshot || !o.fake)) {
+        o.error = L"--screenshot-update-available 只能与 --fake 和 --screenshot 一起使用。";
     }
     return o;
 }
@@ -537,6 +547,18 @@ std::wstring widen(const std::string& s) {
     return w;
 }
 
+// 窗口标题：版本与作者来自 version.hpp，模板在 strings.hpp（中英文案相同）。
+std::string window_title_text() {
+    std::string text = wirex::gui::tr(wirex::gui::Str::window_title);
+    const auto replace_next = [&text](const char* value) {
+        const auto pos = text.find("%s");
+        if (pos != std::string::npos) text.replace(pos, 2U, value);
+    };
+    replace_next(wirex::app_version);
+    replace_next(wirex::app_author);
+    return text;
+}
+
 void render(const ImVec4& clear) {
     auto& d = g_shell.d3d;
     ImGui::Render();
@@ -602,7 +624,7 @@ int run(HINSTANCE instance) {
     const int win_h = rect.bottom - rect.top;
     const int x = mi.rcWork.left + std::max(0, static_cast<int>((mi.rcWork.right - mi.rcWork.left - win_w) / 2));
     const int y = mi.rcWork.top + std::max(0, static_cast<int>((mi.rcWork.bottom - mi.rcWork.top - win_h) / 2));
-    const std::wstring title = widen(wirex::gui::tr(wirex::gui::Str::window_title));
+    const std::wstring title = widen(window_title_text());
     HWND hwnd = CreateWindowExW(0, kWindowClass, title.c_str(), WS_OVERLAPPEDWINDOW, x, y, win_w, win_h, nullptr, nullptr,
                                 instance, nullptr);
     if (hwnd == nullptr) {
@@ -670,6 +692,14 @@ int run(HINSTANCE instance) {
                 backend->fake->seed_relay_fm_demo();
             }
             if (opts.screenshot_bm_cooldown && backend->fake) backend->fake->seed_bm_disconnected_demo();
+            if (opts.screenshot_update_available) {
+                wirex::gui::UpdateStatus status;
+                status.state = wirex::gui::UpdateStatus::State::available;
+                status.current = std::string("v") + wirex::app_version;
+                status.latest = "v0.2.3";
+                status.url = wirex::app_releases_url;
+                vm.set_update_status_for_screenshot(status);
+            }
             bool channel_states_applied = false;
             vm.set_wakeup([wake]() { SetEvent(wake); });
             wirex::gui::AppView view(vm, fonts);
