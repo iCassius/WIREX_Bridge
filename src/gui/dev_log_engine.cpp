@@ -39,7 +39,7 @@ void DevLog::attach(engine::DiagnosticsHooks& hooks, std::string_view run_label)
         if (record.event == "bm_rx_filtered_stream") {
             const auto& c = record.counters;
             std::ostringstream readable;
-            readable << "[rx-filtered] source=" << c.rx_filtered_source_id
+            readable << "source=" << c.rx_filtered_source_id
                      << " destination=" << c.rx_filtered_destination_id
                      << " kind=" << (c.rx_filtered_call_kind == 'P' ? "private" : "group")
                      << " slot=TS" << c.rx_filtered_slot
