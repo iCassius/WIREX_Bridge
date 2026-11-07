@@ -2,6 +2,16 @@
 
 本软件模拟为 MMDVM 设备，并与开启 HRI 模式的 Yaesu 电台连接模拟为 WIRES-X 服务器，实现电台 WIRES-X 模式与 BrandMeister DMR 网络互通。
 
+> **合规提示 / Compliance Notice**
+>
+> 本项目仅供持有合法业余无线电执照的爱好者进行实验研究。使用本软件连接真实电台或发射前，请遵守当地无线电管理法规，并使用你本人的呼号与 DMR ID；不得使用他人身份。
+>
+> This project is for experimental research only by licensed amateur radio operators. Before connecting to a real radio or transmitting, comply with your local radio regulations and use your own callsign and DMR ID. Do not use another person's identity.
+>
+> FM 中继为实验功能，并非 Yaesu 官方功能。The FM relay is experimental and is not a Yaesu feature.
+
+> **版本说明**：当前发布为 v0.2.0 原生单 EXE GUI，界面与本页早期的 WPF 描述不同，详见 [docs/releases/v0.2.0.md](docs/releases/v0.2.0.md)。
+
 ---
 
 ## 一、电台操作步骤
@@ -36,3 +46,17 @@
 ---
 
 > **提示**：`config.json` 会明文保存您的 BM 访问凭据，请妥善保管，切勿分享给他人或上传至公共仓库。
+
+---
+
+## License / 许可
+
+本项目以 GNU General Public License v3.0 or later（GPL-3.0-or-later）发布，完整文本见根目录 [LICENSE](LICENSE)。
+
+This project is released under the GNU General Public License v3.0 or later (GPL-3.0-or-later). See [LICENSE](LICENSE) for the full text.
+
+第三方组件 / Third-party components:
+
+- `third_party/dmr_signal` — GPL-3.0-or-later，见 [third_party/dmr_signal/NOTICE.md](third_party/dmr_signal/NOTICE.md)
+- `third_party/droidstar_mbe` — GPL-3.0-or-later，其中 mbelib 派生部分附带 ISC 许可，见 [third_party/droidstar_mbe/ISC-NOTICE.txt](third_party/droidstar_mbe/ISC-NOTICE.txt)
+- Dear ImGui（`third_party/imgui`）— MIT，见 [third_party/imgui/LICENSE.txt](third_party/imgui/LICENSE.txt)
