@@ -1586,7 +1586,9 @@ void AppView::draw_channel_card(const ChannelView& ch, float width, float height
             auto id = cs.empty() ? when : fmt("%s · %u", when.c_str(), last.source_id);
             if (!ch.last_call_region.empty()) id += " · " + ch.last_call_region;
             text_ellipsis(id.c_str(), call_inner, rgb(color::muted));
-            if (!ch.last_call_region.empty()) ImGui::SetItemTooltip(tr(Str::caller_region_tip_fmt), ch.last_call_region.c_str());
+            if (!ch.last_call_region.empty()) {
+                ImGui::SetItemTooltip(tr(Str::caller_region_tip_fmt), ch.last_call_region.c_str());
+            }
             ImGui::PopFont();
         }
     }
