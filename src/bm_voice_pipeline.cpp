@@ -37,6 +37,25 @@ void add_saturated(std::uint64_t& value, std::uint64_t increment) noexcept
            left.kind == right.kind;
 }
 
+[[nodiscard]] FilterReason reason_for_decision(talkgroup_routing::RxDecision decision) noexcept
+{
+    using talkgroup_routing::RxDecision;
+    switch (decision) {
+    case RxDecision::blocked_group: return FilterReason::blocked_group;
+    case RxDecision::blocked_source: return FilterReason::blocked_source;
+    case RxDecision::candidate_only: return FilterReason::candidate_only;
+    case RxDecision::not_call_start: return FilterReason::not_call_start;
+    case RxDecision::policy_denied: return FilterReason::policy_denied;
+    case RxDecision::invalid_call:
+    case RxDecision::generation_exhausted: return FilterReason::invalid_stream;
+    case RxDecision::admitted:
+    case RxDecision::same_active_call:
+    case RxDecision::media_busy:
+    case RxDecision::stopping: break;
+    }
+    return FilterReason::policy_denied;
+}
+
 } // namespace
 
 BmVoicePipeline::BmVoicePipeline()
@@ -534,6 +553,7 @@ ReceiveResult BmVoicePipeline::ingest_rx(const dmrd::Datagram& datagram,
     }
     if (!filter_accepts_datagram(datagram)) {
         result.error = Error::filtered;
+        result.filter_reason = FilterReason::legacy_filter;
         return result;
     }
     try {
@@ -546,6 +566,7 @@ ReceiveResult BmVoicePipeline::ingest_rx(const dmrd::Datagram& datagram,
     }
     if (result.error == Error::none && rx_state_ == RxState::filtered) {
         result.error = Error::filtered;
+        result.filter_reason = FilterReason::legacy_filter;
     }
     return result;
 }
@@ -562,6 +583,7 @@ ReceiveResult BmVoicePipeline::ingest_routed_rx(const dmrd::Datagram& datagram,
     const auto candidate = call_from_datagram(datagram);
     if (routed_stream_retired(candidate, now)) {
         result.error = Error::filtered;
+        result.filter_reason = FilterReason::retired_stream;
         return result;
     }
     if (routed_rx_cleanup_pending_ || stopping_rx_mapping_) {
@@ -576,10 +598,10 @@ ReceiveResult BmVoicePipeline::ingest_routed_rx(const dmrd::Datagram& datagram,
         }
         const auto admission = router_->admit_rx(candidate, false);
         if (admission.decision != talkgroup_routing::RxDecision::same_active_call) {
-            result.error = admission.decision == talkgroup_routing::RxDecision::media_busy ||
-                           admission.decision == talkgroup_routing::RxDecision::stopping
-                ? Error::busy
-                : Error::filtered;
+            const bool busy = admission.decision == talkgroup_routing::RxDecision::media_busy ||
+                              admission.decision == talkgroup_routing::RxDecision::stopping;
+            result.error = busy ? Error::busy : Error::filtered;
+            if (!busy) result.filter_reason = reason_for_decision(admission.decision);
             return result;
         }
         try {
@@ -612,10 +634,12 @@ ReceiveResult BmVoicePipeline::ingest_routed_rx(const dmrd::Datagram& datagram,
     if (routed_rx_staging_count_ == 0U) {
         if (!starts_from_header && !starts_from_voice_sync) {
             result.error = Error::filtered;
+            result.filter_reason = FilterReason::not_call_start;
             return result;
         }
         if (routed_stream_retired(candidate, now)) {
             result.error = Error::filtered;
+            result.filter_reason = FilterReason::retired_stream;
             return result;
         }
         routed_staging_call_ = candidate;
@@ -639,6 +663,7 @@ ReceiveResult BmVoicePipeline::ingest_routed_rx(const dmrd::Datagram& datagram,
                 routed_staging_has_call_start_ = true;
             } else {
                 result.error = Error::filtered;
+                result.filter_reason = FilterReason::stream_mismatch;
                 return result;
             }
         }
@@ -648,6 +673,7 @@ ReceiveResult BmVoicePipeline::ingest_routed_rx(const dmrd::Datagram& datagram,
         clear_routed_rx_staging();
         routed_staging_receiver_.reset();
         result.error = Error::filtered;
+        result.filter_reason = FilterReason::staging_overflow;
         return result;
     }
     routed_rx_staging_[routed_rx_staging_count_++] = StagedRxDatagram{datagram, now};
@@ -671,6 +697,7 @@ ReceiveResult BmVoicePipeline::ingest_routed_rx(const dmrd::Datagram& datagram,
     }
     if (!validated_call) {
         result.error = Error::filtered;
+        result.filter_reason = FilterReason::invalid_stream;
         return result;
     }
     const bool validated_staged_stream = routed_staging_call_ &&
@@ -680,11 +707,18 @@ ReceiveResult BmVoicePipeline::ingest_routed_rx(const dmrd::Datagram& datagram,
         routed_staging_call_->stream_id == validated_call->stream_id &&
         routed_staging_call_->slot == validated_call->slot &&
         routed_staging_call_->kind == validated_call->kind;
-    if (!routed_staging_has_call_start_ || !validated_staged_stream ||
-        routed_stream_retired(*validated_call, now)) {
+    if (!routed_staging_has_call_start_ || !validated_staged_stream) {
         clear_routed_rx_staging();
         routed_staging_receiver_.reset();
         result.error = Error::filtered;
+        result.filter_reason = FilterReason::invalid_stream;
+        return result;
+    }
+    if (routed_stream_retired(*validated_call, now)) {
+        clear_routed_rx_staging();
+        routed_staging_receiver_.reset();
+        result.error = Error::filtered;
+        result.filter_reason = FilterReason::retired_stream;
         return result;
     }
 
@@ -692,10 +726,10 @@ ReceiveResult BmVoicePipeline::ingest_routed_rx(const dmrd::Datagram& datagram,
     if (!admission.admitted()) {
         clear_routed_rx_staging();
         routed_staging_receiver_.reset();
-        result.error = admission.decision == talkgroup_routing::RxDecision::media_busy ||
-                       admission.decision == talkgroup_routing::RxDecision::stopping
-            ? Error::busy
-            : Error::filtered;
+        const bool busy = admission.decision == talkgroup_routing::RxDecision::media_busy ||
+                          admission.decision == talkgroup_routing::RxDecision::stopping;
+        result.error = busy ? Error::busy : Error::filtered;
+        if (!busy) result.filter_reason = reason_for_decision(admission.decision);
         return result;
     }
 

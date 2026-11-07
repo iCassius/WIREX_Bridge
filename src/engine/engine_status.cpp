@@ -342,10 +342,13 @@ bool append_status_line(std::ostream& file, std::string_view run_id, std::uint64
          << ",\"cache_revision\":" << counters.lcd_source_identity_cache_revision
          << ",\"serial_write_state\":\"" << counters.lcd_source_identity_serial_write_state << "\"}"
          << ",\"rx_filtered_datagrams\":" << counters.rx_filtered_datagrams
+         << ",\"rx_filtered_source_id\":" << counters.rx_filtered_source_id
          << ",\"rx_filtered_destination_id\":" << counters.rx_filtered_destination_id
          << ",\"rx_filtered_slot\":" << counters.rx_filtered_slot
          << ",\"rx_filtered_call_kind\":" << counters.rx_filtered_call_kind
          << ",\"rx_filtered_protocol\":" << counters.rx_filtered_protocol
+         << ",\"rx_filtered_reason\":\"" << counters.rx_filtered_reason << "\""
+         << ",\"rx_filtered_stream_id\":" << counters.rx_filtered_stream_id
          << ",\"rx_filtered_routed_path\":" << counters.rx_filtered_routed_path
          << ",\"tx_datagrams\":" << counters.tx_datagrams
          << ",\"rx_datagrams\":" << counters.rx_datagrams

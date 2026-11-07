@@ -78,6 +78,21 @@ enum class Error : std::uint8_t {
     resource_failure,
 };
 
+// Error::filtered 的具体原因：仅用于诊断与界面提示，不改变准入语义。
+enum class FilterReason : std::uint8_t {
+    none,
+    policy_denied,        // RX 策略未允许（组呼不在 allow 列表 / 私呼未选中）
+    blocked_group,        // 该 TG/时隙在 blocked_groups
+    blocked_source,       // 源 ID 在 blocked_source_ids
+    candidate_only,       // selected 模式下未收听的组呼候选
+    retired_stream,       // 已结束流的迟到包（不是新流量）
+    not_call_start,       // 既不是 LC header 也不是 voice sync，无法作为新流起点
+    stream_mismatch,      // 与正在暂存的流不一致的包
+    staging_overflow,     // 暂存缓冲已满
+    invalid_stream,       // 流未通过 LC 校验或字段无效
+    legacy_filter,        // 非路由模式的 set_receive_filter 拒绝
+};
+
 struct Readiness {
     bool bm_ready{};
     bool hri_ready{};
@@ -144,6 +159,7 @@ struct ReceiveFilter {
 struct ReceiveResult {
     dmr_call::ReceiveResult protocol{};
     Error error{Error::none};
+    FilterReason filter_reason{FilterReason::none};  // error == filtered 时说明原因
 };
 
 struct DmrdSequenceStats {

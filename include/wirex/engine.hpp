@@ -149,6 +149,43 @@ struct NetworkQuality {
     std::uint64_t call_missing{};
 };
 
+// 被收听策略过滤的原因（与 bm_voice::FilterReason 对应；只用于提示与诊断）。
+enum class FilteredReason : std::uint8_t {
+    unknown,
+    policy_denied,
+    blocked_group,
+    blocked_source,
+    candidate_only,
+    private_not_for_local,  // 私呼目标不是本机 ID：BM 不该转发，但若收到只做提示
+    retired_stream,
+    not_call_start,
+    stream_mismatch,
+    staging_overflow,
+    invalid_stream,
+    legacy_filter,
+};
+
+// 只有“真的有一路可收听流量但策略未允许”的原因才应触发界面提示；
+// retired/not_call_start/stream_mismatch/staging_overflow/invalid_stream 属于内部暂存或迟到包。
+[[nodiscard]] constexpr bool filter_reason_actionable(FilteredReason reason) noexcept
+{
+    switch (reason) {
+    case FilteredReason::retired_stream:
+    case FilteredReason::not_call_start:
+    case FilteredReason::stream_mismatch:
+    case FilteredReason::staging_overflow:
+    case FilteredReason::invalid_stream: return false;
+    case FilteredReason::unknown:
+    case FilteredReason::policy_denied:
+    case FilteredReason::blocked_group:
+    case FilteredReason::blocked_source:
+    case FilteredReason::candidate_only:
+    case FilteredReason::private_not_for_local:
+    case FilteredReason::legacy_filter: return true;
+    }
+    return true;
+}
+
 // 最近一次被收听策略过滤的 BM 流（只用于界面提示，不参与路由）。
 struct FilteredTraffic {
     std::uint32_t source_id{};
@@ -156,6 +193,7 @@ struct FilteredTraffic {
     dmr_call::Slot slot{dmr_call::Slot::ts1};
     dmr_call::CallKind kind{dmr_call::CallKind::group};
     std::uint64_t last_ms{};               // 相对 clock_origin_ms
+    FilteredReason reason{FilteredReason::unknown};
 };
 
 struct Snapshot {

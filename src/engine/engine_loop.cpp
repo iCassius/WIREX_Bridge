@@ -19,6 +19,7 @@
 #include "wirex/audio_peak_window.hpp"
 #include "wirex/direct_frame.hpp"
 #include "wirex/dmrd.hpp"
+#include "wirex/filtered_stream_evidence.hpp"
 #include "wirex/hri_lcd_identity_candidate.hpp"
 #include "wirex/hri_ptt_gate.hpp"
 #include "wirex/hri_session.hpp"
@@ -113,6 +114,44 @@ BmLink bm_link_from(const bm_connection::Snapshot& connection) noexcept
         return connection.error == bm_connection::Error::none ? BmLink::connecting : BmLink::failed;
     }
     return BmLink::failed;
+}
+
+FilteredReason filtered_reason_from(bm_voice::FilterReason reason) noexcept
+{
+    using bm_voice::FilterReason;
+    switch (reason) {
+    case FilterReason::none: return FilteredReason::unknown;
+    case FilterReason::policy_denied: return FilteredReason::policy_denied;
+    case FilterReason::blocked_group: return FilteredReason::blocked_group;
+    case FilterReason::blocked_source: return FilteredReason::blocked_source;
+    case FilterReason::candidate_only: return FilteredReason::candidate_only;
+    case FilterReason::retired_stream: return FilteredReason::retired_stream;
+    case FilterReason::not_call_start: return FilteredReason::not_call_start;
+    case FilterReason::stream_mismatch: return FilteredReason::stream_mismatch;
+    case FilterReason::staging_overflow: return FilteredReason::staging_overflow;
+    case FilterReason::invalid_stream: return FilteredReason::invalid_stream;
+    case FilterReason::legacy_filter: return FilteredReason::legacy_filter;
+    }
+    return FilteredReason::unknown;
+}
+
+const char* filtered_reason_name(FilteredReason reason) noexcept
+{
+    switch (reason) {
+    case FilteredReason::unknown: return "unknown";
+    case FilteredReason::policy_denied: return "policy_denied";
+    case FilteredReason::blocked_group: return "blocked_group";
+    case FilteredReason::blocked_source: return "blocked_source";
+    case FilteredReason::candidate_only: return "candidate_only";
+    case FilteredReason::private_not_for_local: return "private_not_for_local";
+    case FilteredReason::retired_stream: return "retired_stream";
+    case FilteredReason::not_call_start: return "not_call_start";
+    case FilteredReason::stream_mismatch: return "stream_mismatch";
+    case FilteredReason::staging_overflow: return "staging_overflow";
+    case FilteredReason::invalid_stream: return "invalid_stream";
+    case FilteredReason::legacy_filter: return "legacy_filter";
+    }
+    return "unknown";
 }
 
 const char* hri_stop_reason_name(wirex::hri_session::StopReason reason) noexcept
@@ -507,6 +546,8 @@ CommandResult run_loop(Shared& shared, StartConfig config)
     std::uint64_t last_published_ms = 0U;
     bool publish_dirty = true;
     std::optional<wirex::engine::FilteredTraffic> last_filtered;  // 最近一次策略过滤的 BM 流（心跳快照携带）
+    // 同一路流每个语音包都会 filtered；状态事件/日志只在首次见到该流时写一次。
+    wirex::engine::FilteredStreamEvidence filtered_stream_evidence;
     auto push_event = [&](EventKind kind, std::string text = {}, std::optional<CallInfo> call = std::nullopt,
                           std::string end_reason = {}) {
         Event event{};
@@ -3860,11 +3901,42 @@ CommandResult run_loop(Shared& shared, StartConfig config)
                     const auto accepted = pipeline->ingest_rx(decoded.datagram, Clock::now());
                     if (accepted.error == wirex::bm_voice::Error::filtered) {
                         ++counters.rx_filtered_datagrams;
-                        // routed mode可能拒绝策略不符或retired stream；不再用legacy单滤镜
-                        // 推断原因，避免报告与实际Router准入结果不一致。
+                        // routed mode可能拒绝策略不符或retired stream；原因由管线随结果返回，
+                        // 不再用legacy单滤镜推断，避免报告与实际Router准入结果不一致。
                         ++counters.rx_filtered_routed_path;
-                        last_filtered = wirex::engine::FilteredTraffic{datagram.source_id, datagram.destination_id,
-                            received_slot, received_call_kind, elapsed_ms()};
+                        auto reason = filtered_reason_from(accepted.filter_reason);
+                        if (reason == FilteredReason::policy_denied &&
+                            received_call_kind == wirex::dmr_call::CallKind::private_call &&
+                            config.local_source_id != 0U &&
+                            datagram.destination_id != config.local_source_id) {
+                            // 私呼目标不是本机：Router 与私呼策略同样拒绝，但提示要说明这一点。
+                            reason = FilteredReason::private_not_for_local;
+                        }
+                        // retired stream / 暂存中间态不是“未收听的流量”，不更新界面提示。
+                        if (wirex::engine::filter_reason_actionable(reason)) {
+                            last_filtered = wirex::engine::FilteredTraffic{datagram.source_id,
+                                datagram.destination_id, received_slot, received_call_kind, elapsed_ms(), reason};
+                            wirex::engine::FilteredStreamKey key{};
+                            key.source_id = datagram.source_id;
+                            key.destination_id = datagram.destination_id;
+                            key.stream_id = datagram.stream_id;
+                            key.slot = static_cast<std::uint8_t>(received_slot);
+                            key.kind = static_cast<std::uint8_t>(received_call_kind);
+                            if (filtered_stream_evidence.note(key, elapsed_ms())) {
+                                counters.rx_filtered_source_id = datagram.source_id;
+                                counters.rx_filtered_destination_id = datagram.destination_id;
+                                counters.rx_filtered_slot = static_cast<std::uint8_t>(received_slot);
+                                counters.rx_filtered_call_kind = received_call_kind ==
+                                        wirex::dmr_call::CallKind::private_call ? 'P' : 'G';
+                                counters.rx_filtered_reason = filtered_reason_name(reason);
+                                counters.rx_filtered_stream_id =
+                                    (static_cast<std::uint32_t>(datagram.stream_id[0]) << 24U) |
+                                    (static_cast<std::uint32_t>(datagram.stream_id[1]) << 16U) |
+                                    (static_cast<std::uint32_t>(datagram.stream_id[2]) << 8U) |
+                                    static_cast<std::uint32_t>(datagram.stream_id[3]);
+                                status("bm_rx_filtered_stream");
+                            }
+                        }
                     }
                     if (accepted.error != wirex::bm_voice::Error::none &&
                         accepted.error != wirex::bm_voice::Error::filtered &&

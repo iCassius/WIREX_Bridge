@@ -81,6 +81,10 @@ struct BridgeCounters {
     std::uint64_t rx_filtered_call_kind{};
     std::uint64_t rx_filtered_protocol{};
     std::uint64_t rx_filtered_routed_path{};
+    // 最近一路被策略过滤的流（仅在新流时刷新；供 dev 日志 [rx-filtered] 与 status JSON 取证）。
+    std::uint64_t rx_filtered_source_id{};
+    std::uint64_t rx_filtered_stream_id{};
+    std::string rx_filtered_reason{"none"};
     bool lcd_source_identity_prepared{};
     std::uint32_t lcd_source_identity_source_id{};
     std::uint64_t lcd_source_identity_generation{};

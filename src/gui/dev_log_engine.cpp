@@ -36,6 +36,18 @@ void DevLog::attach(engine::DiagnosticsHooks& hooks, std::string_view run_label)
         if (previous_status) ok = previous_status(record);
         if (record.event == "radio_detached_bm_runtime_preserved") self->reset_hri_correlation();
         else if (record.event == "runtime_snapshot") self->poll_hri_correlation();
+        if (record.event == "bm_rx_filtered_stream") {
+            const auto& c = record.counters;
+            std::ostringstream readable;
+            readable << "[rx-filtered] source=" << c.rx_filtered_source_id
+                     << " destination=" << c.rx_filtered_destination_id
+                     << " kind=" << (c.rx_filtered_call_kind == 'P' ? "private" : "group")
+                     << " slot=TS" << c.rx_filtered_slot
+                     << " reason=" << c.rx_filtered_reason
+                     << " stream=0x" << std::hex << c.rx_filtered_stream_id << std::dec
+                     << " t=" << record.elapsed_ms << "ms";
+            self->line("rx-filtered", readable.str());
+        }
         std::ostringstream text;
         if (engine::append_status_line(text, run_id, ++*seq, record)) {
             auto s = text.str();

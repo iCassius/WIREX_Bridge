@@ -1,6 +1,7 @@
 #include "wirex/bm_voice_pipeline.hpp"
 #include "wirex/dmr_call.hpp"
 #include "wirex/dmr_vocoder.hpp"
+#include "wirex/filtered_stream_evidence.hpp"
 #include "wirex/hri_ptt_gate.hpp"
 
 #include <algorithm>
@@ -17,6 +18,7 @@ using namespace std::chrono_literals;
 using wirex::bm_voice::BmVoicePipeline;
 using wirex::bm_voice::Error;
 using wirex::bm_voice::EventKind;
+using wirex::bm_voice::FilterReason;
 using wirex::bm_voice::PlaybackFrame;
 using wirex::bm_voice::Readiness;
 using wirex::bm_voice::TimePoint;
@@ -439,7 +441,8 @@ void test_retired_stream_is_extended_by_packets_and_expires_after_silence()
         now += 60ms;
         const auto result = pipeline.ingest_rx(voice.datagram, now);
         all_continuations_rejected = all_continuations_rejected && result.error != Error::none &&
-            pipeline.routing_snapshot().router.media_owner == MediaOwner::idle;
+            pipeline.routing_snapshot().router.media_owner == MediaOwner::idle &&
+            result.filter_reason == FilterReason::retired_stream;
     }
     check(all_continuations_rejected,
           "continuous packets for a canceled stream must refresh retirement and never reclaim the lane");
@@ -780,6 +783,97 @@ void test_failed_eot_remains_faulted_after_cleanup_attempt()
     }
 }
 
+bool feed_until_decision(BmVoicePipeline& pipeline, const CallConfig& call, TimePoint start,
+                         wirex::bm_voice::ReceiveResult& result)
+{
+    SyntheticSource source;
+    wirex::dmr_call::TxPacket packet{};
+    if (!source.start(call, packet)) return false;
+    result = pipeline.ingest_rx(packet.datagram, start);
+    for (std::size_t index = 0U; index < 8U && result.error == Error::filtered &&
+         result.filter_reason == FilterReason::invalid_stream; ++index) {
+        if (!source.voice(packet)) return false;
+        result = pipeline.ingest_rx(packet.datagram,
+            start + std::chrono::milliseconds{60} * static_cast<std::int64_t>(index + 1U));
+    }
+    return true;
+}
+
+// 过滤原因要能区分“真的未收听”和内部暂存/迟到包，供引擎提示与 dev 日志使用。
+void test_filtered_reason_is_reported()
+{
+    {
+        BmVoicePipeline pipeline;
+        RxPolicy rx{};
+        rx.group_mode = GroupMode::selected;
+        rx.allowed_groups.push_back({3100U, Slot::ts2});
+        check(enable_routing(pipeline, rx), "reason test selected policy should enable");
+        wirex::bm_voice::ReceiveResult result{};
+        check(feed_until_decision(pipeline,
+                                  make_call(4603013U, 3200U, Slot::ts2, CallKind::group, 21U),
+                                  TimePoint{} + 300s, result),
+              "unheard group call should be feedable");
+        check(result.error == Error::filtered && result.filter_reason == FilterReason::candidate_only,
+              "selected-mode unheard group reports candidate_only");
+    }
+    {
+        BmVoicePipeline pipeline;
+        RxPolicy rx{};
+        rx.group_mode = GroupMode::selected;
+        rx.private_mode = PrivateMode::selected_peers;
+        check(enable_routing(pipeline, rx), "reason test private policy should enable");
+        wirex::bm_voice::ReceiveResult result{};
+        check(feed_until_decision(pipeline,
+                                  make_call(4603013U, local_id, Slot::ts2, CallKind::private_call, 22U),
+                                  TimePoint{} + 301s, result),
+              "unselected private call should be feedable");
+        check(result.error == Error::filtered && result.filter_reason == FilterReason::policy_denied,
+              "unselected private call reports policy_denied");
+    }
+    {
+        BmVoicePipeline pipeline;
+        RxPolicy rx{};
+        rx.group_mode = GroupMode::all_delivered;
+        rx.blocked_source_ids.push_back(4603013U);
+        check(enable_routing(pipeline, rx), "reason test blocked-source policy should enable");
+        wirex::bm_voice::ReceiveResult result{};
+        check(feed_until_decision(pipeline,
+                                  make_call(4603013U, 3100U, Slot::ts2, CallKind::group, 23U),
+                                  TimePoint{} + 302s, result),
+              "blocked-source call should be feedable");
+        check(result.error == Error::filtered && result.filter_reason == FilterReason::blocked_source,
+              "blocked source reports blocked_source");
+    }
+}
+
+// 同一路流的每个语音包都会 filtered；证据记录只在新流时返回 true。
+void test_filtered_stream_evidence_deduplicates()
+{
+    using wirex::engine::FilteredStreamEvidence;
+    using wirex::engine::FilteredStreamKey;
+    FilteredStreamKey key{};
+    key.source_id = 4603013U;
+    key.destination_id = 3100U;
+    key.stream_id = {{1U, 2U, 3U, 4U}};
+    key.slot = 2U;
+    key.kind = 0U;
+
+    FilteredStreamEvidence evidence;
+    check(evidence.note(key, 1'000U), "first packet of a filtered stream is new");
+    check(!evidence.note(key, 1'100U), "same filtered stream is not reported twice");
+    auto other = key;
+    other.stream_id[3] = 5U;
+    check(evidence.note(other, 1'200U), "a different stream is new");
+    check(evidence.note(key, 1'100U + FilteredStreamEvidence::default_window_ms + 1U),
+          "a stream after its evidence window is reported again");
+
+    FilteredStreamEvidence refreshed;
+    check(refreshed.note(key, 0U), "fresh evidence accepts the stream");
+    check(!refreshed.note(key, 20'000U), "same stream within the window is not new");
+    check(!refreshed.note(key, 45'000U), "activity refreshes the evidence window");
+    check(refreshed.note(key, 75'001U), "stream after silence is new again");
+}
+
 } // namespace
 
 int main()
@@ -787,6 +881,8 @@ int main()
     test_routed_receive_waits_for_lc_and_keeps_one_owner_through_hri_stop();
     test_route_union_blocks_and_stale_generation_cleanup();
     test_retired_stream_is_extended_by_packets_and_expires_after_silence();
+    test_filtered_reason_is_reported();
+    test_filtered_stream_evidence_deduplicates();
     test_late_packet_times_out_unstarted_playback_without_tick();
     test_routed_tx_target_permission_and_cleanup_gates();
     test_permission_revocation_preserves_held_lease_eot();
