@@ -29,7 +29,7 @@ $script:releaseTestNames = @(
 )
 # v0.1.0 已发布，必须保持上面的 40 项。当前 builder 追加 engine_test 与 hri_y_body_test；
 # ZIP-only profile 由当前源码构建，因此使用追加后的序列。
-$script:zipOnlyReleaseTestNames = @($script:releaseTestNames) + @('engine_test', 'hri_y_body_test')
+$script:zipOnlyReleaseTestNames = @($script:releaseTestNames) + @('engine_test', 'hri_y_body_test', 'gui_hri_diagnostics_test')
 $script:activeReleaseVersion = 'v0.1.0'
 
 function Get-ReleaseProfile {

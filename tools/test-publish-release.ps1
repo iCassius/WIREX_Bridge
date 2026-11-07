@@ -213,9 +213,9 @@ try {
     Assert-Throws { Assert-PublishPackage -PackageRoot $testRoot -ExpectedCommit $fakeCommit -Tag 'v0.1.0-alpha.19' } `
         'Assert-PublishPackage rejects a retired alpha tag'
     Assert-True (@((Set-PublishProfile -Tag 'v0.1.0').TestNames).Count -eq 40 -and
-        ([string]::Join('|', @((Set-PublishProfile -Tag 'v0.1.0').TestNames)) + '|engine_test|hri_y_body_test') -ceq
+        ([string]::Join('|', @((Set-PublishProfile -Tag 'v0.1.0').TestNames)) + '|engine_test|hri_y_body_test|gui_hri_diagnostics_test') -ceq
         [string]::Join('|', @((Set-PublishProfile -Tag 'v0.1.1').TestNames))) `
-        'v0.1.0 keeps the fixed 40-test inventory; v0.1.1 appends engine_test and hri_y_body_test'
+        'v0.1.0 keeps the fixed 40-test inventory; v0.1.1 appends engine_test, hri_y_body_test and gui_hri_diagnostics_test'
 
     $stablePublishProfile = Set-PublishProfile -Tag 'v0.1.0'
     $stableRecords = @(Get-ExpectedStablePackageRecords)
@@ -229,12 +229,12 @@ try {
     $r126TestProfile = Set-PublishProfile -Tag 'v0.1.1-test.2'
     Assert-True ($script:publishIsPrerelease -and $r126TestProfile.AssetPathMap.Count -eq 1 -and
         $r126TestProfile.AssetPathMap.Contains('WIREX_Bridge_v0.1.1-test.2.zip') -and
-        $r126TestProfile.Directories.Count -eq 7 -and $r126TestProfile.TestNames.Count -eq 42) `
+        $r126TestProfile.Directories.Count -eq 7 -and $r126TestProfile.TestNames.Count -eq 43) `
         'v0.1.1-test.2 publisher profile uploads only its ZIP as a prerelease'
     $r126StableProfile = Set-PublishProfile -Tag 'v0.1.1'
     Assert-True (-not $script:publishIsPrerelease -and $r126StableProfile.AssetPathMap.Count -eq 1 -and
         $r126StableProfile.AssetPathMap.Contains('WIREX_Bridge_v0.1.1.zip') -and
-        $r126StableProfile.TestNames.Count -eq 42) `
+        $r126StableProfile.TestNames.Count -eq 43) `
         'v0.1.1 publisher profile uploads only its ZIP as a stable release'
     Assert-True (@($stableRecords | ForEach-Object { [string]$_.Path } | Sort-Object -Unique).Count -eq $stableRecords.Count -and
         @($stableRecords | Where-Object { [string]$_.Path -ceq 'runtime/ui/windows/ChannelActivationState.psm1' -and

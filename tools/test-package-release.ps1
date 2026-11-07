@@ -194,9 +194,9 @@ $builderTestLines = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'build-b
     Where-Object { $_ -match "^\s*@\{\s*Name='[^']+';\s*Source='tests\\" })
 $builderTestNames = @($builderTestLines | ForEach-Object { [regex]::Match($_, "Name='([^']+)'").Groups[1].Value })
 # builder 在 v0.1.0 的 40 项之后追加新测试；v0.1.0 序列本身保持不变。
-$currentBuilderTests = @($expectedTests) + @('engine_test', 'hri_y_body_test')
+$currentBuilderTests = @($expectedTests) + @('engine_test', 'hri_y_body_test', 'gui_hri_diagnostics_test')
 Assert-Equal ([string]::Join('|', $builderTestNames)) ([string]::Join('|', $currentBuilderTests)) `
-    'current builder test list is the fixed v0.1.0 sequence followed by engine_test and hri_y_body_test'
+    'current builder test list is the fixed v0.1.0 sequence followed by engine_test, hri_y_body_test and gui_hri_diagnostics_test'
 foreach ($zipVersion in @('v0.1.1-test.2', 'v0.1.1')) {
     Assert-Equal ([string]::Join('|', (Get-ReleaseProfile -Version $zipVersion).TestNames)) ([string]::Join('|', $currentBuilderTests)) `
         ($zipVersion + ' uses the current builder Native test sequence')

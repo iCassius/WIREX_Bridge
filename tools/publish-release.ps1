@@ -31,7 +31,7 @@ $script:v010TestNames = @(
     'bm_bridge_loopback_test', 'ui_control_protocol_v2_test', 'talkgroup_routing_test', 'bm_routing_lifecycle_test', 'routing_state_test'
 )
 # v0.1.0 已发布的 40 项保持不变；ZIP-only profile 追加 engine_test 与 hri_y_body_test。
-$script:zipOnlyTestNames = @($script:v010TestNames) + @('engine_test', 'hri_y_body_test')
+$script:zipOnlyTestNames = @($script:v010TestNames) + @('engine_test', 'hri_y_body_test', 'gui_hri_diagnostics_test')
 $script:publishIsPrerelease = $true
 
 function Set-PublishProfile {
