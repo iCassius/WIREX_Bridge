@@ -4,6 +4,27 @@
 
 WIREX Bridge emulates an MMDVM device and acts as a WIRES-X server connected to a Yaesu transceiver in HRI mode, bridging Yaesu WIRES-X with the BrandMeister DMR network for high-quality digital voice communications.
 
+> **测试电台声明 / Hardware Testing Notice**  
+> 本项目目前**仅在 Yaesu FTX-1 上进行了完整实机开发与测试，尚未在除 FTX-1 之外的任何其他电台型号上进行过测试与验证**。  
+> This project has been developed and verified **exclusively on the Yaesu FTX-1. It has NOT been tested or verified on any other transceiver models**.
+
+---
+
+## FTX-1 专项优化与适配 / Yaesu FTX-1 Optimizations
+
+- **USB 单线集成与自动识别 / Single USB Cable Integration**  
+  仅需一根 USB 数据线连接 FTX-1 与电脑，软件可自动枚举并精准匹配 FTX-1 的 HRI 串口、CAT 串口以及双向 USB 音频端点，免去繁琐的人工端口配置。  
+  Requires only a single USB cable between the FTX-1 and the PC. The software automatically enumerates and binds the FTX-1's HRI COM port, CAT COM port, and USB audio input/output endpoints.
+- **HRI 协议握手与链路守护 / HRI Handshake & Link Guardian**  
+  原生支持 FTX-1 的 Direct 与 Access Point (AP) 模式协议交互，内嵌固定 HRI 握手模板；具备链路心跳守护，遇异常掉线时自动执行指数退避重连（3s / 6s / 10s）。  
+  Native protocol implementation for both Direct and Access Point (AP) modes with embedded HRI handshake templates. Includes active link monitoring with automatic exponential backoff reconnection (3s, 6s, 10s).
+- **双向 CAT 控制与参数同步 / Bidirectional CAT Synchronization**  
+  实时双向同步 FTX-1 的工作频率（VHF/UHF）、调制模式（FM / C4FM-DN）与 TX 发射功率等级，可在 GUI 界面中动态调整并即时下发至电台。  
+  Synchronizes operating frequency (VHF/UHF), operating modes (FM / C4FM-DN), and RF power levels between the GUI and FTX-1 in real time.
+- **手咪物理 PTT 硬件联动 / Physical Microphone PTT Linkage**  
+  全面打通手咪按键硬件事件：直接按下 FTX-1 标配手咪的物理 PTT 即可触发 DMR 网络上行呼叫，松开即刻结束，提供与真实中继完全一致的通联操控手感。  
+  Direct hardware PTT binding: pressing the physical PTT key on the FTX-1 hand mic instantly initiates DMR network transmission without touching the keyboard or mouse.
+
 ---
 
 ## 一、电台操作步骤 / Radio Setup & Steps
