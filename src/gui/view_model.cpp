@@ -159,12 +159,20 @@ std::wstring from_utf8(const std::string& s) {
 }
 
 std::string channel_display_name(const services::ChannelEntry& entry) {
+    const auto has_builtin_name = [&entry](const char* english, const char* chinese) {
+        return entry.name.empty() || entry.name == std::to_string(entry.id) ||
+               entry.name == english || entry.name == chinese;
+    };
+    if (entry.kind == dmr_call::CallKind::group && entry.id == 91U &&
+        has_builtin_name("World-wide", "全球")) return tr(Str::channel_worldwide);
+    if (entry.kind == dmr_call::CallKind::group && entry.id == 46001U &&
+        has_builtin_name("China", "全国")) return tr(Str::channel_china);
+    if (entry.kind == dmr_call::CallKind::private_call && entry.id == 460997U &&
+        has_builtin_name("China Parrot", "中国鹦鹉")) return tr(Str::channel_china_parrot);
+    if (entry.kind == dmr_call::CallKind::private_call && entry.id == 9990U &&
+        (has_builtin_name("BM Parrot", "BM 鹦鹉") || entry.name == "BM Parrot (Private 9990)" ||
+         entry.name == "BM 鹦鹉（私呼 9990）")) return tr(Str::channel_bm_parrot);
     if (!entry.name.empty() && entry.name != std::to_string(entry.id)) return entry.name;
-    if (entry.kind == dmr_call::CallKind::group && entry.id == 91U) return "World-wide";
-    if (entry.kind == dmr_call::CallKind::group && entry.id == 46001U) return language() == Language::en_us ? "China" : "全国";
-    if (entry.kind == dmr_call::CallKind::private_call && entry.id == 460997U) {
-        return language() == Language::en_us ? "China Parrot" : "中国鹦鹉";
-    }
     return {};
 }
 
@@ -1065,7 +1073,7 @@ void ViewModel::start() {
     auto radio_config = make_radio_start_config(radio_error);
     const bool can_connect_radio = radio_config.has_value();
     if (runtime_active && !can_connect_radio) {
-        flash(radio_error.empty() ? "未找到唯一可用的 HRI/USB Audio 设备。" : radio_error, true);
+        flash(radio_error.empty() ? tr(Str::err_unique_radio_devices) : radio_error, true);
         return;
     }
 
@@ -1104,7 +1112,7 @@ void ViewModel::start() {
     if (services_.config.make_runtime_config) {
         runtime = services_.config.make_runtime_config(config_, runtime_error);
     } else {
-        runtime_error = "常驻引擎配置服务不可用。";
+        runtime_error = tr(Str::err_runtime_config_service);
     }
     if (!runtime) {
         pending_radio_attach_.reset();
@@ -1154,7 +1162,7 @@ void ViewModel::start() {
             }
             const auto base_revision = snapshot_->bm_connection_revision;
             if (base_revision == std::numeric_limits<std::uint64_t>::max()) {
-                flash("BM 连接 revision 已达到上限，未发起连接。", true);
+                flash(tr(Str::err_bm_revision_connect), true);
                 return;
             }
             track(Str::op_bm, engine_.set_bm_connection(true, base_revision + 1U));
@@ -1192,12 +1200,12 @@ void ViewModel::stop() {
 void ViewModel::toggle_bm() {
     if (pending(Str::op_bm)) return;
     if (snapshot_->phase != Phase::running) {
-        flash("BM runtime 尚未运行。", true);
+        flash(tr(Str::err_bm_runtime_stopped), true);
         return;
     }
     const auto current_revision = snapshot_->bm_connection_revision;
     if (current_revision == std::numeric_limits<std::uint64_t>::max()) {
-        flash("BM 连接 revision 已达到上限，无法切换连接。", true);
+        flash(tr(Str::err_bm_revision_switch), true);
         return;
     }
     const auto requested_revision = current_revision + 1U;
@@ -1232,7 +1240,7 @@ void ViewModel::toggle_bm() {
             }
             const auto revision = std::max(configured.revision, snapshot_->bm_connection_revision);
             if (revision == std::numeric_limits<std::uint64_t>::max()) {
-                flash("BM 连接 revision 已达到上限，未发起连接。", true);
+                flash(tr(Str::err_bm_revision_connect), true);
                 return;
             }
             track(Str::op_bm, engine_.set_bm_connection(true, revision + 1U));
@@ -1254,7 +1262,7 @@ void ViewModel::attach_radio_when_ready(std::uint64_t generation) {
 
 std::optional<engine::RadioStartConfig> ViewModel::make_radio_start_config(std::string& error) const {
     if (!services_.config.make_start_config) {
-        error = "电台设备解析服务不可用。";
+        error = tr(Str::err_radio_device_service);
         return std::nullopt;
     }
     // make_start_config 同时构造 StartConfig；清除临时 GUI 副本里的密码，避免第二份明文密码被复制进结果。
@@ -1265,7 +1273,7 @@ std::optional<engine::RadioStartConfig> ViewModel::make_radio_start_config(std::
     if (!parsed || !parsed->start_radio || parsed->hri_port.empty() ||
         parsed->audio.expected_wave_in_endpoint_id.empty() ||
         parsed->audio.expected_wave_out_endpoint_id.empty()) {
-        if (error.empty()) error = "未解析到唯一可用的 HRI 串口和 USB Audio 输入/输出端点。";
+        if (error.empty()) error = tr(Str::err_hri_audio_unresolved);
         return std::nullopt;
     }
     engine::RadioStartConfig result;
@@ -1275,7 +1283,7 @@ std::optional<engine::RadioStartConfig> ViewModel::make_radio_start_config(std::
     // R131：中继开启默认仍用 DIRECT 模板（实机确认 AP 模板对中继无区别）；relay.y_template="ap" 时才用 AP 变体。
     result.ap_mode = config_.relay_enabled && config_.relay_y_template_ap;
     if (config_.desired_power_watts < 5U || config_.desired_power_watts > 50U) {
-        error = "期望功率必须为 5–50 W。";
+        error = tr(Str::err_desired_power_range);
         return std::nullopt;
     }
     result.initial_tx_power_deciwatts = static_cast<std::uint16_t>(config_.desired_power_watts * 10U);
@@ -1290,7 +1298,7 @@ std::optional<engine::RadioStartConfig> ViewModel::make_radio_start_config(std::
 
 std::optional<engine::BmTarget> ViewModel::make_bm_target(std::string& error) const {
     if (!services_.config.make_runtime_config) {
-        error = "BM 配置服务不可用。";
+        error = tr(Str::err_bm_config_service);
         return std::nullopt;
     }
     auto runtime = services_.config.make_runtime_config(config_, error);
@@ -1430,7 +1438,7 @@ void ViewModel::remove_static_channel(const ChannelKey& key) {
         return;
     }
     if (static_.busy || !services_.bm_api.remove_static_group) {
-        static_status(static_.busy ? "BM 静态组操作正在进行。" : "BM 静态组模块不可用。", true);
+        static_status(static_.busy ? tr(Str::static_busy) : tr(Str::static_module_unavailable), true);
         return;
     }
     static_.busy = true;
@@ -1442,7 +1450,7 @@ void ViewModel::remove_static_channel(const ChannelKey& key) {
             post_to_ui([this, device, key, g, r = std::move(r)]() {
                 static_.busy = false;
                 if (device != bm_device_id()) {
-                    static_status("设备或 API Key 已变更；频道保留。", true);
+                    static_status(tr(Str::static_identity_changed_keep_channel), true);
                     return;
                 }
                 static_apply(r, true);
@@ -1753,7 +1761,7 @@ void ViewModel::set_audio_devices(std::wstring wave_in_endpoint_id, std::wstring
                 config_.wave_out_endpoint_id = wave_out_endpoint_id;
                 persist();
                 if (result.detail == "waveout_old_endpoint_closed_with_cleanup_warning") {
-                    flash("新音频设备已生效，但旧设备报告了清理警告。", true);
+                    flash(tr(Str::err_audio_cleanup_warning), true);
                 }
             });
         return;
@@ -1808,7 +1816,7 @@ void ViewModel::set_audio_output(std::wstring wave_out_endpoint_id) {
                 config_.wave_out_endpoint_id = selector;
                 persist();
                 if (result.detail == "waveout_old_endpoint_closed_with_cleanup_warning") {
-                    flash("新音频设备已生效，但旧设备报告了清理警告。", true, Str::audio_devices);
+                    flash(tr(Str::err_audio_cleanup_warning), true, Str::audio_devices);
                 }
             });
         return;
@@ -2185,7 +2193,7 @@ bool ViewModel::save_config(const services::GuiConfig& next, std::string& error)
     const bool bm_changed = bm_profile_changed(config_, next);
     if (bm_changed) {
         if (bm_profile_generation_ == std::numeric_limits<std::uint64_t>::max()) {
-            error = "BM 配置版本已达到上限，无法安全保存。";
+            error = tr(Str::err_bm_config_revision);
             return false;
         }
         const bool bm_link_active = snapshot_->bm_requested_enabled || snapshot_->bm_link == BmLink::resolving ||
@@ -2290,10 +2298,10 @@ void ViewModel::static_sync() {
     static_.observed_key = key;
     static_import_pending_ = true; // 新设备/Key 的首次成功读取补充收听频道
     if (key.empty() || device == 0U) {
-        static_status(key.empty() ? std::string() : std::string("请先保存有效的 BM 设备 ID。"), !key.empty());
+        static_status(key.empty() ? std::string() : std::string(tr(Str::static_save_device_id)), !key.empty());
         return;
     }
-    if (had) static_status("设备或 API Key 已变更；请刷新 BM 静态组。", false);
+    if (had) static_status(tr(Str::static_key_or_id_changed), false);
     if (static_.busy) {
         static_.refresh_pending = true;
         return;
@@ -2303,16 +2311,16 @@ void ViewModel::static_sync() {
 
 void ViewModel::static_refresh() {
     if (!services_.bm_api.list_static_groups) {
-        static_status("BM 静态组模块不可用。", true);
+        static_status(tr(Str::static_module_unavailable), true);
         return;
     }
     if (config_.bm_api_key.empty()) {
-        static_status("请输入 BM API Key。", true);
+        static_status(tr(Str::static_api_key_required), true);
         return;
     }
     const auto device = bm_device_id();
     if (device == 0U) {
-        static_status("请先保存有效的 BM 设备 ID。", true);
+        static_status(tr(Str::static_save_device_id), true);
         return;
     }
     if (static_.busy) {
@@ -2322,12 +2330,12 @@ void ViewModel::static_refresh() {
     static_.busy = true;
     static_.observed_device = device;
     static_.observed_key = config_.bm_api_key;
-    static_status("正在读取 BM 静态组。", false);
+    static_status(tr(Str::static_reading), false);
     services_.bm_api.list_static_groups(device, config_.bm_api_key, [this, device](services::BmApiResult r) {
         post_to_ui([this, device, r = std::move(r)]() {
             static_.busy = false;
             if (device != bm_device_id() || static_.observed_key != config_.bm_api_key) {
-                static_status("设备或 API Key 已变更；未显示旧设备的 BM 静态组。", false);
+                static_status(tr(Str::static_identity_changed_hide_old), false);
             } else {
                 static_apply(r, false);
                 if (static_.loaded && static_import_pending_) {
@@ -2363,11 +2371,11 @@ void ViewModel::static_apply(const services::BmApiResult& r, bool write) {
 
 void ViewModel::static_add() {
     if (static_.busy) {
-        static_status("BM 静态组操作正在进行。", true);
+        static_status(tr(Str::static_busy), true);
         return;
     }
     if (!static_.loaded || static_.observed_device != bm_device_id() || static_.observed_key != config_.bm_api_key) {
-        static_status("请先读取当前设备的 BM 静态组。", true);
+        static_status(tr(Str::static_read_first), true);
         return;
     }
     std::uint32_t tg = 0U;
@@ -2375,21 +2383,21 @@ void ViewModel::static_add() {
     const auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), tg);
     if (text.empty() || text.size() > 8U || ec != std::errc{} || ptr != text.data() + text.size() || tg == 0U ||
         tg > 16777215U) {
-        static_status("请输入 1 至 16777215 的静态组 ID。", true);
+        static_status(tr(Str::static_tg_invalid), true);
         return;
     }
     if (!static_.add_slot) {
-        static_status("设备状态不可用；添加已禁用。", true);
+        static_status(tr(Str::static_slot_unavailable), true);
         return;
     }
     const int slot = *static_.add_slot;
     if (std::any_of(static_.groups.begin(), static_.groups.end(),
                     [&](const auto& g) { return g.talkgroup == tg && g.slot == slot; })) {
-        static_status("该静态组已存在。", true);
+        static_status(tr(Str::static_exists), true);
         return;
     }
     static_.busy = true;
-    static_status("正在向 BM 添加静态组。", false);
+    static_status(tr(Str::static_adding), false);
     const auto device = bm_device_id();
     services_.bm_api.add_static_group(device, config_.bm_api_key, tg, slot, [this, device](services::BmApiResult r) {
         post_to_ui([this, device, r = std::move(r)]() {
@@ -2407,16 +2415,16 @@ void ViewModel::static_add() {
 
 void ViewModel::static_remove() {
     if (static_.busy) {
-        static_status("BM 静态组操作正在进行。", true);
+        static_status(tr(Str::static_busy), true);
         return;
     }
     if (!static_.loaded || !static_.selected || *static_.selected >= static_.groups.size()) {
-        static_status("请先选择当前设备的一条 BM 静态组。", true);
+        static_status(tr(Str::static_select_first), true);
         return;
     }
     const auto group = static_.groups[*static_.selected]; // 删除保留原 slot
     static_.busy = true;
-    static_status("正在向 BM 移除静态组。", false);
+    static_status(tr(Str::static_removing), false);
     const auto device = bm_device_id();
     services_.bm_api.remove_static_group(device, config_.bm_api_key, group.talkgroup, group.slot,
         [this, device, group](services::BmApiResult r) {
@@ -2668,6 +2676,14 @@ void ViewModel::update_startup_group_activation_status() {
         static_cast<unsigned>(stats.target_count),
         static_cast<unsigned>(stats.failed),
         static_cast<unsigned>(startup_group_activation_.remaining()));
+}
+
+void ViewModel::refresh_language_dependent_status() {
+    update_startup_group_activation_status();
+    transient_text_.clear();
+    transient_failed_ = false;
+    transient_until_ = {};
+    operation_events_.clear();
 }
 
 void ViewModel::set_channel_page(std::size_t page) { channel_page_ = std::min(page, channel_page_count() - 1U); }

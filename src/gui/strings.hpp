@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <atomic>
 #include <string_view>
 
 namespace wirex::gui {
@@ -153,6 +154,10 @@ namespace wirex::gui {
     X(stop_exit,            "停止并退出",                          "Stop and exit") \
     X(group,                "组呼",                                "Group") \
     X(private_call,         "单呼",                                "Private") \
+    X(channel_worldwide,    "全球",                                "World-wide") /* new */ \
+    X(channel_china,        "全国",                                "China") /* new */ \
+    X(channel_china_parrot, "中国鹦鹉",                            "China Parrot") /* new */ \
+    X(channel_bm_parrot,    "BM 鹦鹉（私呼 9990）",                "BM Parrot (Private 9990)") /* new */ \
     X(static_group,         "静态组",                              "Static") \
     X(dynamic_group,        "动态组",                              "Dynamic") \
     X(btn_tx_target,        "呼叫目标",                            "TX target") \
@@ -487,6 +492,117 @@ namespace wirex::gui {
                             "Open the BrandMeister self-care page to set your account password") /* new */ \
     X(bm_link_api_key_tip,  "打开 BrandMeister API Key 页面，创建或查看 API Key", \
                             "Open the BrandMeister API Key page to create or view your API key") /* new */
+
+// GUI ViewModel status, validation, and service errors.
+#define WIREX_GUI_STRINGS_VIEW_MODEL(X) \
+    X(err_unique_radio_devices, "未找到唯一可用的 HRI/USB Audio 设备。", "Could not resolve one usable HRI and USB audio device pair.") \
+    X(err_runtime_config_service, "常驻引擎配置服务不可用。", "The engine configuration service is unavailable.") \
+    X(err_bm_revision_connect, "BM 连接 revision 已达到上限，未发起连接。", "The BM connection revision limit was reached; no connection was started.") \
+    X(err_bm_revision_switch, "BM 连接 revision 已达到上限，无法切换连接。", "The BM connection revision limit was reached; the connection could not be changed.") \
+    X(err_bm_runtime_stopped, "BM runtime 尚未运行。", "The BM runtime is not running.") \
+    X(err_audio_cleanup_warning, "新音频设备已生效，但旧设备报告了清理警告。", "The new audio device is active, but cleanup of the previous device reported a warning.") \
+    X(err_bm_config_revision, "BM 配置版本已达到上限，无法安全保存。", "The BM configuration revision limit was reached; settings were not saved.") \
+    X(err_radio_device_service, "电台设备解析服务不可用。", "The radio device resolver is unavailable.") \
+    X(err_hri_audio_unresolved, "未解析到唯一可用的 HRI 串口和 USB Audio 输入/输出端点。", "Could not resolve a unique HRI port and USB audio input/output pair.") \
+    X(err_desired_power_range, "期望功率必须为 5–50 W。", "Requested power must be between 5 and 50 W.") \
+    X(err_bm_config_service, "BM 配置服务不可用。", "The BM configuration service is unavailable.") \
+    X(static_busy, "BM 静态组操作正在进行。", "A BM static-group operation is already in progress.") \
+    X(static_module_unavailable, "BM 静态组模块不可用。", "The BM static-group service is unavailable.") \
+    X(static_identity_changed_keep_channel, "设备或 API Key 已变更；频道保留。", "The device or API key changed; the channel was kept.") \
+    X(static_save_device_id, "请先保存有效的 BM 设备 ID。", "Save a valid BM device ID first.") \
+    X(static_api_key_required, "请输入 BM API Key。", "Enter a BM API key.") \
+    X(static_read_first, "请先读取当前设备的 BM 静态组。", "Read this device's BM static groups first.") \
+    X(static_reading, "正在读取 BM 静态组。", "Reading BM static groups…") \
+    X(static_identity_changed_hide_old, "设备或 API Key 已变更；未显示旧设备的 BM 静态组。", "The device or API key changed; static groups from the previous device are hidden.") \
+    X(static_tg_invalid, "请输入 1 至 16777215 的静态组 ID。", "Enter a static-group ID from 1 to 16777215.") \
+    X(static_slot_unavailable, "设备状态不可用；添加已禁用。", "The device status is unavailable; adding a static group is disabled.") \
+    X(static_exists, "该静态组已存在。", "This static group already exists.") \
+    X(static_adding, "正在向 BM 添加静态组。", "Adding the static group to BM…") \
+    X(static_select_first, "请先选择当前设备的一条 BM 静态组。", "Select one of this device's BM static groups first.") \
+    X(static_removing, "正在向 BM 移除静态组。", "Removing the static group from BM…") \
+    X(static_key_or_id_changed, "设备或 API Key 已变更；请刷新 BM 静态组。", "The device or API key changed; refresh BM static groups.") \
+    X(err_cat_config_revision, "CAT 配置版本已达到上限，无法安全保存。", "The CAT configuration revision limit was reached; settings were not saved.")
+
+// GUI config/device-resolution messages; these can appear in tooltips and startup errors.
+#define WIREX_GUI_STRINGS_CONFIG_BRIDGE(X) \
+    X(cfg_device_number_required, "请填写两位设备编号（00–99），再保存本机 DMR ID。", "Enter a two-digit device number (00–99), then save the local DMR ID.") \
+    X(cfg_hri_mode_invalid, "HRI 频率或调制模式无效。", "The HRI frequency or modulation mode is invalid.") \
+    X(cfg_no_com_ports, "当前没有枚举到 Windows COM 端口。", "No Windows COM ports were found.") \
+    X(cfg_no_hri_port, "当前没有识别到 HRI 串口；请检查连接并刷新设备列表。", "No HRI port was detected. Check the connection and refresh the device list.") \
+    X(cfg_port_not_found_fmt, "所选串口 %s 当前没有枚举到。", "The selected serial port %s is not currently present.") \
+    X(cfg_port_not_hri_fmt, "指定的串口 %s 不是当前识别到的 HRI 端口；请检查选择。", "Serial port %s is not the detected HRI port. Check the selection.") \
+    X(cfg_auto_hri_failed, "无法自动选择 HRI COM 端口；请在主界面选择串口或检查 HRI 连接。", "Could not select an HRI COM port automatically. Choose a port on the main screen or check the HRI connection.") \
+    X(cfg_waveout_not_unique, "WaveOut 输出设备没有唯一解析结果；请手动选择。", "Could not identify one WaveOut output device. Select it manually.") \
+    X(cfg_selected_hri_fmt, "自动选择 HRI 串口 %s。", "Selected HRI port %s automatically.") \
+    X(cfg_saved_hri_reused, "沿用已保存且当前识别为 HRI 的串口。", "Keeping the saved port, which is currently identified as HRI.") \
+    X(cfg_duplicate_com, "系统返回重复的 COM 记录；请刷新设备列表后手动选择 HRI 串口。", "Windows returned duplicate COM port records. Refresh the device list and select the HRI port manually.") \
+    X(cfg_serial_catalog_failed, "Windows 串口目录读取失败；请刷新设备列表后重试。", "Could not read the Windows serial-port list. Refresh the device list and retry.") \
+    X(cfg_no_hri_detected, "当前串口目录没有识别到 HRI 设备。", "No HRI device was identified in the current serial-port list.") \
+    X(cfg_multiple_hri, "发现多个 HRI 串口候选；请手动选择一个。", "Multiple HRI ports were found. Select one manually.") \
+    X(cfg_saved_hri_missing_fmt, "已保存的 HRI 串口 %s 当前没有枚举到。", "The saved HRI port %s is not currently present.") \
+    X(cfg_duplicate_hri, "系统返回重复的 HRI 串口记录；请手动选择一个。", "Windows returned duplicate HRI port records. Select one manually.") \
+    X(cfg_saved_port_not_hri, "已保存的串口当前没有识别为 HRI。", "The saved port is not currently identified as HRI.") \
+    X(cfg_cat_selection_invalid, "CAT 串口选择无效或与 HRI 串口冲突。", "The CAT port selection is invalid or conflicts with the HRI port.") \
+    X(cfg_cat_port_missing_fmt, "选择的 CAT 串口 %s 当前没有枚举到。", "The selected CAT port %s is not currently present.") \
+    X(cfg_duplicate_cat, "系统返回重复的 CAT 串口记录；请刷新设备列表后手动选择。", "Windows returned duplicate CAT port records. Refresh the device list and select the CAT port manually.") \
+    X(cfg_cat_unclassified, "当前目录中未识别该端口的 CAT 身份；保留用户明确选择的 COM 口。", "The current device list cannot identify this port as CAT; keeping the explicitly selected COM port.") \
+    X(cfg_multiple_cat, "发现多个同级 CAT 串口候选；为避免选错，请手动选择。", "Multiple CAT ports have the same match rank. Select one manually to avoid choosing the wrong port.") \
+    X(cfg_no_cat_auto, "未找到可自动选择的 CAT 串口；可手动选择当前枚举的非 HRI 端口。", "No CAT port could be selected automatically. Choose a listed non-HRI port manually.") \
+    X(cfg_saved_audio_missing, "已保存的音频 endpoint 当前没有枚举到；配置已保留。", "The saved audio endpoint is not currently present; its setting was kept.") \
+    X(cfg_duplicate_audio, "系统返回重复的音频端点记录；请刷新设备列表或手动选择。", "Windows returned duplicate audio endpoint records. Refresh the device list or select an endpoint manually.") \
+    X(cfg_audio_endpoint_reused, "沿用当前枚举到的稳定音频 endpoint ID。", "Keeping the stable audio endpoint ID found in the current device list.") \
+    X(cfg_audio_start_match, "与启动配置相同的 USB Audio 自动选择结果。", "This USB audio selection matches the startup configuration.") \
+    X(cfg_multiple_usb_audio, "发现多个 USB Audio 候选；请手动选择。", "Multiple USB audio devices were found. Select one manually.") \
+    X(cfg_no_usb_audio, "当前没有 USB Audio 自动候选；请手动选择已枚举的端点。", "No USB audio device can be selected automatically. Choose a listed endpoint manually.") \
+    X(cfg_choose_hri_first, "请先选择 HRI 串口，再使用 USB Audio 自动选择。", "Select the HRI port before using automatic USB audio selection.") \
+    X(cfg_other_direction_multiple, "另一方向有多个 USB Audio 候选；请手动选择输入和输出设备。", "Multiple USB audio candidates were found for the other direction. Select input and output devices manually.") \
+    X(cfg_manual_audio_pair_mismatch, "手动端点与唯一 USB Audio 配对不一致；请手动选择两个端点或恢复 Auto。", "The manual endpoint does not match the unique USB audio pair. Select both endpoints manually or restore Auto.") \
+    X(cfg_other_direction_empty, "另一方向没有 USB Audio 自动候选；请手动选择输入和输出设备。", "No USB audio candidate is available for the other direction. Select input and output devices manually.") \
+    X(cfg_audio_pair_unresolved, "当前设备组合不能自动选择；请手动选择输入和输出设备。", "This device combination cannot be selected automatically. Choose input and output devices manually.") \
+    X(cfg_waveout_independent, "WaveOut 可独立选择；已按唯一 USB Audio 候选或唯一可用输出解析。", "WaveOut can be selected independently; using the only USB audio candidate or only available output.") \
+    X(cfg_waveout_not_matched, "WaveOut 自动解析结果未在当前设备目录中唯一匹配；请手动选择。", "The automatic WaveOut selection has no unique match in the current device list. Select it manually.") \
+    X(cfg_waveout_auto_none, "WaveOut 自动选择没有唯一结果；请手动选择。", "Automatic WaveOut selection did not find one unique result. Select it manually.") \
+    X(cfg_active_serial, "连接状态报告当前实际使用的串口。", "Connection status reports this as the active serial port.") \
+    X(cfg_active_serial_unmatched, "连接状态仍报告此串口，但最新设备目录没有唯一匹配项。", "Connection status still reports this port, but the latest device list has no unique match.") \
+    X(cfg_active_audio, "引擎状态报告当前实际使用的音频 endpoint。", "Engine status reports this as the active audio endpoint.") \
+    X(cfg_active_audio_unmatched, "引擎仍报告此 endpoint，但最新设备目录没有唯一匹配项。", "The engine still reports this endpoint, but the latest device list has no unique match.") \
+    X(cfg_winmm_endpoint_missing, "本机 WinMM 未返回所选 WaveIn/WaveOut 的 endpoint ID；请检查 Windows 音频端点后重试。", "WinMM did not return an endpoint ID for the selected WaveIn/WaveOut device. Check the Windows audio endpoints and retry.") \
+    X(cfg_audio_no_usable_output, "没有可用的 48 kHz 单声道 WaveOut 端点；来话仍会显示，请手动选择输出设备后重试。", "No usable 48 kHz mono WaveOut endpoint is available. Calls remain visible; select an output device and retry.") \
+    X(cfg_audio_multiple_outputs, "发现多个可用的 WaveOut 端点；来话仍会显示，请手动选择输出设备。", "Multiple usable WaveOut endpoints were found. Calls remain visible; select an output device.") \
+    X(cfg_audio_saved_output_missing, "已选择的 WaveOut endpoint 当前没有唯一枚举到；来话仍会显示，请刷新设备或手动选择。", "The selected WaveOut endpoint is not uniquely enumerated. Calls remain visible; refresh devices or select an output manually.") \
+    X(cfg_audio_no_usable_input, "没有可用的 48 kHz WaveIn 端点；请检查电台 USB 音频连接后重试。", "No usable 48 kHz WaveIn endpoint is available. Check the radio's USB audio connection and retry.") \
+    X(cfg_audio_input_not_unique, "WaveIn endpoint 无法按 USB Audio 关键词唯一确定；请在设置中选择稳定 endpoint ID。", "A unique WaveIn endpoint could not be identified by the USB Audio name. Select a stable endpoint ID in settings.") \
+    X(cfg_audio_output_not_unique, "WaveOut endpoint 无法按 USB Audio 关键词唯一确定；请在设置中选择稳定 endpoint ID。", "A unique WaveOut endpoint could not be identified by the USB Audio name. Select a stable endpoint ID in settings.") \
+    X(cfg_audio_saved_input_missing, "连接配置指定的 WaveIn endpoint 当前未唯一枚举到；请检查设备后重试。", "The WaveIn endpoint in the connection settings is not uniquely enumerated. Check the device and retry.") \
+    X(cfg_audio_connection_saved_output_missing, "连接配置指定的 WaveOut endpoint 当前未唯一枚举到；请检查设备后重试。", "The WaveOut endpoint in the connection settings is not uniquely enumerated. Check the device and retry.")
+
+// Native window/CLI startup errors are shown before the config language can load.
+#define WIREX_GUI_STRINGS_STARTUP(X) \
+    X(cli_parse_failed, "无法解析命令行。", "Could not parse the command line.") \
+    X(cli_lang_arg, "--lang 需要 zh-CN 或 en-US。", "--lang requires zh-CN or en-US.") \
+    X(cli_screenshot_modal_value, "--screenshot-modal 只支持 remove-static。", "--screenshot-modal only supports remove-static.") \
+    X(cli_config_path, "--config 需要 config.json 路径。", "--config requires a config.json path.") \
+    X(cli_config_path_invalid, "config.json 路径无效。", "The config.json path is invalid.") \
+    X(cli_screenshot_path, "--screenshot 需要 PNG 路径。", "--screenshot requires a PNG path.") \
+    X(cli_screenshot_path_invalid, "截图路径无效。", "The screenshot path is invalid.") \
+    X(cli_unknown_arg_fmt, "未知参数：%s", "Unknown argument: %s") \
+    X(cli_usage, "用法：WirexBridge.exe [--fake [--fake-services]] [--config <json>] [--screenshot <png>] [--lang zh-CN|en-US] [--screenshot-modal remove-static] [--screenshot-relay-demo] [--screenshot-channel-states] [--screenshot-bm-cooldown] [--screenshot-update-available] [--check-config]", "Usage: WirexBridge.exe [--fake [--fake-services]] [--config <json>] [--screenshot <png>] [--lang zh-CN|en-US] [--screenshot-modal remove-static] [--screenshot-relay-demo] [--screenshot-channel-states] [--screenshot-bm-cooldown] [--screenshot-update-available] [--check-config]") \
+    X(cli_fake_services_requires_fake, "--fake-services 只能与 --fake 一起使用。", "--fake-services can only be used with --fake.") \
+    X(cli_screenshot_modal_requires_fake, "--screenshot-modal 只能与 --fake 和 --screenshot 一起使用。", "--screenshot-modal requires both --fake and --screenshot.") \
+    X(cli_screenshot_channels_requires_fake, "--screenshot-channel-states / --screenshot-bm-cooldown 只能与 --fake 和 --screenshot 一起使用。", "--screenshot-channel-states and --screenshot-bm-cooldown require both --fake and --screenshot.") \
+    X(cli_screenshot_relay_requires_fake, "--screenshot-relay-demo 只能与 --fake 和 --screenshot 一起使用。", "--screenshot-relay-demo requires both --fake and --screenshot.") \
+    X(cli_screenshot_update_requires_fake, "--screenshot-update-available 只能与 --fake 和 --screenshot 一起使用。", "--screenshot-update-available requires both --fake and --screenshot.") \
+    X(err_register_class, "RegisterClassExW 失败。", "RegisterClassExW failed.") \
+    X(err_create_window, "CreateWindowExW 失败。", "CreateWindowExW failed.") \
+    X(err_create_d3d_device, "无法创建 Direct3D 11 设备。", "Could not create the Direct3D 11 device.") \
+    X(err_imgui_backend, "Dear ImGui backend 初始化失败。", "Could not initialize the Dear ImGui backend.") \
+    X(err_create_event, "CreateEventW 失败。", "CreateEventW failed.") \
+    X(err_resize_swap_chain, "调整交换链大小失败。", "Could not resize the swap chain.") \
+    X(err_screenshot_fmt, "截图失败：%s", "Screenshot failed: %s") \
+    X(err_d3d_device_lost, "Direct3D 设备已丢失。", "The Direct3D device was lost.") \
+    X(err_unhandled_exception_fmt, "未处理的异常：%s", "Unhandled exception: %s") \
+    X(err_unhandled_exception, "未处理的异常。", "An unhandled exception occurred.") \
+    X(err_create_bridge_engine_fmt, "无法创建桥接引擎：%s", "Could not create the bridge engine: %s")
 // clang-format on
 
 enum class Str : std::uint16_t {
@@ -501,6 +617,9 @@ enum class Str : std::uint16_t {
     WIREX_GUI_STRINGS_R136(WIREX_GUI_STR_ENUM)
     WIREX_GUI_STRINGS_R136_CALLER_REGION(WIREX_GUI_STR_ENUM)
     WIREX_GUI_STRINGS_R136_TITLE_LINKS(WIREX_GUI_STR_ENUM)
+    WIREX_GUI_STRINGS_VIEW_MODEL(WIREX_GUI_STR_ENUM)
+    WIREX_GUI_STRINGS_CONFIG_BRIDGE(WIREX_GUI_STR_ENUM)
+    WIREX_GUI_STRINGS_STARTUP(WIREX_GUI_STR_ENUM)
 #undef WIREX_GUI_STR_ENUM
         count_
 };
@@ -526,15 +645,18 @@ inline constexpr StrEntry kStrings[] = {
     WIREX_GUI_STRINGS_R136(WIREX_GUI_STR_ROW)
     WIREX_GUI_STRINGS_R136_CALLER_REGION(WIREX_GUI_STR_ROW)
     WIREX_GUI_STRINGS_R136_TITLE_LINKS(WIREX_GUI_STR_ROW)
+    WIREX_GUI_STRINGS_VIEW_MODEL(WIREX_GUI_STR_ROW)
+    WIREX_GUI_STRINGS_CONFIG_BRIDGE(WIREX_GUI_STR_ROW)
+    WIREX_GUI_STRINGS_STARTUP(WIREX_GUI_STR_ROW)
 #undef WIREX_GUI_STR_ROW
 };
 static_assert(sizeof(kStrings) / sizeof(kStrings[0]) == static_cast<std::size_t>(Str::count_));
 
-inline Language g_language = Language::zh_cn;
+inline std::atomic<Language> g_language{Language::zh_cn};
 } // namespace detail
 
-inline void set_language(Language language) noexcept { detail::g_language = language; }
-[[nodiscard]] inline Language language() noexcept { return detail::g_language; }
+inline void set_language(Language language) noexcept { detail::g_language.store(language, std::memory_order_relaxed); }
+[[nodiscard]] inline Language language() noexcept { return detail::g_language.load(std::memory_order_relaxed); }
 
 // config 中的 ui.language；未知值回落到 zh-CN。
 [[nodiscard]] inline Language parse_language(std::string_view tag) noexcept {
@@ -543,7 +665,7 @@ inline void set_language(Language language) noexcept { detail::g_language = lang
 
 [[nodiscard]] inline const char* tr(Str key) noexcept {
     const auto& row = detail::kStrings[static_cast<std::size_t>(key)];
-    return detail::g_language == Language::en_us ? row.en : row.zh;
+    return language() == Language::en_us ? row.en : row.zh;
 }
 
 } // namespace wirex::gui

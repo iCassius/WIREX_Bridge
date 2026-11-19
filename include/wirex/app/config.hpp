@@ -145,7 +145,7 @@ struct SaveOptions {
     bool persist_ui_language{false};
 };
 
-// In-memory defaults (one channel private:460997:2), identical to
+// In-memory defaults (private:460997:2 and private:9990:2 channels), identical to
 // New-WirexPortableConfigDefaults after validation.
 [[nodiscard]] AppConfig default_config();
 

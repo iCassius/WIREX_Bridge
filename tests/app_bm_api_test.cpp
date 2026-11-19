@@ -395,10 +395,16 @@ void test_client_flows()
 void test_servers()
 {
     using namespace wirex::app::bm_servers;
-    check(catalog.size() == 5U, "catalog has five masters");
+    check(catalog.size() == 42U, "catalog has all 42 BrandMeister masters from the current snapshot");
     check(find_entry("bm-china-4602") != nullptr && find_entry("bm-china-4602")->master_id == 4602U &&
               find_entry("bm-china-4602")->address_aliases[0] == "43.129.83.124", "4602 entry with IPv4 alias");
     check(find_entry("BM-CHINA-4602") == nullptr, "selection ids are case-sensitive");
+    check(find_entry("bm-europe-hamnet-2001") != nullptr &&
+              find_entry("bm-europe-hamnet-2001")->hostname == "44.148.230.201",
+          "catalog includes the Europe HAMNET master");
+    check(find_entry("bm-ukraine-2551") != nullptr &&
+              find_entry("bm-ukraine-2551")->hostname == "23.111.17.39",
+          "catalog includes the Ukraine master");
     for (const auto& entry : catalog) check(entry.port == 62031U, std::string("port 62031: ") + std::string(entry.selection_id));
 
     struct Case {

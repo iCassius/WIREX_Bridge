@@ -2364,9 +2364,13 @@ void AppView::draw_audio_devices(const FieldGrid& grid, float caption_h) {
             if (!resolution.name.empty()) {
                 std::string tooltip = resolution.name;
                 if (!resolution.resolved_id.empty()) tooltip += "\n" + to_utf8(resolution.resolved_id);
-                if (!resolution.reason.empty()) tooltip += "\n" + resolution.reason;
+                if (!resolution.reason.empty() && language() == Language::zh_cn) {
+                    tooltip += "\n" + resolution.reason;
+                } else if (resolution.state != services::DeviceResolutionState::resolved) {
+                    tooltip += fmt("\n%s", device_state_text(resolution.state));
+                }
                 ImGui::SetItemTooltip("%s", tooltip.c_str());
-            } else if (!resolution.reason.empty()) {
+            } else if (!resolution.reason.empty() && language() == Language::zh_cn) {
                 ImGui::SetItemTooltip("%s", resolution.reason.c_str());
             } else if (resolution.state != services::DeviceResolutionState::resolved) {
                 ImGui::SetItemTooltip("%s", device_state_text(resolution.state));
@@ -2458,7 +2462,9 @@ void AppView::draw_daily_panel(float width, float height) {
     section_title(tr(Str::daily_controls), fonts_.bold);
 
     // 增加动态组 频道ID / 类型 / 加入监听
-    static const std::vector<std::string> presets = {"460997 中国鹦鹉", "46001 组呼", "91 组呼"};
+    static const std::vector<std::string> presets_zh = {"460997 中国鹦鹉", "46001 组呼", "91 组呼"};
+    static const std::vector<std::string> presets_en = {"460997 China Parrot", "46001 Group", "91 Group"};
+    const auto& presets = language() == Language::en_us ? presets_en : presets_zh;
     {
         const float label_w = ImGui::CalcTextSize(tr(Str::add_listen)).x + ImGui::GetStyle().FramePadding.x * 2.0F;
         const float action_w = std::max(px(layout::kActionWidth), std::ceil(label_w));
@@ -2482,6 +2488,7 @@ void AppView::draw_daily_panel(float width, float height) {
     const auto& startup_status = vm_.startup_group_activation_status();
     if (!startup_status.empty()) {
         const bool warning = startup_status.find("失败") != std::string::npos ||
+                             startup_status.find("error") != std::string::npos ||
                              startup_status.find("failed") != std::string::npos ||
                              startup_status.find("busy") != std::string::npos ||
                              startup_status.find("paused") != std::string::npos ||
@@ -2923,6 +2930,26 @@ void AppView::toggle_language() {
     auto next = vm_.config();
     const auto selected = language() == Language::zh_cn ? Language::en_us : Language::zh_cn;
     set_language(selected);
+    static const std::pair<const char*, const char*> preset_names[] = {
+        {"460997 中国鹦鹉", "460997 China Parrot"},
+        {"46001 组呼", "46001 Group"},
+        {"91 组呼", "91 Group"},
+    };
+    for (const auto& [zh, en] : preset_names) {
+        if (vm_.add_channel_id == (selected == Language::en_us ? zh : en)) {
+            vm_.add_channel_id = selected == Language::en_us ? en : zh;
+            break;
+        }
+    }
+    vm_.refresh_language_dependent_status();
+    vm_.refresh_devices();
+    audio_notice_.clear();
+    settings_error_.clear();
+    connection_events_.clear();
+    last_bm_error_.clear();
+    last_radio_error_.clear();
+    last_cat_error_.clear();
+    last_core_failure_.clear();
     next.ui_language = selected == Language::en_us ? "en-US" : "zh-CN";
     std::string error;
     language_notice_.clear();

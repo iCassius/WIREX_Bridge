@@ -393,6 +393,12 @@ Value default_document()
     channel.set("name", Value::string("460997"));
     Value channels = Value::array();
     channels.items.push_back(std::move(channel));
+    Value global_parrot = Value::object();
+    global_parrot.set("id", Value::number(9990));
+    global_parrot.set("kind", Value::string("private"));
+    global_parrot.set("slot", Value::number(2));
+    global_parrot.set("name", Value::string("BM Parrot (Private 9990)"));
+    channels.items.push_back(std::move(global_parrot));
     root.set("channels", std::move(channels));
     root.set("tx_channel_id", Value::string("private:460997:2"));
     Value routing = Value::object();

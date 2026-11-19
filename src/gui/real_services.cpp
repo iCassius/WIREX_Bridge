@@ -3,6 +3,7 @@
 #include "config_bridge.hpp"
 #include "dev_log.hpp"
 #include "cat_state_sync.hpp"
+#include "strings.hpp"
 
 #include "wirex/app/bm_api.hpp"
 #include "wirex/app/config.hpp"
@@ -33,6 +34,7 @@
 #include <mutex>
 #include <thread>
 #include <utility>
+#include <string_view>
 
 namespace wirex::gui {
 namespace {
@@ -42,6 +44,47 @@ using engine::CommandResult;
 using engine::CommandStatus;
 using steady = std::chrono::steady_clock;
 using namespace std::chrono_literals;
+
+std::string localize(std::string_view zh, std::string_view en) {
+    return language() == Language::en_us ? std::string(en) : std::string(zh);
+}
+
+std::string config_error_text(const app::ConfigError& error, bool saving) {
+    const bool english_ui = language() == Language::en_us ||
+                            (!saving && PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_ENGLISH);
+    if (!english_ui) return error.message;
+    if (saving) return "Could not save config.json. The existing file was left unchanged.";
+    return "Could not read or create config.json. Check that the portable folder is writable.";
+}
+
+std::string cat_error_text(const app::CatResult& result) {
+    if (language() == Language::zh_cn || result.error == app::CatError::none) return result.error_message;
+    switch (result.error) {
+    case app::CatError::radio_rejected_command: return "The radio rejected the CAT command.";
+    case app::CatError::unexpected_response: return "The radio returned an unexpected CAT response.";
+    case app::CatError::frequency_out_of_range: return "The requested frequency is outside the FTX-1 CAT range.";
+    case app::CatError::unknown_mode_code: return "The radio returned an unknown mode code.";
+    case app::CatError::power_out_of_range: return "The requested transmit power is outside the supported range.";
+    case app::CatError::identity_mismatch: return "The CAT identity check did not pass; no settings were written.";
+    case app::CatError::busy: return "A CAT operation is already in progress.";
+    case app::CatError::hri_port_conflict: return "The CAT port conflicts with the HRI port.";
+    case app::CatError::invalid_request: return "The CAT request is invalid.";
+    case app::CatError::power_mode_not_supported: return "Transmit power cannot be set in the current radio mode.";
+    case app::CatError::readback_mismatch: return "The radio readback did not match the requested setting.";
+    case app::CatError::gate_transmitting: return "A setting cannot be changed while the radio is transmitting.";
+    case app::CatError::gate_hri_downlink: return "Frequency or mode cannot be changed while radio audio is playing.";
+    case app::CatError::write_not_authorized: return "The CAT write was not authorized; no setting was sent.";
+    case app::CatError::timeout: return "The radio did not respond before the CAT deadline.";
+    case app::CatError::cancelled: return "The CAT operation was canceled; no further command was sent.";
+    case app::CatError::port_busy_or_denied: return "The CAT port is busy or access was denied.";
+    case app::CatError::serial_io_error: return "CAT serial communication failed.";
+    case app::CatError::serial_close_failed: return "The CAT serial port could not be closed cleanly.";
+    case app::CatError::invalid_frame: return "The radio returned an invalid CAT frame.";
+    case app::CatError::side_mismatch: return "The CAT response referred to the wrong VFO.";
+    case app::CatError::none: break;
+    }
+    return "The CAT operation failed.";
+}
 
 std::string narrow(const std::wstring& w) {
     if (w.empty()) return {};
@@ -163,12 +206,20 @@ services::ConfigService make_config_service(const std::shared_ptr<ConfigState>& 
     services::ConfigService svc;
     svc.load = [st](std::string& error) -> std::optional<services::GuiConfig> {
         // Initialize-PortableConfig：不存在时原子写入默认配置；存在时只校验，不改写。
+        std::error_code exists_error;
+        const bool existed_before_load = fs::exists(st->path, exists_error);
         auto loaded = app::create_default(st->path);
         std::lock_guard<std::mutex> lock(st->mutex);
         if (!loaded) {
-            error = loaded.error().message;
+            error = config_error_text(loaded.error(), false);
             st->base.reset();
             return std::nullopt;
+        }
+        if (!exists_error && !existed_before_load && PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_ENGLISH) {
+            // Honor the Windows UI language only for a fresh profile. Existing settings remain untouched,
+            // and the portable config API keeps its locale-neutral default.
+            auto localized_config = app::set_language(st->path, "en-US");
+            if (localized_config) loaded = std::move(localized_config);
         }
         st->base = loaded.value();
         return config_bridge::to_gui(*st->base);
@@ -176,14 +227,15 @@ services::ConfigService make_config_service(const std::shared_ptr<ConfigState>& 
     svc.save = [st](const services::GuiConfig& gui, std::string& error) {
         std::lock_guard<std::mutex> lock(st->mutex);
         if (!st->base) {
-            error = "config.json 尚未成功读取；为避免覆盖原文件，没有写入。";
+            error = localize("config.json 尚未成功读取；为避免覆盖原文件，没有写入。",
+                             "config.json was not loaded successfully; nothing was written to protect the existing file.");
             return false;
         }
         auto next = config_bridge::apply_gui(*st->base, gui, error);
         if (!next) return false;
         auto saved = app::save(st->path, *next);
         if (!saved) {
-            error = saved.error().message;
+            error = config_error_text(saved.error(), true);
             return false;
         }
         st->base = std::move(saved).value();
@@ -209,7 +261,8 @@ services::ConfigService make_config_service(const std::shared_ptr<ConfigState>& 
         sc = config_bridge::make_start_config(gui, inputs, error);
         if (!sc && lenient) {
             // 返回参数并保留 error：ViewModel 把它作为提示显示。
-            error = "模拟引擎：真实启动检查未通过（" + error + "）";
+            error = localize("模拟引擎：真实启动检查未通过（" + error + "）",
+                             "Fake engine: real device startup checks failed (" + error + ")");
             return lenient_start_config(gui);
         }
         return sc;
@@ -285,23 +338,24 @@ app::CatMode to_app_mode(services::CatMode mode) {
 }
 
 CommandResult to_command_result(const app::CatResult& r) {
+    const std::string message = cat_error_text(r);
     switch (r.status) {
     case app::CatResultStatus::confirmed: return make_result(CommandStatus::accepted);
-    case app::CatResultStatus::busy: return make_result(CommandStatus::busy, r.error_message);
-    case app::CatResultStatus::identity_mismatch: return make_result(CommandStatus::forbidden, r.error_message);
+    case app::CatResultStatus::busy: return make_result(CommandStatus::busy, message);
+    case app::CatResultStatus::identity_mismatch: return make_result(CommandStatus::forbidden, message);
     case app::CatResultStatus::rejected:
         switch (r.error) {
         case app::CatError::write_not_authorized:
-        case app::CatError::hri_port_conflict: return make_result(CommandStatus::forbidden, r.error_message);
+        case app::CatError::hri_port_conflict: return make_result(CommandStatus::forbidden, message);
         case app::CatError::invalid_request:
         case app::CatError::power_out_of_range:
-        case app::CatError::frequency_out_of_range: return make_result(CommandStatus::invalid, r.error_message);
-        default: return make_result(CommandStatus::failed, r.error_message);
+        case app::CatError::frequency_out_of_range: return make_result(CommandStatus::invalid, message);
+        default: return make_result(CommandStatus::failed, message);
         }
     case app::CatResultStatus::mismatch:
     case app::CatResultStatus::unknown: break;
     }
-    return make_result(CommandStatus::failed, r.error_message.empty() ? std::string(app::to_string(r.error)) : r.error_message);
+    return make_result(CommandStatus::failed, message.empty() ? std::string(app::to_string(r.error)) : message);
 }
 
 // 核心门控输入（R131）：引擎常驻，只按发射中 / HRI 下行播放中门控，见 app::CatCoreState。
@@ -365,7 +419,8 @@ public:
         wake_.notify_all();
         if (thread_.joinable()) thread_.join();
         for (auto& task : canceled) {
-            if (task.on_cancel) task.on_cancel(make_result(CommandStatus::not_ready, "CAT 操作已停止。"));
+            if (task.on_cancel) task.on_cancel(make_result(CommandStatus::not_ready,
+                localize("CAT 操作已停止。", "CAT service has stopped.")));
         }
     }
 
@@ -405,7 +460,8 @@ public:
         emit_squelch(squelch_closed);
         notify();
         for (auto& task : canceled) {
-            if (task.on_cancel) task.on_cancel(make_result(CommandStatus::not_ready, "CAT 连接请求已取消。"));
+            if (task.on_cancel) task.on_cancel(make_result(CommandStatus::not_ready,
+                localize("CAT 连接请求已取消。", "The CAT connection request was canceled.")));
         }
         if (done) done(make_result(CommandStatus::accepted));
     }
@@ -424,7 +480,8 @@ public:
                 conn = connection_;
             }
             if (!conn) {
-                finish(generation, done, make_result(CommandStatus::not_ready, "CAT 未连接。"), [](services::CatState&) {});
+                finish(generation, done, make_result(CommandStatus::not_ready,
+                    localize("CAT 未连接。", "CAT is not connected.")), [](services::CatState&) {});
                 return;
             }
             app::CatJob job;
@@ -575,7 +632,8 @@ private:
         }
         if (!accepted) {
             if (done) done(make_result(stopped ? CommandStatus::not_ready : CommandStatus::busy,
-                                       stopped ? "CAT 服务已停止。" : "CAT 操作正在进行。"));
+                                       stopped ? localize("CAT 服务已停止。", "CAT service has stopped.")
+                                               : localize("CAT 操作正在进行。", "A CAT operation is already in progress.")));
             return;
         }
         wake_.notify_one();
@@ -627,7 +685,7 @@ private:
         c.baud_rate = baud;
         c.stop_bits = app::CatStopBits::two;
         if (!app::cat_is_supported_baud_rate(baud)) {
-            error = "CAT 波特率无效。";
+            error = localize("CAT 波特率无效。", "The CAT baud rate is invalid.");
             return std::nullopt;
         }
 
@@ -649,12 +707,14 @@ private:
         const auto selection = app::devices::resolve_port_selection(catalog, saved_hri, saved_cat,
             automatic ? std::string_view{} : std::string_view(requested), selection_error);
         if (selection_error != app::devices::PortSelectionError::none) {
-            error = "CAT 串口名称无效；请选择 COM1 到 COM999。";
+            error = localize("CAT 串口名称无效；请选择 COM1 到 COM999。",
+                             "The CAT port name is invalid; choose COM1 through COM999.");
             return std::nullopt;
         }
         if (!selection.cat_port) {
-            error = selection.cat_conflict ? selection.cat_match_reason
-                : "没有唯一且未与 HRI 冲突的 CAT 串口；请在 CAT 端口中明确选择。";
+            error = selection.cat_conflict && language() == Language::zh_cn ? selection.cat_match_reason
+                : localize("没有唯一且未与 HRI 冲突的 CAT 串口；请在 CAT 端口中明确选择。",
+                           "No unique CAT port without an HRI conflict was found. Choose a CAT port explicitly.");
             return std::nullopt;
         }
         c.port_name = widen(*selection.cat_port);
@@ -669,7 +729,8 @@ private:
         result.started_at = std::chrono::system_clock::now();
         result.status = app::CatResultStatus::unknown;
         result.error = app::CatError::cancelled;
-        result.error_message = "CAT 会话已断开或取消；没有执行该操作。";
+        result.error_message = localize("CAT 会话已断开或取消；没有执行该操作。",
+                                        "The CAT session was disconnected or canceled; the operation was not run.");
         return result;
     }
 
@@ -681,6 +742,9 @@ private:
             future = worker_.submit(job);
         }
         auto result = future.get();
+        if (language() == Language::en_us && result.error != app::CatError::none) {
+            result.error_message = cat_error_text(result);
+        }
         if (auto log = dev_log()) {
             const char* op = job.operation == app::CatOperation::query ? "query"
                            : job.operation == app::CatOperation::set_power ? "set_power"
@@ -720,7 +784,8 @@ private:
                 ok = false;
             }
         }
-        finish(generation, done, ok ? to_command_result(r) : make_result(CommandStatus::not_ready, "CAT 连接已取消。"), [&](services::CatState& s) {
+        finish(generation, done, ok ? to_command_result(r) : make_result(CommandStatus::not_ready,
+            localize("CAT 连接已取消。", "The CAT connection was canceled.")), [&](services::CatState& s) {
             s.connected = ok;
             s.port = conn->port_name;
             s.baud_rate = baud;
@@ -736,12 +801,14 @@ private:
             conn = connection_;
         }
         if (!conn) {
-            finish(generation, done, make_result(CommandStatus::not_ready, "CAT 未连接。"), [](services::CatState&) {});
+            finish(generation, done, make_result(CommandStatus::not_ready,
+                localize("CAT 未连接。", "CAT is not connected.")), [](services::CatState&) {});
             return;
         }
         if (settings.main_frequency_hz != 0U && (settings.main_frequency_hz < app::cat_min_frequency_hz ||
                                                  settings.main_frequency_hz > app::cat_max_frequency_hz)) {
-            finish(generation, done, make_result(CommandStatus::invalid, "频率超出 FTX-1 CAT 允许范围。"), [](services::CatState&) {});
+            finish(generation, done, make_result(CommandStatus::invalid,
+                localize("频率超出 FTX-1 CAT 允许范围。", "The frequency is outside the FTX-1 CAT range.")), [](services::CatState&) {});
             return;
         }
         app::CatJob job;
@@ -800,13 +867,15 @@ private:
             if (r.operation == app::CatOperation::set_frequency &&
                 (r.error == app::CatError::radio_rejected_command || r.error == app::CatError::readback_mismatch)) {
                 cr.status = CommandStatus::failed;
-                cr.detail = "电台拒绝修改频率（可能处于 HRI/WIRES-X 模式）。";
+                cr.detail = localize("电台拒绝修改频率（可能处于 HRI/WIRES-X 模式）。",
+                                     "The radio rejected the frequency change; it may be in HRI/WIRES-X mode.");
             } else if (r.operation == app::CatOperation::set_mode &&
                        (r.error == app::CatError::radio_rejected_command || r.error == app::CatError::readback_mismatch)) {
                 cr.status = CommandStatus::failed;
-                cr.detail = "电台拒绝修改模式（可能处于 HRI/WIRES-X 模式）。";
+                cr.detail = localize("电台拒绝修改模式（可能处于 HRI/WIRES-X 模式）。",
+                                     "The radio rejected the mode change; it may be in HRI/WIRES-X mode.");
             }
-            if (steps > 1) cr.detail += "（已完成的步骤不回滚）";
+            if (steps > 1) cr.detail += localize("（已完成的步骤不回滚）", " (completed steps were not rolled back)");
             finish(generation, done, cr, [&](services::CatState& s) { s.error = r.error_message; });
             return;
         }
@@ -889,14 +958,15 @@ private:
                 if (do_squelch) squelch_sample(poll_generation);
             } catch (...) {
                 if (task.run) {
-                    finish(task.generation, task.on_cancel, make_result(CommandStatus::failed, "CAT 内部错误。"),
-                           [](services::CatState& s) { s.error = "CAT 内部错误。"; });
+                    const auto error = localize("CAT 内部错误。", "An internal CAT error occurred.");
+                    finish(task.generation, task.on_cancel, make_result(CommandStatus::failed, error),
+                           [error](services::CatState& s) { s.error = error; });
                 } else if (do_poll) {
                     bool changed = false;
                     {
                         std::lock_guard<std::mutex> lock(mutex_);
                         if (poll_generation == task_generation_ && !stopping_) {
-                            state_.error = "CAT 内部错误。";
+                            state_.error = localize("CAT 内部错误。", "An internal CAT error occurred.");
                             ++state_.revision;
                             changed = true;
                         }
@@ -935,11 +1005,20 @@ private:
 std::string bm_error_text(const app::bm_api::Error& e, bool write) {
     using app::bm_api::ErrorKind;
     switch (e.kind) {
-    case ErrorKind::canceled: return write ? "静态组写入结果未确认；请刷新列表后再操作。" : "BM 静态组读取已取消。";
-    case ErrorKind::timeout: return "BM API 操作超时；请刷新列表确认服务器状态。";
+    case ErrorKind::canceled:
+        return write ? localize("静态组写入结果未确认；请刷新列表后再操作。",
+                                "The static-group change could not be confirmed. Refresh the list before trying again.")
+                     : localize("BM 静态组读取已取消。", "The BrandMeister static-group read was canceled.");
+    case ErrorKind::timeout:
+        return localize("BM API 操作超时；请刷新列表确认服务器状态。",
+                        "The BrandMeister API request timed out. Refresh the list to check the server state.");
     case ErrorKind::invalid_key:
-    case ErrorKind::invalid_request: return e.message.empty() ? "BM API 参数无效。" : e.message;
-    default: return "BM API 操作失败；请检查 API Key 与网络后刷新。";
+    case ErrorKind::invalid_request:
+        if (language() == Language::zh_cn && !e.message.empty()) return e.message;
+        return localize("BM API 参数无效。", "The BrandMeister API request or API key is invalid.");
+    default:
+        return localize("BM API 操作失败；请检查 API Key 与网络后刷新。",
+                        "The BrandMeister API request failed. Check the API key and network, then refresh.");
     }
 }
 
@@ -969,9 +1048,12 @@ public:
                 out.add_slot = ctx.context.add_slot;
                 out.device_status = ctx.context.status;
             }
-            const std::string status = out.device_status ? std::to_string(*out.device_status) : std::string("未知");
-            out.message = "已读取 " + std::to_string(out.groups.size()) + " 条 BM 静态组；设备状态 " + status +
-                          (out.add_slot ? "。" : "，添加已禁用。");
+            const std::string status = out.device_status ? std::to_string(*out.device_status)
+                : localize("未知", "unknown");
+            out.message = localize("已读取 " + std::to_string(out.groups.size()) + " 条 BM 静态组；设备状态 " + status +
+                                      (out.add_slot ? "。" : "，添加已禁用。"),
+                                  "Loaded " + std::to_string(out.groups.size()) + " BrandMeister static groups; device status " + status +
+                                      (out.add_slot ? "." : "; adding is disabled."));
             done(std::move(out));
         });
     }
@@ -993,14 +1075,19 @@ public:
             out.groups_valid = r.readback_status == ReadbackStatus::confirmed || r.readback_status == ReadbackStatus::not_confirmed;
             out.groups = to_gui_groups(r.groups);
             switch (r.readback_status) {
-            case ReadbackStatus::confirmed: out.message = "BM 已接受静态组更改，读取列表已确认。"; break;
+            case ReadbackStatus::confirmed:
+                out.message = localize("BM 已接受静态组更改，读取列表已确认。",
+                                       "BrandMeister accepted the static-group change and the refreshed list confirms it.");
+                break;
             case ReadbackStatus::not_confirmed:
                 out.failed = true;
-                out.message = "BM 已接受静态组更改，但读取结果与请求不符；请检查列表。";
+                out.message = localize("BM 已接受静态组更改，但读取结果与请求不符；请检查列表。",
+                                       "BrandMeister accepted the change, but the refreshed list does not match it. Check the list.");
                 break;
             default:
                 out.failed = true;
-                out.message = "BM 已接受静态组更改，但回查未完成；请刷新确认。";
+                out.message = localize("BM 已接受静态组更改，但回查未完成；请刷新确认。",
+                                       "BrandMeister accepted the change, but readback did not finish. Refresh to confirm.");
                 break;
             }
             done(std::move(out));
@@ -1023,7 +1110,8 @@ private:
             if (!key) {
                 services::BmApiResult out;
                 out.failed = true;
-                out.message = key_error.message.empty() ? "BM API Key 格式无效。" : key_error.message;
+                out.message = language() == Language::zh_cn && !key_error.message.empty() ? key_error.message
+                    : localize("BM API Key 格式无效。", "The BrandMeister API key format is invalid.");
                 done(std::move(out));
                 return;
             }
@@ -1033,7 +1121,8 @@ private:
             wipe(*key_holder);
             services::BmApiResult out;
             out.failed = true;
-            out.message = "BM 静态组后台操作未能启动。";
+            out.message = localize("BM 静态组后台操作未能启动。",
+                                   "The BrandMeister static-group task could not be started.");
             done(std::move(out));
         }
     }

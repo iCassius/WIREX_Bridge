@@ -132,13 +132,15 @@ bool pump_until_checked(const std::vector<Pending>& pending) {
 }
 
 void test_schedule_and_results() {
+    const std::string newer_version = std::to_string(WIREX_VERSION_MAJOR) + "." +
+        std::to_string(WIREX_VERSION_MINOR) + "." + std::to_string(WIREX_VERSION_PATCH + 1);
     UpdateProbe available_probe;
-    available_probe.release = make_release("v0.2.3");
+    available_probe.release = make_release(newer_version);
     TestEngine available_engine;
     gui::ViewModel available(available_engine, make_services(available_probe, true), false);
 
     UpdateProbe up_to_date_probe;
-    up_to_date_probe.release = make_release("v0.2.2");
+    up_to_date_probe.release = make_release(std::string("v") + app_version);
     TestEngine up_to_date_engine;
     gui::ViewModel up_to_date(up_to_date_engine, make_services(up_to_date_probe, true), false);
 
@@ -148,13 +150,13 @@ void test_schedule_and_results() {
     gui::ViewModel failed(failed_engine, make_services(failed_probe, true), false);
 
     UpdateProbe prerelease_probe;
-    prerelease_probe.release = make_release("v0.3.0-rc.1");
+    prerelease_probe.release = make_release(std::string("v") + newer_version + "-rc.1");
     prerelease_probe.release->prerelease = true;
     TestEngine prerelease_engine;
     gui::ViewModel prerelease(prerelease_engine, make_services(prerelease_probe, true), false);
 
     UpdateProbe draft_probe;
-    draft_probe.release = make_release("v0.4.0");
+    draft_probe.release = make_release(std::string("v") + newer_version);
     draft_probe.release->draft = true;
     TestEngine draft_engine;
     gui::ViewModel draft(draft_engine, make_services(draft_probe, true), false);
@@ -179,7 +181,7 @@ void test_schedule_and_results() {
     for (const auto& item : pending) (void)item.vm->pump();
 
     check(available.update_status().state == UpdateStatus::State::available, "newer tag becomes available");
-    check(available.update_status().latest == "v0.2.3", "latest is normalized with a v prefix");
+    check(available.update_status().latest == std::string("v") + newer_version, "latest is normalized with a v prefix");
     check(available.update_status().url == available_probe.release->html_url,
           "available state opens the release page");
     available.open_update_page();

@@ -191,12 +191,32 @@ void test_partial_send_is_reported_with_target_and_failure_detail()
           "persistent startup summary records the failed local attempt");
 }
 
+void test_startup_status_refreshes_when_language_changes()
+{
+    gui::set_language(gui::Language::zh_cn);
+    TestEngine engine;
+    gui::ViewModel vm(engine, services_for({{91U, dmr_call::CallKind::group, dmr_call::Slot::ts2, ""}}), true);
+    check(vm.startup_group_activation_status().find("自动组呼已冻结") != std::string::npos,
+          "startup status initially follows Chinese UI language");
+
+    gui::set_language(gui::Language::en_us);
+    vm.refresh_language_dependent_status();
+    check(vm.startup_group_activation_status().find("Startup group Quick Calls frozen") != std::string::npos,
+          "startup status is refreshed after English language override");
+
+    gui::set_language(gui::Language::zh_cn);
+    vm.refresh_language_dependent_status();
+    check(vm.startup_group_activation_status().find("自动组呼已冻结") != std::string::npos,
+          "startup status can be refreshed back to Chinese UI language");
+}
+
 } // namespace
 
 int main()
 {
     test_bm_ready_starts_one_frozen_queue_without_hri_or_static_api();
     test_partial_send_is_reported_with_target_and_failure_detail();
+    test_startup_status_refreshes_when_language_changes();
     std::cout << "PASS: " << assertions << " startup group ViewModel assertions\n";
     return EXIT_SUCCESS;
 }

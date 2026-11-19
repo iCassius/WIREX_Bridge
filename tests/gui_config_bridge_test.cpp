@@ -1,5 +1,6 @@
 // src/gui/config_bridge 的表驱动测试：config.json ↔ GUI ↔ engine::StartConfig 的转换规则（对照 PS 版）。
 #include "../src/gui/config_bridge.hpp"
+#include "../src/gui/strings.hpp"
 
 #include "wirex/app/config.hpp"
 #include "wirex/app/json.hpp"
@@ -545,7 +546,9 @@ void test_round_trip_preserves_unknown() {
 
     auto gui = cb::to_gui(loaded.value());
     check(gui.hri_port.empty() && gui.wave_in_endpoint_id.empty(), "auto → empty selectors");
-    check(gui.device_number == "01" && gui.channels.size() == 1U && gui.channels[0].slot == Slot::ts2, "defaults to gui");
+    check(gui.device_number == "01" && gui.channels.size() == 2U && gui.channels[0].slot == Slot::ts2 &&
+          gui.channels[1].id == 9990U && gui.channels[1].kind == CallKind::private_call,
+          "global parrot default survives config-to-GUI conversion");
     gui.callsign = "N0CALL";
     gui.dmr_id = 4609100U;
     gui.device_number = "07";
@@ -651,9 +654,44 @@ void test_relay_round_trip() {
           "to_gui reads relay.y_template=ap");
 }
 
+void test_gui_error_and_channel_names_follow_selected_language() {
+    using wirex::gui::Language;
+    using wirex::gui::set_language;
+    using wirex::gui::services::DeviceInventory;
+    using wirex::gui::services::DeviceResolutionState;
+
+    set_language(Language::en_us);
+    check(cb::known_channel_name(9990U, CallKind::private_call) == "BM Parrot (Private 9990)",
+          "BM Parrot channel name uses English in English UI");
+    auto gui = sample_gui();
+    gui.hri_port.clear();
+    gui.cat_port.clear();
+    gui.wave_in_endpoint_id.clear();
+    gui.wave_out_endpoint_id.clear();
+    DeviceInventory inventory;
+    inventory.serial_discovery_status = "ready";
+    const auto english = cb::resolve_device_selection(gui, inventory);
+    check(english.hri.state == DeviceResolutionState::missing &&
+              english.hri.reason == "No Windows COM ports were found.",
+          "device-resolution error is localized in English UI");
+    check(english.wave_out.reason.find("No usable") != std::string::npos,
+          "audio-resolution error is localized in English UI");
+
+    set_language(Language::zh_cn);
+    check(cb::known_channel_name(9990U, CallKind::private_call) == "BM 鹦鹉（私呼 9990）",
+          "BM Parrot channel name uses Chinese in Chinese UI");
+    const auto chinese = cb::resolve_device_selection(gui, inventory);
+    check(chinese.hri.reason == "当前没有枚举到 Windows COM 端口。",
+          "device-resolution error is localized in Chinese UI");
+    check(chinese.wave_out.reason.find("没有可用的 48 kHz") != std::string::npos,
+          "audio-resolution error is localized in Chinese UI");
+    set_language(Language::zh_cn);
+}
+
 int main() {
     SetConsoleOutputCP(CP_UTF8);
     test_relay_round_trip();
+    test_gui_error_and_channel_names_follow_selected_language();
     test_device_number();
     test_rx_policy();
     test_channel_key();

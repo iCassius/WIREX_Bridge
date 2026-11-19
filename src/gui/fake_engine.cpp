@@ -1,4 +1,5 @@
 #include "fake_engine.hpp"
+#include "strings.hpp"
 
 #include <algorithm>
 #include <array>
@@ -8,6 +9,7 @@
 #include <map>
 #include <mutex>
 #include <random>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -24,6 +26,10 @@ using engine::Phase;
 using talkgroup_routing::MediaOwner;
 using Clock = std::chrono::steady_clock;
 using namespace std::chrono_literals;
+
+std::string localize(std::string_view zh, std::string_view en) {
+    return language() == Language::en_us ? std::string(en) : std::string(zh);
+}
 
 std::uint64_t now_ms() {
     return static_cast<std::uint64_t>(
@@ -883,7 +889,8 @@ std::future<CommandResult> FakeEngine::quick_call_join(talkgroup_routing::GroupR
         Event e;
         e.kind = EventKind::quick_call_result;
         e.at_ms = now_ms();
-        e.text = "TG " + std::to_string(route.destination_id) + " 激活请求已发送";
+        e.text = localize("TG " + std::to_string(route.destination_id) + " 激活请求已发送",
+                          "TG " + std::to_string(route.destination_id) + " activation request sent");
         s->push_event(std::move(e));
         return result(CommandStatus::accepted, 0U, "sent");
     });
@@ -925,7 +932,8 @@ std::future<CommandResult> FakeEngine::disconnect_dynamic_groups(dmr_call::Slot 
         Event e;
         e.kind = EventKind::quick_call_result;
         e.at_ms = now_ms();
-        e.text = "TG 4000 TS" + std::to_string(static_cast<int>(slot)) + " 断开请求已发送";
+        e.text = localize("TG 4000 TS" + std::to_string(static_cast<int>(slot)) + " 断开请求已发送",
+                          "TG 4000 TS" + std::to_string(static_cast<int>(slot)) + " disconnect request sent");
         s->push_event(std::move(e));
         return result(CommandStatus::accepted, 2U, "");
     });
@@ -1174,6 +1182,7 @@ services::GuiConfig demo_config() {
         {46001U, CallKind::group, Slot::ts2, ""},
         {91U, CallKind::group, Slot::ts2, ""},
         {460997U, CallKind::private_call, Slot::ts2, "中国鹦鹉"},
+        {9990U, CallKind::private_call, Slot::ts2, "BM Parrot (Private 9990)"},
         {4600U, CallKind::group, Slot::ts2, ""},
         {46025U, CallKind::group, Slot::ts2, ""},
     };
@@ -1192,12 +1201,17 @@ services::Services make_fake_services(FakeEngine& engine) {
         services::DeviceInventory inv;
         inv.serial_discovery_status = "synthetic";
         inv.serial_ports = {
-            {L"COM3", "COM3 · USB Serial Device", false, true, 100, "USB 串行接口候选"},
-            {L"COM5", "COM5 · Silicon Labs CP210x (Wires-X)", true, false, 0, "唯一 HRI 设备"},
-            {L"COM6", "COM6 · Silicon Labs CP210x (CAT)", false, true, 220, "CP210x 串口匹配"},
+            {L"COM3", "COM3 · USB Serial Device", false, true, 100,
+                localize("USB 串行接口候选", "Possible USB serial port")},
+            {L"COM5", "COM5 · Silicon Labs CP210x (Wires-X)", true, false, 0,
+                localize("唯一 HRI 设备", "Only HRI device found")},
+            {L"COM6", "COM6 · Silicon Labs CP210x (CAT)", false, true, 220,
+                localize("CP210x 串口匹配", "CP210x CAT port match")},
         };
-        inv.wave_in = {{L"{0.0.1.00000000}.{fake-in}", "麦克风 (USB Audio CODEC)", 0U, true}};
-        inv.wave_out = {{L"{0.0.0.00000000}.{fake-out}", "扬声器 (USB Audio CODEC)", 0U, true}};
+        // Device names are descriptive hardware labels, not translated UI prompts. Keeping these
+        // stable also means changing UI language does not leave stale labels in the cached inventory.
+        inv.wave_in = {{L"{0.0.1.00000000}.{fake-in}", "Microphone (USB Audio CODEC)", 0U, true}};
+        inv.wave_out = {{L"{0.0.0.00000000}.{fake-out}", "Speakers (USB Audio CODEC)", 0U, true}};
         return inv;
     };
 
@@ -1396,7 +1410,8 @@ services::Services make_fake_services(FakeEngine& engine) {
     };
     sv.config.make_start_config = [](const services::GuiConfig& config, std::string& error) -> std::optional<engine::StartConfig> {
         if (config.hri_port.empty() || config.wave_in_endpoint_id.empty() || config.wave_out_endpoint_id.empty()) {
-            error = "未能解析 Wires-X 串口和 USB Audio 端点。";
+            error = localize("未能解析 Wires-X 串口和 USB Audio 端点。",
+                             "Could not resolve the Wires-X serial port and USB audio endpoints.");
             return std::nullopt;
         }
         engine::StartConfig sc;
@@ -1420,7 +1435,8 @@ services::Services make_fake_services(FakeEngine& engine) {
         r.groups_valid = true;
         r.add_slot = 2;
         r.device_status = 0;
-        r.message = "已读取 " + std::to_string(r.groups.size()) + " 条 BM 静态组；设备状态 0。";
+        r.message = localize("已读取 " + std::to_string(r.groups.size()) + " 条 BM 静态组；设备状态 0。",
+                             "Loaded " + std::to_string(r.groups.size()) + " BrandMeister static groups; device status 0.");
         return r;
     };
     sv.bm_api.list_static_groups = [st, &engine, list_result](std::uint32_t, std::string, services::BmApiDone done) {
@@ -1448,7 +1464,8 @@ services::Services make_fake_services(FakeEngine& engine) {
                 r.groups = g;
             }
             r.groups_valid = true;
-            r.message = "BM 已接受静态组更改，读取列表已确认。";
+            r.message = localize("BM 已接受静态组更改，读取列表已确认。",
+                                 "BrandMeister accepted the static-group change and the refreshed list confirms it.");
             done(std::move(r));
         });
     };
@@ -1464,7 +1481,7 @@ services::Services make_fake_services(FakeEngine& engine) {
     sv.audio_volume.get = [st, volumes](const std::wstring& id, std::string& error) -> std::optional<float> {
         std::lock_guard<std::mutex> lock(st->mutex);
         if (id.empty()) {
-            error = "未选择音频端点。";
+            error = localize("未选择音频端点。", "No audio endpoint is selected.");
             return std::nullopt;
         }
         auto it = volumes->find(id);
@@ -1474,7 +1491,7 @@ services::Services make_fake_services(FakeEngine& engine) {
     sv.audio_volume.set = [st, volumes](const std::wstring& id, float scalar, std::string& error) {
         std::lock_guard<std::mutex> lock(st->mutex);
         if (id.empty()) {
-            error = "未选择音频端点。";
+            error = localize("未选择音频端点。", "No audio endpoint is selected.");
             return false;
         }
         (*volumes)[id] = std::clamp(scalar, 0.0F, 1.0F);

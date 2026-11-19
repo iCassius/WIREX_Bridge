@@ -129,8 +129,9 @@ void test_defaults()
         c.devices.cat_stop_bits == "Two" && c.devices.wave_in_endpoint_id == "auto" &&
         c.devices.wave_out_endpoint_id == "auto" && c.devices.desired_power_watts == 25, "default devices");
     check(c.audio.radio_playback_gain_milli == 1000 && c.audio.mic_transmit_gain_milli == 16000, "default gains");
-    check(c.channels.size() == 1 && c.channels[0].key() == "private:460997:2" && c.channels[0].name == "460997",
-        "default channel is BM parrot");
+    check(c.channels.size() == 2 && c.channels[0].key() == "private:460997:2" && c.channels[0].name == "460997" &&
+        c.channels[1].key() == "private:9990:2" && c.channels[1].name == "BM Parrot (Private 9990)",
+        "defaults include China and worldwide BM parrot destinations");
     check(c.tx_channel_id == "private:460997:2", "default tx channel");
     check(c.routing.blocked_source_ids.empty(), "default routing empty");
     check(c.ui.bm_server_selection_id == "bm-china-4602" && c.ui.legacy_rx_policy.is_null() && c.ui.language == "zh-CN",
@@ -177,6 +178,12 @@ void test_defaults()
         "                         \"kind\":  \"private\",\r\n"
         "                         \"slot\":  2,\r\n"
         "                         \"name\":  \"460997\"\r\n"
+        "                     },\r\n"
+        "                     {\r\n"
+        "                         \"id\":  9990,\r\n"
+        "                         \"kind\":  \"private\",\r\n"
+        "                         \"slot\":  2,\r\n"
+        "                         \"name\":  \"BM Parrot (Private 9990)\"\r\n"
         "                     }\r\n"
         "                 ],\r\n"
         "    \"tx_channel_id\":  \"private:460997:2\",\r\n"

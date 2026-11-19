@@ -378,12 +378,26 @@ struct Options {
     std::wstring error{};
 };
 
+std::wstring widen(const std::string& s);
+
+std::string format_one(const char* format, const char* value) {
+    std::string result(format != nullptr ? format : "");
+    const auto placeholder = result.find("%s");
+    if (placeholder != std::string::npos) result.replace(placeholder, 2U, value != nullptr ? value : "");
+    return result;
+}
+
+wirex::gui::Language windows_ui_language() {
+    return PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_ENGLISH
+        ? wirex::gui::Language::en_us : wirex::gui::Language::zh_cn;
+}
+
 Options parse_args() {
     Options o;
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (argv == nullptr) {
-        o.error = L"无法解析命令行。";
+        o.error = widen(wirex::gui::tr(wirex::gui::Str::cli_parse_failed));
         return o;
     }
     for (int i = 1; i < argc; ++i) {
@@ -398,13 +412,14 @@ Options parse_args() {
             o.fake_services = true;
         } else if (a == L"--lang") {
             if (i + 1 >= argc || (std::wstring(argv[i + 1]) != L"zh-CN" && std::wstring(argv[i + 1]) != L"en-US")) {
-                o.error = L"--lang 需要 zh-CN 或 en-US。";
+                o.error = widen(wirex::gui::tr(wirex::gui::Str::cli_lang_arg));
                 break;
             }
             o.lang = std::wstring(argv[++i]) == L"en-US" ? "en-US" : "zh-CN";
+            wirex::gui::set_language(wirex::gui::parse_language(*o.lang));
         } else if (a == L"--screenshot-modal") {
             if (i + 1 >= argc || std::wstring(argv[i + 1]) != L"remove-static") {
-                o.error = L"--screenshot-modal 只支持 remove-static。";
+                o.error = widen(wirex::gui::tr(wirex::gui::Str::cli_screenshot_modal_value));
                 break;
             }
             ++i;
@@ -421,55 +436,54 @@ Options parse_args() {
             o.check_config = true;
         } else if (a == L"--config") {
             if (i + 1 >= argc) {
-                o.error = L"--config 需要 config.json 路径。";
+                o.error = widen(wirex::gui::tr(wirex::gui::Str::cli_config_path));
                 break;
             }
             std::error_code ec;
             auto full = std::filesystem::absolute(argv[++i], ec);
             if (ec) {
-                o.error = L"config.json 路径无效。";
+                o.error = widen(wirex::gui::tr(wirex::gui::Str::cli_config_path_invalid));
                 break;
             }
             o.config = std::move(full);
         } else if (a == L"--screenshot") {
             if (i + 1 >= argc) {
-                o.error = L"--screenshot 需要 PNG 路径。";
+                o.error = widen(wirex::gui::tr(wirex::gui::Str::cli_screenshot_path));
                 break;
             }
             std::error_code ec;
             const auto full = std::filesystem::absolute(argv[++i], ec);
             if (ec) {
-                o.error = L"截图路径无效。";
+                o.error = widen(wirex::gui::tr(wirex::gui::Str::cli_screenshot_path_invalid));
                 break;
             }
             o.screenshot = full.wstring();
         } else {
-            o.error = L"未知参数：" + a +
-                      L"\n用法：WirexBridge.exe [--fake [--fake-services]] [--config <json>] [--screenshot <png>] [--lang zh-CN|en-US] "
-                      L"[--screenshot-modal remove-static] [--screenshot-relay-demo] "
-                      L"[--screenshot-channel-states] [--screenshot-bm-cooldown] [--screenshot-update-available] "
-                      L"[--check-config]";
+            o.error = wirex::gui::language() == wirex::gui::Language::en_us
+                ? L"Unknown argument: " + a + L"\n" + widen(wirex::gui::tr(wirex::gui::Str::cli_usage))
+                : L"未知参数：" + a + L"\n" + widen(wirex::gui::tr(wirex::gui::Str::cli_usage));
             break;
         }
     }
     LocalFree(argv);
-    if (o.error.empty() && o.fake_services && !o.fake) o.error = L"--fake-services 只能与 --fake 一起使用。";
+    if (o.error.empty() && o.fake_services && !o.fake) {
+        o.error = widen(wirex::gui::tr(wirex::gui::Str::cli_fake_services_requires_fake));
+    }
     if (o.error.empty() && o.screenshot_modal_remove_static && (!o.screenshot || !o.fake)) {
-        o.error = L"--screenshot-modal 只能与 --fake 和 --screenshot 一起使用。";
+        o.error = widen(wirex::gui::tr(wirex::gui::Str::cli_screenshot_modal_requires_fake));
     }
     if (o.error.empty() && (o.screenshot_channel_states || o.screenshot_bm_cooldown) && (!o.screenshot || !o.fake)) {
-        o.error = L"--screenshot-channel-states / --screenshot-bm-cooldown 只能与 --fake 和 --screenshot 一起使用。";
+        o.error = widen(wirex::gui::tr(wirex::gui::Str::cli_screenshot_channels_requires_fake));
     }
     if (o.error.empty() && o.screenshot_relay_demo && (!o.screenshot || !o.fake)) {
-        o.error = L"--screenshot-relay-demo 只能与 --fake 和 --screenshot 一起使用。";
+        o.error = widen(wirex::gui::tr(wirex::gui::Str::cli_screenshot_relay_requires_fake));
     }
     if (o.error.empty() && o.screenshot_update_available && (!o.screenshot || !o.fake)) {
-        o.error = L"--screenshot-update-available 只能与 --fake 和 --screenshot 一起使用。";
+        o.error = widen(wirex::gui::tr(wirex::gui::Str::cli_screenshot_update_requires_fake));
     }
+    if (o.lang) wirex::gui::set_language(wirex::gui::parse_language(*o.lang));
     return o;
 }
-
-std::wstring widen(const std::string& s);
 
 // 引擎 + 服务的组合。FakeEngine 或真实 Engine（经 EngineAdapter 包装）二选一。
 struct Backend {
@@ -503,7 +517,7 @@ std::optional<Backend> make_backend(const Options& opts, std::wstring& error) {
     try {
         b.real = std::make_unique<wirex::engine::Engine>();
     } catch (const std::exception& e) {
-        error = L"无法创建桥接引擎：" + widen(e.what());
+        error = widen(format_one(wirex::gui::tr(wirex::gui::Str::err_create_bridge_engine_fmt), e.what()));
         return std::nullopt;
     }
     b.adapter = std::make_unique<wirex::gui::EngineAdapter<wirex::engine::Engine>>(*b.real);
@@ -569,6 +583,7 @@ void render(const ImVec4& clear) {
 }
 
 int run(HINSTANCE instance) {
+    wirex::gui::set_language(windows_ui_language());
     const Options opts = parse_args();
     if (!opts.error.empty()) {
         fail_box(opts.error);
@@ -605,7 +620,7 @@ int run(HINSTANCE instance) {
     wc.hIconSm = static_cast<HICON>(LoadImageW(instance, MAKEINTRESOURCEW(IDI_WIREX_APP), IMAGE_ICON,
                                                GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
     if (RegisterClassExW(&wc) == 0) {
-        fail_box(L"RegisterClassExW 失败。");
+        fail_box(widen(wirex::gui::tr(wirex::gui::Str::err_register_class)));
         if (co_ok) CoUninitialize();
         return 1;
     }
@@ -628,14 +643,14 @@ int run(HINSTANCE instance) {
     HWND hwnd = CreateWindowExW(0, kWindowClass, title.c_str(), WS_OVERLAPPEDWINDOW, x, y, win_w, win_h, nullptr, nullptr,
                                 instance, nullptr);
     if (hwnd == nullptr) {
-        fail_box(L"CreateWindowExW 失败。");
+        fail_box(widen(wirex::gui::tr(wirex::gui::Str::err_create_window)));
         UnregisterClassW(kWindowClass, instance);
         if (co_ok) CoUninitialize();
         return 1;
     }
     g_shell.dpi_scale = ImGui_ImplWin32_GetDpiScaleForHwnd(hwnd);
     if (!create_device(hwnd)) {
-        fail_box(L"无法创建 Direct3D 11 设备。");
+        fail_box(widen(wirex::gui::tr(wirex::gui::Str::err_create_d3d_device)));
         destroy_device();
         DestroyWindow(hwnd);
         UnregisterClassW(kWindowClass, instance);
@@ -656,7 +671,7 @@ int run(HINSTANCE instance) {
     const bool win32_ok = ImGui_ImplWin32_Init(hwnd);
     const bool dx11_ok = win32_ok && ImGui_ImplDX11_Init(g_shell.d3d.device, g_shell.d3d.context);
     if (!dx11_ok) {
-        fail_box(L"Dear ImGui backend 初始化失败。");
+        fail_box(widen(wirex::gui::tr(wirex::gui::Str::err_imgui_backend)));
         if (win32_ok) ImGui_ImplWin32_Shutdown();
         ImGui::DestroyContext();
         destroy_device();
@@ -676,7 +691,7 @@ int run(HINSTANCE instance) {
         std::optional<Backend> backend;
         if (wake != nullptr) backend = make_backend(opts, backend_error);
         if (wake == nullptr) {
-            fail_box(L"CreateEventW 失败。");
+            fail_box(widen(wirex::gui::tr(wirex::gui::Str::err_create_event)));
             exit_code = 1;
         } else if (!backend) {
             fail_box(backend_error);
@@ -686,7 +701,10 @@ int run(HINSTANCE instance) {
             wirex::gui::ViewModel vm(*backend->api, std::move(backend->services), opts.fake);
             vm.set_font_status(font_status);
             // --lang 覆盖 config 中的 ui.language，只作用于本次运行（不保存）。
-            if (opts.lang) wirex::gui::set_language(wirex::gui::parse_language(*opts.lang));
+            if (opts.lang) {
+                wirex::gui::set_language(wirex::gui::parse_language(*opts.lang));
+                vm.refresh_language_dependent_status();
+            }
             if (opts.screenshot_relay_demo && backend->fake) {
                 vm.preview_relay_enabled();
                 backend->fake->seed_relay_fm_demo();
@@ -775,7 +793,7 @@ int run(HINSTANCE instance) {
                     release(d.rtv);
                     if (FAILED(d.swap_chain->ResizeBuffers(0, d.resize_w, d.resize_h, DXGI_FORMAT_UNKNOWN, 0)) ||
                         !create_render_target()) {
-                        fail_box(L"调整交换链大小失败。");
+                        fail_box(widen(wirex::gui::tr(wirex::gui::Str::err_resize_swap_chain)));
                         exit_code = 1;
                         break;
                     }
@@ -813,7 +831,7 @@ int run(HINSTANCE instance) {
                 if (opts.screenshot && frames >= kScreenshotFrames && Clock::now() >= shot_after) {
                     std::string error;
                     if (!save_back_buffer_png(*opts.screenshot, error)) {
-                        fail_box(L"截图失败：" + widen(error));
+                        fail_box(widen(format_one(wirex::gui::tr(wirex::gui::Str::err_screenshot_fmt), error.c_str())));
                         exit_code = 1;
                     }
                     g_shell.quit_requested = true;
@@ -821,7 +839,7 @@ int run(HINSTANCE instance) {
                 const HRESULT hr = d.swap_chain->Present(1, 0);
                 d.occluded = hr == DXGI_STATUS_OCCLUDED;
                 if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
-                    fail_box(L"Direct3D 设备已丢失。");
+                    fail_box(widen(wirex::gui::tr(wirex::gui::Str::err_d3d_device_lost)));
                     exit_code = 1;
                     break;
                 }
@@ -862,9 +880,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     try {
         return run(instance);
     } catch (const std::exception& e) {
-        fail_box(L"未处理的异常：" + widen(e.what()));
+        fail_box(widen(format_one(wirex::gui::tr(wirex::gui::Str::err_unhandled_exception_fmt), e.what())));
     } catch (...) {
-        fail_box(L"未处理的异常。");
+        fail_box(widen(wirex::gui::tr(wirex::gui::Str::err_unhandled_exception)));
     }
     return 1;
 }

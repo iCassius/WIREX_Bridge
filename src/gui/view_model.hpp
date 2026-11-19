@@ -224,6 +224,7 @@ public:
     [[nodiscard]] const std::string& startup_group_activation_status() const noexcept {
         return startup_group_activation_status_;
     }
+    void refresh_language_dependent_status();
     [[nodiscard]] bool startup_group_activation_active() const noexcept {
         return startup_group_activation_.active();
     }
